@@ -1,8 +1,6 @@
-//! Wire port registry — all known Brickadia gate wire port names.
+//! Wire port registry: all known Brickadia gate wire port names.
 //!
-//! The `WirePort` enum has one variant per port name from the gate
-//! inventory. Rust picks the optimal discriminant size automatically
-//! (u8 at 239 variants, scales if more are added).
+//! The `WirePort` enum has one variant per port name from the gate inventory.
 
 macro_rules! wire_ports {
     ( $( $variant:ident = $str_name:literal ),* $(,)? ) => {
@@ -469,10 +467,9 @@ wire_ports! {
     ArrayVarRef6 = "ArrayVarRef6",
     ArrayVarRef7 = "ArrayVarRef7",
     ArrayVarRef8 = "ArrayVarRef8",
-    // Full inventory port coverage (vehicle/aero/pickup/light/water/etc.
-    // internal components, plus string/displaytext ports). Kept
-    // exhaustive so lower_call can pull any gate's catalog ports without a
-    // from_name panic.
+    // Full inventory port coverage (vehicle/aero/pickup/light/water/etc. internal components,
+    // plus string/displaytext ports). Kept exhaustive so lowering can pull any gate's catalog
+    // ports without a `from_name` panic.
     ActiveDamping = "ActiveDamping",
     AerodynamicDirection = "AerodynamicDirection",
     AirStrafeControl = "AirStrafeControl",
@@ -696,10 +693,9 @@ wire_ports! {
     BlendSpace = "BlendSpace",
     MeshColors = "MeshColors",
     WeaponAmmoOverride = "WeaponAmmoOverride",
-    // Vector2D composite sub-ports (DisplayText layout): each parent (`Position`,
-    // `Anchor`, …) exposes two individually-wireable float sub-ports `X`/`Y`.
-    // Position/Anchor/Scale axes reuse the variants defined below;
-    // Pivot/ShadowOffset are defined here.
+    // Vector2D composite sub-ports (DisplayText layout): each parent (`Position`, `Anchor`,
+    // and so on) exposes two individually-wireable float sub-ports `X`/`Y`. Position/Anchor/
+    // Scale axes reuse the variants defined below; Pivot/ShadowOffset are defined here.
     PivotX = "Pivot.X",
     PivotY = "Pivot.Y",
     ShadowOffsetX = "ShadowOffset.X",

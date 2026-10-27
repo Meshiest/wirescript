@@ -62,7 +62,7 @@ pub(crate) fn environment_by_label(label: &str) -> Option<&'static properties::E
 }
 
 fn squash(s: &str) -> String {
-    s.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    s.chars().filter(char::is_ascii_alphanumeric).collect()
 }
 
 /// The environment names a program can write, in the map's order.
@@ -121,11 +121,11 @@ fn resolved(
 
 /// Whether the name `Environment` means the builtin here: a binding of the
 /// program's own by that name wins.
-fn environment_unshadowed(ctx: &TypeCheckCtx) -> bool {
+fn environment_unshadowed(ctx: &TypeCheckCtx<'_>) -> bool {
     ctx.scope.lookup(ENVIRONMENT).is_none()
 }
 
-fn report(ctx: &mut TypeCheckCtx, err: PropertyError, range: &SourceRange) {
+fn report(ctx: &mut TypeCheckCtx<'_>, err: PropertyError, range: &SourceRange) {
     match err {
         PropertyError::Unknown(m) => ctx.emit("WS110", m, range.clone()),
         PropertyError::Unsupported(m) => ctx.emit("WS003", m, range.clone()),
@@ -135,18 +135,15 @@ fn report(ctx: &mut TypeCheckCtx, err: PropertyError, range: &SourceRange) {
 /// Type a read of `e` when it is an environment property path (`None`
 /// otherwise). A read runs the Get Environment Property gate, so it needs an
 /// exec context.
-pub(super) fn infer_environment_read(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<Type> {
+pub(super) fn infer_environment_read(ctx: &mut TypeCheckCtx<'_>, e: &Expr) -> Option<Type> {
     let (env, property) = environment_path(e)?;
     if !environment_unshadowed(ctx) {
         return None;
     }
-    if ctx.exec_mode() != ExecMode::Exec {
-        ctx.emit(
-            "WS007",
-            format!("environment read '{ENVIRONMENT}.{env}.{property}' outside an exec context"),
-            e.range().clone(),
-        );
-    }
+    ctx.require_exec(
+        format_args!("environment read '{ENVIRONMENT}.{env}.{property}'"),
+        e.range(),
+    );
     Some(match resolve_environment(env, property) {
         Ok(r) => r.ty,
         Err(err) => {
@@ -157,7 +154,7 @@ pub(super) fn infer_environment_read(ctx: &mut TypeCheckCtx, e: &Expr) -> Option
 }
 
 /// `Environment.<env>` with no property: name one.
-pub(super) fn environment_without_property(ctx: &mut TypeCheckCtx, e: &Expr) -> bool {
+pub(super) fn environment_without_property(ctx: &mut TypeCheckCtx<'_>, e: &Expr) -> bool {
     let Expr::FieldAccess { obj, field, range } = e else {
         return false;
     };
@@ -179,7 +176,11 @@ pub(super) fn environment_without_property(ctx: &mut TypeCheckCtx, e: &Expr) -> 
 /// Check `target = value` when the target is an environment property path,
 /// returning whether it was one. The value must fit the property's type; an
 /// enum property also takes a constant member of its enum.
-pub(super) fn check_property_write(ctx: &mut TypeCheckCtx, target: &Expr, value: &Expr) -> bool {
+pub(super) fn check_property_write(
+    ctx: &mut TypeCheckCtx<'_>,
+    target: &Expr,
+    value: &Expr,
+) -> bool {
     let Some((env, property)) = environment_path(target).filter(|_| environment_unshadowed(ctx))
     else {
         return check_component_write(ctx, target, value);
@@ -194,7 +195,7 @@ pub(super) fn check_property_write(ctx: &mut TypeCheckCtx, target: &Expr, value:
     true
 }
 
-fn check_written_value(ctx: &mut TypeCheckCtx, r: &ResolvedProperty, value: &Expr) {
+fn check_written_value(ctx: &mut TypeCheckCtx<'_>, r: &ResolvedProperty, value: &Expr) {
     if let Some(e) = r.enum_type
         && enum_member_of(e, value).is_some()
     {
@@ -248,18 +249,12 @@ pub(crate) fn resolve_component(
 /// Type `obj.field` read off a component reference of type `class`. A read
 /// runs the Get Component Property gate, so it needs an exec context.
 pub(super) fn infer_component_read(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     class: &str,
     field: &str,
     range: &SourceRange,
 ) -> Type {
-    if ctx.exec_mode() != ExecMode::Exec {
-        ctx.emit(
-            "WS007",
-            format!("component property read '.{field}' outside an exec context"),
-            range.clone(),
-        );
-    }
+    ctx.require_exec(format_args!("component property read '.{field}'"), range);
     match resolve_component(class, field) {
         Ok(r) => r.ty,
         Err(err) => {
@@ -272,7 +267,11 @@ pub(super) fn infer_component_read(
 /// Check `obj.field = value` when `obj` is a component reference, returning
 /// whether it was one. The receiver is typed here; for any other receiver its
 /// diagnostics are dropped so the ordinary assignment check reports them once.
-pub(super) fn check_component_write(ctx: &mut TypeCheckCtx, target: &Expr, value: &Expr) -> bool {
+pub(super) fn check_component_write(
+    ctx: &mut TypeCheckCtx<'_>,
+    target: &Expr,
+    value: &Expr,
+) -> bool {
     let Expr::FieldAccess { obj, field, range } = target else {
         return false;
     };

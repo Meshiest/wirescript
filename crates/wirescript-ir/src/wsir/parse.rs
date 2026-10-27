@@ -316,7 +316,7 @@ impl<'a> Parser<'a> {
 
     fn expect_uint(&mut self, what: &str) -> R<u32> {
         match self.peek().clone() {
-            Tok::Int(n) if n >= 0 && n <= i64::from(u32::MAX) => {
+            Tok::Int(n) if u32::try_from(n).is_ok() => {
                 self.bump();
                 Ok(n as u32)
             }
@@ -503,12 +503,9 @@ impl<'a> Parser<'a> {
                 Tok::Ident("out") => {
                     self.bump();
                     let at = self.at();
-                    let name = match self.bump() {
-                        Tok::Value(n) => n,
-                        _ => {
-                            self.pos -= 1;
-                            return Err(self.err_here("an output name `%name` after `out`"));
-                        }
+                    let Tok::Value(name) = self.bump() else {
+                        self.pos -= 1;
+                        return Err(self.err_here("an output name `%name` after `out`"));
                     };
                     self.out_node(mi, name, at)?;
                 }
@@ -546,7 +543,7 @@ impl<'a> Parser<'a> {
 
     fn id_list(&mut self) -> R<Vec<IdRef<'a>>> {
         self.expect_punct(b'(')?;
-        let list = self.sep_list(b')', |p| p.id_ref())?;
+        let list = self.sep_list(b')', Parser::id_ref)?;
         Ok(list)
     }
 
@@ -557,7 +554,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(IdRef::Name(n, at))
             }
-            Tok::Int(n) if n >= 0 && n <= i64::from(u32::MAX) => {
+            Tok::Int(n) if u32::try_from(n).is_ok() => {
                 self.bump();
                 Ok(IdRef::Id(n as u32))
             }
@@ -798,12 +795,9 @@ impl<'a> Parser<'a> {
 
     fn port_ref(&mut self) -> R<PRef<'a>> {
         let at = self.at();
-        let name = match self.bump() {
-            Tok::Value(n) => n,
-            _ => {
-                self.pos -= 1;
-                return Err(self.err_here("a value `%name`"));
-            }
+        let Tok::Value(name) = self.bump() else {
+            self.pos -= 1;
+            return Err(self.err_here("a value `%name`"));
         };
         let port = if self.eat_punct(b'.') {
             Some(self.port_name()?)
@@ -883,7 +877,7 @@ impl<'a> Parser<'a> {
             return Ok(PAttrVal::RefMap(entries));
         }
         self.expect_punct(b'[')?;
-        Ok(PAttrVal::Refs(self.sep_list(b']', |p| p.port_ref())?))
+        Ok(PAttrVal::Refs(self.sep_list(b']', Parser::port_ref)?))
     }
 
     fn sig(&mut self) -> R<GateIO> {
@@ -996,10 +990,10 @@ impl<'a> Parser<'a> {
     /// One shared `Arc<str>` per distinct file name.
     fn file_arc(&mut self, name: &str) -> Arc<str> {
         if let Some(a) = self.files.get(name) {
-            return a.clone();
+            return Arc::clone(a);
         }
         let a: Arc<str> = Arc::from(name);
-        self.files.insert(name.to_string(), a.clone());
+        self.files.insert(name.to_string(), Arc::clone(&a));
         a
     }
 
@@ -1064,7 +1058,7 @@ impl<'a> Parser<'a> {
             }
             Tok::Punct(b'[') => {
                 self.bump();
-                let items = self.sep_list(b']', |p| p.literal())?;
+                let items = self.sep_list(b']', Parser::literal)?;
                 Ok(Literal::Array(items))
             }
             Tok::Ident(w) => {
@@ -1169,7 +1163,7 @@ impl<'a> Parser<'a> {
 
     fn ty_args(&mut self) -> R<Vec<Type>> {
         self.expect_punct(b'<')?;
-        let out = self.sep_list(b'>', |p| p.ty())?;
+        let out = self.sep_list(b'>', Parser::ty)?;
         Ok(out)
     }
 
@@ -1203,9 +1197,8 @@ impl<'a> Parser<'a> {
         if self.is_punct(b'{') {
             return Ok(Type::Record(self.fields()?));
         }
-        let word = match self.peek().clone() {
-            Tok::Ident(w) => w,
-            _ => return Err(self.err_here("a type")),
+        let Tok::Ident(word) = self.peek().clone() else {
+            return Err(self.err_here("a type"));
         };
         self.bump();
         if let Some((_, t)) = defaults::SCALAR_TYPES.iter().find(|(w, _)| *w == word) {
@@ -1334,7 +1327,7 @@ impl<'a> Parser<'a> {
                 let bad = |what: &str| self.err_at(a.at, format!("`{}`", a.key), what.to_string());
                 match (ann, &a.val) {
                     (None, PAttrVal::Flag) if !a.quoted && a.key == defaults::NO_LABEL => {
-                        nolabel = true
+                        nolabel = true;
                     }
                     (None, PAttrVal::Flag) => {
                         return Err(bad("expected `=` and a value after this attribute key"));
@@ -1669,7 +1662,7 @@ impl<'a> Parser<'a> {
                 None => ordered(NodeKind::Output),
             };
             if mi == 0 {
-                m.root_label_override = dirs.label.clone();
+                m.root_label_override.clone_from(&dirs.label);
                 if let Some(r) = &dirs.label_from {
                     let si = lookup(r.name, r.at)?;
                     let port = self.output_port(&built[si], &self.nodes[si], r)?;
@@ -1801,7 +1794,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-impl<'a> PModule<'a> {
+impl PModule<'_> {
     fn new(name: Option<String>, chip_node: Option<usize>) -> Self {
         PModule {
             name,

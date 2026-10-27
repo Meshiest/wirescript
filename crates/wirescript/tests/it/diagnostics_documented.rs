@@ -2,12 +2,10 @@
 //! `crates/wirescript/src/` is documented in `docs/src/diagnostics.md`,
 //! and that nothing documented there has lost its emit site.
 //!
-//! `ws_reachability.rs` proves a code CAN fire end-to-end, but nothing proved
-//! a code is written DOWN anywhere a user would find it — which is exactly
-//! how WS044-WS048 drifted out of the docs while WS009/WS018 stayed in as
-//! stale entries. This test scans both sources of truth as plain text and
-//! diffs the two `WSddd` code sets, modulo an explicit allowlist of codes
-//! that are reserved/retired and therefore have nothing to document.
+//! `ws_reachability.rs` proves a code can fire end-to-end; this test checks the
+//! code is written down where a user would find it. It scans both sources as
+//! plain text and diffs the two `WSddd` code sets, modulo an explicit allowlist
+//! of reserved or retired codes that have nothing to document.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -18,15 +16,12 @@ use wirescript::collections::HashSet;
 /// Keep in sync with the header of `ws_reachability.rs`.
 const RETIRED_OR_RESERVED: &[&str] = &["WS009", "WS015", "WS018", "WS029", "WS034"];
 
-/// Scan `text` for `WSddd` literals — `WS` followed by exactly 3 ASCII
-/// digits, not itself surrounded by more alphanumerics/underscore — and
-/// insert each match into `out`. A manual scan rather than a `regex`
-/// dependency, since this is the only place in the crate that would need one.
+/// Scan `text` for `WSddd` literals (`WS` followed by exactly 3 ASCII digits,
+/// not surrounded by more alphanumerics or underscore) and insert each match
+/// into `out`. A manual scan avoids a `regex` dependency.
 ///
-/// This deliberately does NOT match `WSP001` (the parse-level code): the
-/// character right after `WS` there is `P`, not a digit, so the digit check
-/// fails before the boundary check is even reached. It also skips generic
-/// placeholders like `WSxxx`/`WS0xx` in prose, for the same reason.
+/// `WSP001` (the parse-level code) and placeholders like `WSxxx`/`WS0xx` do not
+/// match, since the character after `WS` is not a digit.
 fn scan_codes(text: &str, out: &mut BTreeSet<String>) {
     let bytes = text.as_bytes();
     let len = bytes.len();
@@ -72,11 +67,10 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Every `WSddd` code appearing anywhere under `crates/wirescript/src/`
-/// (comments, emit-site string literals, doc comments — the scan is purely
-/// textual). Deliberately scoped to `src/` only: this crate's own
-/// `tests/` directory (including this file's `RETIRED_OR_RESERVED` list and
-/// `ws_reachability.rs`'s header) is NOT scanned, so neither pollutes the
-/// "defined in src/" set.
+/// (comments, emit-site string literals, doc comments; the scan is purely
+/// textual). Scoped to `src/` only: the crate's `tests/` directory (including
+/// this file's `RETIRED_OR_RESERVED` list and `ws_reachability.rs`'s header) is
+/// not scanned, so it cannot pollute the "defined in src/" set.
 fn src_codes() -> BTreeSet<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();

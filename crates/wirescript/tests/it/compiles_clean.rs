@@ -190,7 +190,7 @@ fn placeholders(m: &Module) -> usize {
             .nodes
             .values()
             .filter(|x| x.gate_class == "_Unsupported")
-            .count()
+            .count();
     });
     n
 }
@@ -199,12 +199,7 @@ fn placeholders(m: &Module) -> usize {
 fn case_failures(case: &Case) -> Vec<String> {
     let mut out = Vec::new();
     for (mode, mode_label) in MODES {
-        match wirescript::compile(CompileInput {
-            source: case.src,
-            file: "test.ws",
-            module_name: None,
-            fold_mode: mode,
-        }) {
+        match wirescript::compile(CompileInput::new(case.src, "test.ws").fold_mode(mode)) {
             Ok(r) => {
                 let errors: Vec<_> = r
                     .diagnostics

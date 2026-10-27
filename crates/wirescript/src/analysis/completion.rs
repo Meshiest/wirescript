@@ -2,7 +2,8 @@
 //! these items to its own completion type.
 
 use super::{
-    CollectionKind, SymbolDef, char_col_to_byte, collection_kind, cursor_byte_offset,
+    CollectionKind, SymbolDef, asset_names, asset_type_for_port, asset_types, char_col_to_byte,
+    collection_kind, component_member_completions, cursor_byte_offset, environment_completions,
     find_enclosing_call, member_receiver_at, named_arg_value, param_names, receiver_methods,
     record_field_names, resolve_symbol, swizzle_fields, type_str, user_receiver_methods,
 };
@@ -10,14 +11,15 @@ use crate::catalog::arrays::ARRAY_METHODS;
 use crate::catalog::calls::calls;
 use crate::catalog::events::events;
 use crate::catalog::maps::MAP_METHODS;
+use crate::collections::HashMap;
 use crate::lexer::KEYWORDS;
+use crate::typecheck::enums::{
+    DISCRIMINANT_FIELD, EnumDef, EnumRegistry, build_registry, game_enum_defs,
+};
 
 /// How an editor finds the enum named by the text it completes. Only an
 /// editor's build has one, so the engine is handed it.
-pub type EnumLookup = dyn for<'r> Fn(
-    &'r crate::typecheck::enums::EnumRegistry,
-    &str,
-) -> Option<&'r crate::typecheck::enums::EnumDef>;
+pub type EnumLookup = dyn for<'r> Fn(&'r EnumRegistry, &str) -> Option<&'r EnumDef>;
 
 /// What a completion offers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,10 +56,50 @@ pub struct Completion {
     pub replace_from: Option<usize>,
 }
 
-/// Completions for `receiver.` — array methods, var fields, record fields, or
-/// the receiver methods valid for a typed value. Returns only the members of the
-/// receiver (possibly empty); it never falls through to the global
-/// keyword/function list, so e.g. a `string` receiver shows only string methods.
+impl Completion {
+    pub fn new(label: impl Into<String>, kind: CompletionKind) -> Self {
+        Self {
+            label: label.into(),
+            kind,
+            ..Default::default()
+        }
+    }
+
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    #[must_use]
+    pub fn documentation(mut self, doc: impl Into<String>) -> Self {
+        self.documentation = Some(doc.into());
+        self
+    }
+
+    #[must_use]
+    pub fn insert_text(mut self, text: impl Into<String>) -> Self {
+        self.insert_text = Some(text.into());
+        self
+    }
+
+    #[must_use]
+    pub fn filter_text(mut self, text: impl Into<String>) -> Self {
+        self.filter_text = Some(text.into());
+        self
+    }
+
+    #[must_use]
+    pub fn replace_from(mut self, byte_col: usize) -> Self {
+        self.replace_from = Some(byte_col);
+        self
+    }
+}
+
+/// Completions for `receiver.`: array methods, var fields, record fields or the
+/// receiver methods of a typed value. Only the receiver's members, possibly none;
+/// it never falls through to the global list, so a `string` receiver shows only
+/// string methods.
 fn member_completions(
     var_name: &str,
     symbols: &[SymbolDef],
@@ -71,28 +113,25 @@ fn member_completions(
     // A component reference: its properties and `Remove`.
     if let Some(found) = resolve_symbol(symbols, source, var_name, line, col)
         .and_then(|s| s.ty.as_deref())
-        .and_then(crate::analysis::component_member_completions)
+        .and_then(component_member_completions)
     {
         return found
             .into_iter()
-            .map(|(label, detail)| Completion {
-                kind: if label == "Remove" {
+            .map(|(label, detail)| {
+                let kind = if label == "Remove" {
                     CompletionKind::Method
                 } else {
                     CompletionKind::Property
-                },
-                label,
-                detail: Some(detail),
-                ..Default::default()
+                };
+                Completion::new(label, kind).detail(detail)
             })
             .collect();
     }
 
     let enum_registry = enum_registry_from_source(source);
 
-    // `arr[i].` — an indexed read, not the array itself. Its members are the
-    // array-get gate's outputs (the element `Value` and the `OutOfBounds`
-    // flag), never the array's methods.
+    // `arr[i].` is an indexed read: its members are the array-get gate's outputs
+    // (the element `Value` and the `OutOfBounds` flag), not the array's methods.
     if let Some(base) = var_name.strip_suffix("[]") {
         let sym = resolve_symbol(symbols, source, base, line, col);
         let elem = sym
@@ -100,17 +139,15 @@ fn member_completions(
             .and_then(|t| t.strip_suffix("[]"))
             .unwrap_or("");
         for (name, ty) in [("Value", elem), ("OutOfBounds", "bool")] {
-            items.push(Completion {
-                label: name.to_string(),
-                kind: CompletionKind::Field,
-                detail: Some(if ty.is_empty() {
-                    "field".to_string()
-                } else {
-                    format!("{name}: {ty}")
-                }),
-                insert_text: Some(name.to_string()),
-                ..Default::default()
-            });
+            items.push(
+                Completion::new(name, CompletionKind::Field)
+                    .detail(if ty.is_empty() {
+                        "field".to_string()
+                    } else {
+                        format!("{name}: {ty}")
+                    })
+                    .insert_text(name),
+            );
         }
         return items;
     }
@@ -121,72 +158,52 @@ fn member_completions(
     // ahead of the bare enum-type receiver check below so that check's bare-
     // variant fallback can also reach `push_type_members` (which closes over
     // `field_item`).
-    let field_item = |name: String| Completion {
-        label: name.clone(),
-        kind: CompletionKind::Field,
-        detail: Some("field".to_string()),
-        insert_text: Some(name),
-        ..Default::default()
+    let field_item = |name: String| {
+        Completion::new(name.clone(), CompletionKind::Field)
+            .detail("field")
+            .insert_text(name)
     };
     // Method + swizzle members valid for a typed value: an enum-typed value's
     // `.Discriminant`, swizzle fields, builtin receiver-methods, then
     // in-scope user `self`-mods whose receiver matches.
     let push_type_members = |ty: &str, items: &mut Vec<Completion>| {
         if lookup(&enum_registry, ty).is_some() {
-            items.push(Completion {
-                label: "Discriminant".to_string(),
-                kind: CompletionKind::Field,
-                detail: Some(format!("{ty} discriminant (int)")),
-                insert_text: Some("Discriminant".to_string()),
-                ..Default::default()
-            });
+            items.push(
+                Completion::new(DISCRIMINANT_FIELD, CompletionKind::Field)
+                    .detail(format!("{ty} discriminant (int)"))
+                    .insert_text(DISCRIMINANT_FIELD),
+            );
         }
         for f in swizzle_fields(ty) {
             items.push(field_item(f.to_string()));
         }
         for (name, sig) in receiver_methods(ty) {
-            items.push(Completion {
-                label: name.to_string(),
-                kind: CompletionKind::Method,
-                detail: Some(sig),
-                ..Default::default()
-            });
+            items.push(Completion::new(name, CompletionKind::Method).detail(sig));
         }
         for (name, sig) in user_receiver_methods(ty, symbols) {
-            items.push(Completion {
-                label: name.clone(),
-                kind: CompletionKind::Method,
-                detail: Some(format!("{name}{sig}")),
-                insert_text: Some(name),
-                ..Default::default()
-            });
+            items.push(
+                Completion::new(name.clone(), CompletionKind::Method)
+                    .detail(format!("{name}{sig}"))
+                    .insert_text(name),
+            );
         }
     };
 
-    // Bare enum-type receiver (`Shape.<here>`): a variant PATH ready for
-    // construction or `.Discriminant`, not a value. Only when the name is NOT
-    // shadowed by a value binding: `collect_symbols_for_file` emits no symbol
-    // for an `enum` decl itself, so an unshadowed enum name resolves to `None`
-    // (or, defensively, a `type` symbol), whereas a `var`/`let`/param/mod of
-    // the same name resolves to that value here and must win. This mirrors the
-    // compiler's own shadow guard (`infer.rs`'s
-    // `resolve_variant_for_construction`: a value symbol whose name equals the
-    // enum's shadows the type, so the name is NOT a construction site).
+    // A bare enum-type receiver (`Shape.<here>`) is a variant path, ready for
+    // construction or `.Discriminant`, unless a value binding shadows the name.
+    // `collect_symbols_for_file` emits no symbol for an `enum` declaration, so an
+    // unshadowed enum name resolves to `None` (or a `type` symbol), while a value
+    // of that name resolves here and wins, as in `resolve_variant_for_construction`.
     if sym.is_none_or(|s| s.kind == "type") {
         if let Some(def) = lookup(&enum_registry, var_name) {
             push_variant_completions(&mut items, def);
             return items;
         }
-        // A bare variant name used as a value receiver (`EasingFunction.
-        // Bounce.`, or any `Enum.Variant.` chain) arrives here as just
-        // `Variant`, because `member_receiver_at` only reports the identifier
-        // directly before the dot, discarding the `Enum.` qualifier. Resolve
-        // it the same way the compiler resolves a bare variant
-        // (`resolve_bare_variant_enum`): on a UNIQUE owning enum, treat the
-        // receiver as a value of that enum type, offering `.Discriminant`
-        // (via `push_type_members`) exactly as a directly-typed value would.
-        // An ambiguous or unknown bare name yields no owner and falls through
-        // unchanged.
+        // A bare variant used as a value receiver (`EasingFunction.Bounce.`) arrives
+        // as just `Variant`, since `member_receiver_at` reports only the identifier
+        // before the dot. Resolved as the compiler resolves a bare variant
+        // (`resolve_bare_variant_enum`): a unique owning enum makes it a value of that
+        // type, offering `.Discriminant`; an ambiguous or unknown name falls through.
         if let Some(owner) =
             crate::typecheck::enums::resolve_bare_variant_enum(&enum_registry, var_name, |n| {
                 lookup(&enum_registry, n).is_some()
@@ -199,23 +216,20 @@ fn member_completions(
         }
     }
 
-    // Collection methods come from the receiver's declared type (resolved through
-    // type aliases): a `Map<K, V>` gets the map table, `T[]` or an `array` decl
-    // the array table. The tables are distinct — a map's `length`/`clear`/
-    // `copyFrom` are its own, and `get`/`set`/`has`/`keys`/`values` exist on no
-    // array — so this dispatches on type, never on the bare method name.
+    // Collection methods follow the receiver's declared type, through aliases: a
+    // `Map<K, V>` gets the map table, `T[]` or an `array` declaration the array
+    // table. A map's `length`, `clear` and `copyFrom` are its own, and `get`,
+    // `set`, `has`, `keys` and `values` are map-only.
     let collection = sym.and_then(|s| {
         s.ty.as_deref()
             .and_then(|ty| collection_kind(ty, symbols))
             .or_else(|| (s.kind == "array").then_some(CollectionKind::Array))
     });
     if let Some(kind) = collection {
-        let method_item = |name: &str, signature: &str, doc: &str| Completion {
-            label: name.to_string(),
-            kind: CompletionKind::Method,
-            detail: Some(format!("{name}{signature}")),
-            documentation: Some(doc.to_string()),
-            ..Default::default()
+        let method_item = |name: &str, signature: &str, doc: &str| {
+            Completion::new(name, CompletionKind::Method)
+                .detail(format!("{name}{signature}"))
+                .documentation(doc)
         };
         match kind {
             CollectionKind::Array => {
@@ -240,12 +254,9 @@ fn member_completions(
                 if member.contains('.') {
                     continue; // deeper nesting isn't a direct member
                 }
-                items.push(Completion {
-                    label: member.to_string(),
-                    kind: namespace_member_kind(m.kind),
-                    insert_text: Some(member.to_string()),
-                    ..Default::default()
-                });
+                items.push(
+                    Completion::new(member, namespace_member_kind(m.kind)).insert_text(member),
+                );
             }
         }
         return items;
@@ -256,13 +267,11 @@ fn member_completions(
     // `pos.x`).
     if sym.is_some_and(|s| matches!(s.kind, "var" | "static var")) {
         for (name, detail) in &crate::catalog::VAR_PSEUDO_FIELDS {
-            items.push(Completion {
-                label: name.to_string(),
-                kind: CompletionKind::Field,
-                detail: Some(detail.to_string()),
-                insert_text: Some(name.to_string()),
-                ..Default::default()
-            });
+            items.push(
+                Completion::new(*name, CompletionKind::Field)
+                    .detail(*detail)
+                    .insert_text(*name),
+            );
         }
         if let Some(ty) = sym.and_then(|s| s.ty.as_deref()) {
             push_type_members(ty, &mut items);
@@ -273,7 +282,7 @@ fn member_completions(
     // Record-typed value (e.g. `let split = pl.InputReader()` -> {Forward, Right,
     // Jump}, or a multi-output mod result): offer the record's field names, so
     // `split.<here>` / `on split.<here>` completes `Forward`/`Right`/`Jump`. The
-    // type may be an inline `{…}` string or a named `type` alias resolved here.
+    // type may be an inline `{...}` string or a named `type` alias resolved here.
     if let Some(fields) = sym
         .and_then(|s| s.ty.as_deref())
         .and_then(|ty| resolve_record_fields(ty, symbols))
@@ -292,7 +301,7 @@ fn member_completions(
     items
 }
 
-/// Record field names for a receiver type string: an inline `{…}` record, or a
+/// Record field names for a receiver type string: an inline `{...}` record, or a
 /// named `type` alias resolved through the `type` symbol it points at.
 fn resolve_record_fields(ty: &str, symbols: &[SymbolDef]) -> Option<Vec<String>> {
     if let Some(fields) = record_field_names(ty) {
@@ -313,58 +322,42 @@ fn namespace_member_kind(kind: &str) -> CompletionKind {
     }
 }
 
-/// The `enum` declarations visible in `source`, keyed by name, plus the
-/// built-in `Option`/`Result` prelude - reparsed on demand so enum-aware
-/// completions don't require threading a cached AST/type-checked document
-/// through every completion path. Gated by a fast substring check: a file
-/// with no `enum ` keyword at all cannot contain a `TopDecl::Enum`, so
-/// skipping the reparse in that case returns the exact same registry
-/// (`build_registry` only reads `TopDecl::Enum` entries out of `decls`) that
-/// a full parse would, at zero cost for the common no-enum file.
-fn enum_registry_from_source(source: &str) -> crate::typecheck::enums::EnumRegistry {
+/// The `enum` declarations in `source` by name, plus the `Option` and `Result`
+/// prelude, parsed on demand so enum-aware completion needs no cached AST. A
+/// file without the text `enum ` declares none, so it skips the parse and gets
+/// the same registry.
+fn enum_registry_from_source(source: &str) -> EnumRegistry {
     if !source.contains("enum ") {
-        return crate::typecheck::enums::build_registry(&[]);
+        return build_registry(&[]);
     }
     let ast = crate::on_big_stack(|| crate::parse(source, "completion")).ast;
-    crate::typecheck::enums::build_registry(&ast.decls)
+    build_registry(&ast.decls)
 }
 
 /// Push a completion item for each variant of `def` - the user-enum analog of
 /// `push_enum_member_completions` below, used both for `match`-arm-head
 /// pattern completion and for a bare `Enum.<here>` variant-path receiver.
-fn push_variant_completions(items: &mut Vec<Completion>, def: &crate::typecheck::enums::EnumDef) {
+fn push_variant_completions(items: &mut Vec<Completion>, def: &EnumDef) {
     for v in &def.variants {
-        items.push(Completion {
-            label: v.name.clone(),
-            kind: CompletionKind::EnumMember,
-            detail: Some(format!("{} variant", def.name)),
-            insert_text: Some(v.name.clone()),
-            ..Default::default()
-        });
+        items.push(
+            Completion::new(v.name.clone(), CompletionKind::EnumMember)
+                .detail(format!("{} variant", def.name))
+                .insert_text(v.name.clone()),
+        );
     }
 }
 
-/// If the cursor sits in a `match <scrutinee> { <here> }` arm-head position -
-/// directly inside the match's own arm-list braces, at or past the last arm
-/// separator (a `,`, or a comma-less block arm's closing `}`, or the opening
-/// brace) and before any `=>` of an in-progress arm - return the scrutinee's
-/// raw source text (trimmed). `None` inside a pattern's own parens
-/// (`Circle(<here>)`), inside an arm's body (`Empty => { <here> }` or past
-/// its `=>`), or outside any match at all.
+/// When the cursor is at an arm head of `match <scrutinee> { <here> }` (inside
+/// the match's own braces, after the last arm separator and before any `=>`),
+/// the scrutinee's source text, trimmed. `None` inside a pattern's parens, an
+/// arm's body, or outside any match.
 ///
-/// Scans the whole prefix up to the cursor once, like `find_enclosing_call`
-/// above, skipping strings/comments and tracking brace/paren/bracket nesting
-/// with a small frame stack. Only the innermost `{ }` opened directly by a
-/// `match <expr>` is tagged `MatchArms`; every other brace/paren/bracket is
-/// an opaque `Other` frame, except the block body of an arm (a `{` whose arm
-/// is `AwaitingBody`, the state right after `=>`), which is tagged `ArmBlock`
-/// so that popping it returns the enclosing arm to `Head`. That mirrors the
-/// parser: a block-bodied arm may omit the trailing comma
-/// (`parser/expr.rs`), so the cursor after a comma-less `Empty => { .. }` is
-/// still an arm head. A scrutinee expression that itself contains a raw `{`
-/// (a record literal, e.g. `match f(){x:1} { ... }`) is not handled - the
-/// `{` would be mistaken for the arms brace - but that shape is rare enough
-/// not to be worth the extra bookkeeping here.
+/// One scan of the prefix up to the cursor, skipping strings and comments, with
+/// a frame stack for brace, paren and bracket nesting. Only the `{ }` opened by
+/// `match <expr>` is `MatchArms`, an arm's block body (a `{` right after `=>`)
+/// is `ArmBlock`, and everything else is `Other`. Popping an `ArmBlock` returns
+/// its arm to `Head`, since a block arm may omit its comma. A scrutinee that
+/// contains a `{` (`match f(){x:1} { ... }`) is not handled.
 pub fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Option<String> {
     let offset = cursor_byte_offset(source, line, col);
     let prefix = &source[..offset];
@@ -524,32 +517,27 @@ pub fn match_arm_head_scrutinee_at(source: &str, line: usize, col: usize) -> Opt
 fn push_enum_member_completions(items: &mut Vec<Completion>, et: &str, value_so_far: &str) {
     let filter = value_so_far.trim().to_string();
     for v in crate::catalog::enum_member_names(et) {
-        items.push(Completion {
-            label: v.clone(),
-            kind: CompletionKind::EnumMember,
-            detail: Some(format!("{et} member")),
-            insert_text: Some(v),
-            filter_text: Some(filter.clone()),
-            ..Default::default()
-        });
+        items.push(
+            Completion::new(v.clone(), CompletionKind::EnumMember)
+                .detail(format!("{et} member"))
+                .insert_text(v)
+                .filter_text(filter.clone()),
+        );
     }
 }
 
-/// Push a QUALIFIED completion item (`EasingFunction.Bounce`) for each variant
-/// of the built-in game enum backed by schema enum `et`, if any, alongside
-/// [`push_enum_member_completions`]'s bare-name items, so a config value slot
-/// resolves to a schema enum offers both the bare member and the qualified
-/// form an author would use to construct the value directly. `et` is the raw
-/// schema type (`config_enum_for_named_arg`'s return); at most one built-in
-/// game enum maps to it, found via [`crate::catalog::game_enum_schema_type`].
-/// A no-op for a schema enum with no built-in game-enum counterpart.
+/// Push a qualified item (`EasingFunction.Bounce`) for each variant of the
+/// built-in game enum backed by schema enum `et`, beside
+/// [`push_enum_member_completions`]'s bare names, so a config slot offers both
+/// forms. `et` is the raw schema type from `config_enum_for_named_arg`; at most
+/// one game enum maps to it ([`crate::catalog::game_enum_schema_type`]).
 fn push_qualified_builtin_game_enum_variant_completions(
     items: &mut Vec<Completion>,
     et: &str,
     value_so_far: &str,
 ) {
     let filter = value_so_far.trim().to_string();
-    let Some(def) = crate::typecheck::enums::game_enum_defs()
+    let Some(def) = game_enum_defs()
         .into_iter()
         .find(|def| crate::catalog::game_enum_schema_type(&def.name) == Some(et))
     else {
@@ -557,14 +545,12 @@ fn push_qualified_builtin_game_enum_variant_completions(
     };
     for v in &def.variants {
         let label = format!("{}.{}", def.name, v.name);
-        items.push(Completion {
-            label: label.clone(),
-            kind: CompletionKind::EnumMember,
-            detail: Some(format!("{} variant", def.name)),
-            insert_text: Some(label),
-            filter_text: Some(filter.clone()),
-            ..Default::default()
-        });
+        items.push(
+            Completion::new(label.clone(), CompletionKind::EnumMember)
+                .detail(format!("{} variant", def.name))
+                .insert_text(label)
+                .filter_text(filter.clone()),
+        );
     }
 }
 
@@ -599,16 +585,13 @@ pub fn completions(
 
     // Prefab file reference `$./file.brz` / `$/abs/file.brz`: complete from the
     // candidate paths the frontend supplied (disk scan / drag registry). A
-    // text edit over the whole `$…` fragment keeps `.`/`/` filtering robust.
+    // text edit over the whole `$...` fragment keeps `.`/`/` filtering robust.
     if let Some((dollar, frag)) = prefab_path_fragment(source, line, col) {
         for path in prefab_paths {
             if path.starts_with(frag) {
-                items.push(Completion {
-                    label: path.clone(),
-                    kind: CompletionKind::File,
-                    replace_from: Some(dollar + 1),
-                    ..Default::default()
-                });
+                items.push(
+                    Completion::new(path.clone(), CompletionKind::File).replace_from(dollar + 1),
+                );
             }
         }
         if !items.is_empty() {
@@ -628,21 +611,15 @@ pub fn completions(
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '/')
             {
                 if let Some(slash) = frag.rfind('/') {
-                    for name in crate::analysis::asset_names(&frag[..slash]) {
-                        items.push(Completion {
-                            label: name.to_string(),
-                            kind: CompletionKind::Constant,
-                            ..Default::default()
-                        });
+                    for name in asset_names(&frag[..slash]) {
+                        items.push(Completion::new(name, CompletionKind::Constant));
                     }
                 } else {
-                    for ty in crate::analysis::asset_types() {
-                        items.push(Completion {
-                            label: ty.to_string(),
-                            kind: CompletionKind::Class,
-                            insert_text: Some(format!("{ty}/")),
-                            ..Default::default()
-                        });
+                    for ty in asset_types() {
+                        items.push(
+                            Completion::new(ty, CompletionKind::Class)
+                                .insert_text(format!("{ty}/")),
+                        );
                     }
                 }
                 if !items.is_empty() {
@@ -652,26 +629,19 @@ pub fn completions(
         }
     }
 
-    // Member access `receiver.partial` — return only the receiver's members.
-    // Checked before call-param completion so `Call(arg = recv.<here>` shows
-    // recv's methods, not the enclosing call's params. A plain `Call(` (the dot
-    // belongs to the callee, cursor at an arg boundary) yields no receiver here
-    // and falls through to param completion below.
+    // Member access `receiver.partial`: only the receiver's members. Checked
+    // before call-parameter completion, so `Call(arg = recv.<here>` shows `recv`'s
+    // methods; a plain `Call(` yields no receiver and falls through.
     // `Environment.<env>.<property>`: environment names, then properties.
     let env_items = if symbols.iter().any(|s| s.name == "Environment") {
         None
     } else {
-        crate::analysis::environment_completions(source, line, col)
+        environment_completions(source, line, col)
     };
     if let Some(items) = env_items {
         return items
             .into_iter()
-            .map(|(label, detail)| Completion {
-                label,
-                kind: CompletionKind::Property,
-                detail: Some(detail),
-                ..Default::default()
-            })
+            .map(|(label, detail)| Completion::new(label, CompletionKind::Property).detail(detail))
             .collect();
     }
     if let Some(var_name) = member_receiver_at(source, line, col) {
@@ -705,9 +675,9 @@ pub fn completions(
             // insert bare (the idiomatic form; a quoted string also works).
             let value_ctx = named_arg_value(source, line, col);
             if let Some((param_name, value_so_far)) = value_ctx.as_ref() {
-                // Enum config value — works for both a hand-coded param
-                // (`justify = …`) and a raw config field (`Justification = …`),
-                // resolved through the unified call+event helper.
+                // An enum config value, for a declared parameter (`justify = ...`) or a raw
+                // config field (`Justification = ...`), through the shared call and event
+                // helper.
                 if let Some(et) =
                     crate::catalog::config_enum_for_named_arg(call_name.as_str(), param_name)
                 {
@@ -722,24 +692,20 @@ pub fn completions(
                     }
                 }
                 if let Some(param) = spec.params.iter().find(|p| p.name == param_name) {
-                    // Asset-ref config param (`font = <here>`, `weapon = <here>`):
-                    // offer full `$Type/Name` refs for the param's asset type, so
-                    // the author needn't know the type name. (Once they type `$`,
-                    // the `$Type/` block above takes over.) Constant-only params
-                    // only — a wire-input Entity port takes a live value.
+                    // An asset config parameter (`font = <here>`, `weapon = <here>`): offer full
+                    // `$Type/Name` references for its asset type (once `$` is typed, the
+                    // `$Type/` block above takes over). Constant-only parameters only, since a
+                    // wire-input Entity port takes a live value.
                     if !crate::catalog::is_wire_input(spec.gate_class, param.port.as_str())
-                        && let Some(asset_ty) =
-                            crate::analysis::asset_type_for_port(param.port.as_str())
+                        && let Some(asset_ty) = asset_type_for_port(param.port.as_str())
                     {
-                        for name in crate::analysis::asset_names(asset_ty) {
+                        for name in asset_names(asset_ty) {
                             let full = format!("${asset_ty}/{name}");
-                            items.push(Completion {
-                                label: full.clone(),
-                                kind: CompletionKind::Constant,
-                                detail: Some(format!("{asset_ty} asset")),
-                                insert_text: Some(full),
-                                ..Default::default()
-                            });
+                            items.push(
+                                Completion::new(full.clone(), CompletionKind::Constant)
+                                    .detail(format!("{asset_ty} asset"))
+                                    .insert_text(full),
+                            );
                         }
                         if !items.is_empty() {
                             return items;
@@ -772,20 +738,16 @@ pub fn completions(
                         .map(str::to_string)
                         .unwrap_or_else(|| type_str(&p.ty));
                     if p.optional {
-                        items.push(Completion {
-                            label: format!("{} = ", p.name),
-                            kind: CompletionKind::Field,
-                            detail: Some(format!("{ty_label} (optional)")),
-                            insert_text: Some(format!("{} = ", p.name)),
-                            ..Default::default()
-                        });
+                        items.push(
+                            Completion::new(format!("{} = ", p.name), CompletionKind::Field)
+                                .detail(format!("{ty_label} (optional)"))
+                                .insert_text(format!("{} = ", p.name)),
+                        );
                     } else {
-                        items.push(Completion {
-                            label: p.name.to_string(),
-                            kind: CompletionKind::Field,
-                            detail: Some(format!("{ty_label} (required)")),
-                            ..Default::default()
-                        });
+                        items.push(
+                            Completion::new(p.name, CompletionKind::Field)
+                                .detail(format!("{ty_label} (required)")),
+                        );
                     }
                 }
                 // Data-driven config attributes: the gate's raw settings-menu field
@@ -798,13 +760,11 @@ pub fn completions(
                         crate::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
                             .map(str::to_string)
                             .unwrap_or_else(|| cfg.ty.clone());
-                    items.push(Completion {
-                        label: format!("{} = ", cfg.name),
-                        kind: CompletionKind::Field,
-                        detail: Some(format!("{ty_label} (config)")),
-                        insert_text: Some(format!("{} = ", cfg.name)),
-                        ..Default::default()
-                    });
+                    items.push(
+                        Completion::new(format!("{} = ", cfg.name), CompletionKind::Field)
+                            .detail(format!("{ty_label} (config)"))
+                            .insert_text(format!("{} = ", cfg.name)),
+                    );
                 }
                 if !items.is_empty() {
                     return items;
@@ -828,25 +788,21 @@ pub fn completions(
             // value slot, fall through to the in-scope identifier list below.
             if value_ctx.is_none() {
                 for (surf, _, _) in &evt.input_named {
-                    items.push(Completion {
-                        label: format!("{surf} = "),
-                        kind: CompletionKind::Field,
-                        detail: Some("wired input".to_string()),
-                        insert_text: Some(format!("{surf} = ")),
-                        ..Default::default()
-                    });
+                    items.push(
+                        Completion::new(format!("{surf} = "), CompletionKind::Field)
+                            .detail("wired input")
+                            .insert_text(format!("{surf} = ")),
+                    );
                 }
                 for (surf, field) in &evt.config_named {
                     let ty_label = crate::catalog::config_field_enum_type(evt.gate_class, field)
                         .map(str::to_string)
                         .unwrap_or_else(|| "config".to_string());
-                    items.push(Completion {
-                        label: format!("{surf} = "),
-                        kind: CompletionKind::Field,
-                        detail: Some(format!("{ty_label} (config)")),
-                        insert_text: Some(format!("{surf} = ")),
-                        ..Default::default()
-                    });
+                    items.push(
+                        Completion::new(format!("{surf} = "), CompletionKind::Field)
+                            .detail(format!("{ty_label} (config)"))
+                            .insert_text(format!("{surf} = ")),
+                    );
                 }
                 if !items.is_empty() {
                     return items;
@@ -861,12 +817,9 @@ pub fn completions(
             // parsed from the signature string in the symbol's type.
             if let Some(names) = param_names(sig) {
                 for name in names {
-                    items.push(Completion {
-                        label: name.clone(),
-                        kind: CompletionKind::Field,
-                        insert_text: Some(name),
-                        ..Default::default()
-                    });
+                    items.push(
+                        Completion::new(name.clone(), CompletionKind::Field).insert_text(name),
+                    );
                 }
                 if !items.is_empty() {
                     return items;
@@ -875,23 +828,16 @@ pub fn completions(
         }
     }
 
-    // User symbols. Qualified namespace members (`u.member`) are addressed only
-    // through `u.` member completion, so keep them out of the bare-identifier list.
-    // Dedupe by name: when a name is declared in several scopes, offer only the
-    // one in scope at the cursor (nearest enclosing/preceding declaration), so a
-    // handler-local `players: character[]` doesn't leak into file scope where a
-    // different `players` is visible. Forward references to top-level symbols
-    // still appear (`resolve_symbol` falls back to the first declaration).
-    // Precompute the nearest-preceding (and first-seen) declaration per name in
-    // ONE pass over the symbol table, then resolve each unique name by O(1)
-    // lookup below. `resolve_symbol` re-scans every symbol per call, so calling
-    // it once per unique name made this loop O(n²). This mirrors its rule: the
-    // nearest declaration at/before the cursor wins, else the first declaration.
-    let (cl, cc) = ((line + 1) as u32, (col + 1) as u32);
-    let mut first: crate::collections::HashMap<&str, &SymbolDef> =
-        crate::collections::HashMap::default();
-    let mut best: crate::collections::HashMap<&str, (&SymbolDef, (u32, u32))> =
-        crate::collections::HashMap::default();
+    // User symbols. Qualified namespace members (`u.member`) complete only after
+    // `u.`, so they stay out of this list. A name declared in several scopes is
+    // offered once, as the declaration in scope at the cursor (the nearest one at
+    // or before it, else the first), so a handler-local `players` stays out of
+    // file scope. The per-name choice is computed in one pass over the symbols,
+    // with `resolve_symbol`'s rule.
+    let byte_col = super::text::char_col_to_byte(super::text::line_text(source, line), col);
+    let (cl, cc) = ((line + 1) as u32, (byte_col + 1) as u32);
+    let mut first: HashMap<&str, &SymbolDef> = HashMap::default();
+    let mut best: HashMap<&str, (&SymbolDef, (u32, u32))> = HashMap::default();
     for s in symbols {
         if s.name.contains('.') {
             continue;
@@ -927,19 +873,13 @@ pub fn completions(
             _ => CompletionKind::Text,
         };
         items.push(Completion {
-            label: chosen.name.clone(),
-            kind,
             detail: chosen.ty.clone(),
-            ..Default::default()
+            ..Completion::new(chosen.name.clone(), kind)
         });
     }
 
     for kw in KEYWORDS {
-        items.push(Completion {
-            label: kw.to_string(),
-            kind: CompletionKind::Keyword,
-            ..Default::default()
-        });
+        items.push(Completion::new(*kw, CompletionKind::Keyword));
     }
 
     // Annotations: `@side` port pins, the chip annotations, and the
@@ -959,30 +899,23 @@ pub fn completions(
         ("@layout", "module-level: placement engine (code/cube)"),
         ("@flat", "module-level: inline every chip onto one grid"),
     ] {
-        items.push(Completion {
-            label: ann.to_string(),
-            kind: CompletionKind::Keyword,
-            detail: Some(detail.to_string()),
-            ..Default::default()
-        });
+        items.push(Completion::new(ann, CompletionKind::Keyword).detail(detail));
     }
 
     // Built-in events (RoundStart, ChatCommand, CharacterSpawned, ...).
-    for (name, evt) in events().iter() {
+    for (name, evt) in events() {
         let params: Vec<&str> = evt.data.iter().map(|d| d.name).collect();
         items.push(Completion {
-            label: name.to_string(),
-            kind: CompletionKind::Event,
             detail: if params.is_empty() {
                 None
             } else {
                 Some(format!("({})", params.join(", ")))
             },
-            ..Default::default()
+            ..Completion::new(*name, CompletionKind::Event)
         });
     }
 
-    for (name, spec) in calls().iter() {
+    for (name, spec) in calls() {
         let params_str: Vec<String> = spec
             .params
             .iter()
@@ -994,23 +927,16 @@ pub fn completions(
                 }
             })
             .collect();
-        items.push(Completion {
-            label: name.to_string(),
-            kind: CompletionKind::Function,
-            detail: Some(format!("({})", params_str.join(", "))),
-            ..Default::default()
-        });
+        items.push(
+            Completion::new(*name, CompletionKind::Function)
+                .detail(format!("({})", params_str.join(", "))),
+        );
     }
 
-    // Callable gate builtins (GetMapElement, PushToArray, SetVariable, …) — they
-    // desugar to the method/assignment forms, so they aren't in `calls()`.
+    // Callable gate builtins (`GetMapElement`, `PushToArray`, `SetVariable`)
+    // desugar to method and assignment forms, so they are not in `calls()`.
     for name in crate::catalog::gate_builtins::all() {
-        items.push(Completion {
-            label: name.to_string(),
-            kind: CompletionKind::Function,
-            detail: Some("gate builtin".to_string()),
-            ..Default::default()
-        });
+        items.push(Completion::new(name, CompletionKind::Function).detail("gate builtin"));
     }
 
     for ty in &[
@@ -1027,25 +953,19 @@ pub fn completions(
         "brick",
         "exec",
     ] {
-        items.push(Completion {
-            label: ty.to_string(),
-            kind: CompletionKind::Class,
-            ..Default::default()
-        });
+        items.push(Completion::new(*ty, CompletionKind::Class));
     }
 
     // Built-in game enum type names (`EasingFunction` and friends). Unlike a
     // user-declared `enum`, these have no `TopDecl::Enum` and so never appear
     // in `symbols`; offer them here so `var e: <here>` completes them the
     // same as any hardcoded scalar type above.
-    for def in crate::typecheck::enums::game_enum_defs() {
-        items.push(Completion {
-            label: def.name.clone(),
-            kind: CompletionKind::Class,
-            detail: Some("game enum".to_string()),
-            insert_text: Some(def.name),
-            ..Default::default()
-        });
+    for def in game_enum_defs() {
+        items.push(
+            Completion::new(def.name.clone(), CompletionKind::Class)
+                .detail("game enum")
+                .insert_text(def.name),
+        );
     }
 
     items

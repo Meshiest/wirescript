@@ -1,18 +1,16 @@
 //! Compiles every `.ws` fixture in `tests/fixtures/const/` and asserts the
 //! const half of each differential actually evaluated away.
 //!
-//! The fixtures themselves prove const and runtime agree on VALUES — that is
-//! checked in game, where the real gates run. What they cannot prove is that
-//! the const path vanished: a `const mod` that silently fell back to emitting
-//! gates would still compute the right answer and still pass. That is what
-//! this test is for.
+//! The fixtures prove in game that const and runtime agree on values. They
+//! cannot prove the const path emitted no gates, since a `const mod` that fell
+//! back to gates still computes the right answer; this file checks that.
 
 use crate::common;
 
+use wirescript::FoldMode;
 use wirescript::intern::intern;
 use wirescript::ir::{Literal, Module, gate_class};
-use wirescript::lower::FoldMode;
-use wirescript::typecheck::typecheck;
+use wirescript::typecheck;
 use wirescript::{FsLoader, Severity, resolve};
 
 fn count(m: &Module) -> usize {
@@ -59,21 +57,16 @@ fn lower_ok(source: &str, file: &str) -> Module {
     lowered.module
 }
 
-/// Gate count of `source` — see [`lower_ok`] for the fold-mode guarantee.
+/// Gate count of `source`, lowered with folding off as in [`lower_ok`].
 fn gates(source: &str, file: &str) -> usize {
     count(&lower_ok(source, file))
 }
 
-/// Error codes `source` produces up to and including typecheck. Used for the
-/// negative half of a differential, where the point is that the program is
-/// REJECTED — so it must not go through [`lower_ok`], which panics on errors.
+/// Error codes `source` produces up to and including typecheck, for the
+/// rejected half of a differential ([`lower_ok`] panics on errors).
 fn error_codes(source: &str, file: &str) -> Vec<String> {
     let resolved = resolve(source, file, &FsLoader);
-    let tc = typecheck(
-        &resolved.ast,
-        file,
-        &wirescript::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &wirescript::CeSlotMap::default());
     resolved
         .diagnostics
         .iter()
@@ -98,7 +91,7 @@ fn event_names(m: &Module) -> Vec<String> {
                     Some(Literal::String(s)) => Some(s.clone()),
                     _ => None,
                 }),
-        )
+        );
     });
     out
 }
@@ -137,20 +130,10 @@ fn every_const_fixture_compiles_without_warnings() {
     );
 }
 
-/// The discriminating property of this whole feature: a const parameter
-/// carries a literal into a position that REQUIRES one, which no ordinary
-/// parameter can reach because a parameter is a wire.
-///
-/// `SendCustomEvent`'s channel name is the sharpest case — it is gate CONFIG,
-/// not a wire port, so it can only be baked into the component data. With
-/// `name: const string` the call site's `"died"` reaches it and bakes; with a
-/// plain `name: string` the same body is REJECTED (WS028), because a wire
-/// cannot drive a non-wireable config port.
-///
-/// This test fails if const params stop working, in either direction: degrade
-/// `const string` to `string` and the first half dies on WS028 inside
-/// `lower_ok`; keep it type-checking but lose the bake and the `EventName`
-/// assertion goes empty.
+/// A const parameter carries a literal into a position that requires one,
+/// which a plain parameter (a wire) cannot reach. `SendCustomEvent`'s channel
+/// name is gate config, not a wire port: `name: const string` bakes `"died"`
+/// into it, while `name: string` is rejected with WS028.
 #[test]
 fn a_const_param_carries_a_literal_into_gate_config_where_a_plain_param_cannot() {
     let m = lower_ok(
@@ -181,17 +164,9 @@ fn a_const_param_carries_a_literal_into_gate_config_where_a_plain_param_cannot()
 }
 
 /// A `const` binding folds into a literal-accepting position (a `var`
-/// initializer) instead of emitting the gates the runtime form needs.
-///
-/// NOT const-specific proof, and must not be read as any: swapping `const` for
-/// a plain `let` here produces the IDENTICAL 2 gates, because `let`-into-var
-/// -initializer folding predates this feature entirely (see
-/// `src/lower/tests/const_init.rs`, e.g. `bare_named_constant_bakes`). This
-/// test therefore passes whether or not this feature exists. It is kept only as a
-/// regression guard that adding `const` did not BREAK the pre-existing
-/// folding, and as a smoke test of the `gates`/`count` machinery above. The
-/// real const-specific guard is
-/// `a_const_param_carries_a_literal_into_gate_config_where_a_plain_param_cannot`.
+/// initializer) instead of emitting the gates the runtime form needs. A plain
+/// `let` folds there too, so this is not const-specific; it also smoke-tests
+/// the `gates`/`count` helpers.
 #[test]
 fn a_const_binding_folds_into_a_literal_position() {
     let c = gates("const OUT = 1 << 4\nvar sink: int = OUT", "const.ws");
@@ -205,18 +180,9 @@ fn a_const_binding_folds_into_a_literal_position() {
     );
 }
 
-/// A `match` whose scrutinee's `__disc` is compile-time known lowers
-/// to exactly the taken arm -- no `Expr_Select` gate at all, even under
-/// `ForceOff` (`lower_ok`'s fold-mode guarantee, see its own doc comment).
-/// This elision is gated on `nofold_depth`, a SEPARATE axis from the
-/// certified fold pass `fold_mode` controls -- `ForceOff` isolates it exactly
-/// like `a_non_const_mod_initializer_keeps_its_gates` isolates the
-/// const-mod-call skip above.
-///
-/// The runtime (non-const) form is the load-bearing control: without it, "no
-/// Select gate" could just as easily mean "this program never reaches the
-/// Select-emitting code at all" as "the elision fired". Both forms match the
-/// same `Shape` value shape -- only `const` vs `static var` differs.
+/// A `match` whose scrutinee's `__disc` is compile-time known lowers to the
+/// taken arm with no `Expr_Select` gate, even with folding off. The `static var`
+/// control proves the same program otherwise reaches the Select-emitting path.
 #[test]
 fn a_const_scrutinee_match_emits_no_select() {
     let folded = lower_ok(
@@ -242,13 +208,9 @@ fn a_const_scrutinee_match_emits_no_select() {
     );
 }
 
-/// The built-in `Option<T>` prelude, matched via a BARE construction
-/// scrutinee (`match Some(7) { ... }` - no `enum` declaration, no `Option.`
-/// qualification, and no named `const`/`static var` binding at all) elides
-/// the Select gate exactly like the qualified, explicitly-`const`-bound
-/// scrutinee does above (`a_const_scrutinee_match_emits_no_select`) - proof
-/// that `const_eval::expr::eval_bare_variant_ctor` resolves the bare
-/// construction, not just typecheck's/lowering's live-construction path.
+/// A bare prelude construction scrutinee (`match Some(7) { ... }`, with no
+/// declaration, qualification or binding) elides the Select gate like a
+/// `const`-bound one, via `const_eval::expr::eval_bare_variant_ctor`.
 #[test]
 fn a_bare_prelude_variant_scrutinee_match_emits_no_select() {
     let folded = lower_ok(
@@ -261,37 +223,10 @@ fn a_bare_prelude_variant_scrutinee_match_emits_no_select() {
     );
 }
 
-/// The headline claim of the whole feature: a CALL to a `const mod` — not
-/// just a `const` binding or a `const` param's literal argument, but the
-/// CALL ITSELF, resolved through `ConstCtx::lookup_mod` — costs
-/// ZERO gates, because `interp::eval_call` walks the callee's body in plain
-/// Rust and never touches `ctx.builder`/`add_gate`. `ping`'s `name` param is
-/// `const string`, so `evtName("died")` sits in a position that
-/// FORCES it to be evaluated at compile time (a plain wire argument there
-/// is WS046, per `a_const_parameter_rejects_a_runtime_argument` in
-/// `typecheck/tests.rs`).
-///
-/// `via_call` (calling `evtName`) is checked against TWO baselines:
-/// - `via_literal`: the byte-identical program with the call replaced by
-///   the string it evaluates to. Equal gate counts is the strongest form of
-///   "zero gates for the call" — if `evtName`'s call left even one gate
-///   behind (e.g. its `"evt_" .. kind` body's `Concatenate` gate, or a
-///   microchip-instance boundary), `via_call` would exceed `via_literal`.
-/// - `ordinary`: the IDENTICAL body (`ordName`, `"evt_" .. kind`) called
-///   from an ORDINARY (non-const) position instead — the one shape that CAN
-///   take either a literal or a computed value, so it's the only fair
-///   apples-to-apples "does this get folded" comparison. Unlike `evtName`,
-///   `ordName`'s call has no reason to fold (nothing there requires a
-///   constant), so it lowers normally: several more gates than `via_call`'s
-///   zero, for the SAME computation.
-///
-/// If `lower_chip_call_inline` ever unconditionally lowers a `const`
-/// parameter's argument as an ordinary wire (`lower_expr`) before consulting
-/// the const value it computed, `via_call` regresses to 5 gates (matching
-/// `ordinary`), leaving `evtName`'s fully-expanded (but never wired to
-/// anything) body as 3 orphaned gates. Only `ping`'s param being `const` (not
-/// `evtName` itself) is what a caller can control here — see `is_const` in
-/// `lower_chip_call_inline`.
+/// A call to a `const mod` in a const position costs zero gates: it matches
+/// the program with the evaluated literal written in, and emits fewer gates
+/// than the same body called as an ordinary mod. If `lower_chip_call_inline`
+/// lowered a const parameter's argument as a wire, the body's gates would stay.
 #[test]
 fn a_const_mod_call_in_a_const_position_emits_zero_gates() {
     let via_call = gates(
@@ -324,16 +259,9 @@ fn a_const_mod_call_in_a_const_position_emits_zero_gates() {
     );
 }
 
-/// A top-level `const` binding whose value comes from a `const mod` CALL must
-/// itself be usable everywhere an ordinary top-level constant is: `CHANNEL`
-/// below feeds `SendCustomEvent`'s `eventName` — constant-only gate config,
-/// not a wire port — from a plain reference to the name, with no `const`
-/// parameter of its own in `ping` to force evaluation. This only works if
-/// `CHANNEL`'s value actually lands in the SAME constant environment
-/// lowering reads when it bakes the gate — checked here by reading the real
-/// gate's `EventName` property, not merely by the absence of diagnostics (a
-/// program can type-check cleanly while lowering silently drops the value,
-/// which a diagnostics-only assertion would not catch).
+/// A top-level `const` bound from a `const mod` call is usable like any
+/// top-level constant: `CHANNEL` bakes into `SendCustomEvent`'s constant-only
+/// channel name, checked on the gate's `EventName` property.
 #[test]
 fn a_const_binding_from_a_const_mod_call_bakes_downstream() {
     let m = lower_ok(
@@ -352,11 +280,9 @@ fn a_const_binding_from_a_const_mod_call_bakes_downstream() {
     );
 }
 
-/// A constant defined from a const-mod call is itself usable in ANOTHER
-/// `const` binding's expression — `B` reads `A`, and `A`'s own value only
-/// exists because `f(1)` was evaluated. Proven the same way as the test
-/// above: by reading the baked `EventName`s the two constants actually
-/// produce, not just the absence of diagnostics.
+/// A constant defined from a const-mod call is usable in another `const`
+/// binding's expression (`B` reads `A = f(1)`), checked on the baked
+/// `EventName`.
 #[test]
 fn a_const_from_a_const_mod_call_is_usable_in_another_const_binding() {
     let m = lower_ok(
@@ -376,16 +302,9 @@ fn a_const_from_a_const_mod_call_is_usable_in_another_const_binding() {
     );
 }
 
-/// Pins the boundary of "declaration order does not matter": it does not
-/// extend to a call site preceding the CALLEE MOD's own declaration. That is
-/// WS021 — "chips and mods must be declared before the point where they are
-/// used" — a pre-existing rule that applies to every call (const or not),
-/// unrelated to this fix and unaffected by it: `build_const_env` resolves a
-/// top-level `const mod` from the WHOLE decls list regardless of position
-/// (see the next test), but the program below is rejected before that
-/// tolerance would ever matter, because the call to `evtName` — a plain
-/// mod call, checked the same way regardless of whether its result ends up
-/// feeding a `const` — textually precedes `evtName`'s declaration.
+/// A call to a `const mod` before the mod's declaration is WS021, like any
+/// mod call, even though `build_const_env` could resolve the mod from any
+/// position.
 #[test]
 fn a_const_mod_call_must_still_be_declared_before_its_use() {
     let codes = error_codes(
@@ -399,16 +318,9 @@ fn a_const_mod_call_must_still_be_declared_before_its_use() {
     );
 }
 
-/// The array/map analog of `a_const_mod_call_in_a_const_position_emits_zero_gates`
-/// above, for `fixtures/const/arrays.ws`'s own shape: a const-mod call PER
-/// ELEMENT of an array literal, itself in a const-required position
-/// (`checkInt`'s `cv: const int`), via `.length()`/`[i]` on the literal.
-/// `via_call` (the array literal calling `size`) is checked against
-/// `via_literal` (the byte-identical program with each call replaced by the
-/// int it evaluates to) — equal gate counts is the strongest form of "zero
-/// gates for the array + its calls": if baking left so much as an
-/// `ArrayVar_Push`/`MathMultiply`/`ArrayVar_Get` gate behind, `via_call`
-/// would exceed `via_literal`.
+/// `fixtures/const/arrays.ws`'s shape: a const-mod call per element of an
+/// indexed array literal in a const position costs the same gates as the
+/// program with the evaluated literals written in.
 #[test]
 fn a_const_mod_call_per_array_element_in_a_const_position_emits_zero_gates() {
     let via_call = gates(
@@ -432,16 +344,9 @@ fn a_const_mod_call_per_array_element_in_a_const_position_emits_zero_gates() {
     );
 }
 
-/// `fixtures/const/compound.ws`'s own claim: a const-mod call nested inside
-/// an OPERATOR, in a const-required position, costs zero gates — not just
-/// the standalone call `a_const_mod_call_in_a_const_position_emits_zero_gates`
-/// already covers. `via_call` (`double(3) + 1`, itself `ping`'s `cv: const
-/// int` argument) is checked against `via_literal` (the byte-identical
-/// program with the whole expression replaced by `7`, the value it
-/// evaluates to) — equal gate counts is the strongest form of "zero gates
-/// for the nested call": before `eval_expr` grew a `BinOp` arm, this exact
-/// program was rejected outright (WS046), not merely gate-costly, so this
-/// also doubles as an end-to-end regression guard for that fix.
+/// `fixtures/const/compound.ws`'s claim: a const-mod call nested in a binary
+/// operator (`double(3) + 1`) in a const position costs the same gates as
+/// writing `7`.
 #[test]
 fn a_const_mod_call_nested_in_an_operator_in_a_const_position_emits_zero_gates() {
     let via_call = gates(
@@ -465,15 +370,9 @@ fn a_const_mod_call_nested_in_an_operator_in_a_const_position_emits_zero_gates()
     );
 }
 
-/// The unary-operator and constructor-argument shapes of the same claim,
-/// pinned together since they share one `ping`/`double` setup. `negSix`
-/// nests the call under unary `-`; `v` nests it as a `Vec` argument, mixed
-/// with a NAMED argument (`z = ...`) that is not the call's own axis, so a
-/// binding-by-position regression (see
-/// `const_eval::expr::constructor_named_arguments_bind_by_name_not_by_position`)
-/// would also show up here as a wrong-but-still-zero-gate value rather than
-/// an extra gate — this test only proves the gate COUNT, not the value; the
-/// value is `fixtures/const/compound.ws`'s job, checked in game.
+/// The same claim for a call under unary `-` and as a named `Vec` argument.
+/// Only the gate count is checked; the values are checked in game by
+/// `fixtures/const/compound.ws`.
 #[test]
 fn a_const_mod_call_nested_in_a_unary_operator_or_constructor_argument_emits_zero_gates() {
     let via_call = gates(
@@ -505,14 +404,9 @@ fn a_const_mod_call_nested_in_a_unary_operator_or_constructor_argument_emits_zer
     );
 }
 
-/// `fixtures/const/destructure.ws`'s own claim: a `const { .. } = ..` record
-/// destructure, in a const-required position, costs zero gates. `via_call`
-/// builds a record via a `const mod` call and destructures it (plain +
-/// alias + rest, matching the fixture); `via_literal` is the byte-identical
-/// program with each destructured name replaced by the int it evaluates to.
-/// Equal gate counts is the strongest form of "zero gates for the
-/// destructure" — without this support, destructuring `const` is rejected
-/// outright (WS046), so this also doubles as an end-to-end regression guard.
+/// `fixtures/const/destructure.ws`'s claim: a `const { .. } = ..` destructure
+/// (plain, alias and rest) of a `const mod` record in a const position costs
+/// the same gates as the evaluated literals.
 #[test]
 fn a_const_record_destructure_in_a_const_position_emits_zero_gates() {
     let via_call = gates(
@@ -541,31 +435,13 @@ fn a_const_record_destructure_in_a_const_position_emits_zero_gates() {
     );
 }
 
-/// The multi-output analog of the destructure test above:
-/// `fixtures/const/destructure.ws`'s `const { a, b } = pairC(2)`.
+/// Destructuring a multi-output `const mod` (`const { a, b } = pair(2)`)
+/// reaches `lower::decl`'s const-mod skip path and costs zero gates. The second
+/// half checks the baked channel names, since zero gates also describes a
+/// dropped constant.
 ///
-/// A MULTI-OUTPUT `const mod` evaluates to a `Literal::Record`, and
-/// `const { a, b } = pair(2)` is the only way to bind its outputs — so it has
-/// to reach `lower::decl`'s const-mod skip path just like the single-output
-/// spelling does, or the body lowers as ordinary gates. It did not, and the
-/// cost was not a rounding error: `out a = "x" .. "y"` / `out b = "p" .. "q"`
-/// emitted SIX dead `Concatenate` gates, a body mutating a compile-time
-/// collection failed outright with WS044, and one whose `out` sat inside a
-/// const `if` failed with WS002 "no field ... available fields: ...". So this
-/// asserts the same ZERO-GATE property every other differential in this file
-/// asserts, against a pure-literal baseline.
-///
-/// Not covered here, deliberately: binding the whole result to one name
-/// (`const dummy = pair(2)`) still lowers the call. That spelling stores a
-/// `Literal::Record` under a single name, which `lower::decl` excludes from
-/// the skip path because baking it early-returns past the `Binding::Record`
-/// its later field reads resolve through.
-///
-/// The gate count alone cannot tell a real gate from an `_Unsupported`
-/// placeholder, and "zero gates" is exactly what a silently-dropped constant
-/// also looks like, so the second half asserts the VALUES that reached the
-/// graph: two `const mod` string outputs, built from the mod's own const
-/// parameter, baked into `SendCustomEvent`'s non-wireable channel name.
+/// Binding the whole result to one name (`const r = pair(2)`) still lowers the
+/// call: `lower::decl` keeps it off the skip path so its field reads resolve.
 #[test]
 fn a_multi_output_const_mod_destructure_emits_zero_gates() {
     let via_destructure = gates(
@@ -614,18 +490,9 @@ fn a_multi_output_const_mod_destructure_emits_zero_gates() {
     );
 }
 
-/// `fixtures/const/module_index.ws`'s own claim: a MODULE-LEVEL `const`
-/// array, indexed at module scope (`const z = t[1]`), costs zero gates in
-/// both channels a constant is consumed through — a baked initializer
-/// (`counts`) and a live wire operand (`ping`'s `cv: const int` argument).
-///
-/// Unlike this file's other differentials, both sides declare the same
-/// unused `const t = [10, 20, 30]`, rather than `via_literal` omitting it: a
-/// `const` container materializes only where something reads it at runtime,
-/// and nothing here does, so it costs zero gates on both sides regardless.
-/// Declared on both sides anyway, because keeping the two programs otherwise
-/// identical is what makes the comparison mean "indexing `t` costs nothing
-/// beyond declaring it".
+/// `fixtures/const/module_index.ws`'s claim: indexing a module-level `const`
+/// array (`const z = t[1]`) costs zero gates, both as a baked initializer and as
+/// a const argument. Both sides declare `t`, so only the indexing differs.
 #[test]
 fn a_module_level_const_array_index_adds_no_gates_over_declaring_the_array() {
     const DECL: &str = "const t = [10, 20, 30]\n\
@@ -649,37 +516,13 @@ fn a_module_level_const_array_index_adds_no_gates_over_declaring_the_array() {
     );
 }
 
-// The other half of "declaration order does not matter" — a constant whose
-// own initializer NAMES a later-declared constant (`const B = A + 1` before
-// `const A`'s own declaration) — is pinned in
-// `lower::tests::const_init::constant_chain_through_a_const_mod_call_resolves_regardless_of_order`,
-// against `build_const_env`'s baked VALUE directly (via `baked_array`), not
-// through this file's stricter `lower_ok` (which additionally demands zero
-// typecheck errors end to end). That distinction matters: a top-level `let`'s
-// OWN initializer expression resolves an out-of-order sibling name through
-// ordinary scope lookup (`infer::infer`), which — for EVERY top-level
-// `let`/`const`, with or without a const-mod call anywhere in sight — is
-// strictly declaration-order (`register_decl` does not pre-declare `let`
-// names; `check_decl_inner` binds each one into scope only as it is reached).
-// `build_const_env`'s fixpoint is a SEPARATE, order-independent computation
-// of the same names' VALUES for baking elsewhere (`var`/array initializers,
-// labels, …); it was never a promise that the `let` chain itself
-// type-checks with zero errors out of order.
+// A constant naming a later-declared constant is a typecheck error, since
+// top-level `let`/`const` resolve in declaration order; see
+// `lower::tests::const_init::a_forward_reference_between_top_level_lets_is_reported`.
 
-/// The `fixtures/const/assembly.ws` analog of
-/// `a_const_mod_call_per_array_element_in_a_const_position_emits_zero_gates`
-/// above: a `const mod` that ASSEMBLES its array conditionally — `if`+`push`,
-/// not a single array literal — still costs ZERO gates when the call sits in
-/// a const-required position, because `if`-tree-shaking and the
-/// mutation interpreter both run in plain Rust inside
-/// `interp::eval_call` and never touch `ctx.builder`.
-///
-/// `via_call` (calling `rooms`, whose body conditionally `push`es) is checked
-/// against `via_literal` (the byte-identical program with the call replaced
-/// by the array it evaluates to for `n = 2`) — equal gate counts is the
-/// strongest form of "zero gates for the conditional assembly": if either the
-/// `if`s or the `push`es left so much as one `ArrayVar_Push`/`Branch` gate
-/// behind, `via_call` would exceed `via_literal`.
+/// `fixtures/const/assembly.ws`'s shape: a `const mod` that assembles its array
+/// with `if` and `push`, called in a const position, costs the same gates as
+/// the evaluated array and fewer than the same body as an ordinary mod.
 #[test]
 fn a_const_mod_conditionally_assembling_an_array_via_push_emits_zero_gates() {
     let via_call = gates(
@@ -708,14 +551,9 @@ fn a_const_mod_conditionally_assembling_an_array_via_push_emits_zero_gates() {
          already-evaluated literal directly (got {via_call} vs {via_literal} gates)"
     );
 
-    // Baseline: the IDENTICAL conditional-assembly body (`if`s and `push`es),
-    // called from an ORDINARY (non-const) position instead — the one shape
-    // that can take either a literal or a computed value, so it's the fair
-    // apples-to-apples "does this get folded" comparison, same as
-    // `a_const_mod_call_in_a_const_position_emits_zero_gates` above. Its
-    // result has to land in a `var` before `[1]` can read it back (a plain
-    // mod call's return value has no array storage of its own — unrelated to
-    // const evaluation, see `assembly.ws`'s own comment on this).
+    // Baseline: the same body as an ordinary mod. Its result lands in a `var`
+    // before `[1]` reads it, because a plain mod's returned array has no
+    // storage of its own.
     let ordinary = gates(
         "mod rooms2(n: int) -> int[] {\n\
            var t: int[]\n\
@@ -736,11 +574,9 @@ fn a_const_mod_conditionally_assembling_an_array_via_push_emits_zero_gates() {
     );
 }
 
-/// Every ERROR-severity diagnostic from all three stages, as `"CODE message"`.
-/// Unlike [`error_codes`] this also runs LOWERING, because the diagnostics
-/// these binding tests are about (WS044) are emitted there — and unlike
-/// [`lower_ok`] it must not panic on them, since asserting their ABSENCE is
-/// the whole point.
+/// Every error diagnostic from all three stages, as `"CODE message"`. Unlike
+/// [`error_codes`] it runs lowering, where WS044 is emitted, and unlike
+/// [`lower_ok`] it does not panic on errors.
 fn all_error_diags(source: &str, file: &str) -> Vec<String> {
     let (resolved, tc, lowered) = common::run_stages(source, file, FoldMode::ForceOff);
     resolved
@@ -753,10 +589,9 @@ fn all_error_diags(source: &str, file: &str) -> Vec<String> {
         .collect()
 }
 
-/// A `const mod` that ASSEMBLES its result by mutating a `const` collection —
-/// the one shape with no valid ordinary lowering (its `clear`/`push` target a
-/// `const` binding, which has no array var for the runtime array gates to
-/// point at).
+/// A `const mod` that assembles its result by mutating a `const` collection.
+/// It has no valid ordinary lowering: a `const` binding has no array var for
+/// the runtime `clear`/`push` gates to target.
 const MUTATING_CONST_MOD: &str = "const mod rooms(n: int) -> int[] {\n\
    const t = [0]\n\
    t.clear()\n\
@@ -765,17 +600,10 @@ const MUTATING_CONST_MOD: &str = "const mod rooms(n: int) -> int[] {\n\
    return t\n\
  }\n";
 
-/// BINDING a mutating `const mod`'s result must be clean — the constant is
-/// the whole result, so lowering must not ALSO lower the initializer as
-/// ordinary code.
-///
-/// This is not merely an inconvenience: binding the result to a name is the
-/// natural way to reuse one, so leaving it broken would make mutating const
-/// mods unusable in exactly the spelling users reach for first.
-///
-/// All four binding forms are covered because they take different lowering
-/// paths (`TopDecl::Let` vs `Stmt::Let`, and `const` vs plain `let` differ in
-/// whether typecheck DEMANDS the evaluation succeed).
+/// Binding a mutating `const mod`'s result compiles clean: the constant is the
+/// whole result, so the initializer is not also lowered as ordinary code.
+/// Each binding form takes its own lowering path (`TopDecl::Let` or
+/// `Stmt::Let`; `const` demands evaluation succeed, `let` does not).
 #[test]
 fn binding_a_mutating_const_mod_is_clean_at_every_scope() {
     for (label, src) in [
@@ -799,9 +627,7 @@ fn binding_a_mutating_const_mod_is_clean_at_every_scope() {
                 "{MUTATING_CONST_MOD}in go: exec\non go {{ let r = rooms(2)\n BroadcastChatMessage(\"${{r[0]}}\") }}"
             ),
         ),
-        // The form that was already clean before this fix (it never bound the
-        // call to a name), kept as a control so a regression here is
-        // distinguishable from one in the binding paths above.
+        // Control: a call that is never bound to a name.
         (
             "var initializer",
             format!("{MUTATING_CONST_MOD}var spawn: int[] = rooms(2)"),
@@ -815,12 +641,9 @@ fn binding_a_mutating_const_mod_is_clean_at_every_scope() {
     }
 }
 
-/// The containment that must NOT be weakened by the fix above: WS044 is a
-/// genuinely useful diagnostic for a real dropped mutation, so it has to keep
-/// firing everywhere a mutation is NOT confined to a const-mod body. The fix
-/// works by not lowering an already-evaluated const initializer at all —
-/// never by making the mutation methods themselves quieter — and these three
-/// cases pin that distinction.
+/// WS044 still fires for a dropped mutation outside a const-mod body. The
+/// binding case above is clean because the evaluated initializer is not
+/// lowered, not because mutation methods stopped reporting.
 #[test]
 fn ws044_still_fires_for_a_real_mutation_outside_a_const_mod_body() {
     for (label, src) in [
@@ -852,23 +675,11 @@ fn gates_at(source: &str, file: &str, fold_mode: FoldMode) -> usize {
     count(&lowered.module)
 }
 
-/// A `let` initializer that the FULL const evaluator can fold but the narrow
-/// `expr_to_literal_in` cannot — string interpolation, an `if`-EXPRESSION —
-/// must still lower to its real gates *by way of the const-mod-call gate*.
-/// These programs contain no `const` keyword at all, so the const-mod-call
-/// skip must not touch them.
-///
-/// This is the exact regression that made the const-mod-call gate necessary:
-/// skipping ordinary lowering for EVERY initializer only the full evaluator
-/// could answer silently elided the FormatText + MathAdd (4 gates -> 2) and
-/// the Select (3 -> 2).
-///
-/// Measured with folding OFF, so a fold-pass elision can't be mistaken for a
-/// const-mod one — `ForceOff` isolates the skip that this guards. The now-
-/// default fold pass legitimately collapses these constant initializers under
-/// `Auto` (that is the optimizer doing its job, not the bug here), so the
-/// `@nofold` variants pull double duty: under `Auto` they must still keep
-/// every gate, proving `@nofold` opts back out of the default fold.
+/// A `let` initializer the full const evaluator can fold but
+/// `expr_to_literal_in` cannot (interpolation, an `if` expression) keeps its
+/// gates with folding off: the const-mod-call skip applies only to
+/// initializers that call a `const mod`. The `@nofold` variants also keep their
+/// gates under `Auto`, where the fold pass would otherwise collapse them.
 #[test]
 fn a_non_const_mod_initializer_keeps_its_gates() {
     // (label, source, expected gates with folding disabled, is `@nofold`)
@@ -907,8 +718,8 @@ fn a_non_const_mod_initializer_keeps_its_gates() {
             "{label} under ForceOff must keep its {want} gates (a program with no \
              `const` in it must not be touched by the const-mod-call skip), got {got}"
         );
-        // `@nofold` also opts back out of the now-default fold pass, so the
-        // gates must survive `Auto` too.
+        // `@nofold` opts out of the default fold pass, so the gates survive
+        // `Auto` too.
         if is_nofold {
             let got_auto = gates_at(&src, "nofold.ws", FoldMode::Auto);
             assert_eq!(
@@ -920,11 +731,9 @@ fn a_non_const_mod_initializer_keeps_its_gates() {
     }
 }
 
-/// The other side of the same gate: an initializer that DOES require a
-/// const-mod call is still skipped, `@nofold` or not. A mutating `const mod`
-/// has no valid ordinary lowering to fall back to, so honoring `@nofold` here
-/// would only restore the WS044 breakage under an attribute — see the
-/// two-gate comment in `lower_let_decl`.
+/// An initializer that calls a `const mod` is skipped even under `@nofold`: a
+/// mutating `const mod` has no ordinary lowering, so lowering it would report
+/// WS044. See `lower_let_decl`.
 #[test]
 fn a_const_mod_call_initializer_is_skipped_even_under_nofold() {
     for (label, src) in [
@@ -947,19 +756,9 @@ fn a_const_mod_call_initializer_is_skipped_even_under_nofold() {
                 diags.is_empty(),
                 "a const-mod-call initializer ({label}) must stay clean, got {diags:?}"
             );
-            // 3 gates: the handler's own chain (MicrochipInput) + the
-            // interpolation's FormatText + the BroadcastChatMessage, with
-            // nothing left over from `rooms`' assembly.
-            //
-            // Was 4 until `r[0]` gained a compile-time lowering. The extra gate
-            // was NOT part of `rooms`' result — it was the `_Unsupported`
-            // placeholder `lower_index_access` synthesised for `r[0]`, which
-            // emit writes no component for, so the interpolation slot's wire
-            // died and the message printed 0 instead of 10. The count this test
-            // asserted therefore encoded a silent miscompile, which is also why
-            // it never matched the comment's own accounting above (which only
-            // ever justified three gates). Verified via `read_components`: the
-            // FormatText now bakes `InputA: 10i64`.
+            // 3 gates: the handler's chain (MicrochipInput), the FormatText
+            // (with `r[0]` baked as `InputA: 10`) and the BroadcastChatMessage.
+            // A fourth gate would be an `_Unsupported` placeholder for `r[0]`.
             assert_eq!(
                 gates_at(&src, "nofold_constmod.ws", mode),
                 3,
@@ -970,10 +769,8 @@ fn a_const_mod_call_initializer_is_skipped_even_under_nofold() {
 }
 
 /// Every `Literal::Int` baked into a node property anywhere in `m`, flattening
-/// array initializers. Values baked by the two spellings of a differential
-/// land in different property shapes — a scalar `Value` on the runtime side, an
-/// `InitialValue` array on the const side — so comparing them needs a view that
-/// does not care which.
+/// array initializers, since the runtime spelling bakes a scalar `Value` where
+/// the const spelling bakes an `InitialValue` array.
 fn baked_ints(m: &Module) -> Vec<i64> {
     fn push(lit: &Literal, out: &mut Vec<i64>) {
         match lit {
@@ -987,26 +784,15 @@ fn baked_ints(m: &Module) -> Vec<i64> {
         sub.nodes
             .values()
             .flat_map(|n| n.properties.values())
-            .for_each(|lit| push(lit, &mut out))
+            .for_each(|lit| push(lit, &mut out));
     });
     out
 }
 
-/// THE invariant this file's header claims: the const and runtime spellings of
-/// one program agree on VALUES.
-///
-/// `out r = …` and a valued `return` can both assign a single declared output.
-/// The wire graph keeps the FIRST assignment in source order and drops the
-/// rest; const evaluation short-circuits at the `return`. When the `out` comes
-/// first the two therefore disagree — measured at
-/// `mod pick(n: int) -> (r: int) { out r = 111  if n > 0 { return 222 } }`,
-/// which baked 222 as a `const mod` and wired 111 as a plain `mod`, both
-/// reporting no errors. "Assign a default, then override in a guard" is the
-/// natural idiom that lands on it.
-///
-/// The const spelling of that program is now REJECTED, so the disagreement
-/// cannot ship. The plain-`mod` spelling still compiles, which is what makes
-/// the rejection specific to the const path rather than a syntax error.
+/// When `out r = ...` precedes a valued `return` for the same output, the wire
+/// graph keeps the first assignment while const evaluation stops at the
+/// `return`, so the two would disagree. The const spelling is rejected (WS046);
+/// the plain `mod` still compiles and wires its first assignment.
 #[test]
 fn a_return_that_would_disagree_with_the_wire_graph_is_rejected() {
     let codes = error_codes(
@@ -1042,11 +828,8 @@ fn a_return_that_would_disagree_with_the_wire_graph_is_rejected() {
 /// The converse ordering, `return` first and `out` after, AGREES: an output
 /// written in more than one place goes through the return storage, so the
 /// runtime spelling stores 222 on the path that returns and 111 on the other,
-/// and reads the one that ran; const evaluation of `pick(5)` returns 222.
-///
-/// This is also what stops the fix above from being over-broad: a rule keyed
-/// on "does this mod contain any `out`" rather than on source order would
-/// reject this working program.
+/// and reads the one that ran; const evaluation of `pick(5)` returns 222. The
+/// rejection above is keyed on source order, so this program stays valid.
 #[test]
 fn const_and_runtime_agree_when_the_return_comes_first() {
     let const_ints = baked_ints(&lower_ok(

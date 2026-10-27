@@ -1,7 +1,5 @@
 use super::*;
 
-// ---------- context ----------
-
 #[derive(Clone, Debug)]
 pub(super) struct VarRecord {
     pub(super) node_id: NodeId,
@@ -20,6 +18,21 @@ impl VarRecord {
     }
 }
 
+/// Which constants a compile-time evaluation reads and how it resolves a
+/// `const mod` call (see [`LowerCtx::const_eval`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ConstScope {
+    /// Every constant in scope ([`LowerCtx::const_ctx`]).
+    Plain,
+    /// Constants the certified fold table backs ([`LowerCtx::certified_const_ctx`]).
+    Certified,
+    /// Declared `const`s only ([`LowerCtx::if_cond_const_ctx`]).
+    IfCond,
+    /// Every constant, with calls resolved by [`LowerCtx::resolve_mod_pass1`]
+    /// for baking initializers during pass 1.
+    Pass1,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum VarStorage {
     Var,
@@ -28,21 +41,12 @@ pub(super) enum VarStorage {
     Map,
 }
 
-/// Classify a param/field type that binds a *container* — one whose value wires
-/// a ref port (`ArrayVarRef`/`MapVarRef`) or is a scalar `ref T` — rather than a
-/// plain by-value input. Returns the backing [`VarStorage`] and the
-/// `inner_type` to record: the element type for arrays, the referent for a
-/// scalar `ref T`, and the WHOLE `Type::Map(K,V)` for maps (matching
-/// `pre_declare_map`). `None` for a by-value scalar.
-///
-/// Classifying containers in ONE place — instead of each binding site
-/// re-deriving `is_array`/`is_ref` by pattern-match — is what keeps `Map<K,V>`
-/// (and any future container) from silently falling through the `Array`/`Ref`
-/// matches into a scalar `Var_Get` + `_Unsupported` method lowering.
-/// The backing [`VarStorage`] for the shape of a param/field type (see
-/// [`LowerCtx::declared_shape`]), or `None` for a by-value scalar;
-/// [`container_binding`] adds the `inner_type`.
-fn container_storage(typ: &crate::ast::TypeExpr) -> Option<VarStorage> {
+/// The backing [`VarStorage`] for the shape of a param/field type that binds a
+/// container (an array, a map, or a scalar `ref T`; see
+/// [`LowerCtx::declared_shape`]), or `None` for a by-value scalar.
+/// [`container_binding`] adds the `inner_type`. Binding sites classify through
+/// here so a `Map<K,V>` cannot fall through to a scalar `Var_Get`.
+fn container_storage(typ: &TypeExpr) -> Option<VarStorage> {
     use crate::ast::TypeExpr as TE;
     let is_map = |t: &TE| matches!(t, TE::Generic { name, .. } if name == "Map");
     Some(match typ {
@@ -58,18 +62,15 @@ fn container_storage(typ: &crate::ast::TypeExpr) -> Option<VarStorage> {
 /// tuple. A field that is already a ref (written so or through an alias) is
 /// left alone rather than becoming a double reference.
 fn distribute_ref_fields(
-    ctx: &LowerCtx,
-    fields: Vec<crate::ast::RecordTypeField>,
-    range: &crate::diagnostic::SourceRange,
-) -> Vec<crate::ast::RecordTypeField> {
+    ctx: &LowerCtx<'_>,
+    fields: Vec<RecordTypeField>,
+    range: &SourceRange,
+) -> Vec<RecordTypeField> {
     fields
         .into_iter()
         .map(|mut f| {
-            if !matches!(
-                ctx.declared_shape(None, &f.typ),
-                crate::ast::TypeExpr::Ref { .. }
-            ) {
-                f.typ = crate::ast::TypeExpr::Ref {
+            if !matches!(ctx.declared_shape(None, &f.typ), TypeExpr::Ref { .. }) {
+                f.typ = TypeExpr::Ref {
                     inner: Box::new(f.typ),
                     range: range.clone(),
                 };
@@ -83,7 +84,9 @@ fn distribute_ref_fields(
 const MAX_SHAPE_DEPTH: u32 = 32;
 
 /// The storage a parameter, field or pin of `storage` kind binds and the type
-/// that storage holds, given its resolved type.
+/// that storage holds, given its resolved type: the element type for arrays,
+/// the referent for a scalar `ref T`, and the whole `Type::Map(K,V)` for maps
+/// (matching `pre_declare_map`).
 pub(super) fn container_binding(
     storage: Option<VarStorage>,
     resolved: &Type,
@@ -144,16 +147,16 @@ pub(super) enum Binding {
     EventParam(PortRef),
     DynRef(DynRefRecord),
     Chip(std::sync::Arc<ChipDecl>),
-    /// An `import * as ns` module, keyed by member name. Holds BOTH the module's
-    /// chips (as `Binding::Chip`) and its value members (`let`/`array`/`map`/
-    /// `var`/`buffer`, as their own lowered binding). Keeping the value bindings
-    /// here — rather than only in the shared enclosing scope under their bare
-    /// name — is what lets two namespaces that export the same member name stay
-    /// distinct: `A.foo` and `B.foo` resolve through their own namespace map
-    /// instead of colliding on one bare `foo` where the last import wins.
-    Namespace(HashMap<String, Binding>),
-    Record(HashMap<crate::intern::Sym, Binding>),
+    /// An `import * as ns` module, keyed by member name: its chips and its value
+    /// members (`let`/`array`/`map`/`var`/`buffer`). Value members live here so
+    /// `A.foo` and `B.foo` stay distinct rather than sharing one bare `foo`.
+    Namespace(HashMap<String, Self>),
+    Record(Fields),
 }
+
+/// A record value's bindings, by field name (an enum value's tag and payload
+/// slots included).
+pub(super) type Fields = HashMap<Sym, Binding>;
 
 /// The scope a nested declaration saw where it was written. See
 /// [`LowerCtx::record_decl_view`].
@@ -163,7 +166,7 @@ pub(super) struct DeclView {
     pub(super) serial: u64,
     /// Every frame above the top level, outermost first, by frame id: the
     /// names it bound at the declaration.
-    frames: Vec<(u64, HashMap<crate::intern::Sym, Binding>)>,
+    frames: Vec<(u64, Fields)>,
     consts: crate::const_scope::ConstFrames,
 }
 
@@ -181,7 +184,7 @@ impl DeclView {
 
 /// An enclosing body's frame id and the storage it declares after a nested
 /// declaration (see `LowerCtx::decl_later_storage`).
-pub(super) type LaterStorage = (u64, Vec<crate::intern::Sym>);
+pub(super) type LaterStorage = (u64, Vec<Sym>);
 
 /// What [`LowerCtx::enter_decl_scope`] took aside, for
 /// [`LowerCtx::leave_decl_scope`] to restore.
@@ -211,11 +214,11 @@ pub(super) struct TopView {
     cursor: Option<crate::scope::top::ReadAt>,
 }
 
-/// See [`DeclScope::outside`].
 /// The shadows [`LowerCtx::anon_chip_shadows`] held before entering a
 /// declaration's chips, and each name's binding before them.
 type InsideChips = (usize, Vec<(String, Option<Binding>)>);
 
+/// See [`DeclScope::outside`].
 type OutsideChips = (
     Vec<AnonChipShadow>,
     Vec<(String, Binding)>,
@@ -267,11 +270,8 @@ pub(super) fn same_binding(a: &Binding, b: &Binding) -> bool {
 
 /// One active generic-mod inline: the callee's type-param names and the
 /// substitution (`Type::Param -> concrete`) inferred from this call's args.
-/// Pushed on `LowerCtx::mono_stack` while the generic mod's body is lowered so
-/// that `T`-typed storage/return annotations in the body resolve to the
-/// concrete monomorph (`pick<int>` -> int gates) instead of leaking `Type::Param`
-/// (or a wrong `Any`/last-combo type) to emit. Nested generic inlines push/pop;
-/// the innermost frame (`mono_stack.last()`) governs annotation resolution.
+/// On `LowerCtx::mono_stack` while the body is lowered, so `T`-typed annotations
+/// resolve to the concrete type; the innermost frame governs.
 #[derive(Clone, Debug)]
 pub(super) struct MonoFrame {
     pub(super) params: Vec<String>,
@@ -292,7 +292,7 @@ impl MonoFrame {
             .iter()
             .map(|p| (p.clone(), decl.range.clone()))
             .collect();
-        MonoFrame {
+        Self {
             params,
             subst,
             scopes,
@@ -309,12 +309,8 @@ impl MonoFrame {
         if !self.params.iter().any(|p| p == name) {
             return None;
         }
-        let written_there = at.file.is_empty()
-            || self.scopes.get(name).is_none_or(|d| {
-                d.file == at.file
-                    && d.start.offset <= at.start.offset
-                    && at.end.offset <= d.end.offset
-            });
+        let written_there =
+            at.file.is_empty() || self.scopes.get(name).is_none_or(|d| d.contains(at));
         written_there.then(|| {
             self.subst
                 .get(name)
@@ -327,12 +323,8 @@ impl MonoFrame {
 /// The tag of `rec`, a value of type `ty`, when `ty` is a payload-free enum:
 /// its tag is the whole value, so where one value is expected the enum is its
 /// tag. Decided by the type, never by the record's shape.
-pub(super) fn enum_tag<'r>(
-    ctx: &LowerCtx,
-    rec: &'r HashMap<crate::intern::Sym, Binding>,
-    ty: &Type,
-) -> Option<&'r Binding> {
-    if !crate::lower::predeclare::unit_enum_port(ctx, &unwrap_ref(ty)) {
+pub(super) fn enum_tag<'r>(ctx: &LowerCtx<'_>, rec: &'r Fields, ty: &Type) -> Option<&'r Binding> {
+    if !unit_enum_port(ctx, &unwrap_ref(ty)) {
         return None;
     }
     enum_disc(rec)
@@ -368,11 +360,11 @@ pub(super) fn takes_one_value(t: &Type) -> bool {
 /// gate read held as its outputs (`k` after `let k = Edge(b)`, `t.m`,
 /// `t.0`) and the place takes one value: its first output (see
 /// [`held_output`]). `None` for anything else, read as it is.
-pub(super) fn held_first_output(ctx: &LowerCtx, e: &Expr, slot: &Type) -> Option<Binding> {
+pub(super) fn held_first_output(ctx: &LowerCtx<'_>, e: &Expr, slot: &Type) -> Option<Binding> {
     if !takes_one_value(slot) || ctx.gate_outputs(e.range()).is_none() {
         return None;
     }
-    let Some(Binding::Record(rec)) = crate::lower::access::resolve_field_chain(ctx, e) else {
+    let Some(Binding::Record(rec)) = resolve_field_chain(ctx, e) else {
         return None;
     };
     held_output(ctx, rec, e.range(), OutputPick::First)
@@ -384,19 +376,19 @@ pub(super) fn held_first_output(ctx: &LowerCtx, e: &Expr, slot: &Type) -> Option
 /// of its outputs the place reads. `None` for anything that is no gate read
 /// (a record of the program's own reads no output) or lacks the output.
 pub(super) fn held_output(
-    ctx: &LowerCtx,
-    rec: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &LowerCtx<'_>,
+    rec: &Fields,
     at: &SourceRange,
     pick: OutputPick,
 ) -> Option<Binding> {
     let outputs = ctx.gate_outputs(at)?;
-    let output = |name: &str| rec.get(&crate::intern::intern(name)).cloned();
+    let output = |name: &str| rec.get(&intern(name)).cloned();
     match pick {
         OutputPick::First => output(&outputs[0].0),
         OutputPick::Positions => outputs
             .iter()
             .enumerate()
-            .map(|(i, (n, _))| Some((crate::intern::intern(&i.to_string()), output(n)?)))
+            .map(|(i, (n, _))| Some((intern(&i.to_string()), output(n)?)))
             .collect::<Option<HashMap<_, _>>>()
             .map(Binding::Record),
     }
@@ -408,8 +400,8 @@ pub(super) fn held_output(
 /// other key by name. Never the map's own order, so the first of them is
 /// the same whatever the names hash to.
 pub(super) fn in_declared_order<'r>(
-    ctx: &LowerCtx,
-    rec: &'r HashMap<crate::intern::Sym, Binding>,
+    ctx: &LowerCtx<'_>,
+    rec: &'r Fields,
     at: &SourceRange,
 ) -> Vec<&'r Binding> {
     let declared: Vec<String> = match ctx.gate_outputs(at) {
@@ -423,35 +415,28 @@ pub(super) fn in_declared_order<'r>(
             })
             .unwrap_or_default(),
     };
-    let mut keys: Vec<crate::intern::Sym> = Vec::with_capacity(rec.len());
-    keys.extend(
-        rec.get_key_value(&crate::intern::intern("__disc"))
-            .map(|(k, _)| *k),
-    );
+    let mut keys: Vec<Sym> = Vec::with_capacity(rec.len());
+    keys.extend(rec.get_key_value(&*DISC).map(|(k, _)| *k));
     keys.extend(
         declared
             .iter()
-            .map(|n| crate::intern::intern(n))
+            .map(|n| intern(n))
             .filter(|k| rec.contains_key(k)),
     );
-    let mut rest: Vec<crate::intern::Sym> =
-        rec.keys().copied().filter(|k| !keys.contains(k)).collect();
-    rest.sort_by_key(|k| crate::intern::resolve(*k));
+    let mut rest: Vec<Sym> = rec.keys().copied().filter(|k| !keys.contains(k)).collect();
+    rest.sort_by_key(|k| resolve(*k));
     keys.extend(rest);
     keys.iter().filter_map(|k| rec.get(k)).collect()
 }
 
 /// The tag slot of `rec`, an enum value's slots.
-pub(super) fn enum_disc(rec: &HashMap<crate::intern::Sym, Binding>) -> Option<&Binding> {
-    rec.get(&crate::intern::intern("__disc"))
+pub(super) fn enum_disc(rec: &Fields) -> Option<&Binding> {
+    rec.get(&*DISC)
 }
 
-/// Scope key for an `Output` binding. Outputs share scope frames with value
-/// bindings (inline-mod MODULE frames must isolate them), but live under a
-/// key no identifier can collide with (`:` can't appear in an identifier) so
-/// `out X = X` can still read a var/array named `X` — without a distinct key,
-/// a same-name output would clobber the var's slot and its init expr would
-/// lower to `_Unsupported`.
+/// Scope key for an `Output` binding. Outputs share frames with value bindings
+/// but use a key no identifier can spell (`:`), so `out X = X` still reads a
+/// var named `X` instead of the output clobbering its slot.
 pub(super) fn output_scope_key(name: &str) -> String {
     format!("out:{name}")
 }
@@ -459,8 +444,8 @@ pub(super) fn output_scope_key(name: &str) -> String {
 pub(super) struct LowerCtx<'a> {
     pub(super) builder: ModuleBuilder,
     pub(super) diagnostics: Vec<Diagnostic>,
-    pub(super) type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
-    pub(super) op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
+    pub(super) type_of_expr: &'a HashMap<RangeKey, Type>,
+    pub(super) op_resolutions: &'a HashMap<RangeKey, OpRule>,
     /// Typecheck's recorded method/container resolutions (see `typecheck::resolution`).
     pub(super) resolutions: &'a crate::typecheck::Resolutions,
     /// The concrete type arguments of every generic body enclosing the code
@@ -470,33 +455,33 @@ pub(super) struct LowerCtx<'a> {
     /// Each mod/chip declaration's `resolution_subst` at the point it was
     /// registered, keyed by its source start. Only a declaration nested in a
     /// generic body has an entry; every other one is `[]`.
-    pub(super) decl_resolution_subst: HashMap<(Arc<str>, usize), Arc<[Type]>>,
+    pub(super) decl_resolution_subst: HashMap<StartKey, Arc<[Type]>>,
     /// Each mod/chip declaration's enclosing generic frame (`mono_stack.last()`
     /// where it was registered), keyed like `decl_resolution_subst`. A chip
     /// instanced from inside a generic body lowers in a fresh child ctx, so
     /// this is how its body still resolves the outer `T`.
-    pub(super) decl_mono_frame: HashMap<(Arc<str>, usize), MonoFrame>,
+    pub(super) decl_mono_frame: HashMap<StartKey, MonoFrame>,
     /// For a mod/chip declared inside a body (not at the top level): the
     /// enclosing frames as they stood at the declaration, keyed like
     /// `decl_resolution_subst`. Typecheck checks such a body where it is
     /// written, so a name bound later in an enclosing frame is not the
     /// body's. See [`LowerCtx::enter_decl_scope`].
-    pub(super) decl_views: HashMap<(Arc<str>, usize), Arc<DeclView>>,
+    pub(super) decl_views: HashMap<StartKey, Arc<DeclView>>,
     /// The declarations whose `decl_views` entry records each frame, by frame
     /// id, so a chip build finds the views over the frames it inherits
     /// without scanning them all.
-    pub(super) views_by_frame: HashMap<u64, HashSet<(Arc<str>, usize)>>,
+    pub(super) views_by_frame: HashMap<u64, HashSet<StartKey>>,
     /// The storage names each enclosing mod or chip body declares after the
     /// statement holding a nested declaration, per body frame id, keyed like
     /// `decl_views`. Lowering declares a body's storage before the body runs,
     /// so those names are already in its frame when the nested declaration is
     /// registered.
-    pub(super) decl_later_storage: HashMap<(Arc<str>, usize), Vec<LaterStorage>>,
+    pub(super) decl_later_storage: HashMap<StartKey, Vec<LaterStorage>>,
     /// A `_Literal` of an enclosing module a binding in this chip's scope
     /// names, by node id. Emit inlines a literal only into its own module, so
     /// a read of one from here reads a copy made in this module instead (see
     /// `LowerCtx::local_literals`).
-    pub(super) foreign_literals: HashMap<NodeId, Arc<crate::ir::Node>>,
+    pub(super) foreign_literals: HashMap<NodeId, Arc<Node>>,
     /// The copy made in this module of each foreign literal port, so every
     /// read of one shares a single copy.
     pub(super) literal_copies: HashMap<PortRef, PortRef>,
@@ -504,12 +489,12 @@ pub(super) struct LowerCtx<'a> {
     /// statement, by source position (see `predeclare::hoist_or_defer`). The
     /// frame already binds the name when the statement runs, to the storage
     /// it shadows, so the statement must not take that for its own.
-    pub(super) unhoisted: HashSet<(Arc<str>, usize)>,
+    pub(super) unhoisted: HashSet<StartKey>,
     /// Set by `compile_chip_template`, which lowers a chip body (generic ones
     /// included) outside any instantiation, so resolution lookups there may
     /// fall back (see `resolution_fallback_allowed`).
     pub(super) template_build: bool,
-    /// Inferred custom-event data-slot types — see `LowerInput::ce_slots`.
+    /// Inferred custom-event data-slot types (see `LowerInput::ce_slots`).
     pub(super) ce_slots: &'a CeSlotMap,
     pub(super) file: String,
     pub(super) scope: crate::scope::Scope<Binding>,
@@ -531,7 +516,7 @@ pub(super) struct LowerCtx<'a> {
     pub(super) next_chain_id: u32,
     pub(super) next_scope_id: ScopeId,
     /// When inside an anonymous chip body, nodes get tagged with this
-    /// chip_id so the emitter routes them to a child grid.
+    /// `chip_id` so the emitter routes them to a child grid.
     pub(super) current_anon_chip: Option<NodeId>,
     /// Source range of every `for` body currently being lowered, innermost
     /// last. A statement inside one was written inside the loop, so typecheck
@@ -541,17 +526,17 @@ pub(super) struct LowerCtx<'a> {
     /// by (decl range, enclosing chip at predeclare time) so
     /// `lower_anon_chip` can pair a decl with its node without scanning
     /// every module node.
-    pub(super) anon_chip_nodes: crate::collections::HashMap<(SourceRange, Option<NodeId>), NodeId>,
+    pub(super) anon_chip_nodes: HashMap<(SourceRange, Option<NodeId>), NodeId>,
     /// The storage each anonymous chip's body declares, by its Chip node:
     /// what its statements name, whatever the scope it shares bound to the
     /// name before the chip.
-    pub(super) anon_chip_storage: crate::collections::HashMap<NodeId, Vec<(String, Binding)>>,
+    pub(super) anon_chip_storage: HashMap<NodeId, Vec<(String, Binding)>>,
     /// Each anonymous chip at the top level being lowered, outermost first
     /// (see [`AnonChipShadow`]).
     pub(super) anon_chip_shadows: Vec<AnonChipShadow>,
     /// What each anonymous chip of the top level, by its range, left its
     /// names meaning once lowered (see [`ChipNames`]).
-    pub(super) anon_chip_names: crate::collections::HashMap<SourceRange, ChipNames>,
+    pub(super) anon_chip_names: HashMap<SourceRange, ChipNames>,
     /// What each free name means at the program's top level.
     pub(super) top_names: Arc<crate::scope::top::TopNames>,
     /// The binding of each declaration of a name declared more than once at
@@ -561,16 +546,13 @@ pub(super) struct LowerCtx<'a> {
     /// Accumulated exec from `return` statements inside an inlined mod.
     /// Each return merges into this via chained union gates.
     pub(super) mod_return_exec: Option<PortRef>,
-    /// For mods with a single output: the PseudoVar node that holds the
-    /// return value. Each `return expr` writes to this var via Var_Set.
+    /// For mods with a single output: the `PseudoVar` node that holds the
+    /// return value. Each `return expr` writes to this var via `Var_Set`.
     pub(super) mod_return_var: Option<VarRecord>,
-    /// For a multi-return mod whose single output is an ENUM (record-shaped):
-    /// the superset per-slot storage record the return value lives in. Each
-    /// `return <enum>` stores its slots here (so the caller reads the
-    /// runtime-selected branch's value, not a leaked construction record), and
-    /// the caller binds this record. The record analog of `mod_return_var`; the
-    /// two are mutually exclusive (a given output is scalar OR enum-shaped).
-    pub(super) mod_return_record: Option<HashMap<crate::intern::Sym, Binding>>,
+    /// For a multi-return mod whose single output is an enum: the superset
+    /// per-slot storage each `return <enum>` writes and the caller binds, so the
+    /// caller reads the branch that ran. Exclusive with `mod_return_var`.
+    pub(super) mod_return_record: Option<Fields>,
     /// The output names of the mod being inlined, in declaration order, which
     /// a tuple `return (..)` fills by position.
     pub(super) mod_output_names: Vec<String>,
@@ -586,15 +568,15 @@ pub(super) struct LowerCtx<'a> {
     /// to the return storage (`mod_return_var`/`mod_return_record`) rather
     /// than straight to the output: set when an output is written in more
     /// than one place, so the write on the path that ran is the one read.
-    pub(super) mod_emit_storage: crate::collections::HashSet<String>,
+    pub(super) mod_emit_storage: HashSet<String>,
     /// The stored outputs of the mod being inlined whose writes cannot run in
     /// this call: it is a pure call, and they are written on the body's own
     /// path (or by a `return`). Their writes are skipped, and reading one is
     /// WS007 (`unsequenced_reads`).
-    pub(super) mod_unsequenced: crate::collections::HashSet<String>,
+    pub(super) mod_unsequenced: HashSet<String>,
     /// Outputs a handler, branch or anonymous chip of this module sets with
     /// `emit name = v` (not `out`), so a diagnostic can name the write.
-    pub(super) emitted_outputs: crate::collections::HashSet<String>,
+    pub(super) emitted_outputs: HashSet<String>,
     /// How many sites of this module write each of its outputs a value
     /// (`output_write_counts`, plus a top-level default).
     pub(super) output_write_sites: HashMap<String, usize>,
@@ -612,7 +594,7 @@ pub(super) struct LowerCtx<'a> {
     /// The string patterns lowered for the `match` being lowered, by tested
     /// value and parts: the condition and each hole, so an arm's captures read
     /// the same gates its test built. Taken aside around each `match`.
-    pub(super) concat_cache: Vec<crate::lower::pattern_test::ConcatLowered>,
+    pub(super) concat_cache: Vec<ConcatLowered>,
     /// How many `for` loop bodies enclose the code being lowered, counting a
     /// loop an inlined `mod` brings in.
     pub(super) loop_depth: u32,
@@ -624,48 +606,37 @@ pub(super) struct LowerCtx<'a> {
     pub(super) unsequenced_calls: usize,
     /// Type alias map: `Name -> TypeExpr::Record { ... }` for dissolving
     /// record params at chip boundaries.
-    pub(super) type_aliases: HashMap<String, crate::ast::TypeExpr>,
-    /// Enum registry: `Name -> EnumDef` (variants, each with its assigned
-    /// discriminant and payload shape). Mirrors `typecheck::TypeCheckCtx::enum_defs`,
-    /// seeded once up front from the whole program by
-    /// `typecheck::enums::build_registry` (see `lower::lower`), a whole-file
-    /// pre-pass, so a use resolves regardless of where in the file the `enum`
-    /// itself is declared.
+    pub(super) type_aliases: HashMap<String, TypeExpr>,
+    /// Enum registry: `Name -> EnumDef` (variants with discriminant and payload
+    /// shape), built from the whole program by `typecheck::enums::build_registry`
+    /// so a use resolves wherever the `enum` is declared.
     ///
-    /// **Enum value layout** (the "Shared representation" contract every
-    /// enum-consuming site in this module follows): an enum value lowers to a
-    /// `Binding::Record` (interned-`Sym`-keyed) whose fields are `__disc` - an
-    /// int binding, a `Literal::Int` for a statically-known variant or a
-    /// `Pseudo_Var`-backed `Binding::Var` (read via `Var_Get`) for a
-    /// stored/merged one - plus one payload slot per (variant, field):
-    /// positional field `i` of variant `V` -> interned `__{V}_{i}`; named field
-    /// `f` of variant `V` -> `__{V}_{f}`. A nested-enum payload slot is itself a
-    /// `Binding::Record`. A freshly constructed KNOWN variant binds only
-    /// `__disc` plus its own slots; a stored enum `var` allocates the SUPERSET
-    /// - `__disc` plus every variant's slots - so a merge from any branch
-    /// writes into the same storage gates.
+    /// Enum value layout, followed by every enum site in lowering: a
+    /// `Binding::Record` with `__disc` (an int: a literal for a known variant, a
+    /// `Pseudo_Var` for a stored or merged one) plus one slot per variant field,
+    /// `__{V}_{i}` (positional) or `__{V}_{f}` (named); a nested enum slot is a
+    /// record. A constructed variant binds only its own slots; a stored enum
+    /// `var` allocates every variant's slots, so a merge from any branch writes
+    /// the same gates.
     pub(super) enum_defs: std::sync::Arc<crate::typecheck::enums::EnumRegistry>,
     /// Pending emit exec paths per output name, each tagged with the exec
     /// chain (handler) it was emitted on. Accumulated during lowering, flushed
     /// to union chains at the end so each output gets one wire. The chain tag
-    /// lets flush route same-chain emits through an `await`'s arm (sequenced
-    /// before the hub — a parallel arm races the awaiting `Var_Get`).
+    /// lets flush sequence same-chain emits through an `await`'s arm before the
+    /// hub, since a parallel arm races the awaiting `Var_Get`.
     pub(super) pending_emits: HashMap<String, Vec<(PortRef, Option<u32>)>>,
     /// Outputs value-driven from more than one `emit out = v` site get a backing
-    /// PseudoVar (name -> its var record): each site does a `Var_Set` into it and
+    /// `PseudoVar` (name -> its var record): each site does a `Var_Set` into it and
     /// the var's value feeds the output once (no fan-in). Populated by a pre-scan
     /// before handler lowering; empty for single-site outputs and chip bodies.
     pub(super) output_backing_vars: HashMap<String, VarRecord>,
     /// A record output's backing storage, one var per scalar field: the
     /// record counterpart of `output_backing_vars`, used by chip bodies.
-    pub(super) output_record_backing: HashMap<String, HashMap<crate::intern::Sym, Binding>>,
-    /// Local `let x: exec` signals declared with a stable Union "hub" gate,
-    /// keyed by a per-declaration unique key (`name#hubId`) — NOT the bare
-    /// name, so two mods/handlers declaring the same signal name get separate
-    /// signals. `on x` triggers off the hub's `ExecOut` via the scope binding;
-    /// at flush the union of every `emit x` is wired into the hub. The hub
-    /// gives a forward-referenceable trigger port so `on x` works regardless
-    /// of whether it appears before or after the emits in source.
+    pub(super) output_record_backing: HashMap<String, Fields>,
+    /// Local `let x: exec` signals, each with a Union "hub" gate, keyed per
+    /// declaration (`name#hubId`) so same-named signals in different bodies stay
+    /// separate. `on x` triggers off the hub, which every `emit x` feeds at
+    /// flush, so `on x` may come before or after the emits.
     pub(super) exec_signal_hubs: HashMap<String, NodeId>,
     /// Reverse map: hub node -> its unique signal key. Emit/await sites resolve
     /// a surface name to its key through the *scope* (name -> hub port -> key),
@@ -683,23 +654,18 @@ pub(super) struct LowerCtx<'a> {
     /// resolves to this, allowing `await Sleep(_, 1.0)` to wire the armed flag
     /// as Sleep's input.
     pub(super) await_armed_port: Option<PortRef>,
-    /// Unconditional `await <signal>` per local exec signal: the armed flag's
-    /// var node and the chain the await sits on. At flush, emits of the signal
-    /// from the *same* chain are routed through a `Var_Set(armed = true)` into
-    /// the hub — sequencing the arm before the union so the awaiting `Var_Get`
-    /// can't race it (and so loop back-edges re-arm each iteration). Emits from
-    /// other chains stay direct, guarded by the flag. Only awaits at branch
-    /// depth 0 register here: a conditional `await` (inside `if`) keeps pure
-    /// flag semantics, since its arm must not fire for the untaken branch.
+    /// Unconditional `await <signal>` per local exec signal: the armed flag's var
+    /// and the await's chain. At flush, same-chain emits go through
+    /// `Var_Set(armed = true)` into the hub so the arm precedes the union (and a
+    /// loop back-edge re-arms). Only depth-0 awaits register: a conditional
+    /// `await` must not arm for the untaken branch.
     pub(super) signal_awaits: HashMap<String, (NodeId, Option<u32>)>,
     /// Depth of enclosing exec `if` branches; >0 means conditionally executed.
     pub(super) exec_branch_depth: usize,
     /// Hidden payload stores per local exec signal: `(field, store var, type)`.
-    /// `emit sig = expr` writes the store(s) on the emit chain (before any
-    /// buffer), and `await sig` reads them back on the resumed chain — the
-    /// value crosses the tick through the persistent var, not the buffer.
-    /// A scalar payload uses one entry with field `""`; a record payload gets
-    /// one entry per field.
+    /// `emit sig = expr` writes them on the emit chain and `await sig` reads them
+    /// on the resumed chain, so the value crosses the tick in the var. A scalar
+    /// payload is one entry with field `""`; a record has one per field.
     pub(super) exec_signal_payloads: HashMap<String, Vec<(String, NodeId, Type)>>,
     /// Whether lowering is inside an imperative body (a handler, or a block
     /// nested in one) rather than the top-level decl list. `current_exec` is
@@ -711,7 +677,7 @@ pub(super) struct LowerCtx<'a> {
     /// Field->source-port record produced by the most recent multi-output inline
     /// mod call. Its internal output nodes are removed, so `let s = mod(...)`
     /// consumes this to bind `s` as a record (`s.field` reads the source port).
-    pub(super) pending_inline_record: Option<HashMap<crate::intern::Sym, Binding>>,
+    pub(super) pending_inline_record: Option<Fields>,
     /// The port `value_record_fields` got from lowering a record-SHAPED value
     /// that turned out to carry no field map (its `may_produce_record`
     /// fallback), with the range of the expression it lowered. A reader takes
@@ -721,7 +687,7 @@ pub(super) struct LowerCtx<'a> {
     pub(super) last_value_record_port: Option<(SourceRange, PortRef)>,
     /// Incoming wires per node, for walking a pure value's cone (see
     /// `ordered`).
-    pub(super) cone_index: std::cell::RefCell<crate::lower::ordered::ConeIndex>,
+    pub(super) cone_index: std::cell::RefCell<ordered::ConeIndex>,
     /// How many `emit`s of a local exec signal this lowering has queued; the
     /// handlers they fire run off the chain the emit sat on (see `ordered`).
     pub(super) signal_emits: u32,
@@ -736,90 +702,59 @@ pub(super) struct LowerCtx<'a> {
     /// `import * as Other`; `scope` keeps one binding per name, and this is what
     /// lets a module's body reach its OWN alias (see `ns_mod_scopes`).
     pub(super) ns_by_file: HashMap<std::sync::Arc<str>, HashMap<String, Binding>>,
-    /// Field->binding map stashed by a `return { ... }` record literal while an
-    /// inline mod body is being lowered. A record literal is not a standalone
-    /// expression, and `-> { a, b }` is a single record-typed output, so the
-    /// call consumes this (instead of the removed output node) to bind the
-    /// caller's record. Set only by a record-literal return; taken by the call.
-    pub(super) pending_return_record: Option<HashMap<crate::intern::Sym, Binding>>,
-    /// Output name -> the record bound to it by `out <name> = <record>` inside a
-    /// mod body. A record has no single value port, so wiring it into the
-    /// output's `RerInput` lowered to an `_Unsupported` placeholder that read a
-    /// default. The inline-call machinery consults this to hand the caller the
-    /// real field map instead (see `lower_out_binding` and the record assembly
-    /// at the end of `lower_chip_call_inline`). Scoped to one inline expansion:
-    /// swapped out and restored around the callee body, exactly like the
-    /// constants' frames, so a nested call cannot leak into its caller.
-    pub(super) pending_out_records: HashMap<String, HashMap<crate::intern::Sym, Binding>>,
-    /// Source ranges of chips/mods whose bodies are being lowered on the current
-    /// call path (child contexts inherit a copy). Every call is expanded into the
-    /// wire graph at compile time, so a body that (transitively) calls itself
-    /// would rebuild forever — `lower_chip_call` checks this stack and emits
-    /// WS020 instead of recursing. Keyed on the decl's range (unique per decl,
-    /// includes the file), NOT its name, so two distinct same-named mods — e.g. a
-    /// local `drawCard` and one imported from another module — aren't conflated.
-    /// Each entry also says whether its body is open yet: its arguments lower
-    /// first, at the call site, so a call made while they do (`inc(inc(k))`,
-    /// or `f(h(k))` where `h` calls `f`) is the caller's. Only an open body
-    /// calling its own decl is a cycle.
-    pub(super) chip_call_stack: Vec<(crate::diagnostic::SourceRange, bool)>,
-    /// Every chip/mod name declared anywhere in the (import-merged) program.
-    /// Chips/mods are registered into scope in source order, so a call to one
-    /// not yet registered fails to resolve. Distinguishing "declared later"
-    /// (a use-before-declaration -> WS021 error) from "not a function at all"
-    /// (e.g. an unimplemented builtin -> placeholder) needs the full name set.
-    /// Shared (Arc) so child contexts clone it cheaply.
-    pub(super) known_fn_names: std::sync::Arc<crate::collections::HashSet<String>>,
+    /// Field->binding map stashed by a `return { ... }` record literal in an
+    /// inline mod body; the call takes it to bind the caller's record, since a
+    /// record literal has no single port.
+    pub(super) pending_return_record: Option<Fields>,
+    /// Output name -> the record bound to it by `out <name> = <record>` in a mod
+    /// body, which the inline call hands to the caller as a field map (a record
+    /// has no single port). Swapped out around each callee body so a nested
+    /// call cannot leak into its caller.
+    pub(super) pending_out_records: HashMap<String, Fields>,
+    /// Decl ranges of chips/mods whose bodies are being lowered on this call
+    /// path; `lower_chip_call` reports WS020 for a body that calls itself rather
+    /// than expanding forever. Keyed by range so same-named decls stay distinct.
+    /// The flag says the body is open: a call made while the arguments lower
+    /// (`inc(inc(k))`) belongs to the caller and is no cycle.
+    pub(super) chip_call_stack: Vec<(SourceRange, bool)>,
+    /// Every chip/mod name declared anywhere in the import-merged program, so a
+    /// call to one not yet registered is WS021 (declared later) rather than an
+    /// unknown function.
+    pub(super) known_fn_names: std::sync::Arc<HashSet<String>>,
     /// Which imported declarations each file named (see
-    /// [`crate::ast::ImportScope`]). Shared (Arc) like `known_fn_names`.
-    pub(super) imports: std::sync::Arc<crate::ast::ImportScope>,
+    /// [`ImportScope`]). Shared (Arc) like `known_fn_names`.
+    pub(super) imports: std::sync::Arc<ImportScope>,
     /// Every name a top-level `let` binds. A mod or chip body reads such a
     /// name where it is called, so a call above the declaration finds nothing
     /// bound; this set tells that use-before-declaration (WS021) from a name
     /// that is not a `let` at all.
-    pub(super) known_let_names: std::sync::Arc<crate::collections::HashSet<String>>,
-    /// The compile-time constants: the top-level `let`/`const` values of the
-    /// (import-merged) program (so a `var` / `var … : T[]` initializer can
-    /// name one, `1 << C_FLAG`, instead of restating its value), and those of
-    /// each open scope frame (a body-local `let` of a constant, a `const`, a
-    /// `const` parameter). Mirrors `typecheck::TypeCheckCtx::consts`. Read
-    /// only through [`const_lookup`](Self::const_lookup) and its siblings,
-    /// which resolve a name through the scope.
+    pub(super) known_let_names: std::sync::Arc<HashSet<String>>,
+    /// The compile-time constants: the import-merged program's top-level
+    /// `let`/`const` values and those of each open frame (a body-local constant
+    /// `let`, a `const`, a `const` parameter). Mirrors
+    /// `typecheck::TypeCheckCtx::consts`; read through
+    /// [`const_lookup`](Self::const_lookup) and its siblings.
     pub(super) consts: crate::const_scope::ConstScope,
     /// Container gates that must never be mutated: the `Pseudo_ArrayVar` /
     /// `Pseudo_MapVar` nodes
     /// [`materialize_const_container`](super::predeclare::materialize_const_container)
-    /// builds for a `const` array/map.
-    ///
-    /// A `const` container is BOTH a compile-time value and a runtime
-    /// container, and those two are only one source of truth while nothing
-    /// changes the runtime copy — `const n = xs.length()` folding to 3 while
-    /// the gate holds 4 elements is the divergence this set exists to prevent.
-    ///
-    /// Keyed on the NODE, not the name, so the rule survives aliasing: passing
-    /// a `const` table to a `ys: T[]` parameter binds the callee's `ys` to this
-    /// same node, and a name-keyed check would see only the innocent-looking
-    /// `ys` and let the mutation through.
-    ///
-    /// Not shared with a child context: a microchip body gets a fresh `Scope`,
-    /// so its materializations are its own. Node ids need no such care -- they
-    /// come from `NodeId`'s per-compile counter, which is unique across the
-    /// whole compile.
-    pub(super) immutable_containers: crate::collections::HashSet<NodeId>,
+    /// builds for a `const` array/map. Mutating one would make the runtime copy
+    /// disagree with the folded compile-time value. Keyed by node, not name, so
+    /// a `const` table passed to a `ys: T[]` parameter stays protected. Not
+    /// shared with a child context, whose materializations are its own.
+    pub(super) immutable_containers: HashSet<NodeId>,
     /// The output nodes of the inline mod bodies being lowered. They are
     /// internal (removed once the call binds its result), so a value wired
     /// into one is handed to the caller, not stored.
-    pub(super) inline_outputs: crate::collections::HashSet<NodeId>,
-    /// True only for the compiled entry file's root LowerCtx. `@side` port
+    pub(super) inline_outputs: HashSet<NodeId>,
+    /// True only for the compiled entry file's root `LowerCtx`. `@side` port
     /// annotations are legal only there (WS023 elsewhere).
     pub(super) is_root_module: bool,
     /// `///` doc comments keyed by the declaration's source start offset.
     /// Consumed when stamping `DOC_TEXT` onto chip nodes.
     pub(super) doc_comments: &'a crate::parser::DocComments,
-    /// Depth of enclosing `@nofold` declaration subtrees. >0 means every gate
-    /// created by `add_gate`/`add_event` gets stamped with the `_nofold`
-    /// pseudo-property. Incremented/decremented around the lowering of each
-    /// `@nofold`-annotated `let`/`out`/`var`/`chip`/`on` declaration.
+    /// Depth of enclosing `@nofold` declarations. While >0 every gate from
+    /// `add_gate`/`add_event` is stamped with the `_nofold` pseudo-property.
     pub(super) nofold_depth: u32,
     /// Stack of active generic-mod inlines (see [`MonoFrame`]). Empty at the
     /// top level and inside every non-generic body, where `resolve_local_type`
@@ -830,90 +765,47 @@ pub(super) struct LowerCtx<'a> {
     /// handler in its body that acts, if any. See
     /// `expr::warn_handlers_ungated_by_arm`.
     pub(super) acting_handler_memo: std::cell::RefCell<HashMap<usize, Option<String>>>,
-    /// Source ranges of `if`/`else` blocks a const-evaluable condition
-    /// dropped (`lower_if`'s const-elision path) — never lowered, so no gate
-    /// exists for them at all. Mirrors `typecheck::TypeCheckCtx`'s own
-    /// `dropped_ranges`; the two MUST agree on exactly which ranges they
-    /// drop (see `typecheck_and_lowering_drop_exactly_the_same_ranges` in
-    /// `typecheck::tests`) — a disagreement means code gets type-checked but
-    /// not lowered, or lowered without ever being checked.
+    /// Source ranges of `if`/`else` blocks a const-evaluable condition dropped
+    /// in `lower_if`; they emit no gates. Must match typecheck's own
+    /// `dropped_ranges` exactly, or code is checked but not lowered (or the
+    /// reverse); `typecheck_and_lowering_drop_exactly_the_same_ranges` tests it.
     pub(super) dropped_ranges: Vec<SourceRange>,
-    /// Chip/mod declarations visible to the BAKE path, as a FRAME STACK
-    /// mirroring `scope` and the constants' frames 1:1: every `push_scope`/`pop_scope`
-    /// pair pushes and drops a frame here too. Populated in source order by
-    /// `pre_declare_chip_name` as each pre-declare loop reaches a declaration,
-    /// and consulted ONLY by `array_elem_literal`/`map_entry_literal` (via
-    /// [`resolve_mod_pass1`](Self::resolve_mod_pass1)) when baking a
-    /// var/array/map initializer's `const mod` CALL.
+    /// Chip/mod declarations visible when baking a var/array/map initializer's
+    /// `const mod` call ([`resolve_mod_pass1`](Self::resolve_mod_pass1)), filled
+    /// in source order by `pre_declare_chip_name`. One frame per `scope` frame,
+    /// pushed and popped with it, so a nested declaration is gone outside its
+    /// body. Kept apart from `scope` because pass 1 finishes before pass 2: a
+    /// chip in `scope` that early would be visible to every pass-2 call and
+    /// defeat WS021.
     ///
-    /// **Why a frame stack and not a flat map.** A nested declaration must win
-    /// inside the body that declares it and be gone outside it. As a flat map
-    /// that required a manual save/restore around every borrowed-ctx body,
-    /// which is both easy to forget and easy to place wrongly — the restore
-    /// sat right after pre-declaration rather than after the body was lowered,
-    /// so a chip declared and INSTANTIATED inside an inlined mod cloned an
-    /// already-restored map and silently resolved the outer declaration while
-    /// the ordinary call path in the same chip resolved the inner one. Tying
-    /// the lifetime to the scope that already exists removes the discipline
-    /// (and that whole bug class) entirely.
-    ///
-    /// **Why not `ctx.scope` itself.** That is what the ordinary call-lowering
-    /// path (`resolve_mod`) and its use-before-declaration guard (WS021,
-    /// `lower/call/dispatch.rs`) read. Pass 1 runs to completion before pass 2
-    /// starts, so a chip registered into `scope` during pass 1 would be visible
-    /// to EVERY pass-2 call site regardless of source order, silently defeating
-    /// WS021 (see `lower::tests::chip::use_before_declaration_is_ws021`).
-    /// Keeping a separate stack preserves "only what's declared earlier"
-    /// for the bake without leaking early visibility into pass 2.
-    ///
-    /// Always non-empty: the base frame holds the module's top-level
-    /// declarations.
-    /// Frames are `Arc`-shared: a chip instantiation snapshots the whole
-    /// stack by refcount bump (`build_chip_module`), and a shared frame is
-    /// only deep-cloned if something actually inserts into it
-    /// (`Arc::make_mut` in `pre_declare_chip_name`).
+    /// Always non-empty (the base frame holds the top-level declarations).
+    /// Frames are `Arc`-shared; `pre_declare_chip_name` clones one on insert.
     pub(super) pass1_chips: Vec<std::sync::Arc<HashMap<String, std::sync::Arc<ChipDecl>>>>,
-    /// Bare names the importing module itself owns — snapshotted from `scope`
-    /// after pass-1 pre-declaration (its `in`/`out`/`var`/`array`/… ), before
-    /// any `import * as` namespace lowers its members in pass 2. A namespaced
-    /// `let` member must not re-register (clobber) one of these bare names, or
-    /// e.g. an imported `let start` would overwrite the importer's own
-    /// `in start: exec` and silently drop `on start`'s handler body.
-    pub(super) importer_names: crate::collections::HashSet<String>,
+    /// Bare names the importing module itself owns, taken from `scope` after
+    /// pass-1 pre-declaration. A namespaced `let` member must not re-register
+    /// one, or an imported `let start` would replace the importer's
+    /// `in start: exec` and drop `on start`'s body.
+    pub(super) importer_names: HashSet<String>,
     /// For a mod DECLARED inside an `import * as ns` module: its owning
     /// namespace's member map, keyed by the mod's decl location `(file,
-    /// offset)`. A namespaced mod is registered by BARE name and inlined at its
-    /// call site, where the ambient scope holds whatever namespace lowered last
-    /// — so its body's references to its own module's siblings/vars/consts
-    /// resolved to the WRONG module (two modules with a same-named `helper`: the
-    /// second's callers ran the first's code; a mod mutating `g` wrote the
-    /// last-imported namespace's gate). At inline, the callee's members are
-    /// pushed into its body frame FIRST (params still shadow), so bare `helper` /
-    /// `g` resolve to THIS module's. Keyed by location, so both the `ns.f`
-    /// access and a bare sibling call (distinct `Arc<ChipDecl>` clones of the
-    /// same source) map to one entry.
-    pub(super) ns_mod_scopes:
-        crate::collections::HashMap<(Arc<str>, usize), std::sync::Arc<HashMap<String, Binding>>>,
+    /// offset)`. The inline call pushes these into the body frame before the
+    /// params, so the body's bare names resolve to its own module rather than
+    /// whichever namespace the call site's scope holds. Keyed by location so
+    /// `ns.f` and a bare sibling call share one entry.
+    pub(super) ns_mod_scopes: HashMap<StartKey, std::sync::Arc<HashMap<String, Binding>>>,
     /// The top-level constants of the module each `ns_mod_scopes` entry's
     /// members come from, recorded in the body frame beside them so a member
     /// constant reads as the constant it is there, as typecheck has it.
-    pub(super) ns_mod_consts:
-        crate::collections::HashMap<(Arc<str>, usize), crate::const_scope::MemberConsts>,
-    /// Source-location dedup for STATE reached through multiple imports of one
-    /// file — plain + `import * as`, `import {g}` + `import {g as h}`, or a
-    /// diamond. Keyed by a decl's `(file, start.offset)`: the same SOURCE
-    /// declaration however it was imported. The FIRST import to lower it
-    /// creates the gate and records it here; a later import binds its
-    /// (possibly aliased or namespaced) name to that same gate rather than a
-    /// duplicate. A DIFFERENT file's same-named decl has a distinct key, so
-    /// genuine collisions still get their own gate. See N2/N3.
-    pub(super) import_state_dedup: crate::collections::HashMap<(String, usize), Binding>,
-    /// Companion of `import_state_dedup` for BEHAVIOUR decls (handlers, anon
-    /// chips) that carry no reusable binding: the set of source locations
-    /// already lowered, so the same `on` handler pulled in through several
-    /// imports of one file installs its behaviour ONCE instead of firing N
-    /// times (which, on shared state, N-counts every increment).
-    pub(super) import_behavior_lowered: crate::collections::HashSet<(String, usize)>,
+    pub(super) ns_mod_consts: HashMap<StartKey, crate::const_scope::MemberConsts>,
+    /// State reached through several imports of one file (plain and
+    /// `import * as`, aliased, or a diamond), keyed by the decl's
+    /// `(file, start.offset)`: the first import creates the gate and later ones
+    /// bind their names to it. A different file's same-named decl gets its own.
+    pub(super) import_state_dedup: HashMap<(String, usize), Binding>,
+    /// Source locations of behaviour decls (handlers, anonymous chips) already
+    /// lowered, so a handler imported several times installs once rather than
+    /// firing once per import.
+    pub(super) import_behavior_lowered: HashSet<(String, usize)>,
     /// Set while lowering a statement already flagged unreachable (WS081) by
     /// a preceding `break` in the same block. `lower_assign`'s WS058 check
     /// reads this to stay quiet for that one statement.
@@ -924,40 +816,137 @@ pub(super) struct LowerCtx<'a> {
     pub(super) exec_closed_by_buffer_emit: bool,
     /// Each `fn` lowered so far, keyed by its declaration's (file, offset):
     /// the one definition plane every call to it binds.
-    pub(super) fn_planes: HashMap<(std::sync::Arc<str>, usize), crate::lower::function::FnPlane>,
+    pub(super) fn_planes: HashMap<StartKey, crate::lower::function::FnPlane>,
     /// The `fn`s whose bodies are being lowered, innermost last: a call to
     /// one of these is recursion, which the game does not run.
-    pub(super) fn_building: Vec<(std::sync::Arc<str>, usize)>,
+    pub(super) fn_building: Vec<StartKey>,
 }
 
 /// An exec chain driven by either `a` or `b`: an `Exec_Union` of the two
 /// (`a` on `ExecA`), or whichever one there is.
 pub(super) fn merge_exec(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     a: Option<PortRef>,
     b: Option<PortRef>,
     range: &SourceRange,
 ) -> Option<PortRef> {
     match (a, b) {
-        (Some(a), Some(b)) => {
-            let union = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::UNION,
-                source_range: range.clone(),
-                ports: GateIO::exec_join(),
-                ..Default::default()
-            });
-            ctx.connect(a, union.port(WirePort::ExecA));
-            ctx.connect(b, union.port(WirePort::ExecB));
-            Some(union.port(WirePort::ExecOut))
-        }
+        (Some(a), Some(b)) => Some(exec_join(ctx, Some(a), Some(b), range)),
         (a, b) => a.or(b),
     }
+}
+
+/// An `Exec_Union` with `a` on `ExecA` and `b` on `ExecB`, an absent side
+/// left unwired. The gate is always built. Returns its `ExecOut`.
+pub(super) fn exec_join(
+    ctx: &mut LowerCtx<'_>,
+    a: Option<PortRef>,
+    b: Option<PortRef>,
+    range: &SourceRange,
+) -> PortRef {
+    let union = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::UNION,
+        source_range: range.clone(),
+        ports: GateIO::exec_join(),
+        ..Default::default()
+    });
+    if let Some(a) = a {
+        ctx.connect(a, union.port(WirePort::ExecA));
+    }
+    if let Some(b) = b {
+        ctx.connect(b, union.port(WirePort::ExecB));
+    }
+    union.port(WirePort::ExecOut)
+}
+
+/// An `Exec_Branch` driven by `exec` and `cond`; its arms are on `ExecOutA`
+/// (true) and `ExecOutB`.
+pub(super) fn add_branch(
+    ctx: &mut LowerCtx<'_>,
+    exec: PortRef,
+    cond: PortRef,
+    range: &SourceRange,
+) -> NodeId {
+    let branch = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::BRANCH,
+        source_range: range.clone(),
+        ports: GateIO::exec_branch(),
+        ..Default::default()
+    });
+    ctx.connect(exec, branch.port(WirePort::Exec));
+    ctx.connect(cond, branch.port(WirePort::BCond));
+    branch
+}
+
+/// One `Select` gate: `then_port` on `InputB`, `else_port` on `InputA`, and
+/// `cond_port` on `bSelectB` (true picks `InputB`). The returned port is its
+/// `Output`, typed `result_ty`.
+pub(super) fn emit_select(
+    ctx: &mut LowerCtx<'_>,
+    cond_port: PortRef,
+    then_port: PortRef,
+    else_port: PortRef,
+    result_ty: &Type,
+    note: &'static str,
+    range: &SourceRange,
+) -> PortRef {
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: gc::SELECT,
+        source_range: range.clone(),
+        ports: GateIO {
+            inputs: vec![
+                PortSpec::new(*sym::INPUT_A, result_ty.clone()),
+                PortSpec::new(*sym::INPUT_B, result_ty.clone()),
+                PortSpec::new(*sym::B_SELECT_B, Type::Bool),
+            ],
+            outputs: vec![PortSpec::new(*sym::OUTPUT, result_ty.clone())],
+        },
+        note: Some(note),
+        ..Default::default()
+    });
+    ctx.connect(cond_port, node_id.port(WirePort::BSelectB));
+    ctx.connect(then_port, node_id.port(WirePort::InputB));
+    ctx.connect(else_port, node_id.port(WirePort::InputA));
+    node_id.port(WirePort::Output)
+}
+
+/// The gate `rule` selects, its inputs typed `types` and wired from `inputs`
+/// in order (a `None` stays unwired). Returns its output port.
+pub(super) fn rule_gate(
+    ctx: &mut LowerCtx<'_>,
+    rule: &OpRule,
+    inputs: &[Option<PortRef>],
+    types: &[Type],
+    note: Option<&'static str>,
+    range: &SourceRange,
+) -> PortRef {
+    let node_id = ctx.add_gate(AddNodeOpts {
+        gate_class: rule.gate_class,
+        source_range: range.clone(),
+        ports: GateIO {
+            inputs: inputs
+                .iter()
+                .zip(types)
+                .zip(rule.ports.inputs)
+                .map(|((_, ty), port)| PortSpec::new(port.sym(), ty.clone()))
+                .collect(),
+            outputs: vec![PortSpec::new(rule.ports.output.sym(), rule.result.clone())],
+        },
+        note,
+        ..Default::default()
+    });
+    for (source, &port) in inputs.iter().zip(rule.ports.inputs) {
+        if let Some(source) = source {
+            ctx.connect(*source, node_id.port(port));
+        }
+    }
+    node_id.port(rule.ports.output)
 }
 
 /// The var a mod with several `return`s stores its one `out_type` value into:
 /// each `return` sets it and [`read_return_value`] reads it once they merge.
 pub(super) fn return_value_var(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     out_type: Type,
     range: &SourceRange,
 ) -> VarRecord {
@@ -969,7 +958,7 @@ pub(super) fn return_value_var(
 /// `drive_output`, wire the value into the mod's output when it has exactly
 /// one. Returns the value.
 pub(super) fn read_return_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     ret_var: &VarRecord,
     exec: PortRef,
     drive_output: bool,
@@ -996,7 +985,7 @@ pub(super) fn read_return_value(
 /// `(source, input port)` into it in order, and move the exec chain on to its
 /// `ExecOut`.
 pub(super) fn chain_gate(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     opts: AddNodeOpts,
     exec: PortRef,
     inputs: &[(PortRef, WirePort)],
@@ -1010,25 +999,36 @@ pub(super) fn chain_gate(
     id
 }
 
-/// A `Var_Set` (with `increment`, a `Var_Increment` adding `value`) storing
-/// `value` into the var of type `inner` behind `var_ref`, chained after
-/// `exec`.
-#[allow(clippy::too_many_arguments)]
+/// How a chained var write combines `value` with the var.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WriteKind {
+    /// A `Var_Set` storing the value.
+    Set,
+    /// A `Var_Increment` adding the value.
+    Increment,
+}
+
+/// A `Var_Set` (or, for `WriteKind::Increment`, a `Var_Increment` adding
+/// `value`) storing `value` into the var of type `inner` behind `var_ref`,
+/// chained after `exec`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each input is a separate field of the write gate"
+)]
 pub(super) fn chain_var_write(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     exec: PortRef,
     var_ref: PortRef,
     inner: Type,
     value: PortRef,
-    increment: bool,
+    kind: WriteKind,
     range: SourceRange,
     note: Option<&'static str>,
 ) -> NodeId {
     let opts = AddNodeOpts {
-        gate_class: if increment {
-            gc::VAR_INCREMENT
-        } else {
-            gc::VAR_SET
+        gate_class: match kind {
+            WriteKind::Set => gc::VAR_SET,
+            WriteKind::Increment => gc::VAR_INCREMENT,
         },
         source_range: range,
         ports: GateIO::var_write(inner),
@@ -1043,15 +1043,38 @@ pub(super) fn chain_var_write(
     )
 }
 
+/// `chain_var_write` into `var` after `exec`. Takes the var by record so a
+/// caller does not clone its type and port separately.
+pub(super) fn store_on_chain(
+    ctx: &mut LowerCtx<'_>,
+    exec: PortRef,
+    var: &VarRecord,
+    value: PortRef,
+    kind: WriteKind,
+    range: SourceRange,
+    note: Option<&'static str>,
+) -> NodeId {
+    chain_var_write(
+        ctx,
+        exec,
+        var.node_id.port(WirePort::VarRef),
+        var.inner_type.clone(),
+        value,
+        kind,
+        range,
+        note,
+    )
+}
+
 /// A `Var_Get` reading the var of type `inner` behind `var_ref`, chained after
 /// `exec`; `properties` seed its data. The value is on its `Value` port.
 pub(super) fn chain_var_read(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     exec: PortRef,
     var_ref: PortRef,
     inner: Type,
     range: SourceRange,
-    properties: HashMap<crate::intern::Sym, Literal>,
+    properties: HashMap<Sym, Literal>,
     note: Option<&'static str>,
 ) -> NodeId {
     let opts = AddNodeOpts {
@@ -1065,20 +1088,16 @@ pub(super) fn chain_var_read(
     chain_gate(ctx, opts, exec, &[(var_ref, WirePort::VarRef)])
 }
 
-/// Chain an exec-driven `Var_Get` onto the current exec chain: the gate reads
-/// `var_rec` through its ref port, and `ctx.current_exec` advances to the
-/// gate's `ExecOut`. Callers read the value off the returned node's `Value`
-/// port.
-///
-/// `properties` seeds the gate's data struct, which is how a read gets a
-/// sensible value before its var is first written; the deref path
-/// (`*x`) deliberately passes none.
+/// Chain a `Var_Get` of `var_rec` after `exec`, moving `ctx.current_exec` to its
+/// `ExecOut`; the value is on the returned node's `Value` port. `properties`
+/// seed what a read sees before the var's first write (the `*x` path passes
+/// none).
 pub(super) fn chain_var_get(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     var_rec: &VarRecord,
     exec: PortRef,
     range: &SourceRange,
-    properties: HashMap<crate::intern::Sym, Literal>,
+    properties: HashMap<Sym, Literal>,
     note: Option<&'static str>,
 ) -> NodeId {
     let var_ref = var_rec.node_id.port(WirePort::VarRef);
@@ -1097,7 +1116,7 @@ pub(super) fn chain_var_get(
 /// comes from `ref_port`. Never cached, since what `ref_port` names can change
 /// between two reads.
 pub(super) fn chain_var_get_through(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     ref_port: PortRef,
     inner: &Type,
     exec: PortRef,
@@ -1118,7 +1137,7 @@ pub(super) fn chain_var_get_through(
 /// `increment` a `Var_Increment` adding `value`, whose `VarRef` comes from
 /// `ref_port`. A no-op with no exec chain, like `set_scalar_var`.
 pub(super) fn write_through_ref(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     ref_port: PortRef,
     inner: &Type,
     value: PortRef,
@@ -1134,7 +1153,11 @@ pub(super) fn write_through_ref(
         ref_port,
         inner.clone(),
         value,
-        increment,
+        if increment {
+            WriteKind::Increment
+        } else {
+            WriteKind::Set
+        },
         range.clone(),
         Some("set through ref"),
     );
@@ -1143,7 +1166,7 @@ pub(super) fn write_through_ref(
 
 /// A write whose target could be any var of its type: every cached read is
 /// dropped, so a later read cannot reuse a value this write may have changed.
-pub(super) fn note_dynamic_write(ctx: &mut LowerCtx) {
+pub(super) fn note_dynamic_write(ctx: &mut LowerCtx<'_>) {
     ctx.dyn_ref_writes += 1;
     reset_var_get_caches(ctx);
 }
@@ -1151,7 +1174,7 @@ pub(super) fn note_dynamic_write(ctx: &mut LowerCtx) {
 /// The `Value` a fresh `Var_Get` carries in its data struct: the type's zero,
 /// so a read that beats its var's first write reads that rather than whatever
 /// the gate was serialized with.
-pub(super) fn var_get_seed_props(inner: &Type) -> HashMap<crate::intern::Sym, Literal> {
+pub(super) fn var_get_seed_props(inner: &Type) -> HashMap<Sym, Literal> {
     let mut props = HashMap::default();
     if let Some(lit) = default_literal_for_var_type(inner) {
         props.insert(*sym::VALUE, lit);
@@ -1161,19 +1184,13 @@ pub(super) fn var_get_seed_props(inner: &Type) -> HashMap<crate::intern::Sym, Li
 
 impl<'a> LowerCtx<'a> {
     /// A context with every accumulator empty and every cursor at its start.
-    /// The three places that build a `LowerCtx` - the whole-module entry, the
-    /// resource-estimation template, and a chip body's child module - fill in
-    /// what they need with struct-update syntax (`..LowerCtx::empty(...)`), so
-    /// a new field gets its zero in ONE place instead of needing all three
-    /// edited in lockstep.
-    ///
-    /// The six arguments are the ones that have no meaningful zero: a
-    /// `LowerCtx` cannot exist without a module to build into or the
-    /// typechecker tables to read.
+    /// Every place that builds a `LowerCtx` starts from this with
+    /// struct-update syntax, so a new field gets its zero here. The arguments
+    /// are the fields with no meaningful zero.
     pub(super) fn empty(
         builder: ModuleBuilder,
-        type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
-        op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
+        type_of_expr: &'a HashMap<RangeKey, Type>,
+        op_resolutions: &'a HashMap<RangeKey, OpRule>,
         resolutions: &'a crate::typecheck::Resolutions,
         ce_slots: &'a CeSlotMap,
         doc_comments: &'a crate::parser::DocComments,
@@ -1209,10 +1226,10 @@ impl<'a> LowerCtx<'a> {
             next_scope_id: ROOT_SCOPE_ID + 1,
             current_anon_chip: None,
             loop_body_ranges: Vec::new(),
-            anon_chip_nodes: crate::collections::HashMap::default(),
-            anon_chip_storage: crate::collections::HashMap::default(),
+            anon_chip_nodes: HashMap::default(),
+            anon_chip_storage: HashMap::default(),
             anon_chip_shadows: Vec::new(),
-            anon_chip_names: crate::collections::HashMap::default(),
+            anon_chip_names: HashMap::default(),
             top_names: Arc::default(),
             top_dup_bindings: Arc::default(),
             mod_return_exec: None,
@@ -1221,9 +1238,9 @@ impl<'a> LowerCtx<'a> {
             mod_output_names: Vec::new(),
             mod_output_types: HashMap::default(),
             chip_return_outputs: Vec::new(),
-            mod_emit_storage: crate::collections::HashSet::default(),
-            mod_unsequenced: crate::collections::HashSet::default(),
-            emitted_outputs: crate::collections::HashSet::default(),
+            mod_emit_storage: HashSet::default(),
+            mod_unsequenced: HashSet::default(),
+            emitted_outputs: HashSet::default(),
             output_write_sites: HashMap::default(),
             namespace_output_writes: Arc::new(HashMap::default()),
             record_result_call: None,
@@ -1249,7 +1266,7 @@ impl<'a> LowerCtx<'a> {
             template_cache: Arc::new(crate::template_cache::TemplateCache::new()),
             pending_inline_record: None,
             last_value_record_port: None,
-            cone_index: Default::default(),
+            cone_index: std::cell::RefCell::default(),
             signal_emits: 0,
             emit_log: Vec::new(),
             emit_sites: HashMap::default(),
@@ -1257,12 +1274,12 @@ impl<'a> LowerCtx<'a> {
             pending_return_record: None,
             pending_out_records: HashMap::default(),
             chip_call_stack: Vec::new(),
-            known_fn_names: Arc::new(crate::collections::HashSet::default()),
+            known_fn_names: Arc::new(HashSet::default()),
             imports: Arc::default(),
-            known_let_names: Arc::new(crate::collections::HashSet::default()),
+            known_let_names: Arc::new(HashSet::default()),
             consts: crate::const_scope::ConstScope::default(),
-            immutable_containers: crate::collections::HashSet::default(),
-            inline_outputs: crate::collections::HashSet::default(),
+            immutable_containers: HashSet::default(),
+            inline_outputs: HashSet::default(),
             is_root_module: false,
             nofold_depth: 0,
             mono_stack: Vec::new(),
@@ -1272,11 +1289,11 @@ impl<'a> LowerCtx<'a> {
             pass1_chips: vec![Arc::new(HashMap::default())],
             // Populated from `scope` right after pass 1 (top-level module only;
             // stays empty for a chip body, which has no `import * as`).
-            importer_names: crate::collections::HashSet::default(),
+            importer_names: HashSet::default(),
             ns_mod_scopes: HashMap::default(),
             ns_mod_consts: HashMap::default(),
-            import_state_dedup: crate::collections::HashMap::default(),
-            import_behavior_lowered: crate::collections::HashSet::default(),
+            import_state_dedup: HashMap::default(),
+            import_behavior_lowered: HashSet::default(),
             dead_after_break: false,
             exec_closed_by_buffer_emit: false,
             fn_planes: HashMap::default(),
@@ -1303,37 +1320,28 @@ impl<'a> LowerCtx<'a> {
     /// depth raised? A statement that reached the plane through an inlined
     /// mod body sits outside every such range, so nothing reported it there.
     pub(super) fn inside_written_loop_body(&self, r: &SourceRange) -> bool {
-        self.loop_body_ranges.iter().any(|b| {
-            b.file == r.file && b.start.offset <= r.start.offset && r.end.offset <= b.end.offset
-        })
+        self.loop_body_ranges.iter().any(|b| b.contains(r))
     }
 
-    /// The declared type of the OUTPUT port `src` refers to — the type of the
-    /// value that flows out of it.
-    ///
-    /// Used to give a port whose catalog type is `any` the type of whatever is
-    /// actually wired into it, so the emitted wire variant matches. Recurses
-    /// into chips because the source may live in a nested module; NodeIds come
-    /// from one allocator and are globally unique.
+    /// The declared type of the output port `src`, searched through nested
+    /// chips. Gives an `any`-typed input the type wired into it, so the emitted
+    /// wire variant matches.
     pub(super) fn source_port_type(&self, src: PortRef) -> Option<Type> {
         self.find_node(src.node_id)?.output_type(src.port)
     }
 
     /// Add the instantiated chip `module` under `key`, recording where each of
     /// its nodes sits.
-    pub(super) fn insert_chip(&mut self, key: NodeId, module: crate::ir::Module) {
-        fn note(m: &crate::ir::Module, key: NodeId, out: &mut HashMap<NodeId, NodeId>) {
-            out.extend(m.nodes.keys().map(|id| (*id, key)));
-            m.chips.values().for_each(|c| note(c, key, out));
-        }
-        note(&module, key, &mut self.chip_of);
+    pub(super) fn insert_chip(&mut self, key: NodeId, module: Module) {
+        self.chip_of
+            .extend(module.nodes_deep().map(|n| (n.id, key)));
         self.builder.module.chips.insert(key, module);
     }
 
-    /// The node `id` in this module or any chip under it. NodeIds come from
+    /// The node `id` in this module or any chip under it. `NodeIds` come from
     /// one allocator and are globally unique, so where `chip_of` places a
     /// node only decides where to look first.
-    pub(super) fn find_node(&self, id: NodeId) -> Option<&crate::ir::Node> {
+    pub(super) fn find_node(&self, id: NodeId) -> Option<&Node> {
         let m = &self.builder.module;
         m.nodes
             .get(&id)
@@ -1369,22 +1377,10 @@ impl<'a> LowerCtx<'a> {
         id
     }
 
-    /// Push a scope, run `f`, then restore the previous scope. Use this
-    /// wrapper around any lowering call that should emit nodes under a
-    /// specific scope (handler body, chip body, if branches, blocks, ...).
-    ///
-    /// Also pushes/pops a name-resolution `scope` frame and its constants (via
-    /// `push_scope`/`pop_scope`) around `f`, so every handler body — every
-    /// trigger kind routes through this wrapper, not just the built-in-event
-    /// path — gets its own BLOCK frame. Without this, a body-local `let`
-    /// declared inside e.g. an `in`-port-triggered handler (`on go { let pf =
-    /// ... }`) would have no frame of its own to bind into: it would land in
-    /// whatever scope is ambient at the call site (module root, for a
-    /// top-level handler) and would never be popped. Any caller that ALSO
-    /// needs to bind names visible for the duration of `f` (e.g. a handler's
-    /// typed event params) must do so INSIDE the closure, after this push —
-    /// not before calling `with_scope` — or those bindings leak into the
-    /// outer scope instead of being cleaned up with the body.
+    /// Allocate a scope of `kind`, run `f` under it, then restore the previous
+    /// one. Also pushes a BLOCK name frame (with its constants) around `f`, so
+    /// body-local names bind there; a caller binding names for `f` (a handler's
+    /// event params) must do so inside `f`, or they leak into the outer scope.
     pub(super) fn with_scope<R>(
         &mut self,
         kind: ScopeKind,
@@ -1419,16 +1415,10 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
-    /// Push a new name-resolution `scope` frame together with its empty
-    /// frame of constants, so the stacks can never drift out of lockstep
-    /// (mirrors `typecheck::TypeCheckCtx::push_scope`). Use this (paired with
-    /// `pop_scope`) everywhere lowering enters a block scope (handler body, if
-    /// branch, `BlockExpr`, inline-mod call) instead of a bare
-    /// `ctx.scope.push(...)`. A bare push would leave the constants pointing
-    /// at the wrong (enclosing) frame, so a body-local `let` inside the new
-    /// scope would be recorded one level too shallow, potentially leaking past
-    /// its own scope's lifetime or clobbering a sibling scope's constant of the
-    /// same name.
+    /// Push a name-resolution `scope` frame with its constants and `pass1_chips`
+    /// frames (mirrors `typecheck::TypeCheckCtx::push_scope`). Use this, never a
+    /// bare `ctx.scope.push`, which would record a body-local constant in the
+    /// enclosing frame, where it outlives its scope.
     pub(super) fn push_scope(&mut self, tag: crate::scope::ScopeTag) {
         self.scope.push(tag);
         self.consts.push(self.scope.current_id());
@@ -1436,10 +1426,8 @@ impl<'a> LowerCtx<'a> {
             .push(std::sync::Arc::new(HashMap::default()));
     }
 
-    /// If a state decl at `range`'s source location was already lowered — the
-    /// same source declaration pulled in through another import of the same
-    /// file — return its binding to reuse rather than create a duplicate gate.
-    /// See `import_state_dedup`.
+    /// The binding of the state decl at `range`'s source location when another
+    /// import of the same file already lowered it (see `import_state_dedup`).
     pub(super) fn reuse_import_state(&self, range: &SourceRange) -> Option<Binding> {
         self.import_state_dedup
             .get(&(range.file.to_string(), range.start.offset))
@@ -1465,8 +1453,8 @@ impl<'a> LowerCtx<'a> {
     pub(super) fn pop_scope(&mut self) {
         self.scope.pop();
         self.consts.pop();
-        // Never pop the base frame — it holds the module's own top-level
-        // declarations and must outlive every scope opened inside the module.
+        // The base frame holds the module's top-level declarations and is never
+        // popped.
         if self.pass1_chips.len() > 1 {
             self.pass1_chips.pop();
         }
@@ -1529,13 +1517,11 @@ impl<'a> LowerCtx<'a> {
     /// The `ConstCtx` for `const_eval::eval_expr`, resolving names as
     /// [`const_lookup`](Self::const_lookup) does, so lowering agrees with
     /// typecheck (`typecheck::TypeCheckCtx::const_ctx`) on what's constant at
-    /// this point. A `const mod` body is evaluated against the module's
-    /// constants plus its own parameters, never the call site's scope frames
-    /// (see `const_eval::interp::eval_call`).
-    ///
-    /// `lookup_mod` is supplied by the CALLER, built from [`resolve_mod`](Self::resolve_mod)
-    /// — see `TypeCheckCtx::const_ctx`'s matching doc comment for why this
-    /// method can't build and embed that closure itself.
+    /// this point. A `const mod` body sees the module's constants and its own
+    /// parameters, never the call site's frames (`const_eval::interp::eval_call`).
+    /// `lookup_mod` comes from the caller (a closure over
+    /// [`resolve_mod`](Self::resolve_mod)): a closure borrowing `self` cannot be
+    /// returned from here.
     pub(super) fn const_ctx<'b>(
         &self,
         lookup_mod: crate::const_scope::ModLookup<'b>,
@@ -1563,32 +1549,24 @@ impl<'a> LowerCtx<'a> {
             &self.scope,
             &|b| self.const_bound(b),
             admit,
-            self.enum_defs.clone(),
-            self.imports.clone(),
+            std::sync::Arc::clone(&self.enum_defs),
+            std::sync::Arc::clone(&self.imports),
             lookup_mod,
         )
     }
 
     /// Whether `name` currently reads as a DECLARED compile-time constant.
-    ///
-    /// `lower_let_decl` uses it to confine its shadow-clearing to names a
-    /// `const` actually introduced: a program that uses no `const` keyword
-    /// declares nothing, so this is always `false` there and that program's
-    /// lowering is untouched, which is the feature's own first rule.
+    /// `lower_let_decl` confines its shadow-clearing to these, so a program with
+    /// no `const` is unaffected by it.
     pub(super) fn is_declared_const(&self, name: &str) -> bool {
         self.constant(name, crate::const_scope::Admit::Declared)
             .is_some()
     }
 
     /// The `Literal::Array` / `Literal::Map` a constant `name` holds, or
-    /// `None` for anything else (a scalar constant, an unknown name).
-    ///
-    /// Not restricted to a declared `const`: a plain `let` bound to a constant
-    /// container (`let x = T`, `let xs = [1, 2]`) binds no wire either (see
-    /// `lower_let_decl`), so its only runtime form is the one
-    /// `materialize_const_container` gives it. Its caller only asks for a name
-    /// with no scope binding, which is what keeps a runtime container of the
-    /// same name winning.
+    /// `None` for anything else. Includes a plain `let` of a constant container
+    /// (`let xs = [1, 2]`), which binds no wire; the caller asks only for names
+    /// with no scope binding, so a runtime container of that name wins.
     pub(super) fn const_container_literal(&self, name: &str) -> Option<Literal> {
         match self.constant(name, crate::const_scope::Admit::All) {
             Some(lit @ (Literal::Array(_) | Literal::Map(_))) => Some(lit.clone()),
@@ -1597,10 +1575,8 @@ impl<'a> LowerCtx<'a> {
     }
 
     /// [`const_ctx`](Self::const_ctx), restricted to names DECLARED `const`:
-    /// the `if`-condition elision's own environment (`lower_if`). A plain
-    /// `let` that merely happens to fold must not participate in the
-    /// generalised const-eval elision: the feature's own rule is that a
-    /// program using no `const` compiles identically to before. Mirrors
+    /// the environment of `lower_if`'s condition elision, so a plain `let` that
+    /// folds never drops a branch. Mirrors
     /// `typecheck::TypeCheckCtx::if_cond_const_ctx`.
     pub(super) fn if_cond_const_ctx<'b>(
         &self,
@@ -1608,25 +1584,16 @@ impl<'a> LowerCtx<'a> {
     ) -> crate::const_eval::ConstCtx<'b> {
         self.admitting_ctx(crate::const_scope::Admit::Declared, lookup_mod)
     }
-    /// Resolve `name` to its `ChipDecl` for a `const mod` CALL, via the SAME
-    /// scope-based resolution an ordinary (non-const) call already goes
-    /// through: `lookup_chip` only finds a chip/mod whose `lower_chip_decl`
-    /// has already run (lowering processes decls in source order, unlike
-    /// typecheck's two-pass forward-reference-tolerant registration), so a
-    /// const-mod call resolves here exactly as far "ahead" as any other call
-    /// to it would at this point in lowering.
+    /// Resolve `name` to its `ChipDecl` for a `const mod` call, through the same
+    /// scope lookup an ordinary call uses: only decls already lowered (source
+    /// order) are found.
     pub(super) fn resolve_mod(&self, name: &str) -> Option<std::sync::Arc<ChipDecl>> {
         self.lookup_chip(name).cloned()
     }
 
-    /// [`resolve_mod`](Self::resolve_mod)'s bake-path counterpart — see
-    /// [`pass1_chips`](Self::pass1_chips)'s doc comment for why baking a
-    /// var/array/map initializer's `const mod` CALL cannot simply call
-    /// `resolve_mod` (`ctx.scope`) here.
-    ///
-    /// Scans frames INNERMOST-first, so a body-local declaration shadows a
-    /// same-named outer one for exactly as long as its scope is open — the
-    /// same shadowing `const_lookup` gives scoped constants.
+    /// [`resolve_mod`](Self::resolve_mod) for the initializer bake, over
+    /// [`pass1_chips`](Self::pass1_chips). Scans innermost frame first, so a
+    /// body-local declaration shadows an outer one while its scope is open.
     pub(super) fn resolve_mod_pass1(&self, name: &str) -> Option<std::sync::Arc<ChipDecl>> {
         self.pass1_chips
             .iter()
@@ -1635,19 +1602,90 @@ impl<'a> LowerCtx<'a> {
             .cloned()
     }
 
-    /// `e`'s type in the instantiation being lowered; `Any` where typecheck
-    /// recorded none.
-    ///
-    /// Outside a generic body typecheck checked `e` once, and that is its
-    /// type. Inside one, typecheck's range-keyed record holds whichever
-    /// instantiation it checked last, so it is never read: the type is
-    /// typecheck's entry for this instantiation, which it checked, since it
-    /// checks every instantiation a call demands and lowering builds no other
-    /// (see `call::instantiation_checked`). A template build lowers a generic
-    /// body with no substitution at all, for a resource estimate, and reads
-    /// the record.
+    /// Run `f` against the `ConstCtx` `scope` names, with its `const mod`
+    /// lookup built here.
+    pub(super) fn with_const_ctx<R>(
+        &self,
+        scope: ConstScope,
+        f: impl FnOnce(&crate::const_eval::ConstCtx<'_>) -> R,
+    ) -> R {
+        let current = |n: &str| self.resolve_mod(n);
+        match scope {
+            ConstScope::Plain => f(&self.const_ctx(Some(&current))),
+            ConstScope::Certified => f(&self.certified_const_ctx(Some(&current))),
+            ConstScope::IfCond => f(&self.if_cond_const_ctx(Some(&current))),
+            ConstScope::Pass1 => f(&self.const_ctx(Some(&|n: &str| self.resolve_mod_pass1(n)))),
+        }
+    }
+
+    /// `e`'s compile-time value under `scope`, on a fresh budget.
+    pub(super) fn const_eval(
+        &self,
+        e: &Expr,
+        scope: ConstScope,
+    ) -> Result<Literal, crate::const_eval::ConstError> {
+        self.const_eval_budget(e, scope).0
+    }
+
+    /// [`const_eval`](Self::const_eval), also giving back the budget, whose
+    /// `uncertified` flag says whether the value is the gates' own.
+    pub(super) fn const_eval_budget(
+        &self,
+        e: &Expr,
+        scope: ConstScope,
+    ) -> (
+        Result<Literal, crate::const_eval::ConstError>,
+        crate::const_eval::Budget,
+    ) {
+        let mut budget = crate::const_eval::Budget::default();
+        let lit = self.with_const_ctx(scope, |cx| crate::const_eval::eval_expr(e, cx, &mut budget));
+        (lit, budget)
+    }
+
+    /// The value `l` binds under `scope` (`const_eval::eval_let_value`).
+    pub(super) fn const_eval_let(
+        &self,
+        l: &LetDecl,
+        scope: ConstScope,
+    ) -> Result<Literal, crate::const_eval::ConstError> {
+        let mut budget = crate::const_eval::Budget::default();
+        self.with_const_ctx(scope, |cx| {
+            crate::const_eval::eval_let_value(l, cx, &mut budget)
+        })
+    }
+
+    /// `e`'s type in the instantiation being lowered (see [`Self::type_at`]);
+    /// `Any` where typecheck recorded none. In a generic body this is
+    /// typecheck's per-instantiation entry, since the range-keyed record holds
+    /// the last instantiation checked; a template build has no substitution
+    /// and reads the record.
     pub(super) fn type_of(&self, e: &Expr) -> Type {
-        self.type_at(e.range()).unwrap_or(Type::Any)
+        self.spread_pick_type(e)
+            .unwrap_or_else(|| self.type_at(e.range()).unwrap_or(Type::Any))
+    }
+
+    /// The element type a spread pick reads, `None` when `e` is not one. A
+    /// spread `...t` expands to `t.<key>` picks that keep `t`'s range, so the
+    /// range alone would give `t`'s type, not the element's.
+    fn spread_pick_type(&self, e: &Expr) -> Option<Type> {
+        let Expr::FieldAccess { obj, field, range } = e else {
+            return None;
+        };
+        if range != obj.range() {
+            return None;
+        }
+        let elem = match self.gate_outputs(range) {
+            Some(outputs) => outputs
+                .iter()
+                .find(|(k, _)| k == field)
+                .map(|(_, t)| unwrap_ref(t).as_record()),
+            None => match unwrap_ref(&self.type_at(range)?) {
+                Type::Tuple(ts) => field.parse::<usize>().ok().and_then(|i| ts.get(i).cloned()),
+                Type::Record(fs) => fs.iter().find(|(k, _)| k == field).map(|(_, t)| t.clone()),
+                _ => None,
+            },
+        };
+        Some(elem.unwrap_or(Type::Any))
     }
 
     /// `e` with every `{}` that typecheck typed as a `Map` spelled as the empty
@@ -1669,14 +1707,14 @@ impl<'a> LowerCtx<'a> {
             }
             Expr::RecordLit { fields, range } => {
                 let mut changed = false;
-                let rewritten: Vec<crate::ast::RecordLitField> = fields
+                let rewritten: Vec<RecordLitField> = fields
                     .iter()
                     .map(|f| match f {
-                        crate::ast::RecordLitField::Named { name, value, range } => {
+                        RecordLitField::Named { name, value, range } => {
                             match self.with_map_literals(value) {
                                 Cow::Owned(v) => {
                                     changed = true;
-                                    crate::ast::RecordLitField::Named {
+                                    RecordLitField::Named {
                                         name: name.clone(),
                                         value: v,
                                         range: range.clone(),
@@ -1716,12 +1754,17 @@ impl<'a> LowerCtx<'a> {
     /// being lowered, a gate read as its [`Type::Outputs`]. [`Self::type_at`]
     /// holds a gate read as the record of its outputs.
     fn typecheck_type_at(&self, r: &SourceRange) -> Option<&'a Type> {
-        let range = (r.file.clone(), r.start.offset, r.end.offset);
+        let range = r.key();
         let recorded = self.type_of_expr.get(&range)?;
         if !self.in_generic_instance(r) {
             return Some(recorded);
         }
-        let key = (range.0, range.1, range.2, self.resolution_subst.clone());
+        let key = (
+            range.0,
+            range.1,
+            range.2,
+            std::sync::Arc::clone(&self.resolution_subst),
+        );
         self.resolutions.generic_expr_types.get(&key)
     }
 
@@ -1753,6 +1796,13 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
+    /// [`Self::one_value_type_at`] for the expression `e`, reading a spread
+    /// pick's element type.
+    pub(super) fn one_value_type_of(&self, e: &Expr) -> Option<Type> {
+        self.spread_pick_type(e)
+            .or_else(|| self.one_value_type_at(e.range()))
+    }
+
     /// The outputs of the gate read the expression at `r` is in the
     /// instantiation being lowered, in declared order; `None` for any other
     /// value, a record of the program's own included.
@@ -1770,21 +1820,16 @@ impl<'a> LowerCtx<'a> {
     /// Whether `r` is typed per instantiation: an expression of a generic
     /// body, lowered in one of its instantiations.
     pub(super) fn in_generic_instance(&self, r: &SourceRange) -> bool {
-        !self.resolution_subst.is_empty()
-            && self.resolutions.generic_ranges.contains(&(
-                r.file.clone(),
-                r.start.offset,
-                r.end.offset,
-            ))
+        !self.resolution_subst.is_empty() && self.resolutions.generic_ranges.contains(&r.key())
     }
 
     pub(super) fn resolution_key(&self, e: &Expr) -> crate::typecheck::ResolutionKey {
         let r = e.range();
         (
-            r.file.clone(),
+            std::sync::Arc::clone(&r.file),
             r.start.offset,
             r.end.offset,
-            self.resolution_subst.clone(),
+            std::sync::Arc::clone(&self.resolution_subst),
         )
     }
 
@@ -1864,16 +1909,12 @@ impl<'a> LowerCtx<'a> {
     }
 
     /// Record `d`'s declaration key: the `resolution_subst` in effect where it
-    /// is registered, which its body's key starts with.
-    ///
-    /// Its enclosing frame is recorded under the same condition as the key, so
-    /// the two agree: a declaration in a non-generic body inlined from a
-    /// generic caller has an empty key and must not pick up the caller's frame.
-    /// Every generic body pushes its lexically merged frame (see
-    /// [`Self::body_frame`]), so `mono_stack.last()` here carries every
-    /// enclosing param, not only the innermost body's.
+    /// is registered, which its body's key starts with, and with a non-empty key
+    /// its enclosing generic frame. `mono_stack.last()` carries every enclosing
+    /// param, since each generic body pushes its merged frame
+    /// ([`Self::body_frame`]).
     pub(super) fn record_decl_resolution_subst(&mut self, d: &ChipDecl) {
-        let at = (d.range.file.clone(), d.range.start.offset);
+        let at = d.range.start_key();
         match self
             .mono_stack
             .last()
@@ -1890,7 +1931,7 @@ impl<'a> LowerCtx<'a> {
             self.decl_resolution_subst.remove(&at);
         } else {
             self.decl_resolution_subst
-                .insert(at, self.resolution_subst.clone());
+                .insert(at, std::sync::Arc::clone(&self.resolution_subst));
         }
     }
 
@@ -1900,7 +1941,7 @@ impl<'a> LowerCtx<'a> {
     /// statement holding `d` (see `decl_later_storage`), and the constants.
     /// Called once `d` itself is bound, so its body can name it.
     pub(super) fn record_decl_view(&mut self, d: &ChipDecl) {
-        let at = (d.range.file.clone(), d.range.start.offset);
+        let at = d.range.start_key();
         if self.scope.depth() <= 1 {
             self.decl_views.remove(&at);
             return;
@@ -1940,20 +1981,15 @@ impl<'a> LowerCtx<'a> {
     /// binding it. A mod of an `import * as` module belongs to the module
     /// level, whose own members its body frame receives (`ns_mod_scopes`).
     fn decl_frame(&self, d: &ChipDecl) -> Option<usize> {
-        if self
-            .ns_mod_scopes
-            .contains_key(&(d.range.file.clone(), d.range.start.offset))
-        {
+        if self.ns_mod_scopes.contains_key(&d.range.start_key()) {
             return Some(0);
         }
         let is_d = |b: &Binding| matches!(b, Binding::Chip(c) if c.range.file == d.range.file && c.range.start.offset == d.range.start.offset);
-        self.scope
-            .frame_of(crate::intern::intern(&d.name), is_d)
-            .or_else(|| {
-                self.scope.frame_where(|b| {
-                    is_d(b) || matches!(b, Binding::Namespace(m) if m.values().any(is_d))
-                })
+        self.scope.frame_of(intern(&d.name), is_d).or_else(|| {
+            self.scope.frame_where(|b| {
+                is_d(b) || matches!(b, Binding::Namespace(m) if m.values().any(is_d))
             })
+        })
     }
 
     /// `b` with every port it names on another module's `_Literal` replaced
@@ -1999,15 +2035,13 @@ impl<'a> LowerCtx<'a> {
         let found = self.decl_frame(d);
         let index = found.unwrap_or(depth - 1);
         let view = if found.is_some() && index > 0 {
-            self.decl_views
-                .get(&(d.range.file.clone(), d.range.start.offset))
-                .cloned()
+            self.decl_views.get(&d.range.start_key()).cloned()
         } else {
             None
         };
         // Frames the caller opened above the declaring one. When `d` is not
-        // bound anywhere no scope frame is hidden, and the constant stack is
-        // emptied as it always was for an inlined body.
+        // bound anywhere no scope frame is hidden and the constant stack is
+        // emptied.
         let above = depth - 1 - index;
         let mut copies = 0;
         let frames = match &view {
@@ -2023,7 +2057,7 @@ impl<'a> LowerCtx<'a> {
                     .frames()
                     .take(index)
                     .map(|(tag, id, now)| {
-                        let entries: Vec<(crate::intern::Sym, Binding)> =
+                        let entries: Vec<(Sym, Binding)> =
                             match view.frames.iter().find(|(f, _)| *f == id) {
                                 Some((_, snap)) => snap
                                     .iter()
@@ -2142,7 +2176,7 @@ impl<'a> LowerCtx<'a> {
         if !self.top_names.has_dups() {
             return TopView::default();
         }
-        let top = self.top_names.clone();
+        let top = std::sync::Arc::clone(&self.top_names);
         let mut bound = Vec::new();
         for (name, decls) in top.dups() {
             // Read from another file, a name a library declares twice is its
@@ -2155,7 +2189,10 @@ impl<'a> LowerCtx<'a> {
                 decls.last()
             };
             let mut b = seen
-                .and_then(|d| self.top_dup_bindings.get(&crate::lower::dup_key(d, name)))
+                .and_then(|d| {
+                    self.top_dup_bindings
+                        .get(&crate::const_eval::dup_key(d, name))
+                })
                 .cloned();
             if let Some(b) = &mut b {
                 self.local_literals(b);
@@ -2189,8 +2226,8 @@ impl<'a> LowerCtx<'a> {
             if !self.top_names.is_dup(&r.file, &name) {
                 continue;
             }
-            let key = (r.file.clone(), r.start.offset, name);
-            match self.scope.get_in(0, crate::intern::intern(&key.2)).cloned() {
+            let key = (std::sync::Arc::clone(&r.file), r.start.offset, name);
+            match self.scope.get_in(0, intern(&key.2)).cloned() {
                 Some(b) => Arc::make_mut(&mut self.top_dup_bindings).insert(key, b),
                 None => Arc::make_mut(&mut self.top_dup_bindings).remove(&key),
             };
@@ -2203,7 +2240,7 @@ impl<'a> LowerCtx<'a> {
     /// [`leave_decl_scope`](Self::leave_decl_scope). A chip lowered already
     /// gives what it left; one not lowered yet, its storage.
     fn enter_anon_chips_for(&mut self, d: &ChipDecl) -> Option<InsideChips> {
-        let top = self.top_names.clone();
+        let top = std::sync::Arc::clone(&self.top_names);
         let entered: Vec<&crate::scope::top::TopChip> = top
             .chips_around(&d.range)
             .filter(|c| !self.anon_chip_shadows.iter().any(|s| s.body == c.range))
@@ -2256,11 +2293,7 @@ impl<'a> LowerCtx<'a> {
     /// [`leave_decl_scope`](Self::leave_decl_scope). The top level is the
     /// innermost frame here.
     fn leave_anon_chips_for(&mut self, d: &ChipDecl) -> Option<OutsideChips> {
-        let inside = |s: &AnonChipShadow| {
-            s.body.file == d.range.file
-                && s.body.start.offset <= d.range.start.offset
-                && d.range.end.offset <= s.body.end.offset
-        };
+        let inside = |s: &AnonChipShadow| s.body.contains(&d.range);
         let i = self.anon_chip_shadows.iter().position(|s| !inside(s))?;
         let shadows = self.anon_chip_shadows.split_off(i);
         let mut storage = Vec::new();
@@ -2340,9 +2373,7 @@ impl<'a> LowerCtx<'a> {
     /// typecheck's body key (enclosing combo, then the decl's own). `None` for a
     /// non-generic `d` declared outside any generic body.
     pub(super) fn body_frame(&self, d: &ChipDecl, own: Option<&MonoFrame>) -> Option<MonoFrame> {
-        let outer = self
-            .decl_mono_frame
-            .get(&(d.range.file.clone(), d.range.start.offset));
+        let outer = self.decl_mono_frame.get(&d.range.start_key());
         match (outer, own) {
             (None, None) => None,
             (Some(f), None) | (None, Some(f)) => Some(f.clone()),
@@ -2350,10 +2381,10 @@ impl<'a> LowerCtx<'a> {
                 let mut frame = outer.clone();
                 frame.params.retain(|p| !own.params.contains(p));
                 frame.params.extend(own.params.iter().cloned());
-                for (name, ty) in own.subst.iter() {
+                for (name, ty) in &own.subst {
                     frame.subst.insert(name.clone(), ty.clone());
                 }
-                for (name, d) in own.scopes.iter() {
+                for (name, d) in &own.scopes {
                     frame.scopes.insert(name.clone(), d.clone());
                 }
                 Some(frame)
@@ -2370,7 +2401,7 @@ impl<'a> LowerCtx<'a> {
     ) -> Arc<[Type]> {
         let key = self
             .decl_resolution_subst
-            .get(&(d.range.file.clone(), d.range.start.offset))
+            .get(&d.range.start_key())
             .cloned()
             .unwrap_or_default();
         match frame {
@@ -2393,8 +2424,8 @@ impl<'a> LowerCtx<'a> {
     /// not known here (a type parameter with no instantiation).
     pub(super) fn declared_type(
         &self,
-        decl: &crate::ast::ChipDecl,
-        te: &crate::ast::TypeExpr,
+        decl: &ChipDecl,
+        te: &TypeExpr,
         frame: Option<&MonoFrame>,
     ) -> Option<Type> {
         let types = self.consts.types().in_file(&decl.range.file);
@@ -2433,7 +2464,7 @@ impl<'a> LowerCtx<'a> {
     /// (see [`crate::const_eval::DeclaredTypes::alias_target`]): `None` when
     /// it names no such alias there, or names a type parameter of the generic
     /// body being lowered, which hides an alias of its name.
-    pub(super) fn alias_at(&self, name: &str, at: &SourceRange) -> Option<&crate::ast::TypeExpr> {
+    pub(super) fn alias_at(&self, name: &str, at: &SourceRange) -> Option<&TypeExpr> {
         if self.type_param_at(name, at).is_some() {
             return None;
         }
@@ -2445,9 +2476,9 @@ impl<'a> LowerCtx<'a> {
     pub(super) fn generic_alias_at(
         &self,
         name: &str,
-        args: &[crate::ast::TypeExpr],
+        args: &[TypeExpr],
         at: &SourceRange,
-    ) -> Option<crate::ast::TypeExpr> {
+    ) -> Option<TypeExpr> {
         match self.declared_types_at(at).alias(name)? {
             (params, body) if !params.is_empty() && params.len() == args.len() => {
                 let subst = params.iter().cloned().zip(args.iter().cloned()).collect();
@@ -2460,37 +2491,22 @@ impl<'a> LowerCtx<'a> {
     /// `te`, declared by `decl` (one of its parameters, or a field of one;
     /// `None` for a type written in the body being lowered), with the aliases
     /// at its head written out as the type they declare, each read where it is
-    /// declared: `type RI = *int` gives `*int`, `*M` with `type M = Map<int,
-    /// int>` gives `*Map<int, int>`, a generic alias its instantiated body. A
-    /// type parameter is left as written. Every test of whether a parameter,
-    /// field or pin takes its value by reference reads this rather than the
-    /// spelling, so an alias of a ref, an array or a map binds exactly as the
-    /// type it names does. The shape is kept (a `*{ .. }` stays a ref of a
-    /// record, which the binding rules tell apart from a record of refs).
-    pub(super) fn declared_shape(
-        &self,
-        decl: Option<&ChipDecl>,
-        te: &crate::ast::TypeExpr,
-    ) -> crate::ast::TypeExpr {
+    /// declared (`type RI = *int` gives `*int`; a generic alias gives its
+    /// instantiated body); type parameters stay as written. By-reference tests
+    /// read this, not the spelling, so an alias binds as the type it names. A
+    /// `*{ .. }` stays a ref of a record, distinct from a record of refs.
+    pub(super) fn declared_shape(&self, decl: Option<&ChipDecl>, te: &TypeExpr) -> TypeExpr {
         self.declared_shape_at(decl, te, 0)
     }
 
-    fn declared_shape_at(
-        &self,
-        decl: Option<&ChipDecl>,
-        te: &crate::ast::TypeExpr,
-        depth: u32,
-    ) -> crate::ast::TypeExpr {
+    fn declared_shape_at(&self, decl: Option<&ChipDecl>, te: &TypeExpr, depth: u32) -> TypeExpr {
         use crate::ast::TypeExpr as T;
         if depth > MAX_SHAPE_DEPTH {
             return te.clone();
         }
         let declares = |name: &str, at: &SourceRange| {
             decl.is_some_and(|d| {
-                d.type_params.iter().any(|p| p.name == name)
-                    && d.range.file == at.file
-                    && d.range.start.offset <= at.start.offset
-                    && at.end.offset <= d.range.end.offset
+                d.type_params.iter().any(|p| p.name == name) && d.range.contains(at)
             })
         };
         match te {
@@ -2514,11 +2530,7 @@ impl<'a> LowerCtx<'a> {
     /// [`Self::declared_shape`]) takes its value: by reference to storage
     /// (`Var` for a `*T`, `Array` for an array, `Map` for a map or a `*Map`),
     /// `None` by value.
-    pub(super) fn ref_storage(
-        &self,
-        decl: Option<&ChipDecl>,
-        te: &crate::ast::TypeExpr,
-    ) -> Option<VarStorage> {
+    pub(super) fn ref_storage(&self, decl: Option<&ChipDecl>, te: &TypeExpr) -> Option<VarStorage> {
         container_storage(&self.declared_shape(decl, te))
     }
 
@@ -2526,10 +2538,10 @@ impl<'a> LowerCtx<'a> {
     /// [`Self::declared_shape`]) is a ref or an array: a pin that carries a
     /// ref to the caller's storage rather than a value. A map takes the value
     /// path.
-    pub(super) fn ref_or_array(&self, decl: Option<&ChipDecl>, te: &crate::ast::TypeExpr) -> bool {
+    pub(super) fn ref_or_array(&self, decl: Option<&ChipDecl>, te: &TypeExpr) -> bool {
         matches!(
             self.declared_shape(decl, te),
-            crate::ast::TypeExpr::Ref { .. } | crate::ast::TypeExpr::Array { .. }
+            TypeExpr::Ref { .. } | TypeExpr::Array { .. }
         )
     }
 
@@ -2538,41 +2550,36 @@ impl<'a> LowerCtx<'a> {
     /// this instantiation's type), else read against the declarations of the
     /// file that writes it, and an alias stands for its body as its own file
     /// reads it.
-    pub(super) fn resolve_local_type(&self, te: &crate::ast::TypeExpr) -> Type {
+    pub(super) fn resolve_local_type(&self, te: &TypeExpr) -> Type {
         self.declared_types_at(te.range())
             .resolve_scoped(te, &|name, at| self.type_param_at(name, at))
     }
 
     /// Expand a record-shaped type annotation into its fields, following a
-    /// non-generic alias (`type P = { … }`) or instantiating a generic alias
-    /// (`type Pair<T> = { … }` used as `Pair<int>`, substituting the type
-    /// args). Returns `None` for a non-record type. The single source of
-    /// record-port dissolution for chip inputs, mod params, and top-level
-    /// ports — every such site routes through here so the `Generic` arm can't
-    /// be forgotten at one of them.
-    pub(super) fn record_fields_of(
-        &self,
-        te: &crate::ast::TypeExpr,
-    ) -> Option<Vec<crate::ast::RecordTypeField>> {
+    /// non-generic alias or instantiating a generic one (`Pair<int>`); `None`
+    /// for a non-record type. Every record-port dissolution (chip inputs, mod
+    /// params, top-level ports) goes through here.
+    pub(super) fn record_fields_of(&self, te: &TypeExpr) -> Option<Vec<RecordTypeField>> {
         match te {
-            crate::ast::TypeExpr::Record { fields, .. } => Some(fields.clone()),
+            TypeExpr::Record { fields, .. } => Some(fields.clone()),
             // A type parameter of the generic body being lowered, given a
             // record by this instantiation, or an alias of a record.
-            crate::ast::TypeExpr::Name { name, range } => match self.type_param_expr(name, range) {
-                Some(crate::ast::TypeExpr::Record { fields, .. }) => Some(fields),
+            TypeExpr::Name { name, range } => match self.type_param_expr(name, range) {
+                Some(TypeExpr::Record { fields, .. }) => Some(fields),
                 Some(_) => None,
                 None => match self.alias_at(name, range)? {
-                    crate::ast::TypeExpr::Record { fields, .. } => Some(fields.clone()),
+                    TypeExpr::Record { fields, .. } => Some(fields.clone()),
                     // An alias of a generic alias, or of a ref (`type PR = *R`),
                     // as the type it names.
-                    body @ (crate::ast::TypeExpr::Generic { .. }
-                    | crate::ast::TypeExpr::Ref { .. }) => self.record_fields_of(body),
+                    body @ (TypeExpr::Generic { .. } | TypeExpr::Ref { .. }) => {
+                        self.record_fields_of(body)
+                    }
                     _ => None,
                 },
             },
-            crate::ast::TypeExpr::Generic { name, args, range } => {
+            TypeExpr::Generic { name, args, range } => {
                 match self.generic_alias_at(name, args, range)? {
-                    crate::ast::TypeExpr::Record { fields, .. } => Some(fields),
+                    TypeExpr::Record { fields, .. } => Some(fields),
                     _ => None,
                 }
             }
@@ -2581,7 +2588,7 @@ impl<'a> LowerCtx<'a> {
             // per-field shape here routes such a param through the record path
             // in `resolve_caller_captures` / `explode_record_param_pins` /
             // `wire_chip_args_and_outputs`, which carry ref fields writably.
-            crate::ast::TypeExpr::Ref { inner, range } => Some(distribute_ref_fields(
+            TypeExpr::Ref { inner, range } => Some(distribute_ref_fields(
                 self,
                 self.record_fields_of(inner)?,
                 range,
@@ -2593,7 +2600,7 @@ impl<'a> LowerCtx<'a> {
     /// What the type parameter `name` of the generic body being lowered stands
     /// for in this instantiation, written as an annotation would be. `None`
     /// outside a generic body or for a name that is not one of its parameters.
-    fn type_param_expr(&self, name: &str, range: &SourceRange) -> Option<crate::ast::TypeExpr> {
+    fn type_param_expr(&self, name: &str, range: &SourceRange) -> Option<TypeExpr> {
         let t = self.type_param_at(name, range)?;
         if matches!(t, Type::Param(_)) {
             return None;
@@ -2601,27 +2608,21 @@ impl<'a> LowerCtx<'a> {
         Some(type_expr_of(&t, range))
     }
 
-    /// Like [`record_fields_of`], but also expands a TUPLE type `(A, B, …)` into
-    /// index-named fields ("0", "1", …). A tuple chip/mod param thus explodes
-    /// into per-element pins exactly like a record, and its `ParamPattern::Tuple`
-    /// destructure (keyed by index) binds the element names — without this a
-    /// tuple param fell to a single by-value pin and its names stayed unbound.
-    pub(super) fn record_or_tuple_fields(
-        &self,
-        te: &crate::ast::TypeExpr,
-    ) -> Option<Vec<crate::ast::RecordTypeField>> {
+    /// Like [`record_fields_of`], but also expands a tuple type `(A, B, ...)` into
+    /// index-named fields ("0", "1", and so on), so a tuple param explodes into
+    /// per-element pins and its `ParamPattern::Tuple` binds the element names.
+    pub(super) fn record_or_tuple_fields(&self, te: &TypeExpr) -> Option<Vec<RecordTypeField>> {
         // `*(A, B)` distributes just as `*{ a: A, b: B }` does. Handled here
         // rather than in `record_fields_of` because only this function expands
         // a tuple into index-named fields.
-        if let crate::ast::TypeExpr::Ref { inner, range } = te {
+        if let TypeExpr::Ref { inner, range } = te {
             if let Some(fields) = self.record_or_tuple_fields(inner) {
                 return Some(distribute_ref_fields(self, fields, range));
             }
-            // `*Enum` distributes over the enum's slot columns (`__disc` plus
-            // every variant's payload), the same layout `build_enum_fields`
-            // gives an enum var. Only under a ref: a by-value enum param keeps
-            // its existing single-pin path.
-            let cols = crate::lower::predeclare::enum_container_columns(self, inner, range)?;
+            // `*Enum` distributes over the enum's slot columns, the layout
+            // `build_enum_fields` gives an enum var. A by-value enum param keeps
+            // the single-pin path.
+            let cols = enum_container_columns(self, inner, range)?;
             return Some(distribute_ref_fields(self, cols, range));
         }
         if let Some(fields) = self.record_fields_of(te) {
@@ -2631,13 +2632,13 @@ impl<'a> LowerCtx<'a> {
         // resolves a record alias.
         let resolved;
         let te = match te {
-            crate::ast::TypeExpr::Name { name, range } => match self.type_param_expr(name, range) {
+            TypeExpr::Name { name, range } => match self.type_param_expr(name, range) {
                 Some(t) => {
                     resolved = t;
                     &resolved
                 }
                 None => match self.alias_at(name, range) {
-                    Some(crate::ast::TypeExpr::Generic { name, args, range }) => {
+                    Some(TypeExpr::Generic { name, args, range }) => {
                         match self.generic_alias_at(name, args, range) {
                             Some(t) => {
                                 resolved = t;
@@ -2652,12 +2653,12 @@ impl<'a> LowerCtx<'a> {
             },
             other => other,
         };
-        if let crate::ast::TypeExpr::Tuple { fields, .. } = te {
+        if let TypeExpr::Tuple { fields, .. } = te {
             return Some(
                 fields
                     .iter()
                     .enumerate()
-                    .map(|(i, t)| crate::ast::RecordTypeField {
+                    .map(|(i, t)| RecordTypeField {
                         name: i.to_string(),
                         typ: t.clone(),
                         range: t.range().clone(),
@@ -2670,8 +2671,7 @@ impl<'a> LowerCtx<'a> {
 
     pub(super) fn op_for(&self, e: &Expr) -> Option<&OpRule> {
         let r = e.range();
-        self.op_resolutions
-            .get(&(r.file.clone(), r.start.offset, r.end.offset))
+        self.op_resolutions.get(&r.key())
     }
 
     /// `opts` placed in the current anonymous chip when it names none, and
@@ -2732,18 +2732,10 @@ impl<'a> LowerCtx<'a> {
     }
 
     pub(super) fn connect(&mut self, src: PortRef, dst: PortRef) {
-        // Language-level string -> bool coercion: a string-typed source wired
-        // into a bool-typed destination routes through an inserted
-        // `CompareNotEqual(src, "")` gate, so the coercion means exactly
-        // `src != ""` — empty is false, EVERYTHING else (including "0" and
-        // "false") is true. The game's native bool ports would otherwise
-        // apply their content-aware truthiness ("0"/"false" falsy but "0.0"
-        // truthy — see the Branch/Select/AND chapters of
-        // `data/gate_semantics.json`), which is a footgun the language
-        // deliberately papers over. Native truthiness remains reachable by
-        // wiring through `any` (`Type::Opaque` erases the String port type,
-        // so this interception never sees it) or via the logical operators,
-        // whose string overloads are native gate behavior, not coercions.
+        // A string wired into a bool input goes through `CompareNotEqual(src, "")`,
+        // so only "" is false. Native bool ports treat "0"/"false" as false but
+        // "0.0" as true (`data/gate_semantics.json`); `any` wiring and the
+        // logical operators keep that native truthiness.
         if let Some(coerced) = self.wrap_string_to_bool(src, dst) {
             self.builder.connect(coerced, dst);
             return;
@@ -2809,21 +2801,13 @@ impl<'a> LowerCtx<'a> {
         true
     }
 
-    /// If `src` is a string-typed output and `dst` a bool-typed input,
-    /// build the `!= ""` coercion gate (`CompareNotEqual` with `InputB`
-    /// baked to the empty string — compare inputs are wire-variant fields,
-    /// so the constant inlines as data) and return its `bOutput` for the
-    /// caller to wire into `dst`. `None` when no coercion applies (either
-    /// side untyped/not found, or any other type pair). NOTE: the inserted
-    /// gate does NOT constant-fold — `CompareNotEqual` has no certified
-    /// (str, str) signature in `data/gate_semantics.json`, so the fold pass
-    /// refuses it (correct-but-unoptimized until that signature is probed).
+    /// When `src` is a string output and `dst` a bool input, the `bOutput` of a
+    /// new `CompareNotEqual` with `InputB` baked to `""`, for the caller to wire
+    /// into `dst`; `None` for any other pair. The gate never folds:
+    /// `data/gate_semantics.json` certifies no (str, str) `CompareNotEqual`.
     fn wrap_string_to_bool(&mut self, src: PortRef, dst: PortRef) -> Option<PortRef> {
-        // A boundary node of an already-instantiated chip lives in a nested
-        // `module.chips` entry, not the top-level node map (e.g. wiring a
-        // string call argument into a chip's bool-typed `MicrochipInput`
-        // pin), so the lookup recurses. NodeIds come from one allocator and
-        // are globally unique.
+        // Either end may be a boundary pin inside an instantiated chip, so the
+        // lookup searches nested modules.
         let src_range = {
             let n = self.find_node(src.node_id)?;
             if n.ports.find_output(src.port.sym())?.ty != Type::String {
@@ -2888,7 +2872,7 @@ impl<'a> LowerCtx<'a> {
                 return None;
             }
         }
-        Some(crate::lower::ops::build_format_text(
+        Some(build_format_text(
             self,
             "{0}".to_string(),
             vec![src],
@@ -2896,12 +2880,9 @@ impl<'a> LowerCtx<'a> {
         ))
     }
 
-    /// Run `f` with `nofold_depth` incremented for its duration when `active`
-    /// is true (the enclosing declaration was `@nofold`-annotated). Every
-    /// gate/event `f` creates — directly or through nested lowering calls —
-    /// gets the `_nofold` pseudo-property stamped by `add_gate`/`add_event`.
-    /// Safe against early `return`s inside `f`: a `return` inside a closure
-    /// only unwinds the closure, so the decrement below always runs.
+    /// Run `f` with `nofold_depth` raised when `active` (a `@nofold`
+    /// declaration), so every gate and event it creates, at any depth, is
+    /// stamped `_nofold`.
     pub(super) fn with_nofold<R>(&mut self, active: bool, f: impl FnOnce(&mut Self) -> R) -> R {
         if active {
             self.nofold_depth += 1;
@@ -2909,6 +2890,31 @@ impl<'a> LowerCtx<'a> {
         let r = f(self);
         if active {
             self.nofold_depth -= 1;
+        }
+        r
+    }
+
+    /// Run `f` in a pure context: `current_exec` cleared for its duration and
+    /// restored after, so a var read inside resolves to the var's live output.
+    pub(super) fn pure<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = self.current_exec.take();
+        let r = f(self);
+        self.current_exec = saved;
+        r
+    }
+
+    /// Run `f` with `frame`, when there is one, pushed on `mono_stack` and
+    /// popped after.
+    pub(super) fn with_mono_frame<R>(
+        &mut self,
+        frame: Option<MonoFrame>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let pushed = frame.is_some();
+        self.mono_stack.extend(frame);
+        let r = f(self);
+        if pushed {
+            self.mono_stack.pop();
         }
         r
     }
@@ -2957,11 +2963,9 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
-    /// `lookup_var`, but only when the var is bound in the CURRENT (innermost)
-    /// scope frame. Lets a statement-position redeclaration tell "a body
-    /// pre-pass already declared this var here" (reuse + reset) from "a
-    /// same-named var exists only in an ANCESTOR frame" (a distinct variable
-    /// being shadowed, which needs its own fresh storage gate).
+    /// `lookup_var`, only in the innermost frame. A redeclaration reuses a var
+    /// the body pre-pass declared here, but a same-named var in an ancestor
+    /// frame is being shadowed and needs its own gate.
     pub(super) fn lookup_var_current_frame(&self, name: &str) -> Option<&VarRecord> {
         match self.scope.get_current(name) {
             Some(Binding::Var(r)) => Some(r),
@@ -2983,11 +2987,10 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
-    /// `lookup_buffer`, restricted to the CURRENT (innermost) scope frame — the
-    /// buffer counterpart of [`lookup_var_current_frame`]. A statement-position
-    /// `buffer b = …` shadowing an ancestor buffer must create its OWN gate, or
-    /// its initializer is wired into the outer buffer's `Input` (two drivers =
-    /// a load-breaking fan-in) instead of a fresh buffer of its own.
+    /// `lookup_buffer`, only in the innermost frame (see
+    /// [`lookup_var_current_frame`]). A `buffer b = ...` shadowing an outer one
+    /// needs its own gate, or its initializer fans in to the outer buffer's
+    /// `Input`, which breaks the save at load.
     pub(super) fn lookup_buffer_current_frame(&self, name: &str) -> Option<&NodeRecord> {
         match self.scope.get_current(name) {
             Some(Binding::Buffer(r)) => Some(r),
@@ -3063,7 +3066,7 @@ impl<'a> LowerCtx<'a> {
 
     /// The user `mod`/`chip` a bare call to `name` written in `call_file`
     /// calls: the one in scope, when the calling file can name it (see
-    /// [`crate::ast::ImportScope::user_mod_answers`], which typecheck decides
+    /// [`ImportScope::user_mod_answers`], which typecheck decides
     /// by too).
     pub(super) fn call_target_chip(
         &self,
@@ -3076,7 +3079,7 @@ impl<'a> LowerCtx<'a> {
 
     /// The `self` mod a method call `x.name()` written in `call_file` calls:
     /// one in scope whose first parameter is `self`, when the calling file
-    /// can name it (see [`crate::ast::ImportScope::user_mod_answers`], which
+    /// can name it (see [`ImportScope::user_mod_answers`], which
     /// typecheck decides by too).
     pub(super) fn self_mod_chip(
         &self,
@@ -3107,49 +3110,45 @@ fn var_nodes(binding: &Binding, out: &mut Vec<NodeId>) {
     }
 }
 
-pub(super) fn reset_var_get_caches(ctx: &mut LowerCtx) {
+pub(super) fn reset_var_get_caches(ctx: &mut LowerCtx<'_>) {
     // `take`, not `clear`: clearing costs the table's capacity on every reset.
     std::mem::take(&mut ctx.var_gets);
 }
 
-pub(super) fn invalidate_var_cache(ctx: &mut LowerCtx, target_node_id: &NodeId) {
-    ctx.var_gets.remove(target_node_id);
+pub(super) fn invalidate_var_cache(ctx: &mut LowerCtx<'_>, target_node_id: NodeId) {
+    ctx.var_gets.remove(&target_node_id);
 }
 
-/// The cached reads before a set of branches. `lower_if` takes one so that, at
-/// the join, only the vars a branch actually TOUCHED are invalidated — an
-/// unwritten var's pre-branch read survives, instead of the whole cache being
-/// blanket-cleared.
+/// The cached reads before a set of branches. `lower_if` takes one so the join
+/// invalidates only the vars a branch touched; an unwritten var's pre-branch
+/// read survives.
 pub(super) type VarCacheSnapshot = HashMap<NodeId, NodeId>;
 
-pub(super) fn snapshot_var_caches(ctx: &LowerCtx) -> VarCacheSnapshot {
+pub(super) fn snapshot_var_caches(ctx: &LowerCtx<'_>) -> VarCacheSnapshot {
     ctx.var_gets.clone()
 }
 
-/// The vars whose cached read CHANGED versus `snap` — every var a branch
-/// invalidated, no matter which code path cleared it (a direct write, a
-/// nested `if`'s join, an inline mod's blanket reset, or a chip instance's
-/// ref-arg reset). Comparing actual cache state — rather than trusting each
-/// write site to journal — is what makes the branch merge safe: a stale
-/// pre-branch read can only survive when the cache is provably unchanged. A
-/// var uncached in `snap` is left out: after a restore it is uncached anyway.
-pub(super) fn cache_touched_since(ctx: &LowerCtx, snap: &VarCacheSnapshot) -> HashSet<NodeId> {
+/// The vars whose cached read differs from `snap`: every var a branch
+/// invalidated, whatever path cleared it. Comparing cache state keeps a stale
+/// read from surviving the merge. A var uncached in `snap` is left out, since a
+/// restore leaves it uncached anyway.
+pub(super) fn cache_touched_since(ctx: &LowerCtx<'_>, snap: &VarCacheSnapshot) -> HashSet<NodeId> {
     snap.iter()
         .filter(|(var, get)| ctx.var_gets.get(var) != Some(get))
         .map(|(var, _)| *var)
         .collect()
 }
 
-/// Put the cached reads back to `snap` — used to discard a branch's scratch
-/// cache state (its own fresh reads live on that branch's exec chain and can't
-/// be reused elsewhere) before lowering the next branch and after the join.
-pub(super) fn restore_var_caches(ctx: &mut LowerCtx, snap: &VarCacheSnapshot) {
+/// Put the cached reads back to `snap`, before the next branch and after the
+/// join: a branch's own reads sit on its exec chain and cannot be reused
+/// elsewhere.
+pub(super) fn restore_var_caches(ctx: &mut LowerCtx<'_>, snap: &VarCacheSnapshot) {
     ctx.var_gets.clone_from(snap);
 }
 
 /// `t` written as the annotation that resolves to it. A record is written as
 /// its fields (a type has no alias name to give back), and an enum by name.
-pub(super) fn type_expr_of(t: &Type, range: &SourceRange) -> crate::ast::TypeExpr {
+pub(super) fn type_expr_of(t: &Type, range: &SourceRange) -> TypeExpr {
     use crate::ast::TypeExpr;
     let name = |n: &str| TypeExpr::Name {
         name: n.to_string(),
@@ -3201,7 +3200,7 @@ pub(super) fn type_expr_of(t: &Type, range: &SourceRange) -> crate::ast::TypeExp
         Type::Record(fields) | Type::Outputs(fields) => TypeExpr::Record {
             fields: fields
                 .iter()
-                .map(|(n, t)| crate::ast::RecordTypeField {
+                .map(|(n, t)| RecordTypeField {
                     name: n.clone(),
                     typ: type_expr_of(t, range),
                     range: range.clone(),

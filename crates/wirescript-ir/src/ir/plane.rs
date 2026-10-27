@@ -1,10 +1,9 @@
 //! The one place a callable loop microchip's brick, ports and slots are paired.
 //!
-//! The feature is still moving on the game side, so a rename or a port-order
-//! change must be a single edit here rather than a hunt through lowering and
-//! emit. The component classes themselves live in `gate_class` beside every
-//! other class, and the specs below are what give each one its brick asset,
-//! its port names and its slot order.
+//! The game side of this feature may change, so a rename or a port-order change must be a
+//! single edit here rather than a hunt through lowering and emit. The component classes
+//! themselves live in `gate_class` beside every other class; the specs below give each one
+//! its brick asset, port names and slot order.
 
 use crate::ir::Type;
 use crate::ir::gate_class as gc;
@@ -142,10 +141,10 @@ pub fn result_fields() -> [(&'static str, &'static str, Type); 3] {
 /// for a map. A missing entry reads back as `Type::Any` rather than panicking,
 /// so a caller that already reported a bad source (WS075) can still ask.
 ///
-/// The one table. Typecheck declares each binding's type from it and lowering
-/// declares the entry gate's output ports from it. A second copy could
-/// disagree about, say, whether a map's `index` is an `int`, and nothing would
-/// catch it: the wire would still be drawn, just typed wrong.
+/// The one table: typecheck declares each binding's type from it and lowering declares the
+/// entry gate's output ports from it. A second copy could disagree (say, whether a map's
+/// `index` is an `int`) and nothing would catch it, since the wire would still be drawn,
+/// just typed wrong.
 pub fn slot_types(kind: LoopKind, elem: &[Type]) -> Vec<Type> {
     let at = |i: usize| elem.get(i).cloned().unwrap_or(Type::Any);
     match kind {
@@ -215,17 +214,11 @@ pub fn for_slots<B: ForBinding>(kind: LoopKind, bindings: &[B]) -> Vec<ForSlot> 
 mod tests {
     use super::*;
 
-    /// Cross-checks every string in `plane_spec` against the bundled gate
-    /// inventory (`catalog::default_catalog()`, the same JSON embedded via
-    /// `include_str!` from `data/logic_gate_inventory.simple.json`),
-    /// genuinely comparing name sets rather than only asserting
-    /// non-emptiness. These strings are the entire deliverable of this
-    /// module: a wrong one neither fails to compile nor fails at runtime in
-    /// game, it produces a save that loads without error and silently does
-    /// nothing. Sets, not sequences: the generator
-    /// (`gen_inventory.mjs`) alphabetizes each gate's `inputs`/`outputs`
-    /// arrays, so the dump cannot attest to slot order, only to which names
-    /// exist.
+    /// Cross-checks every string in `plane_spec` against the bundled gate inventory
+    /// (`catalog::default_catalog()`), comparing name sets. A wrong string neither fails to
+    /// compile nor fails at runtime: it produces a save that loads without error and does
+    /// nothing. Sets, not sequences: the generator alphabetizes each gate's `inputs`/`outputs`,
+    /// so the dump cannot attest to slot order.
     #[test]
     fn plane_specs_match_the_live_dump() {
         use crate::catalog::{Port, default_catalog};
@@ -233,7 +226,7 @@ mod tests {
 
         let catalog = default_catalog();
 
-        fn names<'a>(ports: &'a [Port]) -> HashSet<&'a str> {
+        fn names(ports: &[Port]) -> HashSet<&str> {
             ports.iter().map(|p| p.name.as_str()).collect()
         }
 

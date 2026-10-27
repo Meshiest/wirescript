@@ -3,7 +3,7 @@
 //! `PortOrder` and `DefaultValue`. Built from IR by hand.
 
 use brdb::schema::BrdbValue;
-use wirescript::intern::intern;
+use wirescript::intern::{intern, sym};
 use wirescript::ir::build::{AddNodeOpts, ModuleBuilder, port_ref};
 use wirescript::ir::gate_class as gc;
 use wirescript::ir::{Literal, Wire};
@@ -14,7 +14,7 @@ fn brz_of(b: &ModuleBuilder) -> Vec<u8> {
     let lr = wirescript::layout(&b.module);
     let world = wirescript::build_world(
         &b.module,
-        &Default::default(),
+        &wirescript::ir::ProgramSettings::default(),
         &lr,
         &wirescript::EmitOptions::default(),
     )
@@ -26,12 +26,12 @@ fn brz_of(b: &ModuleBuilder) -> Vec<u8> {
 fn a_function_call_writes_eight_input_sources() {
     let mut b = ModuleBuilder::new("call");
     let src = b.add_gate(AddNodeOpts {
-        gate_class: "BrickComponentType_Expr_MathAdd",
+        gate_class: gc::MATH_ADD,
         ..Default::default()
     });
     let mut props = wirescript::collections::HashMap::default();
     props.insert(
-        intern("InputSources"),
+        *sym::INPUT_SOURCES,
         Literal::Array(vec![Literal::Int(1), Literal::Int(0), Literal::Int(1)]),
     );
     props.insert(intern("Input0"), Literal::Int(5));
@@ -68,9 +68,9 @@ fn a_function_call_writes_eight_input_sources() {
 fn a_result_pin_writes_its_order_and_default() {
     let mut b = ModuleBuilder::new("result");
     let mut props = wirescript::collections::HashMap::default();
-    props.insert(intern("PortLabel"), Literal::String("r".into()));
-    props.insert(intern("PortOrder"), Literal::Int(2));
-    props.insert(intern("DefaultValue"), Literal::Int(7));
+    props.insert(*sym::PORT_LABEL, Literal::String("r".into()));
+    props.insert(*sym::PORT_ORDER, Literal::Int(2));
+    props.insert(*sym::DEFAULT_VALUE, Literal::Int(7));
     b.add_gate(AddNodeOpts {
         gate_class: gc::FUNCTION_OUTPUT,
         properties: props,

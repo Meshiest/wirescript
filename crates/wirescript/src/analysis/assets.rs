@@ -8,8 +8,8 @@
 /// (`catalog::component_types`), not the external asset table.
 pub const COMPONENT: &str = "Component";
 
-/// All known external asset type names (`BRItemBase`, `BrickAudioDescriptor`, …),
-/// and [`COMPONENT`].
+/// Every known external asset type name (`BRItemBase`, `BrickAudioDescriptor`,
+/// and so on), and [`COMPONENT`].
 pub fn asset_types() -> Vec<&'static str> {
     brdb::assets::external::ASSET_TYPES
         .iter()
@@ -43,7 +43,7 @@ pub fn asset_names(asset_type: &str) -> Vec<&'static str> {
     brdb::assets::external::ASSET_TYPES
         .iter()
         .find(|(ty, _)| *ty == asset_type)
-        .map(|(_, names)| names.iter().map(|n| n.as_ref()).collect())
+        .map(|(_, names)| names.iter().map(std::convert::AsRef::as_ref).collect())
         .unwrap_or_default()
 }
 
@@ -57,18 +57,16 @@ pub fn asset_type_exists(asset_type: &str) -> bool {
 pub fn asset_exists(asset_type: &str, asset_name: &str) -> bool {
     match asset_name.split_once('/') {
         Some((component, property)) if asset_type == COMPONENT => {
-            asset_names(&format!("{COMPONENT}/{component}"))
-                .iter()
-                .any(|n| *n == property)
+            asset_names(&format!("{COMPONENT}/{component}")).contains(&property)
         }
-        _ => asset_names(asset_type).iter().any(|n| *n == asset_name),
+        _ => asset_names(asset_type).contains(&asset_name),
     }
 }
 
-/// The external asset type an asset-ref config param expects, keyed by the gate
-/// PORT the param wires into — so `font = <here>` / `weapon = <here>` can
-/// complete the correct `$Type/Name` refs without the author knowing the type
-/// name. Only ports whose asset type is present in the catalog are mapped.
+/// The external asset type an asset config parameter expects, keyed by the gate
+/// port it wires into, so `font = <here>` or `weapon = <here>` completes the
+/// right `$Type/Name` references. Only ports whose asset type is in the catalog
+/// are mapped.
 pub fn asset_type_for_port(port: &str) -> Option<&'static str> {
     Some(match port {
         "Font" => "BrickFontDescriptor",

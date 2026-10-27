@@ -1,22 +1,19 @@
 //! End-to-end test for `@flat`: a real `compile_to_world()` call must produce
 //! a world with no child brick grid and no microchip brick, under every
 //! layout engine, and the resulting single grid must still satisfy the two
-//! invariants the game enforces silently — no overlapping bricks (the game
-//! DROPS them at load) and no two wires into one target port (the game
-//! rejects the wire at load).
+//! invariants the game enforces at load: no overlapping bricks (the game drops
+//! them) and no two wires into one target port (the game rejects the wire).
 
-use wirescript::compile::{
-    CompileError, CompileInput, FoldMode, compile_to_world, diagnostics_only,
-};
+use wirescript::compile::{CompileError, CompileInput, compile_to_world, diagnostics_only};
 use wirescript::diagnostic::Severity;
 
 use crate::common;
 
 /// Two named chips (one nested inside the other, and one instantiated
-/// twice — so template instantiation is exercised), an anonymous chip, a
+/// twice, so template instantiation is exercised), an anonymous chip, a
 /// chip that owns its own handler, and a chip reading an outer variable.
 /// Between them these cover every route a node takes into a child module.
-const BODY: &str = r#"chip Double(a: int) -> (r: int) {
+const BODY: &str = r"chip Double(a: int) -> (r: int) {
   return a * 2
 }
 
@@ -45,7 +42,7 @@ on tick {
   total = Scale(offset) + Scale(offset + 1)
   emit sum = total
 }
-"#;
+";
 
 struct Shape {
     grids: usize,
@@ -116,8 +113,8 @@ fn flat_leaves_no_child_grid_under_any_layout() {
     }
 }
 
-/// A fan-in the game reports as nothing at all. Emit refuses overlapping
-/// bricks itself, so a world that builds has none.
+/// A fan-in is silent in game. Emit refuses overlapping bricks itself, so a
+/// world that builds has none.
 #[test]
 fn flat_emits_no_fan_in_under_any_layout() {
     for prefix in [
@@ -132,8 +129,8 @@ fn flat_emits_no_fan_in_under_any_layout() {
 }
 
 /// A microchip brick is what links a parent grid to a child one, and every
-/// such pairing is registered. With no child grids there must be exactly one
-/// — the root shell every program is emitted inside.
+/// such pairing is registered. With no child grids there must be exactly one:
+/// the root shell every program is emitted inside.
 #[test]
 fn flat_emits_one_microchip_brick_for_the_root_shell_only() {
     let source = format!("@flat\n\n{BODY}");
@@ -149,12 +146,11 @@ fn flat_emits_one_microchip_brick_for_the_root_shell_only() {
         "expected only the root shell's brick<->grid link"
     );
 
-    // The root module's own bricks live in a grid, not in `world.bricks` —
-    // that outer list holds only the shell the whole program sits inside. A
-    // chip's microchip brick is pushed onto the bricks of the module that
-    // instantiates it, so both lists have to be counted. Match the asset
-    // exactly: the chip I/O gates are named `..._MicrochipInput`/`Output`
-    // and are ordinary gate bricks, not links to anywhere.
+    // The root module's own bricks live in a grid; `world.bricks` holds only the
+    // shell the program sits inside. A chip's microchip brick goes onto the
+    // bricks of the module that instantiates it, so count both lists. Match the
+    // asset exactly: the chip I/O gates (`..._MicrochipInput`/`Output`) are
+    // ordinary gate bricks, not links.
     let microchips = std::iter::once(&r.world.bricks)
         .chain(r.world.grids.iter().map(|(_, b)| b))
         .flat_map(|bricks| bricks.iter())
@@ -166,9 +162,9 @@ fn flat_emits_one_microchip_brick_for_the_root_shell_only() {
     );
 }
 
-/// Compiling the same source twice must give the identical shape — the merge
-/// walks HashMaps, and an unsorted walk would hand out scope ids (and, before
-/// that, node order) differently run to run.
+/// Compiling the same source twice must give the identical shape: the merge
+/// walks `HashMaps`, and an unsorted walk would hand out scope ids and node
+/// order differently run to run.
 #[test]
 fn flat_is_deterministic() {
     let a = build("@flat\n\n");
@@ -181,8 +177,7 @@ fn flat_is_deterministic() {
 /// A `for` loop's plane is an execution boundary, not a visual grouping:
 /// flattening it onto the root grid would strand the plane-only
 /// `CallableEntry_*` gate there, which the game rejects at load ("Brick not
-/// allowed on this board"). `@flat` over any `for` must refuse (WS080)
-/// instead of silently building that broken save.
+/// allowed on this board"). `@flat` over any `for` must refuse (WS080).
 const FLAT_OVER_A_LOOP: &str =
     "@flat\n\nvar t: int = 0\non ReadBrickGrid() {\n  for i in 0..5 { t = t + i }\n}\n";
 
@@ -201,9 +196,8 @@ fn flat_over_a_loop_is_ws080_in_diagnostics_only() {
     );
 }
 
-/// The refusal must actually stop the bad emit, not just add a warning next
-/// to it: `compile_to_world` has to fail outright, before layout/emit ever
-/// run, so no `.brdb`/`.brz` with the stranded gate can be produced.
+/// The refusal must stop the emit: `compile_to_world` fails before layout and
+/// emit run, so no save with the stranded gate is produced.
 #[test]
 fn flat_over_a_loop_fails_compile_to_world() {
     let result = compile_to_world(
@@ -219,9 +213,8 @@ fn flat_over_a_loop_fails_compile_to_world() {
     );
 }
 
-/// Control: the identical program with `@flat` removed compiles cleanly, so
-/// WS080 is specifically about the `@flat` + `for` combination, not about the
-/// loop itself.
+/// Control: the identical program without `@flat` compiles cleanly, so WS080 is
+/// about the `@flat` + `for` combination, not the loop itself.
 #[test]
 fn the_same_loop_without_flat_compiles_clean() {
     let source = FLAT_OVER_A_LOOP.replacen("@flat\n\n", "", 1);
@@ -236,16 +229,11 @@ fn the_same_loop_without_flat_compiles_clean() {
 }
 
 /// A loop nested inside a named chip still merges into the chip's own module
-/// before the chip itself merges into the root, so refusing it once, on the
-/// root, is what proves it isn't refused again on the way up.
+/// before the chip itself merges into the root, so it is refused once, on the
+/// root, and not again on the way up.
 fn ws080_count(source: &str) -> usize {
     diagnostics_only(
-        CompileInput {
-            source,
-            file: "flat_emit.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        CompileInput::new(source, "flat_emit.ws"),
         &wirescript::FsLoader,
     )
     .into_iter()

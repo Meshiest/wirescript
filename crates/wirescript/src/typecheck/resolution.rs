@@ -5,15 +5,16 @@
 //! arguments of every enclosing generic mod/chip body, outermost first
 //! (empty outside generics), so each generic instantiation has its own entry.
 
-use crate::collections::HashMap;
+use crate::collections::{HashMap, HashSet};
+use crate::diagnostic::RangeKey;
 use crate::ir::Type;
 use std::sync::Arc;
 
-pub use crate::types::container::ContainerKind;
+pub(crate) use crate::types::container::ContainerKind;
 
 /// `(file, start, end, substitution)`. The substitution is shared, so a key
 /// costs no copy of it.
-pub type ResolutionKey = (Arc<str>, usize, usize, Arc<[Type]>);
+pub(crate) type ResolutionKey = (Arc<str>, usize, usize, Arc<[Type]>);
 
 /// What a `recv.name(args)` call resolved to.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,7 +29,7 @@ pub enum MethodTarget {
 
 /// Container methods first, then receiver builtins, in typecheck's order.
 /// A `self`-mod needs a scope lookup, so its arm records it directly.
-pub fn classify_method(name: &str, receiver: &Type) -> Option<MethodTarget> {
+pub(crate) fn classify_method(name: &str, receiver: &Type) -> Option<MethodTarget> {
     if let Some(kind) = ContainerKind::of(receiver) {
         let is_method = match kind {
             ContainerKind::Array { .. } => crate::catalog::arrays::is_array_method(name),
@@ -54,19 +55,19 @@ pub struct Resolutions {
     /// The range-keyed `type_of_expr` holds only the last one checked.
     pub generic_expr_types: HashMap<ResolutionKey, Type>,
     /// Every expression range inside a generic body.
-    pub generic_ranges: crate::collections::HashSet<(Arc<str>, usize, usize)>,
+    pub generic_ranges: HashSet<RangeKey>,
     /// The type arguments of each call of a generic mod or chip, in its
     /// declared order, keyed by the call and the caller's substitution.
     /// Lowering instantiates the callee with exactly these.
     pub call_type_args: HashMap<ResolutionKey, Vec<Type>>,
     /// Every mod or chip body typecheck checked: the declaration's range and
     /// the body's resolution key. Lowering builds no other.
-    pub checked_bodies: crate::collections::HashSet<ResolutionKey>,
+    pub checked_bodies: HashSet<ResolutionKey>,
     /// The type a module port no site annotates is stored as, the join of
     /// its writes, keyed by each write's value. Only a port some write of
     /// which has another type has entries.
-    pub untyped_port_types: HashMap<(Arc<str>, usize, usize), Type>,
+    pub untyped_port_types: HashMap<RangeKey, Type>,
     /// Every argument that is a record given to a parameter of one value
     /// (WS003), by range: the parameter is bound to nothing of it.
-    pub rejected_record_args: crate::collections::HashSet<(Arc<str>, usize, usize)>,
+    pub rejected_record_args: HashSet<RangeKey>,
 }

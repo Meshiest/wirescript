@@ -9,7 +9,7 @@ use crate::ir::Type;
 /// `Output0..7`).
 const MAX_SLOTS: usize = 8;
 
-pub(super) fn check_signature(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
+pub(super) fn check_signature(ctx: &mut TypeCheckCtx<'_>, c: &ChipDecl) {
     check_defaults(ctx, c);
     if c.is_fn {
         check_fn(ctx, c);
@@ -18,7 +18,7 @@ pub(super) fn check_signature(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
 
 /// A default value is a constant of its parameter's type, on a trailing
 /// parameter of a `mod` or `fn`.
-fn check_defaults(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
+fn check_defaults(ctx: &mut TypeCheckCtx<'_>, c: &ChipDecl) {
     let mut seen_default = false;
     for p in &c.inputs {
         let Some(d) = &p.default else {
@@ -51,10 +51,7 @@ fn check_defaults(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
         let want = super::resolve::resolve_type_expr(ctx, &p.typ);
         let got = super::infer::infer(ctx, d);
         super::infer::coerce_value_or_emit(ctx, d, &got, &want);
-        let lookup = |n: &str| ctx.resolve_mod(n);
-        let cx = ctx.const_ctx(Some(&lookup));
-        let mut budget = crate::const_eval::Budget::default();
-        if crate::const_eval::eval_expr(d, &cx, &mut budget).is_err() {
+        if ctx.const_eval(d, crate::const_scope::Admit::All).is_err() {
             ctx.emit(
                 "WS046",
                 format!(
@@ -70,9 +67,9 @@ fn check_defaults(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
 /// A `fn` is one plane: no type parameters or per-call constants, values in
 /// and out through at most eight slots each, a record parameter one slot per
 /// field.
-fn check_fn(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
+fn check_fn(ctx: &mut TypeCheckCtx<'_>, c: &ChipDecl) {
     let unsupported =
-        |ctx: &mut TypeCheckCtx, what: &str, range: crate::diagnostic::SourceRange| {
+        |ctx: &mut TypeCheckCtx<'_>, what: &str, range: crate::diagnostic::SourceRange| {
             ctx.emit(
                 "WS114",
                 format!(

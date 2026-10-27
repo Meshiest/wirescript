@@ -1,21 +1,31 @@
+use std::fmt::Write as _;
+use std::sync::Arc;
+
 use super::doc_links::{Doc, doc_url, with_doc_link};
+use super::format::TextKind;
 use super::gate_docs::gate_docs;
 use super::resource_estimate::{ResourceEstimate, lookup_estimate};
 use super::symbols::SymbolDef;
-use super::text::{after_char, char_col_to_byte, find_enclosing_call, word_at};
-use super::types::{CollectionKind, collection_kind, type_str};
+use super::text::{after_char, char_col_to_byte, find_enclosing_call, line_text, word_at};
+use super::types::{CollectionKind, collection_kind, type_expr_str, type_str};
+use super::visit::visit_program;
 use super::{IfContextMap, NarrowedReadMap, TypeMap, VarReadContextMap};
 use crate::ast::{
-    CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, LetBinding, Pattern, Script, Stmt, TopDecl,
-    Trigger, TypeExpr,
+    Block, CallArg, ChipDecl, Expr, Handler, HandlerConfigArg, ImportKind, ImportScope, LetBinding,
+    LetDecl, Pattern, RecordLitField, Script, Stmt, TopDecl, Trigger, TypeExpr,
 };
 use crate::catalog::calls::calls;
 use crate::catalog::events::find_event;
-use crate::collections::HashMap;
+use crate::catalog::{config_field_enum_type, enum_member_names};
+use crate::collections::{HashMap, HashSet};
+use crate::const_eval::{ConstEnv, DeclaredTypes};
 use crate::diagnostic::SourceRange;
 use crate::ir::{Literal, Type};
-use crate::lower::ConstEnv;
+use crate::parser::DocComments;
+use crate::typecheck::enums::{DISCRIMINANT_FIELD, EnumRegistry, build_registry};
+use crate::types::mono::substitute;
 
+#[derive(Clone, Copy)]
 enum EstimateKind {
     Chip,
     Mod,
@@ -62,12 +72,9 @@ fn estimate_kind(sym_kind: &str) -> EstimateKind {
 }
 
 fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
-    // A `const mod` called from a const-required position is answered entirely
-    // by the compile-time interpreter and contributes NO gates. The signature
-    // line above already shows `const mod`, so this line only has to carry the
-    // count — the caveat (a call from a NON-const position falls back to an
-    // ordinary inlined mod and does emit gates) lives in the docs rather than
-    // in every hover, which a reader sees hundreds of times.
+    // A `const mod` called from a const-required position is evaluated at
+    // compile time and emits no gates. A call from a non-const position is an
+    // ordinary inlined mod; the docs carry that caveat, not this line.
     if est.is_const_eval {
         return "*const: 0 gates*".to_string();
     }
@@ -76,10 +83,8 @@ fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
         _ => est.total_microchips,
     };
     let mut parts = vec![format!("~{} gates", est.gates)];
-    // A `mod`/scope with no inner microchips (the common case — an inlined mod
-    // whose body is plain gates, like `assert`) shows no chip clause at all; a
-    // bare "0 chips" reads like a missing count. A `chip` always instantiates
-    // at least itself, so its count is never zero and always shown.
+    // A `mod` with no inner microchips shows no chip clause, since "0 chips"
+    // reads like a missing count. A `chip` counts itself, so it always shows one.
     if chips > 0 {
         parts.push(format!(
             "{} chip{}",
@@ -96,9 +101,8 @@ fn format_estimate(est: &ResourceEstimate, kind: EstimateKind) -> String {
 }
 
 /// Render a [`Literal`] roughly the way its wirescript literal syntax would
-/// read, for hover's `const NAME: TYPE = VALUE` display. Long
-/// containers/records are capped so hover can't dump an enormous table — a
-/// truncated tail says "there's more" rather than pretending to be exact.
+/// read, for hover's `const NAME: TYPE = VALUE` display. Output is capped at
+/// `MAX_CHARS` characters, with a trailing `...` marking the cut.
 fn literal_display(lit: &Literal) -> String {
     const MAX_CHARS: usize = 200;
     let s = literal_display_inner(lit);
@@ -113,9 +117,8 @@ fn literal_display_inner(lit: &Literal) -> String {
     match lit {
         Literal::Bool(b) => b.to_string(),
         Literal::Int(n) => n.to_string(),
-        // Same 3-decimal / trailing-zero-trimmed rendering `@label(expr)` and
-        // FormatText use elsewhere — a const float hovers the way it would
-        // actually display in-game, not with raw `f64` precision.
+        // The 3-decimal, trailing-zero-trimmed rendering `@label(expr)` and
+        // FormatText use, so a const float hovers the way it displays in game.
         Literal::Float(f) => {
             crate::lower::fold::eval::render_for_format(&crate::lower::fold::eval::Value::Float(*f))
         }
@@ -160,64 +163,40 @@ fn literal_display_inner(lit: &Literal) -> String {
     }
 }
 
-/// Best-effort compile-time VALUE of a `const` binding, for hover's
-/// `const NAME: TYPE = VALUE` display.
+/// The compile-time value of a `const` binding, for the `const NAME: TYPE =
+/// VALUE` hover. The `LetDecl` is the one in `ast` whose range starts at
+/// `target_off`.
 ///
-/// Hover works from a flat [`SymbolDef`], which doesn't carry enough AST
-/// structure to walk sibling declarations, so this RE-PARSES `source` (the
-/// same trick [`hover_custom_event`] already uses) and locates the `LetDecl`
-/// whose own range starts at `target_off` — exactly the range
-/// `collect_let_symbols` stored on the `SymbolDef`, so a fresh parse of the
-/// same source always lands on the same node.
-///
-/// A TOP-LEVEL const's value comes from [`crate::lower::build_const_env`] —
-/// the very fixpoint lowering itself runs, so hover can never disagree with
-/// what actually gets baked. A const declared inside a `mod`/`chip` BODY is
-/// evaluated by walking that body's OWN statements up to the target in
-/// source order, seeding the running environment from each earlier sibling
-/// `let`/`const` that itself evaluates (best-effort: one this walk can't
-/// resolve is simply left out, so a later sibling that doesn't depend on it
-/// can still resolve). Entering a nested NAMED `mod`/`chip` resets the
-/// environment to the module env alone (mirrors `const_eval::interp::eval_call`'s
-/// own scoping); an anonymous `chip { }` keeps the running environment (it
-/// shares its parent's scope, per the language).
-///
-/// Crucially, a `mod`/`chip`'s own PARAMETERS are never bound to anything
-/// here — unlike typecheck's per-call placeholder zero
-/// (`typecheck/decl.rs`), which exists only so a body can type-check with no
-/// call site in hand. A body const that reads a parameter therefore simply
-/// fails to evaluate (an unresolved name), and this returns `None` — never
-/// the placeholder, which would be a wrong value dressed up as a real one.
-///
-/// `symbols` is the merged program's symbol table, which says which `mod`s an
-/// import brings (see [`import_shadowable`]).
+/// A top-level const takes its value from `crate::const_eval::build_const_env_in`,
+/// so hover shows what lowering bakes. One inside a `mod` or `chip` body is
+/// evaluated over that body's statements up to it, seeded with each earlier
+/// sibling that evaluates; a nested named `mod`/`chip` starts again from the
+/// module's environment, an anonymous `chip { }` shares its parent's. A const
+/// that reads one of the body's parameters gives `None`, not a placeholder.
+/// `symbols` is the merged program's table (see [`import_shadowable`]).
 fn const_hover_value(ast: &Script, symbols: &[SymbolDef], target_off: usize) -> Option<Literal> {
     let script = ast;
-    let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&script.decls));
-    let types = std::sync::Arc::new(crate::const_eval::DeclaredTypes::for_program_in(
+    let enum_defs = Arc::new(build_registry(&script.decls));
+    let types = Arc::new(DeclaredTypes::for_program_in(
         &script.decls,
         &enum_defs,
         &script.imports,
     ));
     let mut module_env =
-        crate::lower::build_const_env_in(&script.decls, &enum_defs, &script.imports, &types);
+        crate::const_eval::build_const_env_in(&script.decls, &enum_defs, &script.imports, &types);
     let mods = const_mod_table(&script.decls);
     let lookup = |name: &str| mods.get(name).cloned();
-    let lookup_mod = ModScope {
-        lookup: &lookup,
-        imports: script.imports.clone(),
-        types,
-        import_shadowable: import_shadowable(&script.decls, symbols),
-    };
+    let shadowable = import_shadowable(&script.decls, symbols);
     // A constant computed through a builtin an import may replace has the
     // value the builtin gives here, which is not the one the program gets.
-    let mut unknown: crate::collections::HashSet<String> = Default::default();
+    let mut unknown: HashSet<String> = HashSet::default();
     loop {
         let before = unknown.len();
         for d in &script.decls {
             if let TopDecl::Let(l) = d
                 && let LetBinding::Ident { name, .. } = &l.binding
-                && (lookup_mod.calls_shadowable(&l.value) || reads_any(&l.value, &unknown))
+                && (calls_shadowable(&l.value, shadowable.as_ref())
+                    || reads_any(&l.value, &unknown))
             {
                 unknown.insert(name.clone());
             }
@@ -229,49 +208,45 @@ fn const_hover_value(ast: &Script, symbols: &[SymbolDef], target_off: usize) -> 
     for name in &unknown {
         module_env.remove(name);
     }
-    eval_const_at(
-        &script.decls,
-        target_off,
-        &module_env,
-        &module_env,
-        &enum_defs,
-        &lookup_mod,
-    )
+    let scope = EvalScope {
+        lookup: &lookup,
+        imports: Arc::clone(&script.imports),
+        types,
+        import_shadowable: shadowable,
+        module_env: Arc::new(module_env),
+        enum_defs,
+    };
+    eval_const_at(&script.decls, target_off, &scope.module_env, &scope)
 }
 
-/// The builtin names an import may replace with a user `mod` the file's own
-/// declarations don't show (hover has the file before its imports are
-/// merged): the names a named import brings, and for a whole-module import
-/// the `mod`s, `chip`s and `fn`s the merged program (`symbols`) declares in
-/// other files. `None` stands for every name, when the file imports a whole
-/// module and nothing says what it declares.
-fn import_shadowable(
-    decls: &[TopDecl],
-    symbols: &[SymbolDef],
-) -> Option<crate::collections::HashSet<String>> {
-    let mut names = crate::collections::HashSet::default();
+/// The builtin names an import may replace with a user `mod` the file itself
+/// does not declare (hover sees the file before its imports merge): the names a
+/// named import brings, and for a whole-module import the mods and chips the
+/// merged program (`symbols`) declares elsewhere. `None` means every name, for a
+/// whole-module import whose declarations are unknown.
+fn import_shadowable(decls: &[TopDecl], symbols: &[SymbolDef]) -> Option<HashSet<String>> {
+    let mut names = HashSet::default();
     let mut whole = false;
     for d in decls {
-        match d {
-            TopDecl::Import(i) => match &i.kind {
-                crate::ast::ImportKind::All => whole = true,
-                crate::ast::ImportKind::Named(bindings) => {
+        if let TopDecl::Import(i) = d {
+            match &i.kind {
+                ImportKind::All => whole = true,
+                ImportKind::Named(bindings) => {
                     names.extend(
                         bindings
                             .iter()
                             .map(|b| b.alias.clone().unwrap_or_else(|| b.name.clone())),
                     );
                 }
-                crate::ast::ImportKind::Namespace(_) => {}
-            },
-            _ => {}
+                ImportKind::Namespace(_) => {}
+            }
         }
     }
     if whole {
         let own = decls
             .iter()
             .find(|d| !matches!(d, TopDecl::Import(_)))
-            .map(|d| d.range().file.clone())?;
+            .map(|d| Arc::clone(&d.range().file))?;
         let foreign: Vec<&SymbolDef> = symbols.iter().filter(|s| s.range.file != own).collect();
         if foreign.is_empty() {
             return None;
@@ -287,85 +262,75 @@ fn import_shadowable(
 }
 
 /// Whether `e` reads one of `names`.
-fn reads_any(e: &Expr, names: &crate::collections::HashSet<String>) -> bool {
+fn reads_any(e: &Expr, names: &HashSet<String>) -> bool {
     use crate::ast::walk::{Node, any_below};
     if names.is_empty() {
         return false;
     }
     let mut read =
-        |n: Node| matches!(n, Node::Expr(Expr::Ident { name, .. }) if names.contains(name));
+        |n: Node<'_>| matches!(n, Node::Expr(Expr::Ident { name, .. }) if names.contains(name));
     read(Node::Expr(e)) || any_below(Node::Expr(e), |_| true, &mut read)
 }
 
-/// Every top-level `const mod`, by name — mirrors the table
-/// `crate::lower::build_const_env` builds internally, so a const initializer
+/// Every top-level `const mod`, by name. Mirrors the table
+/// `crate::const_eval::build_const_env_in` builds internally, so a const initializer
 /// that CALLS a const mod resolves here the same way it resolves for real.
-fn const_mod_table(decls: &[TopDecl]) -> HashMap<String, std::sync::Arc<ChipDecl>> {
+fn const_mod_table(decls: &[TopDecl]) -> HashMap<String, Arc<ChipDecl>> {
     decls
         .iter()
         .filter_map(|d| match d {
-            TopDecl::Chip(c) if c.is_const => {
-                Some((c.name.clone(), std::sync::Arc::new(c.clone())))
-            }
+            TopDecl::Chip(c) if c.is_const => Some((c.name.clone(), Arc::new(c.clone()))),
             _ => None,
         })
         .collect()
 }
 
-type LookupMod<'a> = dyn Fn(&str) -> Option<std::sync::Arc<ChipDecl>> + 'a;
+/// Whether `e` calls a builtin an import may replace (`shadowable`, where
+/// `None` stands for every builtin).
+fn calls_shadowable(e: &Expr, shadowable: Option<&HashSet<String>>) -> bool {
+    use crate::ast::walk::{Node, any_below};
+    let mut hit = |n: Node<'_>| match n {
+        Node::Expr(Expr::Call { callee, .. }) => {
+            matches!(callee.as_ref(), Expr::Ident { name, .. }
+            if crate::catalog::calls::find_call(name).is_some()
+                && shadowable.is_none_or(|s| s.contains(name)))
+        }
+        _ => false,
+    };
+    hit(Node::Expr(e)) || any_below(Node::Expr(e), |_| true, &mut hit)
+}
 
-/// The `const mod`s a hovered constant can call, and which of them each file
-/// names (a builtin-named one replaces the builtin only where named, as it
-/// does when compiling).
-struct ModScope<'a> {
+type LookupMod<'a> = dyn Fn(&str) -> Option<Arc<ChipDecl>> + 'a;
+
+/// What a hovered constant evaluates against: the module's constants and
+/// enums, and the `const mod`s it can call and which of them each file names
+/// (a builtin-named one replaces the builtin only where named, as it does
+/// when compiling).
+struct EvalScope<'a> {
     lookup: &'a LookupMod<'a>,
-    imports: std::sync::Arc<crate::ast::ImportScope>,
-    types: std::sync::Arc<crate::const_eval::DeclaredTypes>,
+    imports: Arc<ImportScope>,
+    types: Arc<DeclaredTypes>,
     /// See [`import_shadowable`].
-    import_shadowable: Option<crate::collections::HashSet<String>>,
+    import_shadowable: Option<HashSet<String>>,
+    module_env: Arc<ConstEnv>,
+    enum_defs: Arc<EnumRegistry>,
 }
 
-impl ModScope<'_> {
-    /// Whether `e` calls a builtin an import may replace.
-    fn calls_shadowable(&self, e: &Expr) -> bool {
-        use crate::ast::walk::{Node, any_below};
-        let mut hit = |n: Node| match n {
-            Node::Expr(Expr::Call { callee, .. }) => {
-                matches!(callee.as_ref(), Expr::Ident { name, .. }
-                if crate::catalog::calls::find_call(name).is_some()
-                    && self.import_shadowable.as_ref().is_none_or(|s| s.contains(name)))
-            }
-            _ => false,
-        };
-        hit(Node::Expr(e)) || any_below(Node::Expr(e), |_| true, &mut hit)
-    }
-}
-
-/// Evaluate one expression against `env`/`module_env`, discarding any error —
-/// hover has no diagnostic to attach a reason to, so "couldn't evaluate" and
-/// "evaluated to something surprising" are both just `None`.
-fn eval_one(
-    expr: &Expr,
-    env: &ConstEnv,
-    module_env: &ConstEnv,
-    enum_defs: &crate::typecheck::enums::EnumRegistry,
-    lookup_mod: &ModScope,
-) -> Option<Literal> {
-    if lookup_mod.calls_shadowable(expr) {
+/// Evaluate one expression against `env` and the module constants, discarding
+/// any error: hover has no diagnostic to attach a reason to, so "couldn't
+/// evaluate" and "evaluated to something surprising" are both just `None`.
+fn eval_one(expr: &Expr, env: &ConstEnv, scope: &EvalScope<'_>) -> Option<Literal> {
+    if calls_shadowable(expr, scope.import_shadowable.as_ref()) {
         return None;
     }
-    // `enum_defs` here is a borrowed `&HashMap` (this function's own
-    // parameter), not an `Arc`, so this hover-only path still pays a deep
-    // clone rather than a refcount bump; hover queries are not the hot loop
-    // this refactor targets.
     let cx = crate::const_eval::ConstCtx::new(
-        crate::const_scope::ConstNames::of(std::sync::Arc::new(env.clone())),
-        std::sync::Arc::new(module_env.clone()),
-        std::sync::Arc::default(),
-        std::sync::Arc::new(enum_defs.clone()),
-        lookup_mod.imports.clone(),
-        lookup_mod.types.clone(),
-        Some(lookup_mod.lookup),
+        crate::const_scope::ConstNames::of(Arc::new(env.clone())),
+        Arc::clone(&scope.module_env),
+        Arc::default(),
+        Arc::clone(&scope.enum_defs),
+        Arc::clone(&scope.imports),
+        Arc::clone(&scope.types),
+        Some(scope.lookup),
     );
     let mut budget = crate::const_eval::Budget::default();
     crate::const_eval::eval_expr(expr, &cx, &mut budget).ok()
@@ -376,15 +341,13 @@ fn range_contains_offset(range: &SourceRange, off: usize) -> bool {
 }
 
 /// Search `decls` (top-level, or a namespace's) for the `LetDecl` whose range
-/// starts at `target_off`, evaluating const siblings along the way — see
-/// [`const_hover_value`]'s doc comment for the full scoping rules.
+/// starts at `target_off`, evaluating const siblings along the way. See
+/// [`const_hover_value`] for the scoping rules.
 fn eval_const_at(
     decls: &[TopDecl],
     target_off: usize,
     env0: &ConstEnv,
-    module_env: &ConstEnv,
-    enum_defs: &crate::typecheck::enums::EnumRegistry,
-    lookup_mod: &ModScope,
+    scope: &EvalScope<'_>,
 ) -> Option<Literal> {
     let mut env = env0.clone();
     for d in decls {
@@ -393,30 +356,24 @@ fn eval_const_at(
                 if l.range.start.offset == target_off {
                     return l
                         .is_const
-                        .then(|| eval_one(&l.value, &env, module_env, enum_defs, lookup_mod))
+                        .then(|| eval_one(&l.value, &env, scope))
                         .flatten();
                 }
-                bind_let(l, &mut env, module_env, enum_defs, lookup_mod);
+                bind_let(l, &mut env, scope);
             }
             // A named mod/chip body is its OWN scope: reset to the module
             // env alone, with no outer locals and deliberately no params,
             // which hide the module constants they are named like.
             TopDecl::Chip(c) if range_contains_offset(&c.range, target_off) => {
-                let env = body_env(c, module_env);
-                return eval_const_in_block(
-                    &c.body, target_off, &env, module_env, enum_defs, lookup_mod,
-                );
+                let env = body_env(c, &scope.module_env);
+                return eval_const_in_block(&c.body, target_off, &env, scope);
             }
             // An anonymous chip shares its parent's scope.
             TopDecl::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
-                return eval_const_in_block(
-                    &ac.body, target_off, &env, module_env, enum_defs, lookup_mod,
-                );
+                return eval_const_in_block(&ac.body, target_off, &env, scope);
             }
             TopDecl::Namespace(ns) if range_contains_offset(&ns.range, target_off) => {
-                return eval_const_at(
-                    &ns.decls, target_off, env0, module_env, enum_defs, lookup_mod,
-                );
+                return eval_const_at(&ns.decls, target_off, env0, scope);
             }
             _ => {}
         }
@@ -427,14 +384,8 @@ fn eval_const_at(
 /// Bind what `l` binds in `env`: the value of a `let` of a constant, and for
 /// one that is not constant, nothing, hiding the constants its names shadow,
 /// as compiling does.
-fn bind_let(
-    l: &crate::ast::LetDecl,
-    env: &mut ConstEnv,
-    module_env: &ConstEnv,
-    enum_defs: &crate::typecheck::enums::EnumRegistry,
-    lookup_mod: &ModScope,
-) {
-    let value = eval_one(&l.value, env, module_env, enum_defs, lookup_mod);
+fn bind_let(l: &LetDecl, env: &mut ConstEnv, scope: &EvalScope<'_>) {
+    let value = eval_one(&l.value, env, scope);
     match value.and_then(|v| crate::const_eval::bind_destructured(&l.binding, v).ok()) {
         Some(pairs) => env.extend(pairs),
         None => {
@@ -458,12 +409,10 @@ fn body_env(c: &ChipDecl, module_env: &ConstEnv) -> ConstEnv {
 /// Same walk as [`eval_const_at`], over a statement block (a mod/chip/anon-chip
 /// body, or an `if` arm).
 fn eval_const_in_block(
-    block: &crate::ast::Block,
+    block: &Block,
     target_off: usize,
     env0: &ConstEnv,
-    module_env: &ConstEnv,
-    enum_defs: &crate::typecheck::enums::EnumRegistry,
-    lookup_mod: &ModScope,
+    scope: &EvalScope<'_>,
 ) -> Option<Literal> {
     let mut env = env0.clone();
     for s in &block.stmts {
@@ -472,43 +421,30 @@ fn eval_const_in_block(
                 if l.range.start.offset == target_off {
                     return l
                         .is_const
-                        .then(|| eval_one(&l.value, &env, module_env, enum_defs, lookup_mod))
+                        .then(|| eval_one(&l.value, &env, scope))
                         .flatten();
                 }
-                bind_let(l, &mut env, module_env, enum_defs, lookup_mod);
+                bind_let(l, &mut env, scope);
             }
             // A `var` hides the constant it is named like.
             Stmt::Var(v) => {
                 env.remove(&v.name);
             }
             Stmt::ChipDecl(c) if range_contains_offset(&c.range, target_off) => {
-                let env = body_env(c, module_env);
-                return eval_const_in_block(
-                    &c.body, target_off, &env, module_env, enum_defs, lookup_mod,
-                );
+                let env = body_env(c, &scope.module_env);
+                return eval_const_in_block(&c.body, target_off, &env, scope);
             }
             Stmt::AnonChip(ac) if range_contains_offset(&ac.range, target_off) => {
-                return eval_const_in_block(
-                    &ac.body, target_off, &env, module_env, enum_defs, lookup_mod,
-                );
+                return eval_const_in_block(&ac.body, target_off, &env, scope);
             }
             Stmt::If(i) if range_contains_offset(&i.then_block.range, target_off) => {
-                return eval_const_in_block(
-                    &i.then_block,
-                    target_off,
-                    &env,
-                    module_env,
-                    enum_defs,
-                    lookup_mod,
-                );
+                return eval_const_in_block(&i.then_block, target_off, &env, scope);
             }
             Stmt::If(i) => {
-                if let Some(eb) = &i.else_block {
-                    if range_contains_offset(&eb.range, target_off) {
-                        return eval_const_in_block(
-                            eb, target_off, &env, module_env, enum_defs, lookup_mod,
-                        );
-                    }
+                if let Some(eb) = &i.else_block
+                    && range_contains_offset(&eb.range, target_off)
+                {
+                    return eval_const_in_block(eb, target_off, &env, scope);
                 }
             }
             _ => {}
@@ -517,16 +453,15 @@ fn eval_const_in_block(
     None
 }
 
-/// `ast` is the file's PRE-RESOLVE parse. Eight of the resolvers below need
-/// it, and a hover runs per keystroke, so it comes from the caller rather than
-/// being parsed here.
+/// `ast` is the file's pre-resolve parse. Hover runs per keystroke, so the
+/// caller supplies it rather than this parsing again.
 pub fn hover_at(
     source: &str,
     file: &str,
     ast: &Script,
     symbols: &[SymbolDef],
     type_map: &TypeMap,
-    doc_comments: &crate::parser::DocComments,
+    doc_comments: &DocComments,
     if_contexts: &IfContextMap,
     var_read_contexts: &VarReadContextMap,
     narrowed_reads: &NarrowedReadMap,
@@ -535,13 +470,9 @@ pub fn hover_at(
     line: usize,
     col: usize,
 ) -> Option<String> {
-    // Dropped (never type-checked) code reports FIRST, and — like the two
-    // non-word hovers below — before `word_at`, which returns `None` for any
-    // position that isn't an identifier. A dropped block must report at EVERY
-    // position inside it, braces and whitespace and operators included: it is
-    // a warning about a region, and someone skimming a block hovers the block,
-    // not necessarily a name in it. Behind `word_at` the warning silently
-    // vanished on `{`, `}`, `=` and every space.
+    // Dropped (never type-checked) code reports first, before `word_at`, which
+    // returns `None` off an identifier: the warning covers a region and must
+    // answer at every position in it, braces and whitespace included.
     if let Some(h) = hover_dropped_range(file, dropped_ranges, line, col) {
         return Some(h);
     }
@@ -552,7 +483,7 @@ pub fn hover_at(
         return Some(h);
     }
 
-    // `:name` atom literals aren't identifier words either — show the
+    // `:name` atom literals aren't identifier words either; show the
     // compile-time `int` they hash to.
     if let Some(h) = hover_atom(source, file, line, col) {
         return Some(with_doc_link(h, Doc::Topic("atoms")));
@@ -564,9 +495,9 @@ pub fn hover_at(
     // even when it is spelled like one. The one exception is a quoted enum
     // setting (`function = "Bounce"`).
     match super::format::text_kind_at(source, line, col) {
-        super::format::TextKind::Comment => return None,
-        super::format::TextKind::Str => return hover_config_enum_value(source, &word, line, col),
-        super::format::TextKind::Code => {}
+        TextKind::Comment => return None,
+        TextKind::Str => return hover_config_enum_value(source, &word, line, col),
+        TextKind::Code => {}
     }
 
     // `@color`, `@material`, `@label`: the word after an `@` is the
@@ -959,14 +890,16 @@ fn render_prefab_file_hover(path: &str, file: &str) -> String {
         "Embeds a `.brz` archive"
     };
     let mut out = format!("**Prefab file reference**\n\n{kind} into `SpawnPrefab`.\n\n");
-    out += &format!("- Reference: `${path}`\n");
-    out += &format!("- Resolves to: `{}`\n", resolved.display());
+    let _ = writeln!(out, "- Reference: `${path}`");
+    let _ = writeln!(out, "- Resolves to: `{}`", resolved.display());
     if !path.ends_with(".brz") && !path.ends_with(".ws") {
         out += "\nNote: prefab references must end in `.brz` (a prebuilt archive) or `.ws` (a source file) (WS019).\n";
     }
     #[cfg(not(target_arch = "wasm32"))]
     match std::fs::metadata(&resolved) {
-        Ok(m) => out += &format!("- On disk: {} bytes\n", m.len()),
+        Ok(m) => {
+            let _ = writeln!(out, "- On disk: {} bytes", m.len());
+        }
         Err(_) => out += "- Not found on disk\n",
     }
     out
@@ -981,9 +914,9 @@ fn render_asset_hover(path: &str) -> String {
         "**Asset reference**\n\nAn external Brickadia asset, inlined into the gate's data.\n\n",
     );
     if let Some((ty, name)) = path.split_once('/') {
-        out += &format!("- Type: `{ty}`\n- Name: `{name}`\n");
+        let _ = writeln!(out, "- Type: `{ty}`\n- Name: `{name}`");
     } else {
-        out += &format!("- Asset: `{path}`\n");
+        let _ = writeln!(out, "- Asset: `{path}`");
     }
     out
 }
@@ -1019,27 +952,18 @@ fn render_component_type_hover(path: &str) -> String {
     }
     let mut out = format!("**Component type** `{}`\n\n", o.display_name);
     if !o.description.is_empty() {
-        out += &format!("{}\n\n", o.description);
+        let _ = writeln!(out, "{}\n", o.description);
     }
-    out += &format!("- Class: `{}`\n", o.class);
+    let _ = writeln!(out, "- Class: `{}`", o.class);
     out
 }
 
-/// Cursor position inside a block `if constexpr` dropped before type-checking
-/// (see `TypeCheckCtx::dropped_ranges`). Runs FIRST in `hover_at` — ahead of
-/// every other hover AND ahead of its `word_at` early return — because the
-/// untaken branch was never type-checked at all: a stale reference or type
-/// error in there is invisible to diagnostics, so this hover is the only place
-/// that surfaces it. Being a warning about a whole REGION rather than about a
-/// symbol, it must answer at every position in that region (`{`, `}`, `=`,
-/// whitespace included), which is exactly what sitting behind `word_at` broke.
-///
-/// `line`/`col` are 0-based (the `hover_at` convention); `SourceRange`
-/// positions are 1-based, so the cursor is converted before comparing.
-/// Containment is half-open (`start <= pos < end`), matching the lexer's
-/// snapshot-before/snapshot-after token convention that
-/// `scoped_refs::range_contains_cursor` also follows — a block's `end` is one
-/// past its closing `}`, so the brace itself is inside.
+/// Hover inside an `if` block dropped before type checking because its
+/// condition is constant (`TypeCheckCtx::dropped_ranges`). Diagnostics never see
+/// that branch, so this hover is where its errors show, at every position in it;
+/// `hover_at` runs it before `word_at`. `line`/`col` are 0-based against 1-based
+/// ranges, half-open as in `scoped_refs::range_contains_cursor`, so the closing
+/// `}` is inside.
 fn hover_dropped_range(
     file: &str,
     dropped_ranges: &[(SourceRange, String)],
@@ -1076,7 +1000,7 @@ fn hover_if_keyword(
     }
 
     let offset = line_offset_at(source, line) + word_start_in_line(source.lines().nth(line)?, col);
-    let f: std::sync::Arc<str> = file.into();
+    let f: Arc<str> = file.into();
     let &is_exec = if_contexts.get(&(f, offset))?;
 
     let mut hover = if is_exec {
@@ -1085,15 +1009,11 @@ fn hover_if_keyword(
         "```wirescript\nif (pure) -> Select gate\n```\nPure-context conditional. Produces a **Select** gate that picks one of two values based on the condition.".to_string()
     };
     if let Some(est) = resource_estimates.get(&format!("@{offset}")) {
-        hover += &format!("\n\n{}", format_estimate(est, EstimateKind::Scope));
+        let _ = write!(hover, "\n\n{}", format_estimate(est, EstimateKind::Scope));
     }
     Some(hover)
 }
 
-/// Named parameter inside a builtin call (e.g. `delay` in `Sleep(_, delay = 1.0)`).
-/// Only fires in arg-name position — the word followed by a single `=` — so a
-/// value expression that shares a param's name (`delay = delay`) hovers as the
-/// symbol it is, not as the param docs.
 /// The scalar kind a `Type` renders a default value as, or `None` for a
 /// non-scalar (entity/vector/...) with no displayable constant default.
 fn scalar_kind_of(ty: &Type) -> Option<&'static str> {
@@ -1106,12 +1026,10 @@ fn scalar_kind_of(ty: &Type) -> Option<&'static str> {
     }
 }
 
-/// A gate data-struct field's registered default VALUE, rendered for display.
 /// The default value brdb registers for one field of a gate's data struct:
-/// resolve the gate class to its struct through `COMPONENT_TYPE_STRUCT_PAIRS`,
-/// then read the field out of `STRUCT_DEFAULTS` - the same source of truth the
-/// emitter bakes from. `None` when the gate has no data struct, or that struct
-/// no such field.
+/// the gate class resolves to its struct through `COMPONENT_TYPE_STRUCT_PAIRS`,
+/// then the field is read out of `STRUCT_DEFAULTS`, the table the emitter bakes
+/// from. `None` when the gate has no data struct, or that struct has no such field.
 fn struct_field_default(gate_class: &str, field: &str) -> Option<&'static dyn brdb::AsBrdbValue> {
     let strct = brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
         .iter()
@@ -1124,6 +1042,7 @@ fn struct_field_default(gate_class: &str, field: &str) -> Option<&'static dyn br
         .map(|(_, v)| v.as_ref())
 }
 
+/// A gate data-struct field's registered default value, rendered for display.
 /// An enum field shows its member name (not the stored index); otherwise
 /// [`struct_field_default`]'s value is read in its declared scalar `kind`
 /// (`bool`/`int`/`float`/`string`). `None` when the gate registers no such
@@ -1131,16 +1050,16 @@ fn struct_field_default(gate_class: &str, field: &str) -> Option<&'static dyn br
 fn gate_field_default(gate_class: &str, field: &str, kind: &str) -> Option<String> {
     let value = struct_field_default(gate_class, field)?;
     // Enum-typed field: the default is an index; show the member name.
-    if let Some(et) = crate::catalog::config_field_enum_type(gate_class, field) {
-        if let Ok(idx) = value.as_brdb_u8() {
-            let names = crate::catalog::enum_member_names(et);
-            return Some(
-                names
-                    .into_iter()
-                    .nth(idx as usize)
-                    .unwrap_or_else(|| idx.to_string()),
-            );
-        }
+    if let Some(et) = config_field_enum_type(gate_class, field)
+        && let Ok(idx) = value.as_brdb_u8()
+    {
+        let names = enum_member_names(et);
+        return Some(
+            names
+                .into_iter()
+                .nth(idx as usize)
+                .unwrap_or_else(|| idx.to_string()),
+        );
     }
     match kind {
         "bool" => value.as_brdb_bool().ok().map(|b| b.to_string()),
@@ -1152,14 +1071,12 @@ fn gate_field_default(gate_class: &str, field: &str, kind: &str) -> Option<Strin
     }
 }
 
-/// A gate data-struct field's registered COMPOSITE default (vector / color /
-/// rotator / quat), rendered for display. Reads the struct default the same way
-/// [`gate_field_default`] reads scalars, then pulls the composite's named
-/// sub-fields (`X`/`Y`/`Z`, `R`/`G`/`B`/`A`, `Pitch`/`Yaw`/`Roll`, ...) through the
-/// `AsBrdbValue` struct-property accessor. Colors are stored LINEAR and shown as
-/// their sRGB hex (`#181425`); vectors/rotators show a `Vec(...)`/`Rotation(...)`
-/// constructor. `None` when the gate registers no such default or `ty` isn't a
-/// composite the emitter can bake.
+/// A gate data-struct field's registered composite default (vector, color,
+/// rotator, quat) as display text: the struct default read as
+/// [`gate_field_default`] reads scalars, then its named sub-fields. Colors are
+/// stored linear and shown as sRGB hex (`#181425`); vectors and rotators as
+/// `Vec(...)`/`Rotation(...)`. `None` when there is no such default or `ty` is
+/// not a composite the emitter bakes.
 fn composite_field_default(gate_class: &str, field: &str, ty: &Type) -> Option<String> {
     let value = struct_field_default(gate_class, field)?;
     let schema = brdb::schemas::bricks_components_schema_max();
@@ -1207,7 +1124,7 @@ fn composite_field_default(gate_class: &str, field: &str, ty: &Type) -> Option<S
     }
 }
 
-/// A gate field's default rendered for hover — a `Vector2D` sub-port axis
+/// A gate field's default rendered for hover: a `Vector2D` sub-port axis
 /// (`Position.X`) via [`vector2d_subport_default`], a scalar via
 /// [`gate_field_default`], or a composite (vector/color/rotator/quat) via
 /// [`composite_field_default`].
@@ -1243,10 +1160,10 @@ fn fnum(f: f64) -> String {
     f.to_string()
 }
 
-/// Linear-light 0–1 component -> sRGB byte (the standard piecewise encode).
+/// Linear-light 0 to 1 component -> sRGB byte (the standard piecewise encode).
 fn linear_to_srgb_u8(c: f64) -> u8 {
     let c = c.clamp(0.0, 1.0);
-    let s = if c <= 0.0031308 {
+    let s = if c <= 0.003_130_8 {
         12.92 * c
     } else {
         1.055 * c.powf(1.0 / 2.4) - 0.055
@@ -1272,6 +1189,9 @@ fn render_color_default(r: f64, g: f64, b: f64, a: f64) -> String {
     }
 }
 
+/// Named parameter inside a builtin call (e.g. `delay` in `Sleep(_, delay = 1.0)`).
+/// Only fires in arg-name position (the word followed by a single `=`), so a
+/// value that shares a param's name (`delay = delay`) hovers as its symbol.
 fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
     if !word_is_named_arg_name(source, line, col) {
         return None;
@@ -1289,7 +1209,7 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
 
     // A param surfaced as a plain int but backed by a schema enum shows the
     // enum's name (and its members below) instead of `int`, wireable or not.
-    let config_enum = crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str());
+    let config_enum = config_field_enum_type(spec.gate_class, p.port.as_str());
     let ty_label = config_enum
         .map(str::to_string)
         .unwrap_or_else(|| type_str(&p.ty));
@@ -1298,27 +1218,26 @@ fn hover_named_param(source: &str, word: &str, line: usize, col: usize) -> Optio
         v += " *(optional)*";
     }
     if !tooltip.is_empty() {
-        v += &format!("\n\n{}", tooltip);
+        let _ = write!(v, "\n\n{tooltip}");
     }
     if let Some(et) = config_enum {
-        let members = crate::catalog::enum_member_names(et).join(", ");
+        let members = enum_member_names(et).join(", ");
         if !members.is_empty() {
-            v += &format!("\n\none of: {members}");
+            let _ = write!(v, "\n\none of: {members}");
         }
     }
-    // The gate's registered default for this field, if any — scalar, or a
-    // composite vector/color (enum params show the member name via
-    // `gate_field_default`'s enum resolution).
+    // The gate's registered default for this field, if any: a scalar or a
+    // composite (an enum parameter shows its member name through
+    // `gate_field_default`).
     if let Some(d) = field_default_display(spec.gate_class, p.port.as_str(), &p.ty) {
-        v += &format!("\n\nDefault: `{d}`");
+        let _ = write!(v, "\n\nDefault: `{d}`");
     }
     Some(v)
 }
 
-/// Is the hovered word in named-argument-name position — followed (modulo
-/// spaces) by a single `=` (not `==`)? Inside call parens `name = value` can
-/// only be a named arg, while a value identifier is never followed by a bare
-/// `=`, so this cleanly separates the two sides of `delay = delay`.
+/// Whether the hovered word is a named argument's name: followed, after spaces,
+/// by a single `=` (not `==`). A value identifier is never followed by a bare
+/// `=`, so this separates the two sides of `delay = delay`.
 fn word_is_named_arg_name(source: &str, line: usize, col: usize) -> bool {
     let Some(l) = source.lines().nth(line) else {
         return false;
@@ -1343,18 +1262,14 @@ fn receiver_at(source: &str, line: usize, col: usize) -> Option<&str> {
     Some(&l[word_start_at_byte(l, obj_end)..obj_end])
 }
 
-/// Collection methods (`arr.push`, `m.get`, ...). Only fires on a `.method`
-/// access (the hovered word is immediately preceded by `.`), so a user symbol
-/// that happens to share a method name — e.g. `var sum = 0` — still hovers as
-/// itself rather than as `array.sum`.
+/// Collection methods (`arr.push`, `m.get`). Fires only on a `.method` access,
+/// so a user symbol sharing a method's name (`var sum = 0`) hovers as itself.
 ///
-/// Which table the method comes from depends on the RECEIVER's type: a map's
-/// `length`/`remove`/`clear`/`copyFrom` are distinct from the identically-named
-/// array methods, and map-only names (`get`/`set`/`has`/`keys`/`values`) exist
-/// on no array. So we resolve the object's type first and dispatch to the right
-/// catalog. When the receiver's type can't be recovered (imported var whose span
-/// the local `type_map` never keyed), we fall back to the name-based array lookup
-/// — the historical behavior — rather than showing nothing.
+/// The table follows the receiver's type: a map's `length`, `remove`, `clear`
+/// and `copyFrom` differ from the array methods of the same names, and `get`,
+/// `set`, `has`, `keys` and `values` exist on maps only. When the receiver's type
+/// is unknown (an imported var whose span `type_map` has no entry for), the
+/// array table by name is the fallback.
 fn hover_collection_method(
     source: &str,
     symbols: &[SymbolDef],
@@ -1362,16 +1277,14 @@ fn hover_collection_method(
     line: usize,
     col: usize,
 ) -> Option<String> {
-    // Dispatch on the RECEIVER's declared type. The receiver identifier of a
-    // method call is NOT recorded as its own expression in `type_map` — only the
-    // whole call's result type is, and at the same start offset — so a span
-    // lookup there would grab the call's type (e.g. `get`'s `{ Value, Found }`)
-    // rather than the receiver's. The symbol table keys type by name, which is
-    // exactly the receiver here, and covers both top-level and handler-local vars.
+    // Dispatch on the receiver's declared type. `type_map` has no entry for a
+    // method call's receiver, only for the whole call at the same start offset, so
+    // a span lookup would return the call's type; the symbol table keys by name,
+    // which is the receiver here, top-level or handler-local.
     let obj_name = receiver_at(source, line, col)?;
 
-    // The receiver's DECLARED type string (`Map<string, int>`, `Grid<int>`, ...)
-    // drives dispatch and is what the map hover displays — the type the user wrote.
+    // The receiver's declared type string (`Map<string, int>`, `Grid<int>`)
+    // drives dispatch and is what the map hover shows.
     let declared = symbols
         .iter()
         .find(|s| s.name == obj_name)
@@ -1458,24 +1371,21 @@ fn hover_builtin_event(word: &str) -> Option<String> {
     );
     if !evt.input_named.is_empty() {
         let wired: Vec<&str> = evt.input_named.iter().map(|(s, _, _)| *s).collect();
-        out += &format!("\n\n**Wired input:** {}", wired.join(", "));
+        let _ = write!(out, "\n\n**Wired input:** {}", wired.join(", "));
     }
     if !evt.config_named.is_empty() {
         let cfg: Vec<&str> = evt.config_named.iter().map(|(s, _)| *s).collect();
-        out += &format!("\n\n**Config:** {} *(constant-only)*", cfg.join(", "));
+        let _ = write!(out, "\n\n**Config:** {} *(constant-only)*", cfg.join(", "));
     }
     Some(out)
 }
 
-/// Context-aware hover for the custom-event channel words — both the receiver
-/// TRIGGER (`on CustomEvent` / `on GlobalCustomEvent`) and the SEND call
-/// (`SendCustomEvent` / `SendGlobalCustomEvent`, including the receiver form
-/// `e.SendCustomEvent(...)`). Resolves the channel's data slots (names + types)
-/// from every receiver declaration and matching sender in the file, and renders
-/// the full typed signature — e.g. `on CustomEvent("init") -> (p: character)` or
-/// `SendCustomEvent("init", p: character)`. Returns `None` when the word is not a
-/// CE word with a resolvable channel under the cursor, so the generic hovers
-/// handle that case.
+/// Hover for the custom-event channel words: the trigger (`on CustomEvent`,
+/// `on GlobalCustomEvent`) and the send call (`SendCustomEvent`,
+/// `SendGlobalCustomEvent`, also as `e.SendCustomEvent(...)`). Resolves the
+/// channel's data slots from every receiver and matching sender in the file and
+/// renders the typed signature, such as `on CustomEvent("init") -> (p: character)`.
+/// `None` when the word is not one of these with a resolvable channel.
 fn hover_custom_event(
     source: &str,
     file: &str,
@@ -1497,8 +1407,8 @@ fn hover_custom_event(
     let line_str = source.lines().nth(line)?;
     let word_off = line_offset_at(source, line) + word_start_in_line(line_str, col);
 
-    // Re-parse the same source: identical byte offsets, so `type_map` (keyed by
-    // (file, start, end)) still resolves each sender arg's inferred type.
+    // `ast` has the same byte offsets as `type_map`'s keys, so each sender
+    // argument's inferred type resolves.
     let script = ast;
 
     let channel = if is_send {
@@ -1534,10 +1444,9 @@ fn hover_custom_event(
     ))
 }
 
-/// The literal channel name of the `send_name`
-/// (`SendCustomEvent`/`SendGlobalCustomEvent`) CALL whose callee identifier
-/// contains byte offset `off` — handles both the plain call and the receiver
-/// form `e.SendCustomEvent(...)`.
+/// The literal channel name of the `send_name` call (`SendCustomEvent` or
+/// `SendGlobalCustomEvent`, plain or as a method) whose callee contains byte
+/// offset `off`.
 fn ce_send_channel_at(script: &Script, send_name: &str, off: usize) -> Option<String> {
     let mut channel = None;
     {
@@ -1559,7 +1468,7 @@ fn ce_send_channel_at(script: &Script, send_name: &str, off: usize) -> Option<St
             }
             channel = ce_send_channel(args);
         };
-        super::visit::visit_program(script, &mut on_handler, &mut on_call);
+        visit_program(script, &mut on_handler, &mut on_call);
     }
     channel
 }
@@ -1582,7 +1491,7 @@ fn ce_trigger_channel_at(script: &Script, word: &str, off: usize) -> Option<Stri
             channel = ce_handler_channel(h);
         };
         let mut on_call = |_: &Expr| {};
-        super::visit::visit_program(script, &mut on_handler, &mut on_call);
+        visit_program(script, &mut on_handler, &mut on_call);
     }
     channel
 }
@@ -1595,10 +1504,9 @@ fn ce_handler_channel(h: &Handler) -> Option<String> {
             name,
             value: Expr::StringLit { value, .. },
         } = c
+            && name.eq_ignore_ascii_case("eventname")
         {
-            if name.eq_ignore_ascii_case("eventname") {
-                return Some(value.clone());
-            }
+            return Some(value.clone());
         }
     }
     for c in &h.config {
@@ -1626,7 +1534,7 @@ fn resolve_ce_channel_slots(
     } else {
         "SendCustomEvent"
     };
-    let file_arc: std::sync::Arc<str> = file.into();
+    let file_arc: Arc<str> = file.into();
 
     // Per slot: first receiver-declared name, first receiver-declared type,
     // first sender-inferred type. `on_handler` and `on_call` touch disjoint
@@ -1651,10 +1559,10 @@ fn resolve_ce_channel_slots(
                 if names[i].is_none() {
                     names[i] = Some(p.name.clone());
                 }
-                if decl_types[i].is_none() {
-                    if let Some(te) = &p.ty {
-                        decl_types[i] = Some(crate::analysis::types::type_expr_str(te));
-                    }
+                if decl_types[i].is_none()
+                    && let Some(te) = &p.ty
+                {
+                    decl_types[i] = Some(crate::analysis::types::type_expr_str(te));
                 }
             }
         };
@@ -1676,16 +1584,16 @@ fn resolve_ce_channel_slots(
                 }
                 if send_types[slot].is_none() {
                     let r = expr.range();
-                    if let Some(t) = type_map.get(&(file_arc.clone(), r.start.offset, r.end.offset))
+                    if let Some(t) =
+                        type_map.get(&(Arc::clone(&file_arc), r.start.offset, r.end.offset))
+                        && !matches!(t, Type::Any | Type::Opaque)
                     {
-                        if !matches!(t, Type::Any | Type::Opaque) {
-                            send_types[slot] = Some(type_str(t));
-                        }
+                        send_types[slot] = Some(type_str(t));
                     }
                 }
             }
         };
-        super::visit::visit_program(script, &mut on_handler, &mut on_call);
+        visit_program(script, &mut on_handler, &mut on_call);
     }
 
     let n = names.len().max(decl_types.len()).max(send_types.len());
@@ -1693,12 +1601,12 @@ fn resolve_ce_channel_slots(
         .map(|i| {
             let name = names
                 .get(i)
-                .and_then(|o| o.clone())
+                .and_then(std::clone::Clone::clone)
                 .unwrap_or_else(|| format!("data{}", i + 1));
             let ty = decl_types
                 .get(i)
-                .and_then(|o| o.clone())
-                .or_else(|| send_types.get(i).and_then(|o| o.clone()))
+                .and_then(std::clone::Clone::clone)
+                .or_else(|| send_types.get(i).and_then(std::clone::Clone::clone))
                 .unwrap_or_else(|| "any".to_string());
             (name, ty)
         })
@@ -1714,10 +1622,9 @@ fn ce_send_channel(args: &[CallArg]) -> Option<String> {
             value: Expr::StringLit { value, .. },
             ..
         } = a
+            && name.eq_ignore_ascii_case("eventname")
         {
-            if name.eq_ignore_ascii_case("eventname") {
-                return Some(value.clone());
-            }
+            return Some(value.clone());
         }
     }
     for a in args {
@@ -1756,10 +1663,9 @@ fn ce_send_data_slots(args: &[CallArg]) -> Vec<(usize, &Expr)> {
                 if let Some(n) = name
                     .strip_prefix("data")
                     .and_then(|s| s.parse::<usize>().ok())
+                    && n >= 1
                 {
-                    if n >= 1 {
-                        out.push((n - 1, value));
-                    }
+                    out.push((n - 1, value));
                 }
             }
             CallArg::Spread(_) => {}
@@ -1768,10 +1674,10 @@ fn ce_send_data_slots(args: &[CallArg]) -> Vec<(usize, &Expr)> {
     out
 }
 
-/// Hover for an event handler's config-arg NAME (`enabled` in
-/// `on Clock(enabled = true)`) — the call-param hover's event counterpart.
-/// Fires only in named-arg-name position, and only when the enclosing trigger
-/// is a known event whose config/input args include `word`.
+/// Hover for an event handler's config argument name (`enabled` in
+/// `on Clock(enabled = true)`), the event counterpart of the call-parameter
+/// hover. Fires only in named-argument position, for a known event whose config
+/// or input arguments include `word`.
 fn hover_event_config_param(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
     if !word_is_named_arg_name(source, line, col) {
         return None;
@@ -1783,16 +1689,16 @@ fn hover_event_config_param(source: &str, word: &str, line: usize, col: usize) -
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(word))
     {
-        let enum_ty = crate::catalog::config_field_enum_type(evt.gate_class, field);
+        let enum_ty = config_field_enum_type(evt.gate_class, field);
         let ty_label = enum_ty.unwrap_or("config value");
         let mut v = format!(
             "**{}** `{}: {}` *(event config, constant-only)*\n\nSets `{}` on the `{}` gate.",
             word, word, ty_label, field, evt.surface_name
         );
         if let Some(et) = enum_ty {
-            let members = crate::catalog::enum_member_names(et).join(", ");
+            let members = enum_member_names(et).join(", ");
             if !members.is_empty() {
-                v += &format!("\n\none of: {members}");
+                let _ = write!(v, "\n\none of: {members}");
             }
         }
         return Some(v);
@@ -1810,10 +1716,10 @@ fn hover_event_config_param(source: &str, word: &str, line: usize, col: usize) -
     None
 }
 
-/// Hover for a data-driven config attribute NAME — a raw settings-menu field
-/// (`bOnlyHitPlayerBodyParts`, `FontSize`, `Function`) set by its inventory name
-/// rather than a declared param. Fires only in named-arg-name position for a
-/// scalar config field the enclosing gate exposes.
+/// Hover for a data-driven config attribute name: a raw settings-menu field
+/// (`bOnlyHitPlayerBodyParts`, `FontSize`, `Function`) set by its inventory
+/// name. Fires only in named-argument position, for a scalar config field of the
+/// enclosing gate.
 fn hover_data_driven_config(source: &str, word: &str, line: usize, col: usize) -> Option<String> {
     if !word_is_named_arg_name(source, line, col) {
         return None;
@@ -1825,16 +1731,16 @@ fn hover_data_driven_config(source: &str, word: &str, line: usize, col: usize) -
         return None;
     }
     let cfg = crate::catalog::scalar_config_field(spec.gate_class, word)?;
-    let enum_ty = crate::catalog::config_field_enum_type(spec.gate_class, word);
+    let enum_ty = config_field_enum_type(spec.gate_class, word);
     let ty_label = enum_ty.unwrap_or(cfg.ty.as_str());
     let mut v = format!("**{word}** `{word}: {ty_label}` *(gate config, constant-only)*");
     if !cfg.display_name.is_empty() {
-        v += &format!("\n\n{}", cfg.display_name);
+        let _ = write!(v, "\n\n{}", cfg.display_name);
     }
     if let Some(et) = enum_ty {
-        let members = crate::catalog::enum_member_names(et).join(", ");
+        let members = enum_member_names(et).join(", ");
         if !members.is_empty() {
-            v += &format!("\n\none of: {members}");
+            let _ = write!(v, "\n\none of: {members}");
         }
     }
     Some(v)
@@ -1850,20 +1756,17 @@ fn hover_config_enum_value(source: &str, word: &str, line: usize, col: usize) ->
     // The hovered word must actually be a member of that enum (not some other
     // value written in the slot).
     crate::catalog::enum_member_value(et, word)?;
-    let members = crate::catalog::enum_member_names(et).join(", ");
+    let members = enum_member_names(et).join(", ");
     Some(format!("**{word}**: `{et}` member\n\none of: {members}"))
 }
 
-// ---------- language-level `enum` hover (user + built-in game enums) ----------
+// Language-level `enum` hover (user and built-in game enums)
 //
-// The functions in this block hover a Wirescript `enum` *type* (a
-// [`crate::typecheck::enums::EnumDef`]) - distinct from `hover_config_enum_value`
-// above, which hovers a raw brdb *schema* enum member written as a gate config
-// value (`direction = X_Negative`). A user `enum` re-parses `source` to build
-// the same [`crate::typecheck::enums::build_registry`] the compiler itself
-// resolves against (the same trick [`hover_custom_event`] and
-// [`const_hover_value`] use); a built-in GAME enum (`EasingFunction`, ...) is
-// resolved straight from the catalog, since it needs no source at all.
+// These hover an `enum` type ([`crate::typecheck::enums::EnumDef`]), unlike
+// `hover_config_enum_value`, which hovers a brdb schema enum member written as
+// a gate config value (`direction = X_Negative`). A user enum is looked up in
+// the registry [`crate::typecheck::enums::build_registry`] builds from the
+// parsed `ast`; a built-in game enum (`EasingFunction`) comes from the catalog.
 
 /// A variant's payload shape, rendered the way its construction site would
 /// read: empty for a unit variant, `(float, float)` for positional, `{ x:
@@ -1875,13 +1778,13 @@ fn render_variant_payload(v: &crate::typecheck::enums::VariantDef) -> String {
     match &v.payload {
         Payload::Unit => String::new(),
         Payload::Positional(types) => {
-            let parts: Vec<String> = types.iter().map(super::types::type_expr_str).collect();
+            let parts: Vec<String> = types.iter().map(type_expr_str).collect();
             format!("({})", parts.join(", "))
         }
         Payload::Named(fields) => {
             let parts: Vec<String> = fields
                 .iter()
-                .map(|(n, t)| format!("{n}: {}", super::types::type_expr_str(t)))
+                .map(|(n, t)| format!("{n}: {}", type_expr_str(t)))
                 .collect();
             format!(" {{ {} }}", parts.join(", "))
         }
@@ -1894,30 +1797,25 @@ fn render_variant_payload(v: &crate::typecheck::enums::VariantDef) -> String {
 /// dispatch chain, so a value symbol of the same name (a `var`/`let`/mod, ...)
 /// always wins - an enum type name is never itself a registered value symbol.
 fn hover_enum_type_name(source: &str, ast: &Script, word: &str) -> Option<String> {
-    // Built-in game enum: resolved straight from the catalog's memoized table
-    // (a cheap linear scan, no reparse) - checked first since it applies to
-    // every file, unlike a user `enum`.
+    // A built-in game enum comes from the catalog's memoized table, checked first
+    // since it applies to every file.
     if let Some(v) = hover_builtin_game_enum_type(word) {
         return Some(v);
     }
-    // Prelude (`Option`/`Result`): cheap to build (two entries), no reparse.
+    // The prelude (`Option`, `Result`).
     if let Some(def) = crate::typecheck::enums::prelude_enum_defs()
         .into_iter()
         .find(|d| d.name == word)
     {
         return Some(render_user_or_prelude_enum_hover(&def, false));
     }
-    // A user `enum`: only worth a reparse when the file could plausibly
-    // declare one (mirrors the LSP's own `enum_registry_from_source` fast path).
+    // A user `enum`, only when the file could declare one.
     if !source.contains("enum ") {
         return None;
     }
     let e = find_top_level_enum_decl(&ast.decls, word)?;
-    let def = crate::typecheck::enums::EnumDef {
-        name: e.name.clone(),
-        type_params: e.type_params.clone(),
-        variants: crate::typecheck::enums::variant_defs(e),
-    };
+    let def =
+        crate::typecheck::enums::EnumDef::from_decl(e, crate::typecheck::enums::variant_defs(e));
     Some(render_user_or_prelude_enum_hover(&def, true))
 }
 
@@ -1958,21 +1856,20 @@ fn render_user_or_prelude_enum_hover(
         .iter()
         .map(|v| format!("`{}{}`", v.name, render_variant_payload(v)))
         .collect();
-    out += &format!("\n\nVariants: {}", variants.join(", "));
+    let _ = write!(out, "\n\nVariants: {}", variants.join(", "));
     if !is_user {
         out += "\n\n*Built-in prelude enum.*";
     }
     out
 }
 
-/// Hover for a built-in GAME enum type name (`EasingFunction`, `Direction`,
-/// ...): resolved directly from the catalog's schema-derived table
-/// ([`crate::catalog::game_enum_schema_type`], a cheap lookup with no
-/// reparse), listing each cleaned variant name with its real schema
-/// discriminant ([`crate::catalog::enum_member_value`]).
+/// Hover for a built-in game enum type name (`EasingFunction`, `Direction`),
+/// from the catalog's schema-derived table
+/// ([`crate::catalog::game_enum_schema_type`]): each cleaned variant name with
+/// its schema discriminant ([`crate::catalog::enum_member_value`]).
 fn hover_builtin_game_enum_type(word: &str) -> Option<String> {
     let schema_type = crate::catalog::game_enum_schema_type(word)?;
-    let variants: Vec<String> = crate::catalog::enum_member_names(schema_type)
+    let variants: Vec<String> = enum_member_names(schema_type)
         .into_iter()
         .map(|raw| {
             let clean = crate::catalog::clean_game_enum_variant(&raw);
@@ -1986,18 +1883,14 @@ fn hover_builtin_game_enum_type(word: &str) -> Option<String> {
     ))
 }
 
-/// Hover for a VARIANT in a construction path (`Shape.Circle`,
-/// `EasingFunction.Bounce`) - the variant token itself, not the enum name
-/// before it: its owning enum, payload shape, and real discriminant integer.
-/// Reparses `source` to build the full registry (user enums + prelude +
-/// built-in game enums, exactly `crate::typecheck::enums::build_registry`,
-/// the same table the compiler resolves `Enum.Variant` against), so a
-/// built-in and a user enum hover identically here.
+/// Hover for a variant in a construction path (`Shape.Circle`,
+/// `EasingFunction.Bounce`), on the variant token: its enum, payload shape and
+/// discriminant. The registry is `build_registry` over `ast` (user enums, the
+/// prelude and the game's enums), the table the compiler resolves
+/// `Enum.Variant` against, so built-in and user enums hover alike.
 ///
-/// Only fires on a `.`-preceded word whose preceding identifier is NOT
-/// shadowed by a value symbol (`var`/`let`/mod/...) - mirrors the compiler's own
-/// shadow rule in `resolve_variant_for_construction`: a value binding of the
-/// same name as an enum wins, so that name is not a construction site.
+/// Fires only when the identifier before the `.` is not a value symbol, as in
+/// `resolve_variant_for_construction`: a value named like an enum wins.
 fn hover_enum_variant_path(
     source: &str,
     ast: &Script,
@@ -2013,7 +1906,7 @@ fn hover_enum_variant_path(
         return None;
     }
 
-    let registry = crate::typecheck::enums::build_registry(&ast.decls);
+    let registry = build_registry(&ast.decls);
     let def = registry.expression_path(enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == word)?;
     let is_user = find_top_level_enum_decl(&ast.decls, enum_name).is_some();
@@ -2030,18 +1923,11 @@ fn hover_enum_variant_path(
     Some(out)
 }
 
-/// Hover for a named payload FIELD's KEY in an enum-variant CONSTRUCTION
-/// (`Shape.Box { w: 1.0, h: 2.0 }` - the `w`/`h`): its declared type, read
-/// off `enum Shape { Box { w: float, ... } }`.
-///
-/// Reparses `source` like its sibling enum hovers ([`hover_enum_type_name`],
-/// [`hover_enum_variant_path`]) rather than taking a pre-resolved AST. The
-/// field-key-span derivation mirrors
-/// `analysis::definition::resolve_enum_field_construction_definition`'s: a
-/// `RecordLitField::Named`'s `range` spans the WHOLE `key: value` (see
-/// `parser::expr::parse_record_lit`), not just the key, so the key span is
-/// derived from the field name's byte length rather than read off a
-/// dedicated sub-range.
+/// Hover for a named payload field's key in a variant construction
+/// (`Shape.Box { w: 1.0, h: 2.0 }`, on `w` or `h`): its type from the enum
+/// declaration. A `RecordLitField::Named` range spans the whole `key: value`, so
+/// the key span comes from the field name's byte length, as in
+/// `definition::resolve_enum_field_construction_definition`.
 fn hover_enum_field_construction(
     source: &str,
     ast: &Script,
@@ -2064,15 +1950,15 @@ fn hover_enum_field_construction(
             };
             for f in fields {
                 let (name, key_start, key_end) = match f {
-                    crate::ast::RecordLitField::Named { name, range, .. } => (
+                    RecordLitField::Named { name, range, .. } => (
                         name.as_str(),
                         range.start.offset,
                         range.start.offset + name.len(),
                     ),
-                    crate::ast::RecordLitField::Shorthand { name, range } => {
+                    RecordLitField::Shorthand { name, range } => {
                         (name.as_str(), range.start.offset, range.end.offset)
                     }
-                    crate::ast::RecordLitField::Spread { .. } => continue,
+                    RecordLitField::Spread { .. } => continue,
                 };
                 if name != word || word_off < key_start || word_off > key_end {
                     continue;
@@ -2094,11 +1980,11 @@ fn hover_enum_field_construction(
                 hit = Some((enum_name.clone(), variant.clone()));
             }
         };
-        super::visit::visit_program(ast, &mut on_handler, &mut on_call);
+        visit_program(ast, &mut on_handler, &mut on_call);
     }
     let (enum_name, variant_name) = hit?;
 
-    let registry = crate::typecheck::enums::build_registry(&ast.decls);
+    let registry = build_registry(&ast.decls);
     let def = registry.expression_path(&enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == variant_name)?;
     let crate::typecheck::enums::Payload::Named(field_defs) = &vdef.payload else {
@@ -2107,22 +1993,14 @@ fn hover_enum_field_construction(
     let (_, ty) = field_defs.iter().find(|(n, _)| n == word)?;
     Some(format!(
         "```wirescript\n{word}: {}\n```\n\nNamed payload field of `{enum_name}.{variant_name}`.",
-        super::types::type_expr_str(ty)
+        type_expr_str(ty)
     ))
 }
 
-/// Hover for `.Discriminant` on a variant PATH (`Shape.Circle.Discriminant`,
-/// `EasingFunction.Bounce.Discriminant`): the discriminant is a compile-time
-/// CONSTANT here (the variant is named, not merely typed), so this reports
-/// the actual integer rather than just `int`.
-///
-/// An ordinary enum VALUE's `.Discriminant` (`s.Discriminant` where `s:
-/// Shape`) is a two-identifier chain, not three (`Enum.Variant.Discriminant`),
-/// so it does not match here and is left to the generic field-type hover in
-/// [`resolve_field_hover`], which already resolves it to `field Discriminant:
-/// int` via `type_map` (the typechecker types `.Discriminant` as `Type::Int`
-/// regardless of whether the object is a bare value or a variant path - see
-/// `infer.rs`'s `field == "Discriminant"` arm).
+/// Hover for `.Discriminant` on a variant path (`Shape.Circle.Discriminant`):
+/// the variant is named, so its discriminant is a constant and the hover shows
+/// the integer. A value's `.Discriminant` (`s.Discriminant`) is a two-part chain
+/// and goes to [`resolve_field_hover`], which shows `field Discriminant: int`.
 fn hover_enum_discriminant_variant_path(
     source: &str,
     ast: &Script,
@@ -2130,7 +2008,7 @@ fn hover_enum_discriminant_variant_path(
     line: usize,
     col: usize,
 ) -> Option<String> {
-    if word != "Discriminant" {
+    if word != DISCRIMINANT_FIELD {
         return None;
     }
     let l = source.lines().nth(line)?;
@@ -2151,7 +2029,7 @@ fn hover_enum_discriminant_variant_path(
         return None;
     }
 
-    let registry = crate::typecheck::enums::build_registry(&ast.decls);
+    let registry = build_registry(&ast.decls);
     let def = registry.expression_path(enum_name)?;
     let vdef = def.variants.iter().find(|v| v.name == variant_name)?;
     Some(format!(
@@ -2161,10 +2039,9 @@ fn hover_enum_discriminant_variant_path(
     ))
 }
 
-/// Is the hovered word actually being used as a call or method access — i.e.
-/// preceded by `.` (`recv.method`) or immediately followed by `(` (`call(...)`)?
-/// Call/method hovers only fire in these positions, so a plain identifier that
-/// merely shares a builtin's name (`var Teleport = 0`) hovers as itself.
+/// Whether the hovered word is a call or method access: preceded by `.` or
+/// followed by `(`. Call hovers fire only there, so a plain identifier sharing a
+/// builtin's name (`var Teleport = 0`) hovers as itself.
 fn word_is_call_or_method(source: &str, line: usize, col: usize) -> bool {
     let Some(l) = source.lines().nth(line) else {
         return false;
@@ -2277,8 +2154,8 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
         params.join(", "),
         out
     )];
-    // The game's own SearchTags keywords for this gate (from the inventory dump)
-    // — surfaced so hover doubles as a "what would I search for this?" hint.
+    // The game's SearchTags keywords for this gate, from the inventory dump, so
+    // hover also says what to search for.
     let tags_line = crate::catalog::default_catalog()
         .find_by_class(spec.gate_class)
         .map(|g| g.component.search_tags.trim())
@@ -2326,18 +2203,16 @@ fn hover_builtin_call(source: &str, word: &str, line: usize, col: usize) -> Opti
     Some(parts.join("\n\n"))
 }
 
-/// A markdown table of a gate's parameter/config defaults (from
-/// `gate_field_default`), or `None` if the gate registers none. Covers both the
-/// named parameters and the extra settings-menu config fields that aren't
-/// surfaced as params — the limits/sweep-style values you'd otherwise look up
-/// in-game.
+/// A markdown table of a gate's parameter and config defaults (from
+/// `gate_field_default`), or `None` when it registers none. Covers the named
+/// parameters and the settings-menu config fields that are not parameters.
 fn defaults_table(spec: &crate::catalog::calls::CallSpec) -> Option<String> {
     let mut rows: Vec<(String, String, String)> = Vec::new();
     for p in &spec.params {
         if let Some(d) = field_default_display(spec.gate_class, p.port.as_str(), &p.ty) {
             // An enum-backed config param shows its enum type, not bare `int`
             // (matching the value, which is rendered as the member name).
-            let ty_label = crate::catalog::config_field_enum_type(spec.gate_class, p.port.as_str())
+            let ty_label = config_field_enum_type(spec.gate_class, p.port.as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| type_str(&p.ty));
             rows.push((p.name.to_string(), ty_label, d));
@@ -2349,7 +2224,7 @@ fn defaults_table(spec: &crate::catalog::calls::CallSpec) -> Option<String> {
             continue;
         }
         if let Some(d) = gate_field_default(spec.gate_class, &cfg.name, &cfg.ty) {
-            let ty_label = crate::catalog::config_field_enum_type(spec.gate_class, &cfg.name)
+            let ty_label = config_field_enum_type(spec.gate_class, &cfg.name)
                 .map(str::to_string)
                 .unwrap_or_else(|| cfg.ty.clone());
             rows.push((cfg.name.clone(), ty_label, d));
@@ -2361,7 +2236,7 @@ fn defaults_table(spec: &crate::catalog::calls::CallSpec) -> Option<String> {
     let mut t =
         String::from("**Defaults:**\n\n| Parameter | Type | Default |\n| --- | --- | --- |");
     for (n, ty, d) in &rows {
-        t += &format!("\n| {n} | {ty} | {d} |");
+        let _ = write!(t, "\n| {n} | {ty} | {d} |");
     }
     Some(t)
 }
@@ -2379,7 +2254,7 @@ fn hover_chip_or_mod_keyword(
     }
 
     let lo = line_offset_at(source, line);
-    let line_end = lo + super::text::line_text(source, line).len() + 1;
+    let line_end = lo + line_text(source, line).len() + 1;
 
     for sym in symbols {
         if matches!(sym.kind, "chip" | "mod" | "fn")
@@ -2409,7 +2284,7 @@ fn hover_chip_or_mod_keyword(
                 lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset)
             {
                 let ek = estimate_kind(sym.kind);
-                hover += &format!("\n\n{}", format_estimate(est, ek));
+                let _ = write!(hover, "\n\n{}", format_estimate(est, ek));
             }
             return Some(hover);
         }
@@ -2433,7 +2308,7 @@ fn hover_on_keyword(
     let est = resource_estimates.get(&format!("@{offset}"))?;
 
     let mut hover = "```wirescript\non handler (exec)\n```".to_string();
-    hover += &format!("\n\n{}", format_estimate(est, EstimateKind::Scope));
+    let _ = write!(hover, "\n\n{}", format_estimate(est, EstimateKind::Scope));
     Some(hover)
 }
 
@@ -2446,7 +2321,7 @@ fn hover_record_or_type_field(
     ast: &Script,
     type_map: &TypeMap,
     symbols: &[SymbolDef],
-    doc_comments: &crate::parser::DocComments,
+    doc_comments: &DocComments,
     word: &str,
     line: usize,
     col: usize,
@@ -2467,47 +2342,38 @@ fn hover_record_or_type_field(
         if sym.kind == "type"
             && sym.range.start.line.saturating_sub(1) as usize <= line
             && sym.range.end.line.saturating_sub(1) as usize >= line
+            && let Some(ref ty_str) = sym.ty
+            && let Some(field_type) = extract_record_field_type(ty_str, word)
         {
-            if let Some(ref ty_str) = sym.ty {
-                if let Some(field_type) = extract_record_field_type(ty_str, word) {
-                    let mut hover =
-                        format!("```wirescript\n{}.{}: {}\n```", sym.name, word, field_type);
-                    // Field `///` doc comment, stored by the parser keyed by the
-                    // field name's offset.
-                    let field_off = line_offset_at(source, line)
-                        + word_start_in_line(source.lines().nth(line)?, col);
-                    if let Some(doc) = doc_comments.get(&(sym.range.file.clone(), field_off)) {
-                        hover += &format!("\n\n{doc}");
-                    }
-                    return Some(hover);
-                }
+            let mut hover = format!("```wirescript\n{}.{}: {}\n```", sym.name, word, field_type);
+            // Field `///` doc comment, stored by the parser keyed by the
+            // field name's offset.
+            let field_off =
+                line_offset_at(source, line) + word_start_in_line(source.lines().nth(line)?, col);
+            if let Some(doc) = doc_comments.get(&(Arc::clone(&sym.range.file), field_off)) {
+                let _ = write!(hover, "\n\n{doc}");
             }
+            return Some(hover);
         }
     }
     None
 }
 
-/// Hover for a USAGE (call site) of a generic `mod`/`chip`: show the type
-/// arguments *resolved for this call* in the angle brackets — e.g.
-/// `mod assert<int>(want: int, got: int, label: string)` instead of the
-/// declaration's `mod assert<T: int | float | string>(want: T, ...)`.
+/// Hover for a call of a generic `mod` or `chip`, with the type arguments
+/// resolved for this call: `mod assert<int>(want: int, got: int, label: string)`
+/// rather than the declaration's `mod assert<T: int | float | string>(...)`.
 ///
-/// Re-parses `source` (identical byte offsets, so `type_map` still resolves
-/// each argument's inferred type — the same trick [`hover_custom_event`] uses),
-/// finds the `Expr::Call` whose callee identifier spans the cursor, locates the
-/// callee's generic declaration, and re-runs the shared call-site inference
-/// ([`crate::types::mono::infer_call_subst`], or the caller's explicit
-/// `assert<int>(...)` type arguments when present) to bind each type parameter.
-///
-/// Returns `None` when the word is not the callee of a generic call — so the
-/// declaration site and every non-generic call still fall through to
-/// [`hover_user_symbol`]'s declaration-signature hover.
+/// Finds the `Expr::Call` in `ast` whose callee spans the cursor, its generic
+/// declaration, and binds each type parameter through the call-site inference
+/// ([`crate::types::mono::infer_call_subst`]) or explicit type arguments. `None`
+/// when the word is not a generic call's callee, so declarations and other calls
+/// fall through to [`hover_user_symbol`].
 fn hover_generic_call(
     source: &str,
     file: &str,
     ast: &Script,
     symbols: &[SymbolDef],
-    doc_comments: &crate::parser::DocComments,
+    doc_comments: &DocComments,
     resource_estimates: &HashMap<String, ResourceEstimate>,
     type_map: &TypeMap,
     word: &str,
@@ -2535,12 +2401,8 @@ fn hover_generic_call(
     // params in scope, so a `T` becomes `Type::Param("T")`, and every alias
     // read where the declaration's file declares it.
     let param_names: Vec<String> = decl.type_params.iter().map(|tp| tp.name.clone()).collect();
-    let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&script.decls));
-    let types = crate::const_eval::DeclaredTypes::for_program_in(
-        &script.decls,
-        &enum_defs,
-        &script.imports,
-    );
+    let enum_defs = Arc::new(build_registry(&script.decls));
+    let types = DeclaredTypes::for_program_in(&script.decls, &enum_defs, &script.imports);
     let types = types.in_file(&decl.range.file);
     let own_param = |name: &str, _: &crate::diagnostic::SourceRange| {
         param_names
@@ -2564,7 +2426,7 @@ fn hover_generic_call(
         }
         s
     } else {
-        let file_arc: std::sync::Arc<str> = file.into();
+        let file_arc: Arc<str> = file.into();
         let arg_types: Vec<Type> = positional_arg_types(&args, type_map, &file_arc);
         let params: Vec<(String, Vec<Type>)> = decl
             .type_params
@@ -2608,7 +2470,7 @@ fn hover_generic_call(
         .iter()
         .zip(param_types.iter())
         .map(|(p, pt)| {
-            let ty = type_str(&crate::types::mono::substitute(pt, &subst));
+            let ty = type_str(&substitute(pt, &subst));
             if p.is_const {
                 format!("{}: const {}", p.name, ty)
             } else {
@@ -2620,10 +2482,7 @@ fn hover_generic_call(
         [] => String::new(),
         [single] => format!(
             " -> {}",
-            type_str(&crate::types::mono::substitute(
-                &resolve(&single.typ),
-                &subst
-            ))
+            type_str(&substitute(&resolve(&single.typ), &subst))
         ),
         multiple => {
             let fields: Vec<String> = multiple
@@ -2632,7 +2491,7 @@ fn hover_generic_call(
                     format!(
                         "{}: {}",
                         o.name,
-                        type_str(&crate::types::mono::substitute(&resolve(&o.typ), &subst))
+                        type_str(&substitute(&resolve(&o.typ), &subst))
                     )
                 })
                 .collect();
@@ -2647,17 +2506,13 @@ fn hover_generic_call(
         return None;
     }
     let synth = SymbolDef {
-        name: sym.name.clone(),
-        kind: sym.kind,
-        range: sym.range.clone(),
         ty: Some(format!(
             "{}({}){}",
             header,
             params_str.join(", "),
             ret_suffix
         )),
-        exec: sym.exec,
-        is_const: sym.is_const,
+        ..sym.clone()
     };
     let mut out = render_decl_hover(
         &synth,
@@ -2676,7 +2531,11 @@ fn hover_generic_call(
         })
         .collect();
     if !bindings.is_empty() {
-        out += &format!("\n\n*Generic call: {} for this call.*", bindings.join(", "));
+        let _ = write!(
+            out,
+            "\n\n*Generic call: {} for this call.*",
+            bindings.join(", ")
+        );
     }
     Some(out)
 }
@@ -2684,8 +2543,8 @@ fn hover_generic_call(
 /// The `(args, type_args)` of the `Expr::Call` whose callee is the identifier
 /// `word` and whose callee range contains byte offset `off`. Walks the whole
 /// program (handler/mod/chip bodies included) via the shared visitor.
-fn generic_call_at<'a>(
-    script: &'a Script,
+fn generic_call_at(
+    script: &Script,
     word: &str,
     off: usize,
 ) -> Option<(Vec<CallArg>, Vec<TypeExpr>)> {
@@ -2712,14 +2571,13 @@ fn generic_call_at<'a>(
                 found = Some((args.clone(), type_args.clone()));
             }
         };
-        super::visit::visit_program(script, &mut on_handler, &mut on_call);
+        visit_program(script, &mut on_handler, &mut on_call);
     }
     found
 }
 
-/// Find the generic `mod`/`chip` declaration named `name` (top-level or inside
-/// a namespace). Returns the first match — enough for hover, which only needs
-/// the parameter shape and type-param bounds.
+/// The generic `mod` or `chip` named `name`, top-level or in a namespace; the
+/// first match is enough for its parameter shape and bounds.
 fn find_generic_chip_decl<'a>(decls: &'a [TopDecl], name: &str) -> Option<&'a ChipDecl> {
     for d in decls {
         match d {
@@ -2739,17 +2597,13 @@ fn find_generic_chip_decl<'a>(decls: &'a [TopDecl], name: &str) -> Option<&'a Ch
 /// `type_map` by each argument expression's source range. A named/spread arg
 /// stops the run (positional inference lines up by position); a missing entry
 /// becomes `Type::Any`, which contributes no constraint.
-fn positional_arg_types(
-    args: &[CallArg],
-    type_map: &TypeMap,
-    file: &std::sync::Arc<str>,
-) -> Vec<Type> {
+fn positional_arg_types(args: &[CallArg], type_map: &TypeMap, file: &Arc<str>) -> Vec<Type> {
     let mut out = Vec::new();
     for a in args {
         let CallArg::Positional(e) = a else { break };
         let r = e.range();
         let ty = type_map
-            .get(&(file.clone(), r.start.offset, r.end.offset))
+            .get(&(Arc::clone(file), r.start.offset, r.end.offset))
             .cloned()
             .unwrap_or(Type::Any);
         out.push(ty);
@@ -2763,7 +2617,7 @@ fn hover_user_symbol(
     file: &str,
     ast: &Script,
     symbols: &[SymbolDef],
-    doc_comments: &crate::parser::DocComments,
+    doc_comments: &DocComments,
     var_read_contexts: &VarReadContextMap,
     narrowed_reads: &NarrowedReadMap,
     resource_estimates: &HashMap<String, ResourceEstimate>,
@@ -2771,15 +2625,13 @@ fn hover_user_symbol(
     line: usize,
     col: usize,
 ) -> Option<String> {
-    // Resolve to the declaration in scope at the cursor, so hovering (or reading)
-    // a name reused across scopes shows the one actually visible here — e.g.
-    // hovering `players` in `var players: character[]` resolves to that array,
-    // not a file-scope `players: string`.
+    // The declaration in scope at the cursor, so a name reused across scopes
+    // shows the visible one (`players` in `var players: character[]` is that array,
+    // not a file-scope `players: string`).
     let sym = super::resolve_symbol(symbols, source, word, line, col)?;
 
-    // Namespace alias (`import * as card`): it has no type — show it as a
-    // namespace and list the members it brings in (its qualified `card.*`
-    // symbols), rather than falling through to `namespace card: unknown`.
+    // A namespace alias (`import * as card`) has no type: show it as a namespace
+    // with the members it brings (its `card.*` symbols).
     if sym.kind == "namespace" {
         let prefix = format!("{}.", sym.name);
         let members: Vec<&str> = symbols
@@ -2789,7 +2641,8 @@ fn hover_user_symbol(
             .collect();
         let mut v = format!("```wirescript\nnamespace {}\n```", sym.name);
         if !members.is_empty() {
-            v += &format!(
+            let _ = write!(
+                v,
                 "\n\n{} member{}: {}",
                 members.len(),
                 if members.len() == 1 { "" } else { "s" },
@@ -2802,7 +2655,7 @@ fn hover_user_symbol(
     // A read an `any` kind test narrowed shows the type it has here.
     let narrowed = source.lines().nth(line).and_then(|l| {
         let start = line_offset_at(source, line) + word_start_in_line(l, col);
-        narrowed_reads.get(&(std::sync::Arc::from(file), start, start + word.len()))
+        narrowed_reads.get(&(Arc::from(file), start, start + word.len()))
     });
     let mut v = match narrowed {
         Some(n) => {
@@ -2823,10 +2676,10 @@ fn hover_user_symbol(
     };
 
     // For var reads: show exec/pure context at the hovered location
-    if sym.kind == "var" {
+    if matches!(sym.kind, "var" | "static var") {
         let l = source.lines().nth(line)?;
         let offset = line_offset_at(source, line) + word_start_in_line(l, col);
-        let f: std::sync::Arc<str> = file.into();
+        let f: Arc<str> = file.into();
         if let Some(&is_exec) = var_read_contexts.get(&(f, offset)) {
             if is_exec {
                 v += "\n\n*(exec) reads current value via Var\\_Get*";
@@ -2839,20 +2692,16 @@ fn hover_user_symbol(
     Some(v)
 }
 
-/// Render a declaration symbol's hover card: its signature line (mods/chips/fns
-/// show `(exec, params) -> ret`; everything else `kind name: type`), followed by
-/// its doc comment and, for callables, a resource estimate. Shared by plain
-/// symbol hover and namespace-member hover.
+/// A declaration's hover card: its signature (callables show `(exec, params)
+/// -> ret`, everything else `kind name: type`), its doc comment, and for a
+/// callable its resource estimate. Used by plain and namespace-member hover.
 ///
-/// `value_ctx`, when given, is `(symbols, file)` of the file the symbol's OWN
-/// declaration lives in — used only to look up a `const` `let`'s computed
-/// VALUE (see [`const_hover_value`]). Namespace-member hover passes `None`:
-/// the member's declaration lives in a DIFFERENT (imported) file, so
-/// re-parsing the CURRENT file could never find it — showing no value there
-/// is correct, not a shortcut.
+/// `value_ctx` is `(symbols, file)` of the file the declaration is in, for a
+/// `const`'s value ([`const_hover_value`]). Namespace-member hover passes `None`:
+/// that declaration is in another file.
 fn render_decl_hover(
     sym: &SymbolDef,
-    doc_comments: &crate::parser::DocComments,
+    doc_comments: &DocComments,
     resource_estimates: &HashMap<String, ResourceEstimate>,
     value_ctx: Option<(&[SymbolDef], &Script)>,
 ) -> String {
@@ -2903,8 +2752,8 @@ fn render_decl_hover(
                 sym.name, bound
             )
         }
-        // `name: const string` — the keyword sits before the TYPE, mirroring
-        // how the parameter is spelled in the signature itself.
+        // `name: const string`: the keyword sits before the type, as in the
+        // signature.
         "param" => {
             let ty_display = if sym.is_const {
                 format!("const {ty_str}")
@@ -2913,11 +2762,9 @@ fn render_decl_hover(
             };
             format!("```wirescript\nparam {}: {}\n```", sym.name, ty_display)
         }
-        // A `const` binding: show `const`, not `let`, and — the single most
-        // useful thing hover can say about a compile-time constant — its
-        // computed VALUE, when `value_ctx` lets us attempt one. A value that
-        // can't be determined at hover time (needs a call site, or genuinely
-        // fails to evaluate) is simply omitted rather than guessed at.
+        // A `const` binding shows `const`, not `let`, and its computed value when
+        // `value_ctx` allows; a value that needs a call site or fails to evaluate is
+        // left out.
         "let" if sym.is_const => {
             let value = value_ctx
                 .and_then(|(symbols, ast)| const_hover_value(ast, symbols, sym.range.start.offset))
@@ -2933,26 +2780,25 @@ fn render_decl_hover(
         _ => format!("```wirescript\n{} {}: {}\n```", sym.kind, sym.name, ty_str),
     };
     if let Some(doc) = doc_comments.get(&crate::parser::doc_key(&sym.range)) {
-        v += &format!("\n\n{}", doc);
+        let _ = write!(v, "\n\n{doc}");
     }
-    if matches!(sym.kind, "mod" | "chip" | "fn") {
-        if let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset) {
-            let ek = estimate_kind(sym.kind);
-            v += &format!("\n\n{}", format_estimate(est, ek));
-        }
+    if matches!(sym.kind, "mod" | "chip" | "fn")
+        && let Some(est) = lookup_estimate(resource_estimates, &sym.name, sym.range.start.offset)
+    {
+        let ek = estimate_kind(sym.kind);
+        let _ = write!(v, "\n\n{}", format_estimate(est, ek));
     }
     v
 }
 
-/// Hover for the member in a namespace-qualified reference — the `drawTopText`
-/// in `card.drawTopText` where `card` is an `import * as card`. The member is
-/// stored in `symbols` under its qualified `card.drawTopText` name, so the plain
-/// bare-word lookup in [`hover_user_symbol`] misses it; form the qualified name
-/// here and render its signature (go-to-definition already resolved this path).
+/// Hover for the member of a namespace-qualified reference (`drawTopText` in
+/// `card.drawTopText`, where `card` is `import * as card`). It is stored under
+/// its qualified name, which the bare-word lookup in [`hover_user_symbol`] does
+/// not form.
 fn hover_namespace_member(
     source: &str,
     symbols: &[SymbolDef],
-    doc_comments: &crate::parser::DocComments,
+    doc_comments: &DocComments,
     resource_estimates: &HashMap<String, ResourceEstimate>,
     word: &str,
     line: usize,
@@ -2977,17 +2823,11 @@ fn hover_namespace_member(
     ))
 }
 
-/// Record-literal field key resolved through the TYPE MAP: the typechecker
-/// records a type for every `Expr::RecordLit` it visits, keyed by that
-/// literal's own byte range, so no written shape needs recognizing textually
-/// the way [`resolve_record_lit_field`] below does.
-///
-/// The innermost enclosing literal wins: `{value: {value: 10}}` spells both
-/// keys the same, and only the containing literal distinguishes them.
-///
-/// The field-key-span derivation mirrors [`hover_enum_field_construction`]'s: a
-/// `RecordLitField::Named`'s `range` spans the WHOLE `key: value`, so the key
-/// span comes from the field name's byte length.
+/// A record-literal field key resolved through `type_map`, which has a type
+/// for every `Expr::RecordLit` keyed by its range, so no shape is recognized
+/// from text as [`resolve_record_lit_field`] does. The innermost literal wins
+/// (`{value: {value: 10}}` spells both keys alike). The key span comes from the
+/// field name's length, as in [`hover_enum_field_construction`].
 fn resolve_record_lit_field_typed(
     source: &str,
     file: &str,
@@ -3009,15 +2849,15 @@ fn resolve_record_lit_field_typed(
             };
             for f in fields {
                 let (name, key_start, key_end) = match f {
-                    crate::ast::RecordLitField::Named { name, range, .. } => (
+                    RecordLitField::Named { name, range, .. } => (
                         name.as_str(),
                         range.start.offset,
                         range.start.offset + name.len(),
                     ),
-                    crate::ast::RecordLitField::Shorthand { name, range } => {
+                    RecordLitField::Shorthand { name, range } => {
                         (name.as_str(), range.start.offset, range.end.offset)
                     }
-                    crate::ast::RecordLitField::Spread { .. } => continue,
+                    RecordLitField::Spread { .. } => continue,
                 };
                 if name != word || word_off < key_start || word_off > key_end {
                     continue;
@@ -3028,10 +2868,10 @@ fn resolve_record_lit_field_typed(
                 }
             }
         };
-        super::visit::visit_program(ast, &mut on_handler, &mut on_expr);
+        visit_program(ast, &mut on_handler, &mut on_expr);
     }
     let (start, end) = best?;
-    let ty = type_map.get(&(std::sync::Arc::from(file), start, end))?;
+    let ty = type_map.get(&(Arc::from(file), start, end))?;
     let (Type::Record(fields) | Type::Outputs(fields)) = ty else {
         return None;
     };
@@ -3069,13 +2909,11 @@ fn resolve_record_lit_field(
                 if sym.kind == "type"
                     && sym.name == type_name
                     && let Some(ref ty_str) = sym.ty
+                    && let Some(field_type) = extract_record_field_type(ty_str, field)
                 {
-                    if let Some(field_type) = extract_record_field_type(ty_str, field) {
-                        return Some(format!(
-                            "```wirescript\n{}.{}: {}\n```",
-                            type_name, field, field_type
-                        ));
-                    }
+                    return Some(format!(
+                        "```wirescript\n{type_name}.{field}: {field_type}\n```"
+                    ));
                 }
             }
         }
@@ -3097,13 +2935,9 @@ fn resolve_record_lit_field(
     None
 }
 
-/// Extract a field's type from a record type string like `{counter: *int, step: int}`.
-///
-/// This operates on stringified type representations rather than the `Type` enum because
-/// cross-file imported symbols only carry their serialized type string (`SymbolDef.ty`),
-/// not a resolved `Type`. When hovering a field on an imported record, the actual `Type`
-/// may not be available in the current file's type_map, so we fall back to parsing the
-/// string form that the symbol exporter produced.
+/// A field's type from a record type string like `{counter: *int, step: int}`.
+/// An imported symbol carries only its type string (`SymbolDef.ty`), so a field
+/// of an imported record is read from that string.
 fn extract_record_field_type(ty_str: &str, field: &str) -> Option<String> {
     let inner = ty_str.strip_prefix('{')?.strip_suffix('}')?;
     for part in split_record_fields(inner) {
@@ -3325,13 +3159,10 @@ fn range_contains_1based(r: &SourceRange, line: u32, col: u32) -> bool {
     (r.start.line, r.start.col) <= (line, col) && (line, col) < (r.end.line, r.end.col)
 }
 
-/// The smallest `MatchExpr` in `ast` whose range contains the 1-based
-/// `(line, col)` cursor: the innermost enclosing one when matches nest (an
-/// arm's body can itself be a match). The closure's parameter type is
-/// annotated with the function's own `'a` (rather than left for inference)
-/// so the collected `&'a Expr`s can outlive [`super::visit::visit_program`]'s
-/// call. A plain inferred closure type ties `e` to a fresh, closure-local
-/// lifetime that cannot escape (E0521).
+/// The innermost `MatchExpr` in `ast` containing the 1-based `(line, col)`
+/// cursor. The closure's parameter is annotated with `'a` so the collected
+/// `&'a Expr`s outlive [`super::visit::visit_program`]'s call (an inferred
+/// closure lifetime cannot escape, E0521).
 fn enclosing_match_expr<'a>(ast: &'a Script, line: u32, col: u32) -> Option<&'a Expr> {
     let mut candidates: Vec<&'a Expr> = Vec::new();
     let mut on_handler = |_: &'a Handler| {};
@@ -3340,7 +3171,7 @@ fn enclosing_match_expr<'a>(ast: &'a Script, line: u32, col: u32) -> Option<&'a 
             candidates.push(e);
         }
     };
-    super::visit::visit_program(ast, &mut on_handler, &mut on_call);
+    visit_program(ast, &mut on_handler, &mut on_call);
     candidates
         .into_iter()
         .filter(|e| range_contains_1based(e.range(), line, col))
@@ -3385,7 +3216,7 @@ fn hover_is_keyword(
         return None;
     }
     let cursor_line = (line + 1) as u32;
-    let cursor_col = (char_col_to_byte(super::text::line_text(source, line), col) + 1) as u32;
+    let cursor_col = (char_col_to_byte(line_text(source, line), col) + 1) as u32;
     let Expr::Is { value, path, range } = enclosing_is_expr(ast, cursor_line, cursor_col)? else {
         return None;
     };
@@ -3404,7 +3235,8 @@ fn hover_is_keyword(
             "```wirescript\n{test} is Type.{member}\n```\n**Kind test**: `true` while `{subject}` holds a `{member}` value."
         );
         if let Some(ty) = narrow::member_type(member) {
-            v += &format!(
+            let _ = write!(
+                v,
                 " When this test is a whole `if` condition, `{subject}` is narrowed to `{}` inside the block.",
                 type_str(&ty)
             );
@@ -3433,7 +3265,7 @@ fn hover_loop_exit_keyword(
     if word != "break" && word != "continue" {
         return None;
     }
-    fn found(node: Node, line: u32, col: u32) -> bool {
+    fn found(node: Node<'_>, line: u32, col: u32) -> bool {
         let hit = match node {
             Node::Stmt(Stmt::Break { range } | Stmt::Continue { range }) => {
                 range_contains_1based(range, line, col)
@@ -3445,10 +3277,10 @@ fn hover_loop_exit_keyword(
         hit || below
     }
     let cursor_line = (line + 1) as u32;
-    let cursor_col = (char_col_to_byte(super::text::line_text(source, line), col) + 1) as u32;
+    let cursor_col = (char_col_to_byte(line_text(source, line), col) + 1) as u32;
     let mut hit = false;
     walk::script_children(ast, &mut |n, _| {
-        hit = hit || found(n, cursor_line, cursor_col)
+        hit = hit || found(n, cursor_line, cursor_col);
     });
     if !hit {
         return None;
@@ -3463,24 +3295,18 @@ fn hover_loop_exit_keyword(
     Some(format!("```wirescript\n{word}\n```\n{what}"))
 }
 
-/// Compute a "fill missing match arms" edit for a cursor on/inside a `match`
-/// whose written arms don't cover its scrutinee enum. Locates the smallest
-/// enclosing `MatchExpr` in the pre-resolve `ast` containing `(line, col)`,
-/// resolves the scrutinee's type through `type_map` (it must be a registered
-/// `Type::Enum`), and asks the shared witness engine
-/// ([`crate::typecheck::patterns::analyze`], Task 11, the same one the
-/// compiler's WS054 exhaustiveness diagnostic uses) which arms the ones
-/// already written don't cover. Each witness renders through
-/// [`crate::typecheck::infer::render_pattern`] (the same renderer WS054
-/// uses) as one `  {pattern} => todo,` line, inserted right before the
-/// match's closing `}` with the indentation of its last arm (or, for an
-/// empty match, the match's own line plus two spaces).
+/// The "fill missing match arms" edit for a cursor on or inside a `match` that
+/// does not cover its enum: the innermost `MatchExpr` in `ast` at `(line, col)`,
+/// its scrutinee's `Type::Enum` from `type_map`, and the arms the witness engine
+/// ([`crate::typecheck::patterns::analyze`], as WS054 uses) finds missing. Each
+/// renders through [`crate::typecheck::infer::render_pattern`] as
+/// `  {pattern} => todo,`, inserted before the closing `}` at the last arm's
+/// indentation (the match's own line plus two spaces when it has none).
 ///
-/// `None` when the cursor isn't on a `match`, its scrutinee didn't resolve to
-/// a registered enum, or the arms already cover every variant.
+/// `None` when the cursor is not on a `match`, the scrutinee is not a registered
+/// enum, or every variant is covered.
 pub fn fill_match_arms_at(
     source: &str,
-    _symbols: &[SymbolDef],
     type_map: &TypeMap,
     ast: &Script,
     line: usize,
@@ -3489,7 +3315,7 @@ pub fn fill_match_arms_at(
     let cursor_line = (line + 1) as u32;
     // AST ranges carry the lexer's BYTE columns, so the cursor's char column
     // has to be converted before it is compared against one.
-    let cursor_col = (char_col_to_byte(super::text::line_text(source, line), col) + 1) as u32;
+    let cursor_col = (char_col_to_byte(line_text(source, line), col) + 1) as u32;
 
     let best = enclosing_match_expr(ast, cursor_line, cursor_col)?;
     let Expr::MatchExpr {
@@ -3502,7 +3328,7 @@ pub fn fill_match_arms_at(
     };
 
     let sr = scrutinee.range();
-    let scrut_ty = type_map.get(&(sr.file.clone(), sr.start.offset, sr.end.offset))?;
+    let scrut_ty = type_map.get(&sr.key())?;
     if !matches!(
         scrut_ty,
         Type::Enum { .. } | Type::Int | Type::Float | Type::Bool | Type::String
@@ -3510,9 +3336,8 @@ pub fn fill_match_arms_at(
         return None;
     }
 
-    let enum_defs = std::sync::Arc::new(crate::typecheck::enums::build_registry(&ast.decls));
-    let types =
-        crate::const_eval::DeclaredTypes::for_program_in(&ast.decls, &enum_defs, &ast.imports);
+    let enum_defs = Arc::new(build_registry(&ast.decls));
+    let types = DeclaredTypes::for_program_in(&ast.decls, &enum_defs, &ast.imports);
     let arm_patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
     let enums = crate::typecheck::patterns::Enums {
         defs: &enum_defs,
@@ -3534,23 +3359,18 @@ pub fn fill_match_arms_at(
         None => format!("{}  ", line_indent((range.start.line - 1) as usize)),
     };
 
-    // Each missing arm gets a bare `todo` placeholder body. `todo` is a plain
-    // identifier, so the inserted text PARSES: it lands as an undefined
-    // identifier (WS002), which is exactly the "fill me in" state the author
-    // then replaces. LSP snippet syntax (`${1:todo}` tab-stops) is deliberately
-    // NOT used here: this server advertises no snippet capability and the
-    // lsp-types version in use has no SnippetTextEdit, so a snippet placeholder
-    // would land in the buffer as literal `${1:todo}` characters, and a bare
-    // `$` is a hard parse error (WSP001). Real tab-stops can be restored if the
-    // LSP library gains SnippetTextEdit and the client advertises the capability.
+    // Each missing arm gets a bare `todo` body: it parses (as an undefined
+    // identifier, WS002) and marks what to fill in. The server has no snippet
+    // support, so a `${1:todo}` tab-stop would land as literal text, and a bare `$`
+    // does not parse.
     let mut text = usefulness
         .missing
         .iter()
-        .map(|w| {
+        .fold(String::new(), |mut text, w| {
             let pat = crate::typecheck::infer::render_pattern(&w.0);
-            format!("{indent}{pat} => todo,\n")
-        })
-        .collect::<String>();
+            let _ = writeln!(text, "{indent}{pat} => todo,");
+            text
+        });
 
     // The match's own `range.end` is one past its closing `}` (the parser
     // sets it from the `}` token's own `end`), so the `}` itself sits at
@@ -3579,21 +3399,21 @@ pub fn fill_match_arms_at(
 
 pub(super) fn resolve_record_param_field_type(
     script: &crate::ast::Script,
-    param_type: &crate::ast::TypeExpr,
+    param_type: &TypeExpr,
     field: &str,
 ) -> Option<String> {
     let record_fields = match param_type {
-        crate::ast::TypeExpr::Record { fields, .. } => fields,
-        crate::ast::TypeExpr::Name { name, .. } => {
+        TypeExpr::Record { fields, .. } => fields,
+        TypeExpr::Name { name, .. } => {
             for d in &script.decls {
                 if let crate::ast::TopDecl::TypeAlias(ta) = d
                     && ta.name == *name
-                    && let crate::ast::TypeExpr::Record { fields, .. } = &ta.typ
+                    && let TypeExpr::Record { fields, .. } = &ta.typ
                 {
                     return fields
                         .iter()
                         .find(|f| f.name == field)
-                        .map(|f| super::types::type_expr_str(&f.typ));
+                        .map(|f| type_expr_str(&f.typ));
                 }
             }
             return None;
@@ -3603,7 +3423,7 @@ pub(super) fn resolve_record_param_field_type(
     record_fields
         .iter()
         .find(|f| f.name == field)
-        .map(|f| super::types::type_expr_str(&f.typ))
+        .map(|f| type_expr_str(&f.typ))
 }
 
 /// A property read or written on a component reference, `light.Brightness`:
@@ -3626,7 +3446,7 @@ fn hover_component_property(
     let obj_end = start - 1;
     let obj_start = word_start_at_byte(l, obj_end);
     let lo = line_offset_at(source, line);
-    let f: std::sync::Arc<str> = file.into();
+    let f: Arc<str> = file.into();
     let named = (obj_start < obj_end)
         .then(|| find_obj_type(type_map, &f, lo + obj_start, lo + obj_end))
         .flatten();
@@ -3658,7 +3478,10 @@ fn narrowing_note(declared: &str, n: &crate::typecheck::NarrowedRead) -> String 
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the hover tables are separate maps the caller already holds"
+)]
 fn resolve_field_hover(
     source: &str,
     file: &str,
@@ -3681,16 +3504,15 @@ fn resolve_field_hover(
     let lo = line_offset_at(source, line);
     let field_end_col = word_end_at_byte(l, c);
 
-    let f: std::sync::Arc<str> = file.into();
-    let fmt_field =
-        |ty_display: String| format!("```wirescript\nfield {}: {}\n```", field, ty_display);
+    let f: Arc<str> = file.into();
+    let fmt_field = |ty_display: String| format!("```wirescript\nfield {field}: {ty_display}\n```");
 
     // Layer 1: Full expression span (obj.field) in type_map - best case, typechecker
     // recorded the type of the entire dotted expression. Skip a bare `any`: for a
     // `.field` that's the error-fallback type of a field that didn't resolve, so
     // fall through to structural resolution / the record-type fallback below
     // rather than showing an unhelpful `field z: any`.
-    let span = (f.clone(), lo + obj_start, lo + field_end_col);
+    let span = (Arc::clone(&f), lo + obj_start, lo + field_end_col);
     if let Some(n) = narrowed_reads.get(&span) {
         return Some(fmt_field(type_str(&n.ty)) + &narrowing_note("any", n));
     }
@@ -3731,14 +3553,11 @@ fn resolve_field_hover(
         return Some(hit);
     }
 
-    // Fallback: the field didn't resolve, but if the object IS a record, show
-    // its whole type — one field per line in a fenced `wirescript` block, which
-    // VS Code syntax-COLOURS. Hovering an erroring `x.Jump` then lists the valid
-    // fields, coloured. (The diagnostic message reporting the same error stays
-    // plain text — VS Code diagnostics don't support markup/colour.) Try the
-    // typed `type_map` first (gives a real `Type::Record` for a multi-line
-    // render), then the symbol table (a record TYPE STRING for named aliases /
-    // `in` ports the type_map didn't key at this span).
+    // The field did not resolve; if the object is a record, show its whole type,
+    // one field per line in a fenced `wirescript` block (VS Code colors it), so
+    // hovering an erroring `x.Jump` lists the valid fields. `type_map` first (a real
+    // `Type::Record`), then the symbol table (a type string for a named alias or an
+    // `in` port).
     let obj_ty = find_obj_type(type_map, &f, lo + obj_start, lo + obj_end).or_else(|| {
         type_map
             .iter()
@@ -3752,10 +3571,10 @@ fn resolve_field_hover(
             other => other,
         };
         if let Type::Record(fields) | Type::Outputs(fields) = rec {
-            let body: String = fields
-                .iter()
-                .map(|(n, t)| format!("\n  {n}: {},", type_str(t)))
-                .collect();
+            let body = fields.iter().fold(String::new(), |mut body, (n, t)| {
+                let _ = write!(body, "\n  {n}: {},", type_str(t));
+                body
+            });
             return Some(format!("```wirescript\n{{{body}\n}}\n```"));
         }
     }
@@ -3768,9 +3587,9 @@ fn resolve_field_hover(
     None
 }
 
-/// The object's resolved record TYPE STRING (`{ x: int, y: int }`) from the
-/// symbol table — either an inline record type on the symbol itself, or a named
-/// alias resolved to its `type` declaration. `None` if the object isn't a record.
+/// The object's record type string (`{ x: int, y: int }`) from the symbol
+/// table: an inline record type, or a named alias resolved to its `type`
+/// declaration. `None` when the object is not a record.
 fn resolve_object_record_string(symbols: &[SymbolDef], obj_name: &str) -> Option<String> {
     let sym = symbols.iter().find(|s| s.name == obj_name)?;
     let ty_name = sym.ty.as_deref()?;
@@ -3792,11 +3611,14 @@ fn render_record_type_string_hover(rec: &str) -> String {
         .trim_start_matches('{')
         .trim_end_matches('}')
         .trim();
-    let body: String = inner
-        .split(", ")
-        .filter(|f| !f.trim().is_empty())
-        .map(|f| format!("\n  {},", f.trim()))
-        .collect();
+    let body =
+        inner
+            .split(", ")
+            .filter(|f| !f.trim().is_empty())
+            .fold(String::new(), |mut body, f| {
+                let _ = write!(body, "\n  {},", f.trim());
+                body
+            });
     format!("```wirescript\n{{{body}\n}}\n```")
 }
 
@@ -3820,38 +3642,30 @@ fn resolve_field_via_symbols(symbols: &[SymbolDef], obj_name: &str, field: &str)
         })
 }
 
-/// Find the type of an object expression at the given span in the type_map.
-///
-/// The typechecker records expression spans that may not exactly match the byte
-/// offsets computed from source text (off-by-one in end position is common due to
-/// how the parser vs. hover module count trailing characters). We handle this with
-/// a 3-tier lookup:
-///
-/// 1. **Exact span** - `(file, obj_start, obj_end)` matches directly.
-/// 2. **Fuzzy end** - same start, but end offset is +/-1 from what we computed.
-///    This catches the most common parser/hover offset mismatch.
-/// 3. **Start-only scan** - any entry with a matching `(file, obj_start, _)`.
-///    Last resort when the end offset is completely different.
+/// The type of the object expression at a span, from `type_map`. The parser's
+/// end offsets can differ from the ones computed here from text, so the lookup
+/// tries the exact span, then the same start with the end off by one, then any
+/// entry with the same start.
 fn find_obj_type(
     type_map: &TypeMap,
-    file: &std::sync::Arc<str>,
+    file: &Arc<str>,
     obj_start: usize,
     obj_end: usize,
 ) -> Option<Type> {
     // Tier 1: exact span
-    if let Some(ty) = type_map.get(&(file.clone(), obj_start, obj_end)) {
+    if let Some(ty) = type_map.get(&(Arc::clone(file), obj_start, obj_end)) {
         return Some(ty.clone());
     }
 
     // Tier 2: fuzzy end offset (+/-1)
     for end in [obj_end.wrapping_sub(1), obj_end + 1] {
-        if let Some(ty) = type_map.get(&(file.clone(), obj_start, end)) {
+        if let Some(ty) = type_map.get(&(Arc::clone(file), obj_start, end)) {
             return Some(ty.clone());
         }
     }
 
     // Tier 3: scan for any entry starting at obj_start in this file
-    for ((f, s, _e), ty) in type_map.iter() {
+    for ((f, s, _e), ty) in type_map {
         if **f == **file && *s == obj_start {
             return Some(ty.clone());
         }

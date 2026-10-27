@@ -1,6 +1,7 @@
 //! `@color` / `@material` checking (WS003, WS040).
 
 use super::*;
+use crate::analysis::types::type_str;
 use crate::types::mono::unwrap_ref;
 
 /// Which annotation a value belongs to.
@@ -13,15 +14,15 @@ enum Style {
 impl Style {
     fn word(self) -> &'static str {
         match self {
-            Style::Color => "@color",
-            Style::Material => "@material",
+            Self::Color => "@color",
+            Self::Material => "@material",
         }
     }
 
     fn want(self) -> Type {
         match self {
-            Style::Color => Type::Color,
-            Style::Material => Type::Enum {
+            Self::Color => Type::Color,
+            Self::Material => Type::Enum {
                 name: crate::lower::MATERIAL_ENUM.to_string(),
                 args: vec![],
             },
@@ -34,7 +35,7 @@ impl Style {
 /// only places a runtime value has a brick to wire into, as for `@label`) a
 /// compile-time constant. Runs after the main pass so a runtime value may name
 /// any top-level declaration, including one below it.
-pub(super) fn check_style_exprs(ctx: &mut TypeCheckCtx, script: &Script) {
+pub(super) fn check_style_exprs(ctx: &mut TypeCheckCtx<'_>, script: &Script) {
     check_pair(
         ctx,
         script.module_color.as_ref(),
@@ -74,7 +75,7 @@ pub(super) fn check_style_exprs(ctx: &mut TypeCheckCtx, script: &Script) {
 }
 
 /// The nested declarations in `block`, where every value must be constant.
-fn check_block(ctx: &mut TypeCheckCtx, block: &Block) {
+fn check_block(ctx: &mut TypeCheckCtx<'_>, block: &Block) {
     for s in &block.stmts {
         match s {
             Stmt::Var(v) => check_pair(ctx, v.color_expr.as_ref(), v.material_expr.as_ref(), false),
@@ -105,7 +106,7 @@ fn check_block(ctx: &mut TypeCheckCtx, block: &Block) {
 }
 
 fn check_pair(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     color: Option<&Expr>,
     material: Option<&Expr>,
     runtime_ok: bool,
@@ -118,7 +119,7 @@ fn check_pair(
     }
 }
 
-fn check_one(ctx: &mut TypeCheckCtx, style: Style, e: &Expr, runtime_ok: bool) {
+fn check_one(ctx: &mut TypeCheckCtx<'_>, style: Style, e: &Expr, runtime_ok: bool) {
     let arg = match style {
         Style::Color => std::borrow::Cow::Borrowed(e),
         Style::Material => crate::lower::material_arg(e),
@@ -145,8 +146,8 @@ fn check_one(ctx: &mut TypeCheckCtx, style: Style, e: &Expr, runtime_ok: bool) {
             format!(
                 "`{}` takes a {}, got {}",
                 style.word(),
-                crate::analysis::types::type_str(&want),
-                crate::analysis::types::type_str(&got),
+                type_str(&want),
+                type_str(&got),
             ),
             e.range().clone(),
         );

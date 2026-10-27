@@ -100,21 +100,20 @@ fn lower_single(src: &str, fold_mode: FoldMode) -> LowerResult {
 
 /// Unfolded: lowering tests are structural microscopes that assert on real
 /// gates, not on what the certified fold pass would leave behind.
-/// `compile_folded` is the fold-behavior twin. ForceOff (not Auto) so this
+/// `compile_folded` is the fold-behavior twin. `ForceOff` (not Auto) so this
 /// stays unfolded regardless of whether `src` carries a module-level `@fold`.
 pub(super) fn compile(src: &str) -> LowerResult {
     lower_single(src, FoldMode::ForceOff)
 }
 
-/// Like `compile`, but with the certified fold pass enabled (ForceOn — not
-/// gated on a module-level `@fold`, since these are the fold-behavior tests
-/// themselves).
+/// Like `compile`, but with the certified fold pass enabled: `ForceOn`, not gated
+/// on a module-level `@fold`, since these are the fold-behavior tests themselves.
 pub(super) fn compile_folded(src: &str) -> LowerResult {
     lower_single(src, FoldMode::ForceOn)
 }
 
 /// Like `compile`, but with `fold_mode: FoldMode::Auto` (the production
-/// default) — folds unless `src` opts out with a module-level `@nofold`.
+/// default): folds unless `src` opts out with a module-level `@nofold`.
 pub(super) fn compile_auto(src: &str) -> LowerResult {
     lower_single(src, FoldMode::Auto)
 }
@@ -160,7 +159,7 @@ pub(super) fn wsir_and_diags(src: &str) -> (String, Vec<String>) {
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
     };
-    let result = match crate::compile_to_world(input, Default::default()) {
+    let result = match crate::compile_to_world(input, crate::emit::EmitOptions::default()) {
         Ok(r) => r,
         Err(crate::CompileError::HasErrors(ds)) => {
             panic!(
@@ -215,11 +214,9 @@ pub(super) fn backed(m: &crate::ir::Module, name: &str) -> bool {
 }
 
 /// Compile `entry_src` as the root file, resolving its `import`s against the
-/// in-memory `deps` (each `(name, source)` is loaded as `name.ws`).
-/// `fold_mode: Auto` (folds by default) — the cross-file tests that assert on
-/// gate shape keep their arithmetic real with a runtime input so folding is a
-/// no-op; this also doubles as the harness for
-/// `imported_module_nofold_is_inert`-style entry-vs-import annotation tests.
+/// in-memory `deps` (each `(name, source)` is loaded as `name.ws`), at
+/// `fold_mode: Auto`. Cross-file gate-shape tests keep their arithmetic real with
+/// a runtime input, so folding is a no-op for them.
 pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResult {
     let loader = crate::resolve::MemLoader {
         files: deps
@@ -236,13 +233,12 @@ pub(super) fn compile_multi(entry_src: &str, deps: &[(&str, &str)]) -> LowerResu
 pub(super) fn errs(s: &str) -> Vec<String> {
     crate::typecheck::typecheck(
         &crate::parser::parse(s, "t").ast,
-        "t",
         &crate::typecheck::CeSlotMap::default(),
     )
     .diagnostics
     .into_iter()
     .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-    .map(|d| d.code.to_string())
+    .map(|d| d.code)
     .collect()
 }
 
@@ -260,7 +256,7 @@ pub(super) fn only_chip<'a>(r: &'a LowerResult, what: &str) -> &'a crate::ir::Mo
 pub(super) fn assert_emits(module: &crate::ir::Module, layout: &crate::layout::LayoutResult) {
     let brz = crate::emit::emit_brz(
         module,
-        &Default::default(),
+        &crate::ir::ProgramSettings::default(),
         layout,
         &crate::emit::EmitOptions::default(),
     );
@@ -443,11 +439,9 @@ pub(super) fn wired_reachable(
 }
 
 /// The `NAME_LABEL`s of the `Var` gates that some `Exec_Var_Set` writes
-/// through its `VarRef` port. Proves a payload slot is actually WRITTEN, which
-/// neither a gate count nor a label lookup can: a slot that is allocated by
-/// `build_enum_fields` but never assigned still has its `Var` gate and its
-/// label, so a count-only check passes on a construction that dropped the
-/// value entirely.
+/// through its `VarRef` port. This proves a payload slot is WRITTEN: a slot
+/// `build_enum_fields` allocates but never assigns still has its `Var` gate and
+/// label, so a count or label check alone passes on a dropped value.
 pub(super) fn written_var_labels(r: &LowerResult) -> Vec<String> {
     let mut out: Vec<String> = r
         .module
@@ -474,7 +468,7 @@ pub(super) fn written_var_labels(r: &LowerResult) -> Vec<String> {
 }
 
 /// The `Value` baked into the `Exec_Var_Set` that writes the `Var` gate
-/// labelled `label`. A constant assigned to a var inlines onto the Var_Set as
+/// labelled `label`. A constant assigned to a var inlines onto the `Var_Set` as
 /// component data (see `constant_vec_inlines_into_var_set`), so this reads back
 /// the VALUE a slot actually receives, which `written_var_labels` cannot see.
 pub(super) fn written_value(r: &LowerResult, label: &str) -> Option<crate::ir::Literal> {

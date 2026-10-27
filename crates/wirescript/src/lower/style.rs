@@ -39,7 +39,7 @@ pub(crate) fn material_arg(e: &Expr) -> std::borrow::Cow<'_, Expr> {
 /// a runtime value. Typecheck (which decides where a runtime value may go) and
 /// lowering (which bakes or wires it) both ask this, so they agree on which
 /// values are constant. No `const mod` call is evaluated, in either stage.
-pub(crate) fn style_constant(e: &Expr, cx: &crate::const_eval::ConstCtx) -> Option<Literal> {
+pub(crate) fn style_constant(e: &Expr, cx: &crate::const_eval::ConstCtx<'_>) -> Option<Literal> {
     let mut budget = crate::const_eval::Budget::default();
     if let Some(lit) = srgb_constructor(e, cx, &mut budget) {
         return Some(lit);
@@ -52,7 +52,7 @@ pub(crate) fn style_constant(e: &Expr, cx: &crate::const_eval::ConstCtx) -> Opti
 /// constructor, so it is handled here.
 fn srgb_constructor(
     e: &Expr,
-    cx: &crate::const_eval::ConstCtx,
+    cx: &crate::const_eval::ConstCtx<'_>,
     budget: &mut crate::const_eval::Budget,
 ) -> Option<Literal> {
     let Expr::Call { callee, args, .. } = e else {
@@ -84,7 +84,7 @@ fn material_value(lit: &Literal) -> Option<Literal> {
     match lit {
         Literal::Record(fields) => fields
             .iter()
-            .find(|(n, _)| n == "__disc")
+            .find(|(n, _)| n == DISC_FIELD)
             .map(|(_, v)| v.clone()),
         Literal::Int(_) => Some(lit.clone()),
         _ => None,
@@ -94,7 +94,7 @@ fn material_value(lit: &Literal) -> Option<Literal> {
 /// The baked `_color` / `_material` of each of `color` and `material` that
 /// folds to a constant here.
 fn baked_style(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     color: Option<&Expr>,
     material: Option<&Expr>,
 ) -> (Option<Literal>, Option<Literal>) {
@@ -110,7 +110,7 @@ fn baked_style(
 
 /// Set the constant parts of a `@color` / `@material` on `node_id`.
 pub(super) fn bake_style(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     node_id: NodeId,
     color: Option<&Expr>,
     material: Option<&Expr>,
@@ -149,7 +149,7 @@ fn storage_nodes(binding: &Binding) -> Vec<NodeId> {
 }
 
 /// The constant `@color` / `@material` of the `var` just declared by `d`.
-pub(super) fn bake_var_style(ctx: &mut LowerCtx, d: &VarDecl) {
+pub(super) fn bake_var_style(ctx: &mut LowerCtx<'_>, d: &VarDecl) {
     if d.color_expr.is_none() && d.material_expr.is_none() {
         return;
     }
@@ -169,15 +169,15 @@ pub(super) fn bake_var_style(ctx: &mut LowerCtx, d: &VarDecl) {
 }
 
 /// A runtime `@color` lowered to a color-typed port.
-fn lower_color_value(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
+fn lower_color_value(ctx: &mut LowerCtx<'_>, e: &Expr) -> PortRef {
     lower_expr(ctx, e)
 }
 
 /// A runtime `@material` lowered to the int-typed port of its `BrickMaterial`
 /// discriminant, the value the changer's `Material` input takes.
-fn lower_material_value(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
+fn lower_material_value(ctx: &mut LowerCtx<'_>, e: &Expr) -> PortRef {
     let e = &*material_arg(e);
-    match crate::lower::access::lower_discriminant(ctx, e, e.range()) {
+    match lower_discriminant(ctx, e, e.range()) {
         Some(p) => p,
         None => lower_expr(ctx, e),
     }
@@ -189,45 +189,45 @@ fn lower_material_value(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
 /// Runs in the same post-declaration pass as `resolve_dynamic_var_labels`, in
 /// a pure context (`current_exec` cleared) so a var read resolves to its live
 /// `Value` output.
-pub(super) fn resolve_dynamic_var_styles(ctx: &mut LowerCtx, decls: &[TopDecl]) {
-    let saved_exec = ctx.current_exec.take();
-    for d in decls {
-        let TopDecl::Var(v) = d else { continue };
-        if v.color_expr.is_none() && v.material_expr.is_none() {
-            continue;
-        }
-        let view = ctx.top_view(crate::scope::top::ReadAt::code(&v.range));
-        let hosts = ctx
-            .scope
-            .get(&v.name)
-            .map(storage_nodes)
-            .unwrap_or_default();
-        if !hosts.is_empty() {
-            let cx = ctx.const_ctx(None);
-            let runtime_color = v
-                .color_expr
-                .as_ref()
-                .filter(|e| style_constant(e, &cx).is_none());
-            let runtime_material = v
-                .material_expr
-                .as_ref()
-                .filter(|e| style_constant(&material_arg(e), &cx).is_none());
-            if let Some(e) = runtime_color {
-                let src = lower_color_value(ctx, e);
-                for &host in &hosts {
-                    ctx.builder.module.dynamic_colors.insert(host, src);
+pub(super) fn resolve_dynamic_var_styles(ctx: &mut LowerCtx<'_>, decls: &[TopDecl]) {
+    ctx.pure(|ctx| {
+        for d in decls {
+            let TopDecl::Var(v) = d else { continue };
+            if v.color_expr.is_none() && v.material_expr.is_none() {
+                continue;
+            }
+            let view = ctx.top_view(crate::scope::top::ReadAt::code(&v.range));
+            let hosts = ctx
+                .scope
+                .get(&v.name)
+                .map(storage_nodes)
+                .unwrap_or_default();
+            if !hosts.is_empty() {
+                let cx = ctx.const_ctx(None);
+                let runtime_color = v
+                    .color_expr
+                    .as_ref()
+                    .filter(|e| style_constant(e, &cx).is_none());
+                let runtime_material = v
+                    .material_expr
+                    .as_ref()
+                    .filter(|e| style_constant(&material_arg(e), &cx).is_none());
+                if let Some(e) = runtime_color {
+                    let src = lower_color_value(ctx, e);
+                    for &host in &hosts {
+                        ctx.builder.module.dynamic_colors.insert(host, src);
+                    }
+                }
+                if let Some(e) = runtime_material {
+                    let src = lower_material_value(ctx, e);
+                    for &host in &hosts {
+                        ctx.builder.module.dynamic_materials.insert(host, src);
+                    }
                 }
             }
-            if let Some(e) = runtime_material {
-                let src = lower_material_value(ctx, e);
-                for &host in &hosts {
-                    ctx.builder.module.dynamic_materials.insert(host, src);
-                }
-            }
+            ctx.restore_top_view(view);
         }
-        ctx.restore_top_view(view);
-    }
-    ctx.current_exec = saved_exec;
+    });
 }
 
 /// Resolve a module-level `@color` / `@material` into the root shell's
@@ -235,7 +235,7 @@ pub(super) fn resolve_dynamic_var_styles(ctx: &mut LowerCtx, decls: &[TopDecl]) 
 /// emit when not. Runs beside `resolve_module_label`, so it may
 /// forward-reference declarations below it.
 pub(super) fn resolve_module_style(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     color: Option<&Expr>,
     material: Option<&Expr>,
 ) {
@@ -243,17 +243,18 @@ pub(super) fn resolve_module_style(
         return;
     }
     let (baked_color, baked_material) = baked_style(ctx, color, material);
-    let saved_exec = ctx.current_exec.take();
-    let color = match (color, baked_color) {
-        (Some(_), Some(lit)) => Some(crate::ir::StyleValue::Baked(lit)),
-        (Some(e), None) => Some(crate::ir::StyleValue::Wired(lower_color_value(ctx, e))),
-        (None, _) => None,
-    };
-    let material = match (material, baked_material) {
-        (Some(_), Some(lit)) => Some(crate::ir::StyleValue::Baked(lit)),
-        (Some(e), None) => Some(crate::ir::StyleValue::Wired(lower_material_value(ctx, e))),
-        (None, _) => None,
-    };
-    ctx.current_exec = saved_exec;
+    let (color, material) = ctx.pure(|ctx| {
+        let color = match (color, baked_color) {
+            (Some(_), Some(lit)) => Some(crate::ir::StyleValue::Baked(lit)),
+            (Some(e), None) => Some(crate::ir::StyleValue::Wired(lower_color_value(ctx, e))),
+            (None, _) => None,
+        };
+        let material = match (material, baked_material) {
+            (Some(_), Some(lit)) => Some(crate::ir::StyleValue::Baked(lit)),
+            (Some(e), None) => Some(crate::ir::StyleValue::Wired(lower_material_value(ctx, e))),
+            (None, _) => None,
+        };
+        (color, material)
+    });
     ctx.builder.module.root_style = crate::ir::RootStyle { color, material };
 }

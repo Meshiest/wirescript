@@ -1,8 +1,8 @@
 //! Write the reference half of `docs/src/environment.md` from the game's
 //! property map: every environment, its properties with the type a program
 //! reads and writes them as, and the members of each enum property. Usage:
-//!   cargo run -p wirescript --example gen_environment_doc            # write
-//!   cargo run -p wirescript --example gen_environment_doc -- --check # fail if stale
+//!   `cargo run -p wirescript --example gen_environment_doc` (write)
+//!   `cargo run -p wirescript --example gen_environment_doc -- --check` (fail if stale)
 use std::fmt::Write as _;
 use wirescript::catalog::properties::{PropertyType, property_map, property_type};
 
@@ -12,7 +12,7 @@ const MARKER: &str =
 
 /// An environment's name in a program: the game's label without spaces.
 fn squash(s: &str) -> String {
-    s.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    s.chars().filter(char::is_ascii_alphanumeric).collect()
 }
 
 fn reference() -> String {

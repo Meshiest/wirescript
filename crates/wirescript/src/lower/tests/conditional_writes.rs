@@ -19,8 +19,8 @@ fn chain_start(
 }
 
 /// A mod writing an output, called in a `for` bound under an `if`, or through
-/// `import * as`, is a conditional or repeated site: the output is stored.
-/// Both drove the output constantly, and two namespaced calls fanned in.
+/// `import * as`, is a conditional or repeated site: the output is stored, not
+/// driven constantly, and two namespaced calls do not fan in.
 #[test]
 fn a_call_in_a_loop_bound_or_through_a_namespace_is_a_counted_site() {
     let r = compile_ok(
@@ -42,7 +42,7 @@ fn a_call_in_a_loop_bound_or_through_a_namespace_is_a_counted_site() {
 
 /// A write after a `return` that may have run is conditional, in a handler, a
 /// chip's handler and a mod, whether the `return` sits under an `if` or in a
-/// `match` arm. Each drove the output with the constant from load time.
+/// `match` arm: the output is not driven with the constant from load time.
 #[test]
 fn a_write_after_a_possible_return_is_conditional() {
     let head = "enum K { A, B }\nin go: exec\nin c: bool\nin k: int\nvar e: K = K.A\nvar n: int = 0\nout on_: int = n\n";
@@ -70,8 +70,8 @@ fn a_write_after_a_possible_return_is_conditional() {
 
 /// An `if` expression's branch that writes, through a mod, runs only when it
 /// is taken; a branch with a `return` in a `match` leaves only on its branch;
-/// and a value `match` arm that acts runs only when it matches. Each ran on
-/// every evaluation.
+/// and a value `match` arm that acts runs only when it matches, not on every
+/// evaluation.
 #[test]
 fn an_if_or_match_expression_arm_that_acts_runs_only_when_taken() {
     let head = "enum K { A, B }\nin go: exec\nin c: bool\nvar k: K = K.A\nvar n: int = 0\nout on_: int = n\nout o: int\n\
@@ -174,7 +174,7 @@ fn an_if_or_match_expression_arm_that_acts_runs_only_when_taken() {
 }
 
 /// A range's start and stride feed two of the loop's pins each, and are
-/// evaluated once: `for i in bump()..9` called `bump()` twice.
+/// evaluated once: `for i in bump()..9` calls `bump()` once.
 #[test]
 fn a_loop_bound_is_evaluated_once() {
     for range in ["bump()..9", "(0..9).step(bump())", "(bump()..9).rev()"] {
@@ -197,9 +197,8 @@ fn a_loop_bound_is_evaluated_once() {
 }
 
 /// The path checks see a `return` and an `emit` in a value `match` arm:
-/// WS090 for a path that leaves before setting the output (it compiled and
-/// handed the caller a stale value), and no false WS013 for an output written
-/// only there.
+/// WS090 for a path that leaves before setting the output (the caller would
+/// get a stale value), and no false WS013 for an output written only there.
 #[test]
 fn path_checks_see_value_match_arms() {
     let head = "enum K { A, B }\nin go: exec\nvar k: K = K.A\nvar n: int = 0\nout on_: int = n\n";
@@ -235,7 +234,7 @@ fn a_custom_event_sent_in_a_loop_is_checked() {
 }
 
 /// An `out` in a `match` arm of a handler declares its port as one in an `if`
-/// branch does; it was WS073.
+/// branch does, with no WS073.
 #[test]
 fn an_out_in_a_handler_match_arm_is_a_port() {
     let r = compile_ok(
@@ -297,8 +296,7 @@ fn a_handler_an_arm_cannot_gate_is_warned() {
 /// to it: `int` and `float` give `float`, so an integer constant written to it
 /// is that float, and a bare multi-output read is the output it reads. Values
 /// no one type holds (a string, bool or enum beside a number, a record beside
-/// a scalar, two different records) are `WS103` (a string was stored into an
-/// `int` var).
+/// a scalar, two different records) are `WS103`.
 #[test]
 fn an_untyped_output_is_stored_as_the_join_of_its_writes() {
     let head = "enum K { A, B }\ntype P = { a: int, b: float }\ntype Q = { a: int, b: int }\nin go: exec\n\
@@ -468,8 +466,8 @@ fn a_mod_body_write_to_an_untyped_output_joins_it() {
     }
 }
 
-/// A range's bounds run in source order: `for i in a()..b()` called `b`
-/// first, so a side effect of `a` that `b` reads was not seen.
+/// A range's bounds run in source order: in `for i in a()..b()`, a side effect
+/// of `a` that `b` reads is seen.
 #[test]
 fn a_range_evaluates_its_bounds_in_source_order() {
     for range in [
@@ -552,7 +550,8 @@ fn a_custom_event_mismatch_names_where_the_receiver_type_came_from() {
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
     };
-    let r = crate::compile_with_loader(input, Default::default(), &loader).expect("compiles");
+    let r = crate::compile_with_loader(input, crate::emit::EmitOptions::default(), &loader)
+        .expect("compiles");
     let m = r
         .diagnostics
         .iter()

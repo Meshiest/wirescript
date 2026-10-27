@@ -1,8 +1,10 @@
+use std::fmt::Write as _;
+
 use super::*;
 
 /// The first `on` handler in a parsed script, for a test that only declares
-/// one. `what` names it in the panic so a parse regression says which
-/// handler went missing.
+/// one. `what` names it in the panic, so a failure says which handler is
+/// missing.
 fn first_handler<'a>(s: &'a Script, what: &str) -> &'a Handler {
     s.decls
         .iter()
@@ -104,8 +106,7 @@ fn parses_clean_corpus() {
             "let s = \"a\" ..\n \"b\"",
             None,
         ),
-        // Any expression may open a map entry; these misparsed as block
-        // expressions under an allow-list brace precheck.
+        // Any expression may open a map entry, not only a name or literal.
         ("brace: record", "let r = { x: 1, y: 2 }\n", None),
         ("brace: map", "var m: Map<int,int> = { 1 => 2 }\n", None),
         (
@@ -174,8 +175,8 @@ fn parses_clean_corpus() {
 #[test]
 fn out_binding_rejects_trailing_tokens() {
     // `out aw(wa)` reads like an anonymous output of a call, but an output
-    // port is always `out NAME` / `out NAME = expr` — trailing tokens like
-    // `(wa)` must not be silently dropped and re-parsed as their own decl.
+    // port is always `out NAME` / `out NAME = expr`, so trailing tokens like
+    // `(wa)` must be reported, not re-parsed as their own decl.
     let r = parse("let wa = (1, 2)\nout aw(wa)", "test");
     assert!(
         r.diagnostics.iter().any(|d| d.message.contains("out")),
@@ -187,7 +188,7 @@ fn out_binding_rejects_trailing_tokens() {
 #[test]
 fn top_doc_block_before_blank_is_module_doc_not_merged() {
     // A `///` block at the top, separated from the first decl by a blank
-    // line (or a `//` comment), is the module doc — it must NOT merge into
+    // line (or a `//` comment), is the module doc; it must NOT merge into
     // the following declaration's own doc comment.
     let src = "/// mod line 1\n/// mod line 2\n\n//\n\n/// chip doc\nchip {\n  var x: int = 0\n}";
     let r = parse(src, "test");
@@ -324,8 +325,8 @@ fn handler_with_param() {
 
 #[test]
 fn event_trigger_requires_parens() {
-    // An event trigger is a CALL -- `on RoundStart { }` (no
-    // parens) must error, steering to `on RoundStart() { }`.
+    // An event trigger is a CALL: `on RoundStart { }` (no parens) must
+    // error, steering to `on RoundStart() { }`.
     let r = crate::parser::parse("on RoundStart { }", "test");
     assert!(
         r.diagnostics.iter().any(|d| d
@@ -510,9 +511,7 @@ fn float_init(src: &str) -> f64 {
 #[test]
 fn an_error_at_the_end_of_an_interpolation_slot_reports_in_file_coordinates() {
     // "unexpected token '' in expression" is reported against the slot's
-    // Eof token, which was the one token the lexer pushed without mapping
-    // fragment coordinates back into the containing file, so a line-6
-    // error landed on line 1.
+    // Eof token, which must carry file coordinates (line 6, not line 1).
     let src = "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\nlet e = 5\nlet f = \"v: ${ a + }\"\n";
     let r = parse(src, "test");
     let d = r
@@ -526,11 +525,9 @@ fn an_error_at_the_end_of_an_interpolation_slot_reports_in_file_coordinates() {
 #[test]
 fn float_literals_keep_their_digit_separators() {
     assert_eq!(float_init("var x = 1_000.5"), 1000.5);
-    // The negative arm parsed the raw token text, so `_` made `f64`'s
-    // parser fail and `unwrap_or(0.0)` baked `-0.0` with no diagnostic.
+    // The negative arm strips separators too.
     assert_eq!(float_init("var x = -1_000.5"), -1000.5);
-    // The lexer stopped the exponent at the first `_`, splitting this into
-    // `2.5e1` and an identifier `_0`.
+    // A `_` in the exponent is a separator, not the start of an identifier.
     assert_eq!(float_init("var x = 2.5e1_0"), 2.5e10);
     assert_eq!(float_init("var x = -2.5e1_0"), -2.5e10);
 }
@@ -566,9 +563,8 @@ fn tuple_index_reports_instead_of_silently_picking_slot_zero() {
 
 #[test]
 fn array_and_map_decl_keywords_are_rejected() {
-    // The `array`/`map` declaration keywords were removed in favor of
-    // `var NAME: T[]` / `var NAME: Map<K,V>` (identical storage). Using them
-    // is a parse error pointing at the `var` replacement.
+    // `array`/`map` are not declaration keywords: using them is a parse
+    // error pointing at `var NAME: T[]` / `var NAME: Map<K,V>`.
     let ra = crate::parser::parse("array xs: int[]", "test");
     assert!(
         ra.diagnostics
@@ -589,7 +585,7 @@ fn array_and_map_decl_keywords_are_rejected() {
     assert!(rv.diagnostics.is_empty(), "var array: {:?}", rv.diagnostics);
     match &rv.ast.decls[0] {
         TopDecl::Var(v) => assert_eq!(v.name, "xs"),
-        d => panic!("expected Var, got {:?}", d),
+        d => panic!("expected Var, got {d:?}"),
     }
     let rvm = crate::parser::parse("var m: Map<string, int>", "test");
     assert!(rvm.diagnostics.is_empty(), "var map: {:?}", rvm.diagnostics);
@@ -607,7 +603,7 @@ fn parse_chip_decl() {
             assert_eq!(c.outputs.len(), 2);
             assert_eq!(c.outputs[0].name, "value");
         }
-        d => panic!("expected Chip, got {:?}", d),
+        d => panic!("expected Chip, got {d:?}"),
     }
 }
 
@@ -624,7 +620,7 @@ fn fn_decl_takes_the_mod_grammar() {
         c.inputs[1].default,
         Some(crate::ast::Expr::IntLit { value: 1, .. })
     ));
-    // The old expression-bodied form is not the grammar.
+    // An expression-bodied `fn ... = expr` is not the grammar.
     let old = crate::parser::parse("fn add(a: int, b: int) -> int = a + b", "test");
     assert!(!old.diagnostics.is_empty());
 }
@@ -638,7 +634,7 @@ fn parse_anonymous_output_defaults_to_underscore() {
             assert_eq!(c.outputs.len(), 1);
             assert_eq!(c.outputs[0].name, "_");
         }
-        d => panic!("expected Chip, got {:?}", d),
+        d => panic!("expected Chip, got {d:?}"),
     }
 }
 
@@ -652,7 +648,7 @@ fn parse_mod_with_output() {
             assert_eq!(c.outputs.len(), 1);
             assert_eq!(c.outputs[0].name, "r");
         }
-        d => panic!("expected Chip (mod), got {:?}", d),
+        d => panic!("expected Chip (mod), got {d:?}"),
     }
 }
 
@@ -669,7 +665,7 @@ fn parse_mod_anonymous_output_defaults_to_underscore() {
             assert_eq!(c.outputs.len(), 1);
             assert_eq!(c.outputs[0].name, "_");
         }
-        d => panic!("expected Chip (mod), got {:?}", d),
+        d => panic!("expected Chip (mod), got {d:?}"),
     }
 }
 
@@ -740,9 +736,9 @@ fn parse_return_value() {
     match &r.ast.decls[0] {
         TopDecl::Chip(c) => match &c.body.stmts[0] {
             Stmt::Return { value: Some(_), .. } => {}
-            s => panic!("expected Return with value, got {:?}", s),
+            s => panic!("expected Return with value, got {s:?}"),
         },
-        d => panic!("expected Chip, got {:?}", d),
+        d => panic!("expected Chip, got {d:?}"),
     }
 }
 
@@ -753,9 +749,9 @@ fn parse_return_no_value() {
     match &r.ast.decls[0] {
         TopDecl::Chip(c) => match &c.body.stmts[0] {
             Stmt::Return { value: None, .. } => {}
-            s => panic!("expected Return without value, got {:?}", s),
+            s => panic!("expected Return without value, got {s:?}"),
         },
-        d => panic!("expected Chip, got {:?}", d),
+        d => panic!("expected Chip, got {d:?}"),
     }
 }
 
@@ -1449,7 +1445,7 @@ fn parse_invisible_port_annotation() {
 /// Walks a parsed script for the first `Expr::NestedPrefab`, returning its
 /// captured inner source. Only recurses through the handful of expression
 /// and statement kinds needed to reach a call argument inside a handler
-/// body — enough for this test, not a general-purpose AST visitor.
+/// body; it is not a general-purpose AST visitor.
 fn find_nested_prefab_source(script: &Script) -> Option<String> {
     fn walk_expr(e: &Expr) -> Option<String> {
         match e {
@@ -1582,7 +1578,7 @@ fn a_trailing_star_still_continues_across_the_newline() {
     );
 }
 
-// ---- `on <Event> -> <pattern>` output capture -----
+// `on <Event> -> <pattern>` output capture
 
 /// What an `on ... -> pattern` row expects.
 struct Arrow {
@@ -1766,10 +1762,9 @@ fn on_arrow_bindings() {
 }
 
 /// An identifier filling a POSITIONAL CONFIG slot is a config value, not
-/// the removed inline output-binding form. `CustomEvent`'s channel name is
-/// such a slot, so `on CustomEvent(CH)` (for a `const CH`) — and any
-/// computed expression in the same slot — must parse, not hit the
-/// steer-to-`->` heuristic.
+/// the unsupported inline output-binding form. `CustomEvent`'s channel name
+/// is such a slot, so `on CustomEvent(CH)` (for a `const CH`) and any
+/// computed expression there must parse, not hit the steer-to-`->` heuristic.
 #[test]
 fn an_identifier_in_a_positional_config_slot_is_not_an_inline_output_bind() {
     for src in [
@@ -1785,7 +1780,7 @@ fn an_identifier_in_a_positional_config_slot_is_not_an_inline_output_bind() {
             r.diagnostics
         );
     }
-    // …and it really lands as a positional CONFIG arg, not as a param.
+    // ...and it really lands as a positional CONFIG arg, not as a param.
     let s = parse_ok("const CH = \"evt_died\"\non CustomEvent(CH) -> (v: int) { }");
     let handler = first_handler(&s, "a handler");
     assert_eq!(handler.config.len(), 1, "one positional config arg");
@@ -1800,10 +1795,9 @@ fn an_identifier_in_a_positional_config_slot_is_not_an_inline_output_bind() {
     );
 }
 
-/// The guard against over-broad suppression: an event with NO positional
-/// config slot must keep the steer-to-`->` heuristic and its original
-/// message, since there an identifier really is the removed inline
-/// output-binding form.
+/// An event with NO positional config slot keeps the steer-to-`->`
+/// heuristic and its message, since there an identifier really is the
+/// unsupported inline output-binding form.
 #[test]
 fn an_event_without_positional_config_still_gets_the_arrow_hint() {
     for src in [
@@ -1973,9 +1967,8 @@ fn parses_enum_decl_with_mixed_variants() {
 
 #[test]
 fn enum_is_contextual_and_still_usable_as_a_name() {
-    // `enum` opens a declaration only when an identifier follows it, so
-    // programs written before enums existed keep their `enum` variables,
-    // parameters and record fields.
+    // `enum` opens a declaration only when an identifier follows it, so it
+    // stays usable as a variable, parameter and record field name.
     let src = "enum Shape { Empty }\n\
                    var enum: int = 0\n\
                    type Rec = { enum: int }\n\
@@ -2007,6 +2000,41 @@ fn parses_enum_explicit_discriminant() {
     assert_eq!(e.variants[0].explicit_disc, Some(0));
     assert_eq!(e.variants[1].explicit_disc, Some(5));
     assert_eq!(e.variants[2].explicit_disc, None);
+}
+
+#[test]
+fn enum_discriminants_read_every_integer_literal_form() {
+    let src =
+        "enum E { A = 0x10, B = 0b101, C = 0o17, D = -0x2, F = 1_000, G = -9223372036854775808 }\n";
+    let r = crate::parse(src, "t.ws");
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    let TopDecl::Enum(e) = &r.ast.decls[0] else {
+        panic!()
+    };
+    let discs: Vec<_> = e.variants.iter().map(|v| v.explicit_disc).collect();
+    assert_eq!(
+        discs,
+        [
+            Some(16),
+            Some(5),
+            Some(15),
+            Some(-2),
+            Some(1000),
+            Some(i64::MIN)
+        ]
+    );
+}
+
+#[test]
+fn an_out_of_range_enum_discriminant_is_an_error() {
+    let r = crate::parse("enum E { A = 99999999999999999999 }\n", "t.ws");
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.message.contains("out of range")),
+        "{:?}",
+        r.diagnostics
+    );
 }
 
 #[test]
@@ -2047,10 +2075,9 @@ fn braced_construction_still_parses_in_value_position() {
 
 #[test]
 fn shorthand_braced_construction_is_a_single_variant_ctor_not_a_split() {
-    // Regression: a shorthand-first braced body (`{ w, h }`) after `A.B` in
-    // a value position must parse as ONE `Expr::VariantCtor`, NOT silently
-    // split into a bare `A.B` plus a separate `{ w, h }` block decl (which
-    // dropped the field values with zero diagnostics).
+    // A shorthand-first braced body (`{ w, h }`) after `A.B` in a value
+    // position parses as ONE `Expr::VariantCtor`, not a bare `A.B` plus a
+    // separate `{ w, h }` block decl.
     for (src, nfields) in [
         (
             "enum Shape { Box { w: float, h: float } }\nout b = Shape.Box { w, h }\n",
@@ -2114,8 +2141,7 @@ fn malformed_braced_body_commits_with_a_diagnostic_not_a_silent_split() {
     // A non-record brace body after `A.B` in a value position (the most
     // plausible real typo: braces instead of parens for a positional
     // variant, or a stray block) must COMMIT to a single VariantCtor with a
-    // parse diagnostic - NEVER silently split into two decls with the body
-    // dropped.
+    // parse diagnostic, never split into two decls with the body dropped.
     for src in [
         "enum S { Circle(float) }\nout c = S.Circle { 5.0 }\n",
         "out b = E.V { let x = 1 }\n",
@@ -2127,8 +2153,7 @@ fn malformed_braced_body_commits_with_a_diagnostic_not_a_silent_split() {
             "malformed braced construction must emit a diagnostic: src={src:?}"
         );
         // The `out` decl's value is a single VariantCtor whose malformed body
-        // was consumed (zero recovered fields) - the decl list is NOT the
-        // extra-decl "split" shape.
+        // was consumed (zero recovered fields), with no extra decl split off.
         let out = r
             .ast
             .decls
@@ -2399,7 +2424,7 @@ fn is_parses_as_a_variant_test() {
     };
     assert!(matches!(value.as_ref(), Expr::Ident { name, .. } if name == "s"));
     let Expr::FieldAccess { obj, field, .. } = path.as_ref() else {
-        panic!("expected a variant path, got {:?}", path)
+        panic!("expected a variant path, got {path:?}")
     };
     assert_eq!(field, "Circle");
     assert!(matches!(obj.as_ref(), Expr::Ident { name, .. } if name == "Shape"));
@@ -2421,7 +2446,7 @@ fn is_binds_like_an_equality_operator() {
         panic!("expected a top-level BinOp, got {:?}", out.value)
     };
     assert_eq!(op, "&&");
-    assert!(matches!(left.as_ref(), Expr::Is { .. }), "left: {:?}", left);
+    assert!(matches!(left.as_ref(), Expr::Is { .. }), "left: {left:?}");
 }
 
 /// The statements of the one top-level handler in `src`.
@@ -2493,14 +2518,22 @@ on go {
 /// A program nested past `MAX_NEST_DEPTH` is refused with one diagnostic
 /// instead of overflowing the stack.
 ///
-/// The three shapes each reach depth a different way: nested parens by
-/// parser recursion, a `+` chain by left-nesting one `BinOp` per operand
-/// with no deep recursion at all, and an `else if` ladder by nesting an
-/// `If` per arm. All three overflow a 2 MiB stack, the size tokio gives
-/// the worker an editor's analysis runs on, and an overflow aborts the
-/// process: `catch_unwind` cannot turn it into a diagnostic.
+/// Each shape reaches depth a different way: nested parens by recursion, a
+/// `+` chain by left-nesting one `BinOp` per operand, and an `else if`
+/// ladder by nesting an `If` per arm. It runs on a 2 MiB stack, the size of
+/// the editor's analysis worker; a coverage build's larger frames get 8 MiB.
 #[test]
 fn nesting_past_the_depth_limit_is_a_diagnostic_not_a_crash() {
+    let stack = if cfg!(coverage) { 8 << 20 } else { 2 << 20 };
+    std::thread::Builder::new()
+        .stack_size(stack)
+        .spawn(check_nesting_limit)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn check_nesting_limit() {
     let n = crate::parser::MAX_NEST_DEPTH + 50;
     let deep = [
         format!("on t() {{\n  o = {}1{}\n}}\n", "(".repeat(n), ")".repeat(n)),
@@ -2513,9 +2546,10 @@ fn nesting_past_the_depth_limit_is_a_diagnostic_not_a_crash() {
         ),
         format!(
             "in c: int\non t() {{\n{}{{ o = 0 }}\n}}\n",
-            (0..n)
-                .map(|i| format!("  if c == {i} {{ o = {i} }} else "))
-                .collect::<String>()
+            (0..n).fold(String::new(), |mut s, i| {
+                let _ = write!(s, "  if c == {i} {{ o = {i} }} else ");
+                s
+            })
         ),
     ];
     for src in &deep {
@@ -2570,14 +2604,9 @@ fn leftover_tokens_in_an_interpolation_slot_are_reported() {
 
 /// A span inside `${...}` is the span in the FILE, whatever shape the
 /// sub-expression is.
-///
-/// The alternative is lexing the slot on its own and walking the tree
-/// afterwards to shift its positions, which needs an arm per expression
-/// shape: a record literal, an `is`, an `unsafe`, a block expression or a
-/// match-arm body that the walker misses reports at line 1.
 #[test]
 fn spans_inside_an_interpolation_are_file_positions() {
-    // Each body is a shape the old shifting walker missed.
+    // A record literal, an `is`, an `unsafe` and a block expression.
     for body in ["{ a: n }", "n is E.A", "unsafe n.A.f", "{ let t = n; t }"] {
         let src = format!("in n: int\n\n\n\nout s = \"v ${{ {body} }}\"\n");
         let r = parse(&src, "t");
@@ -2598,7 +2627,7 @@ fn spans_inside_an_interpolation_are_file_positions() {
             .iter()
             .find_map(|p| match p {
                 crate::ast::InterpPart::Expr(e) => Some(e),
-                _ => None,
+                crate::ast::InterpPart::Lit(_) => None,
             })
             .expect("the `${...}` slot");
         assert_eq!(
@@ -2612,10 +2641,8 @@ fn spans_inside_an_interpolation_are_file_positions() {
 /// A `${...}` slot is lexed at its position in the file, and the lexer's
 /// own source slicing stays fragment-local.
 ///
-/// Seeding the lexer's reported positions is what makes an interpolation's
-/// spans right; seeding the offsets it INDEXES WITH aborts the compile,
-/// since a slot late in a file would slice its short fragment at the
-/// file offset.
+/// Only the reported positions are seeded: seeding the offsets it INDEXES
+/// WITH would slice a late slot's short fragment at the file offset.
 #[test]
 fn an_interpolation_slot_containing_a_string_lexes() {
     let pad = "// filler\n".repeat(30);
@@ -2630,10 +2657,8 @@ fn an_interpolation_slot_containing_a_string_lexes() {
 /// A dangling operator before a closing token does not swallow the rest of
 /// the file.
 ///
-/// `parse_primary`'s error arm consumed whatever token it failed on,
-/// including the `}` that closes the block around it: the block then ran
-/// to EOF looking for its terminator and every declaration after it was
-/// never parsed at all, so nothing in the rest of the file was checked.
+/// `parse_primary`'s error arm must leave the `}` that closes the block
+/// around it, or the block runs to EOF and nothing after it is parsed.
 #[test]
 fn a_dangling_operator_does_not_swallow_the_rest_of_the_file() {
     let r = parse(
@@ -2662,15 +2687,9 @@ fn a_dangling_operator_does_not_swallow_the_rest_of_the_file() {
 /// Leaving a closing token in place must not let any recovery loop spin.
 ///
 /// Every prefix AND every suffix of a program with a dangling operator
-/// before each bracket kind is parsed. The suffixes are the half that can
-/// reach the top-level loop: a prefix of a valid program always begins
-/// with a well-formed declaration, so `parse_script` is never handed a
-/// stray closing token in first position, and a prefix-only sweep stayed
-/// green while 139 of these suffixes spun.
-///
-/// The sweep runs on its own thread with a deadline because the failure
-/// mode is a loop that allocates a declaration per iteration: without one
-/// this reports as a CI job that never finishes and names no test.
+/// before each bracket kind is parsed; only a suffix can hand `parse_script`
+/// a stray closing token in first position. The sweep runs on its own thread
+/// with a deadline, so a spinning loop fails this test instead of hanging CI.
 #[test]
 fn recovery_terminates_on_every_truncated_prefix_and_suffix() {
     let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -2684,8 +2703,8 @@ fn recovery_terminates_on_every_truncated_prefix_and_suffix() {
                     "type P = { x: int }\nvar p: P\nin go: exec\non go { p = { x: 1 + } }\n",
                     "in go: exec\non go { let m = { 1 => 2 + } }\n",
                     "enum E { A }\nin go: exec\nvar s: E\nvar n: int\non go { n = match s { E.A => 1 + } }\n",
-                    // Shapes a user types by accident, each of which spun the
-                    // top-level loop: a lone closer, one brace too many, a
+                    // Shapes a user types by accident, each of which can spin
+                    // the top-level loop: a lone closer, one brace too many, a
                     // match in a top-level `out`, and a typed parameter on a
                     // name that is not a catalog event (which parses as a call
                     // expression and leaves the `)` in place).
@@ -2965,7 +2984,7 @@ fn for_range_bare_dotdot_continues_across_a_line_break() {
     assert!(matches!(s, crate::ast::Expr::Ident { name, .. } if name == "start"));
     assert!(matches!(e, crate::ast::Expr::Ident { name, .. } if name == "end"));
 
-    // Split before `..` - the shape the formatter actually produces.
+    // Split before `..`, the shape the formatter produces.
     let (s, e) = endpoints("in go: exec\non go { for i in start\n  ..end { } }");
     assert!(matches!(s, crate::ast::Expr::Ident { name, .. } if name == "start"));
     assert!(matches!(e, crate::ast::Expr::Ident { name, .. } if name == "end"));

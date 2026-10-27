@@ -3,7 +3,7 @@
 //! `let`s, calls and a few errors) at 2k, 4k and 8k lines, times each request
 //! through the public `analysis` API, and fails any whose 4k -> 8k ratio is
 //! above 2.6. Usage:
-//!   cargo run --release -p wirescript --example editor_scale [-- --runs 7]
+//!   `cargo run --release -p wirescript --example editor_scale [-- --runs 7]`
 use std::time::{Duration, Instant};
 use wirescript::analysis::{
     collect_inlay_hints, find_name_range, prepare_rename_at, references_at, semantic_tokens,
@@ -55,7 +55,7 @@ fn requests(src: &str) -> Vec<(&'static str, Duration)> {
     // Parse, resolve and typecheck, as the language server does per edit.
     time("front end", &mut || {
         let r = resolve_parsed(wirescript::parse(src, FILE), FILE, &FsLoader);
-        tc = Some(wirescript::typecheck::typecheck_with_inference(&r.ast, FILE).0);
+        tc = Some(wirescript::typecheck_with_inference(&r.ast).0);
         resolved = Some(r);
     });
     let (resolved, tc) = (resolved.unwrap(), tc.unwrap());
@@ -88,12 +88,7 @@ fn requests(src: &str) -> Vec<(&'static str, Duration)> {
         std::hint::black_box(collect_inlay_hints(src, &resolved.ast, &tc.type_of_expr, FILE).len());
     });
     time("diagnostics", &mut || {
-        let input = wirescript::CompileInput {
-            source: src,
-            file: FILE,
-            module_name: None,
-            fold_mode: Default::default(),
-        };
+        let input = wirescript::CompileInput::new(src, FILE);
         std::hint::black_box(wirescript::diagnostics_only(input, &FsLoader).len());
     });
     times

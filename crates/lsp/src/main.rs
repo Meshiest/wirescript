@@ -1,5 +1,9 @@
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(not(target_family = "wasm"))]
 #[global_allocator]
@@ -9,20 +13,39 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use wirescript::CompileInput;
+use wirescript::KEYWORDS;
 use wirescript::analysis::text::Ruler;
 use wirescript::analysis::{
-    asset_ref_at, collect_estimates, collect_inlay_hints, collect_symbols_for_file,
-    cursor_byte_offset, definition_at, field_name_at, fill_match_arms_at, fill_record_at,
-    find_asset_refs, find_name_range, format_with, hover_at, prefab_path_fragment,
-    prepare_rename_at, references_at, references_to_export, rename_edit_text, semantic_tokens,
-    word_at, AssetRef, CrossFile, FormatOptions, InlayHintKind, NarrowedReadMap, RefNs, RefSite,
-    RefTarget, ResourceEstimate, SemTokenKind, SymbolDef, TextRange, TypeMap, VarReadContextMap,
+    AssetRef, CrossFile, FormatOptions, InlayHintKind, NarrowedReadMap, RefNs, RefSite, RefTarget,
+    ResourceEstimate, SemTokenKind, SymbolDef, TextRange, TypeMap, VarReadContextMap, asset_ref_at,
+    collect_estimates, collect_inlay_hints, collect_symbols_for_file, cursor_byte_offset,
+    definition_at, field_name_at, fill_match_arms_at, fill_record_at, find_asset_refs,
+    find_name_range, format_with, hover_at, prefab_path_fragment, prepare_rename_at, references_at,
+    references_to_export, rename_edit_text, semantic_tokens, word_at,
 };
 use wirescript::ast::{ImportKind, LetBinding, Script, TopDecl};
-use wirescript::lexer::KEYWORDS;
-use wirescript::resolve::{resolve, resolve_parsed, FileLoader, FsLoader};
-use wirescript::typecheck::typecheck_with_inference;
-use wirescript::FoldMode;
+use wirescript::compile::resolve_prefab_path;
+use wirescript::diagnostic::{Pos, Severity, SourceRange};
+use wirescript::resolve::{FileLoader, FsLoader, resolve, resolve_parsed};
+use wirescript::typecheck_with_inference;
+
+/// The semantic-token legend: the token type the server reports for a kind is
+/// the kind's index in this list.
+const SEM_TOKEN_LEGEND: [(SemTokenKind, SemanticTokenType); 5] = [
+    (SemTokenKind::Type, SemanticTokenType::TYPE),
+    (SemTokenKind::Function, SemanticTokenType::FUNCTION),
+    (SemTokenKind::Parameter, SemanticTokenType::PARAMETER),
+    (SemTokenKind::Variable, SemanticTokenType::VARIABLE),
+    (SemTokenKind::Namespace, SemanticTokenType::NAMESPACE),
+];
+
+fn sem_token_type(kind: SemTokenKind) -> u32 {
+    SEM_TOKEN_LEGEND
+        .iter()
+        .position(|(k, _)| *k == kind)
+        .expect("every semantic-token kind is in the legend") as u32
+}
 
 struct CompileProgressNotification;
 impl tower_lsp::lsp_types::notification::Notification for CompileProgressNotification {
@@ -44,40 +67,39 @@ fn lsp_col_to_char(source: &str, line: usize, character: u32) -> usize {
 
 /// [`wirescript::analysis::text::char_col_to_editor`] as an LSP position's
 /// `character`.
-fn char_col_to_lsp(ruler: &Ruler, line: usize, col: usize) -> u32 {
+fn char_col_to_lsp(ruler: &Ruler<'_>, line: usize, col: usize) -> u32 {
     ruler.char_col_to_editor(line, col) as u32
 }
 
 /// [`wirescript::analysis::text::byte_col_to_editor`] as an LSP position's
 /// `character`.
-fn byte_off_to_lsp(ruler: &Ruler, line: usize, byte: usize) -> u32 {
+fn byte_off_to_lsp(ruler: &Ruler<'_>, line: usize, byte: usize) -> u32 {
     ruler.byte_col_to_editor(line, byte) as u32
 }
 
 /// Source text for `uri`, preferring the open document and falling back to
 /// disk. Needed only to convert one result's columns for the editor.
-fn source_for<'a>(docs: &'a HashMap<Url, DocState>, uri: &Url) -> std::borrow::Cow<'a, str> {
-    use std::borrow::Cow;
+fn source_for<'a>(docs: &'a HashMap<Url, DocState>, uri: &Url) -> Cow<'a, str> {
     match docs.get(uri) {
         Some(d) => Cow::Borrowed(d.source.as_str()),
         None => uri
             .to_file_path()
             .ok()
-            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|p| fs::read_to_string(p).ok())
             .map_or(Cow::Borrowed(""), Cow::Owned),
     }
 }
 
-fn pos_to_lsp(ruler: &Ruler, p: wirescript::diagnostic::Pos) -> Position {
+fn pos_to_lsp(ruler: &Ruler<'_>, p: Pos) -> Position {
     let line = p.line.saturating_sub(1);
     Position {
-        line: line as u32,
+        line,
         // `Pos::col` is a 1-based byte column.
         character: byte_off_to_lsp(ruler, line as usize, p.col.saturating_sub(1) as usize),
     }
 }
 
-fn range_to_lsp(ruler: &Ruler, r: &wirescript::diagnostic::SourceRange) -> Range {
+fn range_to_lsp(ruler: &Ruler<'_>, r: &SourceRange) -> Range {
     Range {
         start: pos_to_lsp(ruler, r.start),
         end: pos_to_lsp(ruler, r.end),
@@ -87,7 +109,7 @@ fn range_to_lsp(ruler: &Ruler, r: &wirescript::diagnostic::SourceRange) -> Range
 /// A [`TextRange`] carries 0-based BYTE columns, `ref_site_to_text_range`
 /// builds it straight from a `SourceRange`, not the char columns the rest of
 /// `analysis::` returns.
-fn text_range_to_lsp(ruler: &Ruler, r: &TextRange) -> Range {
+fn text_range_to_lsp(ruler: &Ruler<'_>, r: &TextRange) -> Range {
     Range {
         start: Position {
             line: r.start_line as u32,
@@ -104,22 +126,20 @@ fn text_range_to_lsp(ruler: &Ruler, r: &TextRange) -> Range {
 /// when it is not open) and indexing its lines once however many results it
 /// holds.
 fn ranges_in_files(docs: &HashMap<Url, DocState>, refs: &[(Url, TextRange)]) -> Vec<Range> {
-    let mut sources: HashMap<&Url, std::borrow::Cow<str>> = HashMap::new();
+    let mut sources: HashMap<&Url, Cow<'_, str>> = HashMap::new();
     for (u, _) in refs {
         sources.entry(u).or_insert_with(|| source_for(docs, u));
     }
-    let rulers: HashMap<&Url, Ruler> = sources.iter().map(|(u, s)| (*u, Ruler::new(s))).collect();
+    let rulers: HashMap<&Url, Ruler<'_>> =
+        sources.iter().map(|(u, s)| (*u, Ruler::new(s))).collect();
     refs.iter()
         .map(|(u, r)| text_range_to_lsp(&rulers[u], r))
         .collect()
 }
 
-/// One [`RefSite`] converted to the LSP-facing [`TextRange`] the edit path
-/// uses: a coarse site (a whole-declaration/whole-statement span) is first
-/// narrowed to the precise name token via `find_name_range` against ITS OWN
-/// file's `source` — the only place source text enters this module, and a
-/// bounded narrowing of one already-resolved site, never a textual search
-/// (see the plan's Global Constraints). A precise site converts directly.
+/// One [`RefSite`] as the [`TextRange`] the edit path uses. A coarse site (a
+/// whole declaration or statement) is narrowed to its name token with
+/// `find_name_range` against its own file's `source`; a precise one converts directly.
 fn ref_site_to_text_range(source: &str, name: &str, site: &RefSite) -> TextRange {
     let range = if site.coarse {
         find_name_range(source, &site.range, name).unwrap_or_else(|| site.range.clone())
@@ -135,17 +155,14 @@ fn ref_site_to_text_range(source: &str, name: &str, site: &RefSite) -> TextRange
     }
 }
 
-/// The same field-name / keyword refusal `prepare_rename_at` applies before
-/// it ever calls `references_at`, reused here so `references`/`rename` don't
-/// fall through to `references_at`'s own (coarser) dispatch and return the
-/// enclosing declaration's whole reference set for a cursor that's actually
-/// on a record FIELD name or a lexer keyword — mirrors the `field_name_at`
-/// guard `goto_definition` already applies for the same reason.
+/// The field-name and keyword refusal `prepare_rename_at` applies, so
+/// `references` and `rename` on a record field name or a keyword return nothing
+/// instead of the enclosing declaration's references.
 fn is_field_or_keyword(ast: &Script, source: &str, line: usize, col: usize) -> bool {
-    if let Some(word) = word_at(source, line, col) {
-        if KEYWORDS.contains(&word.as_str()) {
-            return true;
-        }
+    if let Some(word) = word_at(source, line, col)
+        && KEYWORDS.contains(&word.as_str())
+    {
+        return true;
     }
     field_name_at(ast, source, line, col)
 }
@@ -173,34 +190,24 @@ fn sort_and_dedup(mut results: Vec<(Url, TextRange)>) -> Vec<(Url, TextRange)> {
     results
 }
 
-/// The top-level declaration in `ast` binding `name` in namespace `ns`, if
-/// any — mirrors `analysis::definition::top_decl_name`'s construct coverage
-/// (chip/mod, fn, `let <ident>`, event) plus `type` (importable per the
-/// plan's Global Constraints, but not a target of that private helper since
-/// `definition.rs` never jumps to a type-position use). Returns the whole
-/// declaration's own range; callers narrow it to the name token via
-/// `find_name_range`, exactly like `find_import_definition` does for
-/// goto-definition.
-fn top_level_decl_range(
-    ast: &Script,
-    name: &str,
-    ns: RefNs,
-) -> Option<wirescript::diagnostic::SourceRange> {
+/// The top-level declaration in `ast` that binds `name` in namespace `ns`: a
+/// chip or mod, a `let <ident>`, an event or a `type`. Returns the whole
+/// declaration's range; callers narrow it to the name with `find_name_range`.
+fn top_level_decl_range(ast: &Script, name: &str, ns: RefNs) -> Option<SourceRange> {
     for d in &ast.decls {
         match d {
             TopDecl::Chip(c) if ns == RefNs::Value && c.name == name => {
-                return Some(c.range.clone())
+                return Some(c.range.clone());
             }
-            TopDecl::Fn(f) if ns == RefNs::Value && f.name == name => return Some(f.range.clone()),
             TopDecl::Let(l) if ns == RefNs::Value => {
-                if let LetBinding::Ident { name: n, .. } = &l.binding {
-                    if n == name {
-                        return Some(l.range.clone());
-                    }
+                if let LetBinding::Ident { name: n, .. } = &l.binding
+                    && n == name
+                {
+                    return Some(l.range.clone());
                 }
             }
             TopDecl::Event(e) if ns == RefNs::Value && e.name == name => {
-                return Some(e.range.clone())
+                return Some(e.range.clone());
             }
             TopDecl::TypeAlias(t) if ns == RefNs::Type && t.name == name => {
                 return Some(t.range.clone());
@@ -211,14 +218,10 @@ fn top_level_decl_range(
     None
 }
 
-/// For an `Imported` target: find the `import { … }` specifier in the
-/// CURRENT file that brought in `export_name`, resolve + parse the source
-/// file it points at (mirrors `definition.rs::find_import_definition`'s path
-/// resolution), then run `references_at` on the ORIGINAL declaration's own
-/// name span there — giving the defining file's URI, source, and its own
-/// decl + local-use sites. `None` when the current doc isn't open, no
-/// matching import specifier exists, or the target file/decl can't be
-/// resolved (e.g. deleted from disk).
+/// For an `Imported` target: find the `import { ... }` specifier in the current
+/// file that brings in `export_name`, resolve and parse the file it names, and run
+/// `references_at` on the original declaration there. `None` when the document is
+/// not open, no specifier matches, or the file or declaration cannot be resolved.
 fn find_defining_file_sites(
     docs: &HashMap<Url, DocState>,
     uri: &Url,
@@ -246,19 +249,16 @@ fn find_defining_file_sites(
         format!("{import_path}.ws")
     };
 
-    // Prefer an already-open buffer for `D` over its on-disk content — it may
-    // hold unsaved edits, and reusing its own `Url` (rather than a freshly
-    // built `Url::from_file_path`) avoids tagging edits with a differently-
-    // spelled URI for a file the client already has open under another
-    // spelling (the same class of bug the respelled-URI dedup elsewhere in
-    // this file guards against).
-    let d_canonical = std::path::Path::new(&d_file)
+    // Prefer an open buffer for `D` over the file on disk: it may hold unsaved
+    // edits, and its own `Url` keeps edits tagged with the URI spelling the
+    // client already uses.
+    let d_canonical = Path::new(&d_file)
         .canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from(&d_file));
+        .unwrap_or_else(|_| PathBuf::from(&d_file));
     if let Some((open_uri, open_doc)) = docs.iter().find(|(u, _)| {
         u.to_file_path()
             .ok()
-            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .map(|p| fs::canonicalize(&p).unwrap_or(p))
             .as_ref()
             == Some(&d_canonical)
     }) {
@@ -291,25 +291,16 @@ fn find_defining_file_sites(
     Some((d_uri, d_source, sites))
 }
 
-/// Cross-file site collection for `references`/`rename`, driven entirely by
-/// the AST-based resolver (`references_at`/`references_to_export`) — never a
-/// textual scan. `target`/`current_sites` come from an initial
-/// `references_at` call at the LSP cursor; `current_sites` already IS the
-/// current file's own decl + local-use set.
+/// Cross-file sites for `references` and `rename`, found by the AST resolver
+/// (`references_at`, `references_to_export`), never by a text search.
+/// `current_sites` is the current file's own declaration and local uses.
 ///
-/// - `Local`: only `current_sites`, tagged to `uri` — no cross-file scan runs
-///   at all (locals never cross files per the plan's Global Constraints).
-/// - `Exported`: the current file already IS the defining file `D`, so
-///   `current_sites` doubles as `D`'s sites; every other `.ws` file (open
-///   docs, regardless of directory, plus a same-directory disk scan for
-///   closed ones — mirroring the pre-resolver behavior) is scanned via
-///   `references_to_export` for import-specifier + import-bound uses.
-/// - `Imported`: `find_defining_file_sites` resolves the real defining file
-///   `D` (which may not be `uri`, and may not even be open) and its own
-///   sites; the same sibling scan then runs over every other file, which
-///   naturally includes the current (importer) file recomputing to the same
-///   `current_sites` — cheap and correct, since `D` itself never matches
-///   `references_to_export` (its binding has no `import_export` tag).
+/// - `Local`: only `current_sites`; a local never crosses files.
+/// - `Exported`: the current file is the defining file `D`, so `current_sites`
+///   are `D`'s; every other `.ws` file (open documents, and closed ones in the
+///   same directory) is scanned for the import specifiers and their uses.
+/// - `Imported`: `find_defining_file_sites` finds `D` (which may be closed) and
+///   its sites; the same scan then runs over every other file.
 fn collect_references_across_files(
     docs: &HashMap<Url, DocState>,
     uri: &Url,
@@ -347,9 +338,8 @@ fn collect_references_across_files(
         CrossFile::Local => unreachable!("handled above"),
     };
     let Some((d_uri, d_source, d_sites)) = defining else {
-        // Couldn't resolve the defining file (e.g. the imported file is
-        // missing on disk) — degrade to this file's own sites rather than
-        // returning nothing.
+        // The defining file cannot be resolved (an imported file missing on disk):
+        // fall back to this file's own sites.
         let results: Vec<(Url, TextRange)> = current_sites
             .iter()
             .map(|s| {
@@ -362,14 +352,10 @@ fn collect_references_across_files(
         return sort_and_dedup(results);
     };
 
-    // CRITICAL: narrow every cross-file coarse site against `export_name`, not
-    // `target.name`. `D`'s text (and a sibling's specifier) spells the ORIGINAL
-    // export name; narrowing a coarse `mod helper(){…}` decl against the
-    // cursor's LOCAL name (e.g. an alias `assist`) would fail `find_name_range`
-    // and fall back to the whole-decl range — replacing the entire declaration.
-    // After the aliased-import-is-`Local` classification, `target.name` already
-    // equals `export_name` on every path that reaches here, but binding to
-    // `export_name` makes that invariant explicit and corruption-proof.
+    // Narrow every cross-file coarse site against `export_name`, not
+    // `target.name`: `D` and a sibling's specifier spell the original export name,
+    // and a failed `find_name_range` against a local alias would replace the whole
+    // declaration.
     let mut results: Vec<(Url, TextRange)> = d_sites
         .iter()
         .map(|s| {
@@ -383,25 +369,23 @@ fn collect_references_across_files(
     let d_canonical = d_uri
         .to_file_path()
         .ok()
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+        .map(|p| fs::canonicalize(&p).unwrap_or(p));
 
-    // Every OPEN document that isn't `D` itself: scan for import-specifier +
-    // import-bound uses of `export_name`. (`D` naturally yields nothing here
-    // even when left in, since its own binding carries no `import_export`
-    // tag — the explicit skip is just to avoid the redundant parse.)
-    for (doc_uri, doc_state) in docs.iter() {
+    // Every open document other than `D`: its import specifiers of `export_name`
+    // and their uses.
+    for (doc_uri, doc_state) in docs {
         if let Some(dc) = &d_canonical {
             let doc_canon = doc_uri
                 .to_file_path()
                 .ok()
-                .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+                .map(|p| fs::canonicalize(&p).unwrap_or(p));
             if doc_canon.as_ref() == Some(dc) {
                 continue;
             }
         }
         let file = uri_to_file_string(doc_uri);
         let ast = wirescript::on_big_stack(|| wirescript::parse(&doc_state.source, &file)).ast;
-        for s in references_to_export(&ast, &file, &export_name, target.ns) {
+        for s in references_to_export(&ast, &export_name, target.ns) {
             results.push((
                 doc_uri.clone(),
                 ref_site_to_text_range(&doc_state.source, &export_name, &s),
@@ -411,7 +395,7 @@ fn collect_references_across_files(
 
     for_each_unopened_sibling(docs, uri, d_canonical.as_deref(), |entry_uri, file, src| {
         let ast = wirescript::on_big_stack(|| wirescript::parse(&src, &file)).ast;
-        for s in references_to_export(&ast, &file, &export_name, target.ns) {
+        for s in references_to_export(&ast, &export_name, target.ns) {
             results.push((
                 entry_uri.clone(),
                 ref_site_to_text_range(&src, &export_name, &s),
@@ -456,26 +440,23 @@ fn insert_quickfix(
     })
 }
 
-/// Visit every `.ws` file beside `uri` that is not already open in the editor
-/// (nor `skip`), handing `f` its URL, its path as a `file` string, and its
-/// source read from disk.
+/// Visit every `.ws` file beside `uri` that is not open in the editor (nor
+/// `skip`), handing `f` its URL, its path as a `file` string and its source.
 ///
-/// Skipping is keyed on the CANONICAL path, never the `Url`: the client's URI
-/// spelling (`file:///c%3A/…`) differs from `Url::from_file_path`'s
-/// (`file:///C:/…`), so a Url-keyed skip re-added every open doc from disk.
-/// References then showed each site twice, and rename emitted two identical
-/// TextEdits per site - overlapping edits the editor refuses to apply, silently
-/// leaving those files un-renamed.
+/// The skip is keyed on the canonical path, never the `Url`: the client spells
+/// URIs differently (`file:///c%3A/...` against `file:///C:/...`), and reading an
+/// open document again from disk duplicates its sites, which gives rename
+/// overlapping edits the editor refuses.
 fn for_each_unopened_sibling(
     docs: &HashMap<Url, DocState>,
     uri: &Url,
-    skip: Option<&std::path::Path>,
+    skip: Option<&Path>,
     mut f: impl FnMut(Url, String, String),
 ) {
-    let open_paths: std::collections::HashSet<std::path::PathBuf> = docs
+    let open_paths: HashSet<PathBuf> = docs
         .keys()
         .filter_map(|u| u.to_file_path().ok())
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .map(|p| fs::canonicalize(&p).unwrap_or(p))
         .collect();
     let Ok(file_path) = uri.to_file_path() else {
         return;
@@ -484,30 +465,29 @@ fn for_each_unopened_sibling(
         return;
     };
     for path in list_dir(dir) {
-        if !path.extension().map_or(false, |e| e == "ws") {
+        if path.extension().is_none_or(|e| e != "ws") {
             continue;
         }
-        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if open_paths.contains(&canonical) || skip == Some(canonical.as_path()) {
             continue;
         }
         let Ok(entry_uri) = Url::from_file_path(&path) else {
             continue;
         };
-        let Ok(src) = std::fs::read_to_string(&path) else {
+        let Ok(src) = fs::read_to_string(&path) else {
             continue;
         };
         f(entry_uri, path.to_string_lossy().to_string(), src);
     }
 }
 
-/// Find-references for an atom `:name`: every `:name` occurrence in every open
-/// document plus every `.ws` file in the referencing file's directory. Atoms
-/// are global (a name hashes to one xxHash64 value, with no scope), so this is
-/// a plain name match across the workspace — no resolution needed.
+/// Find-references for an atom `:name`: every `:name` in every open document and
+/// every `.ws` file in the referencing file's directory. Atoms are global (one
+/// xxHash64 value per name, no scope), so a plain name match is exact.
 fn collect_atom_references(docs: &HashMap<Url, DocState>, uri: &Url, name: &str) -> Vec<Location> {
     let mut out: Vec<Location> = Vec::new();
-    for (doc_uri, doc_state) in docs.iter() {
+    for (doc_uri, doc_state) in docs {
         let file = uri_to_file_string(doc_uri);
         let ruler = Ruler::new(&doc_state.source);
         for r in wirescript::analysis::atom_references(&doc_state.source, &file, name) {
@@ -532,7 +512,7 @@ fn collect_atom_references(docs: &HashMap<Url, DocState>, uri: &Url, name: &str)
 fn uri_to_file_string(uri: &Url) -> String {
     uri.to_file_path()
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| uri.path().to_string())
+        .unwrap_or_else(|()| uri.path().to_string())
 }
 
 /// The paths in `dir`, or none when it cannot be read.
@@ -541,8 +521,8 @@ fn uri_to_file_string(uri: &Url) -> String {
 /// EBADF, std turns that into a panic, and a WASI server cannot unwind, so the
 /// panic ends it. There the directory handle is leaked instead: every
 /// `DirEntry` shares it, so it stays open once the `ReadDir` is forgotten.
-fn list_dir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Ok(mut entries) = std::fs::read_dir(dir) else {
+fn list_dir(dir: &Path) -> Vec<PathBuf> {
+    let Ok(mut entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
     let paths = entries.by_ref().flatten().map(|e| e.path()).collect();
@@ -551,7 +531,7 @@ fn list_dir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     paths
 }
 
-/// Candidate prefab-reference strings for `$./…` completion: every `.brz`
+/// Candidate prefab-reference strings for `$./...` completion: every `.brz`
 /// archive and `.ws` source file under the document's directory, as
 /// `./relative/path.ext` (forward slashes, the wirescript reference form).
 /// Bounded depth so large trees don't stall completion.
@@ -562,18 +542,18 @@ fn scan_prefab_paths(uri: &Url) -> Vec<String> {
     let Some(base) = file_path.parent() else {
         return Vec::new();
     };
-    fn walk(dir: &std::path::Path, base: &std::path::Path, depth: usize, out: &mut Vec<String>) {
+    fn walk(dir: &Path, base: &Path, depth: usize, out: &mut Vec<String>) {
         if depth > 6 || out.len() > 500 {
             return;
         }
         for path in list_dir(dir) {
             if path.is_dir() {
                 walk(&path, base, depth + 1, out);
-            } else if path.extension().is_some_and(|e| e == "brz" || e == "ws") {
-                if let Ok(rel) = path.strip_prefix(base) {
-                    let rel = rel.to_string_lossy().replace('\\', "/");
-                    out.push(format!("./{rel}"));
-                }
+            } else if path.extension().is_some_and(|e| e == "brz" || e == "ws")
+                && let Ok(rel) = path.strip_prefix(base)
+            {
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                out.push(format!("./{rel}"));
             }
         }
     }
@@ -606,7 +586,7 @@ fn prefab_ref_diagnostics(source: &str, file: &str) -> Vec<Diagnostic> {
         if !r.path.ends_with(".brz") {
             continue;
         }
-        let resolved = wirescript::compile::resolve_prefab_path(file, &r.path);
+        let resolved = resolve_prefab_path(file, &r.path);
         if !resolved.is_file() {
             out.push(Diagnostic {
                 range,
@@ -629,24 +609,19 @@ struct DocState {
     if_contexts: wirescript::analysis::IfContextMap,
     var_read_contexts: VarReadContextMap,
     narrowed_reads: NarrowedReadMap,
-    /// Ranges of `if`/`else` blocks a const-evaluable condition dropped before
-    /// type-checking (never verified), with a human-readable reason for each —
-    /// surfaced by `hover_dropped_range` so hovering inside one says so.
-    dropped_ranges: Vec<(wirescript::diagnostic::SourceRange, String)>,
+    /// Ranges of `if`/`else` blocks dropped before type checking because their
+    /// condition is constant, each with the reason `hover_dropped_range` shows.
+    dropped_ranges: Vec<(SourceRange, String)>,
     resource_estimates: wirescript::collections::HashMap<String, ResourceEstimate>,
     pre_resolve_ast: Script,
-    /// Canonical paths this doc imports, transitively — used to decide whether
-    /// a change to another file can affect it.
+    /// Canonical paths this document imports, transitively: a change to any of
+    /// them can affect it.
     imported_files: Vec<String>,
 }
 
-/// One analysis' diagnostics, split by the file each actually names.
-///
-/// `resolve` inlines every import into the entry file's AST, so analysing
-/// `main.ws` routinely raises diagnostics whose range names `util.ws`. A
-/// publish is per-URI, so those have to be sent to the file they came from.
-/// Keeping only the entry's share strands the rest in no buffer at all, and
-/// the editor shows a clean file for a program the compiler rejects.
+/// One analysis' diagnostics, split by the file each names. `resolve` inlines
+/// every import into the entry file's AST, so analysing `main.ws` raises
+/// diagnostics for `util.ws`, and each must be published to its own URI.
 #[derive(Default)]
 struct SplitDiagnostics {
     /// The analysed document's own share, plus range-less diagnostics.
@@ -659,7 +634,7 @@ impl SplitDiagnostics {
     /// Append `other`, skipping anything already reported for the same file.
     /// `compile` re-runs parse and typecheck, so the on-save lowering set
     /// overlaps the live one.
-    fn extend_deduped(&mut self, other: SplitDiagnostics) {
+    fn extend_deduped(&mut self, other: Self) {
         fn push_new(into: &mut Vec<Diagnostic>, from: Vec<Diagnostic>) {
             for d in from {
                 if !into
@@ -677,13 +652,13 @@ impl SplitDiagnostics {
     }
 }
 
-fn to_lsp_diagnostic(ruler: &Ruler, d: &wirescript::diagnostic::Diagnostic) -> Diagnostic {
+fn to_lsp_diagnostic(ruler: &Ruler<'_>, d: &wirescript::diagnostic::Diagnostic) -> Diagnostic {
     Diagnostic {
         range: range_to_lsp(ruler, &d.range),
         severity: Some(match d.severity {
-            wirescript::diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
-            wirescript::diagnostic::Severity::Warning => DiagnosticSeverity::WARNING,
-            _ => DiagnosticSeverity::INFORMATION,
+            Severity::Error => DiagnosticSeverity::ERROR,
+            Severity::Warning => DiagnosticSeverity::WARNING,
+            Severity::Info => DiagnosticSeverity::INFORMATION,
         }),
         code: Some(NumberOrString::String(d.code.clone())),
         code_description: wirescript::analysis::doc_url(wirescript::analysis::Doc::Diagnostic(
@@ -697,14 +672,9 @@ fn to_lsp_diagnostic(ruler: &Ruler, d: &wirescript::diagnostic::Diagnostic) -> D
     }
 }
 
-/// Split compiler diagnostics by the file each names, converting every range
-/// against the text of THAT file. `Pos::col` is a byte column into the file
-/// the range names, so the entry document's text is the wrong ruler for an
-/// imported one.
-///
-/// A diagnostic for a file that is currently `open` is dropped: that document
-/// analyses itself and publishes its own set, and a second copy from its
-/// importer would double every marker.
+/// Split diagnostics by the file each names, converting each range against that
+/// file's text (`Pos::col` is a byte column into the file the range names). A
+/// diagnostic for an `open` file is dropped: that document publishes its own.
 fn split_by_file<'a>(
     diags: impl Iterator<Item = &'a wirescript::diagnostic::Diagnostic>,
     file: &str,
@@ -714,7 +684,7 @@ fn split_by_file<'a>(
     // Clients respell file URIs (VS Code sends `file:///c%3A/...`), so an open
     // document is recognized by its canonical PATH and not by `Url` equality,
     // the same reason `collect_references_across_files` dedups that way.
-    let open_paths: std::collections::HashSet<String> = open
+    let open_paths: HashSet<String> = open
         .keys()
         .map(|u| FsLoader.canonical_path(&uri_to_file_string(u), "."))
         .collect();
@@ -737,10 +707,10 @@ fn split_by_file<'a>(
         }
         foreign_src
             .entry(other.clone())
-            .or_insert_with(|| std::fs::read_to_string(&*d.range.file).ok());
+            .or_insert_with(|| fs::read_to_string(&*d.range.file).ok());
         foreign.push((other, d));
     }
-    let rulers: HashMap<&Url, Ruler> = foreign_src
+    let rulers: HashMap<&Url, Ruler<'_>> = foreign_src
         .iter()
         .filter_map(|(u, text)| Some((u, Ruler::new(text.as_deref()?))))
         .collect();
@@ -764,11 +734,11 @@ struct Backend {
     /// so they can be cleared when that document stops reporting them (or is
     /// closed). Diagnostics belong to the server until it says otherwise, and
     /// nothing else would ever retract a marker in a file nobody has open.
-    foreign_diags: Mutex<HashMap<Url, std::collections::HashSet<Url>>>,
+    foreign_diags: Mutex<HashMap<Url, HashSet<Url>>>,
     /// Whether the client accepts a dynamic `workspace/didChangeWatchedFiles`
     /// registration, read from its initialize capabilities. Set once in
     /// `initialize`, read once in `initialized`.
-    watch_files: std::sync::atomic::AtomicBool,
+    watch_files: AtomicBool,
     /// Per document, a count of its `did_change`s and the text of the newest.
     /// A debounced handler analyses only if its document's count is still the
     /// one it took when its wait ends, see [`DEBOUNCE`]; meanwhile an analysis
@@ -776,22 +746,15 @@ struct Backend {
     changes: Mutex<HashMap<Url, (u64, String)>>,
 }
 
-/// How long `did_change` waits before analysing.
-///
-/// One analysis is tens of milliseconds of synchronous front end on a large
-/// program, and typing outruns it, so without a window every intermediate
-/// buffer state is analysed in full and thrown away while hover and completion
-/// queue behind it. Long enough to swallow a burst of keystrokes, short enough
-/// that a pause reads as instant.
+/// How long `did_change` waits before analysing: long enough to absorb a burst
+/// of keystrokes, short enough that a pause reads as instant. Without it every
+/// intermediate buffer is analysed in full while hover and completion queue.
 const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
-/// A loader that serves imports from the OPEN EDITOR BUFFERS first, falling back
-/// to disk, so an unsaved edit in an imported file is visible to the files that
-/// import it instead of their diagnostics describing the last saved version. Also
-/// skips a disk read per import per keystroke for files already in memory.
-///
-/// Holds a snapshot (canonical path -> source) taken before `resolve` rather
-/// than the live `docs` mutex, since `analyze` re-locks that mutex afterwards.
+/// A loader that serves imports from the open editor buffers before disk, so an
+/// unsaved edit in an imported file is visible to its importers. It holds a
+/// snapshot (canonical path to source) taken before `resolve`, since `analyze`
+/// locks the `docs` mutex again afterwards.
 struct OpenDocLoader {
     open: HashMap<String, String>,
 }
@@ -815,39 +778,26 @@ impl FileLoader for OpenDocLoader {
 impl Backend {
     /// A server for `client` with no documents open.
     fn new(client: Client) -> Self {
-        Backend {
+        Self {
             client,
             docs: Mutex::new(HashMap::new()),
             foreign_diags: Mutex::new(HashMap::new()),
-            watch_files: std::sync::atomic::AtomicBool::new(false),
+            watch_files: AtomicBool::new(false),
             changes: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Typecheck-only analysis for one document, publishing its diagnostics.
+    /// Typecheck-only analysis of one document; publishes its diagnostics.
     ///
-    /// Resource estimates (the gate counts hover shows) are recomputed here on
-    /// every analysis, including per keystroke, rather than cached across
-    /// `did_change` calls: `collect_estimates` lowers every chip/handler body,
-    /// but [`lookup_estimate`] keys by NAME, so a carried-forward map would have
-    /// no entry for a mod added or renamed since the last save — it would render
-    /// with no gate count while its neighbours had one, reading as the estimate
-    /// being broken rather than stale.
-    ///
-    /// Recomputing costs ~11% of one analysis (measured on the largest program
-    /// to hand: ~4ms of a ~39ms analyze, and well under 1ms on smaller files),
-    /// which the template cache keeps flat. That is worth paying for a hover
-    /// that matches the buffer.
+    /// Resource estimates (hover's gate counts) are recomputed every time:
+    /// [`lookup_estimate`] keys by name, so a carried-over map has no entry for a
+    /// mod added or renamed since.
     fn analyze(&self, uri: &Url, source: &str) -> SplitDiagnostics {
         let file = uri_to_file_string(uri);
 
-        // Parse ONCE and hand the result to resolve, avoiding a second parse of
-        // the same buffer per keystroke. The pre-resolve AST (kept for local
-        // analysis: references, semantic tokens, rename) is cloned off before
-        // resolve consumes the parse.
-        // On the big stack: this runs on a ~2 MiB tokio worker, and an
-        // overflow there aborts the process, so the server would vanish on
-        // `didOpen`. The spawn is ~100 us against tens of ms of work.
+        // Parse once and hand the parse to `resolve`; the pre-resolve AST (for
+        // references, semantic tokens and rename) is cloned off first. This runs on
+        // the big stack, since an overflow on the ~2 MiB tokio worker aborts the server.
         let pre_resolve = wirescript::on_big_stack(|| wirescript::parse(source, &file));
         let pre_resolve_ast = pre_resolve.ast.clone();
         // Snapshot the other open buffers so imports resolve against unsaved
@@ -871,7 +821,7 @@ impl Backend {
         };
         let (resolved, tc, symbols, resource_estimates) = wirescript::on_big_stack(|| {
             let resolved = resolve_parsed(pre_resolve, &file, &loader);
-            let tc = typecheck_with_inference(&resolved.ast, &file).0;
+            let tc = typecheck_with_inference(&resolved.ast).0;
             let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(&file));
             let resource_estimates = collect_estimates(&resolved.ast, &tc, &file);
             (resolved, tc, symbols, resource_estimates)
@@ -915,57 +865,37 @@ impl Backend {
         split
     }
 
-    /// Lowering and emit diagnostics for one document.
-    ///
-    /// `analyze()` stops at typecheck — lowering on every keystroke is the
-    /// blowup this server is built to avoid — so a whole class of problem
-    /// (a destructured field that binds nothing, a wire to a port the gate
-    /// does not have) never reached the editor at all. Running the full
-    /// pipeline on save is cheap enough and catches those where the author
-    /// will see them, instead of at the next explicit Compile.
+    /// Lowering and emit diagnostics for one document, run on save. `analyze`
+    /// stops at typecheck, so problems only lowering finds (a destructured field
+    /// that binds nothing, a wire to a missing port) surface here.
     ///
     /// Runs on a blocking task: `compile` reserves its own big stack, and the
-    /// server must stay responsive while it works.
+    /// server must stay responsive meanwhile.
     async fn lowering_diagnostics(&self, uri: &Url, source: &str) -> SplitDiagnostics {
         let file = uri_to_file_string(uri);
         let src_owned = source.to_string();
         let file_owned = file.clone();
         let result = tokio::task::spawn_blocking(move || {
-            wirescript::compile(wirescript::CompileInput {
-                source: &src_owned,
-                file: &file_owned,
-                module_name: None,
-                fold_mode: FoldMode::Auto,
-            })
+            wirescript::compile(CompileInput::new(&src_owned, &file_owned))
         })
         .await;
 
         // A panic in the compile must not take diagnostics (or the server) down.
-        let result = match result {
-            Ok(r) => r,
-            Err(_) => return SplitDiagnostics::default(),
+        let Ok(result) = result else {
+            return SplitDiagnostics::default();
         };
 
         let (diags, emit_error) = match result {
             Ok(r) => (r.diagnostics, None),
-            // `compile` stops at the first stage that reports an error, so a
-            // file with a type error never reaches lowering and its WSP001
-            // "no lowering for this expression" warnings are never produced.
-            // `wirescript-check` runs the same front end past typecheck for
-            // exactly that reason (`bin/check.rs`), and the two disagreed on
-            // every file with both. Re-run for the full set; this second pass
-            // only happens on a save of a file that already has errors.
+            // `compile` stops at the first stage with an error, so a file with a type
+            // error never gets lowering's WSP001 warnings. Run the front end past
+            // typecheck too, as `wirescript-check` does, for the full set.
             Err(wirescript::CompileError::HasErrors(_)) => {
                 let src_owned = source.to_string();
                 let file_owned = file.clone();
                 let full = tokio::task::spawn_blocking(move || {
                     wirescript::diagnostics_only(
-                        wirescript::CompileInput {
-                            source: &src_owned,
-                            file: &file_owned,
-                            module_name: None,
-                            fold_mode: FoldMode::Auto,
-                        },
+                        CompileInput::new(&src_owned, &file_owned),
                         &wirescript::FsLoader,
                     )
                 })
@@ -982,12 +912,7 @@ impl Backend {
                 let file_owned = file.clone();
                 let full = tokio::task::spawn_blocking(move || {
                     wirescript::diagnostics_only(
-                        wirescript::CompileInput {
-                            source: &src_owned,
-                            file: &file_owned,
-                            module_name: None,
-                            fold_mode: FoldMode::Auto,
-                        },
+                        CompileInput::new(&src_owned, &file_owned),
                         &wirescript::FsLoader,
                     )
                 })
@@ -1001,10 +926,8 @@ impl Backend {
             Err(_) => SplitDiagnostics::default(),
         };
 
-        // Emit failures carry no source range (they name a wire and a brick, not
-        // a line). Surface one at the top of the file rather than dropping it —
-        // it is the difference between a build that fails and a build that fails
-        // for no visible reason.
+        // Emit failures carry no source range (they name a wire and a brick), so
+        // report one at the top of the file instead of dropping it.
         if let Some(msg) = emit_error {
             out.own.push(Diagnostic {
                 range: tower_lsp::lsp_types::Range::default(),
@@ -1018,10 +941,6 @@ impl Backend {
         out
     }
 
-    /// Re-analyze the other open documents that the changed file can actually
-    /// affect — i.e. those importing it (transitively) — rather than every open
-    /// document, so a keystroke in one file doesn't cost (open tabs + 1) full
-    /// analyses for every other open file.
     /// The text of `uri`'s newest change, which its own debounced handler
     /// may not have analysed yet.
     fn newest_text(&self, uri: &Url) -> Option<String> {
@@ -1040,13 +959,12 @@ impl Backend {
         }
     }
 
+    /// Re-analyze the other open documents that import the changed file,
+    /// directly or transitively; the rest cannot be affected by it.
     async fn reanalyze_other_docs(&self, changed_uri: &Url) {
         let changed = FsLoader.canonical_path(&uri_to_file_string(changed_uri), ".");
         let others: Vec<(Url, String)> = {
-            let docs = match self.docs.lock() {
-                Ok(d) => d,
-                Err(_) => return,
-            };
+            let Ok(docs) = self.docs.lock() else { return };
             docs.iter()
                 .filter(|(uri, _)| *uri != changed_uri)
                 .filter(|(_, doc)| doc.imported_files.iter().any(|p| p == &changed))
@@ -1117,13 +1035,10 @@ impl Backend {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        // An importer's diagnostics are only refreshed by an edit to a file the
-        // editor has OPEN (`reanalyze_other_docs` walks open documents). A
-        // module changed or CREATED on disk while closed would leave every file
-        // importing it showing diagnostics for the version that is gone - the
-        // shape that reads as "the LSP is wrong about my import". Watching the
-        // workspace's `.ws` files closes that gap; registered below, in
-        // `initialized`, only when the client offers it.
+        // An importer's diagnostics refresh only on an edit to an open file
+        // (`reanalyze_other_docs` walks open documents), so a module changed or
+        // created on disk while closed is caught by watching the workspace's `.ws`
+        // files. The watch is registered in `initialized` when the client offers it.
         self.watch_files.store(
             params
                 .capabilities
@@ -1132,7 +1047,7 @@ impl LanguageServer for Backend {
                 .and_then(|w| w.did_change_watched_files.as_ref())
                 .and_then(|f| f.dynamic_registration)
                 .unwrap_or(false),
-            std::sync::atomic::Ordering::Relaxed,
+            Ordering::Relaxed,
         );
         // A client that brings its own formatter can opt out of server-side
         // formatting so the editor doesn't list two providers.
@@ -1140,7 +1055,7 @@ impl LanguageServer for Backend {
             .initialization_options
             .as_ref()
             .and_then(|o| o.get("provideFormatting"))
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -1167,7 +1082,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     prepare_provider: Some(true),
-                    work_done_progress_options: Default::default(),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
                 })),
                 references_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(provide_formatting)),
@@ -1178,24 +1093,21 @@ impl LanguageServer for Backend {
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 document_link_provider: Some(DocumentLinkOptions {
                     resolve_provider: Some(false),
-                    work_done_progress_options: Default::default(),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: SemanticTokensLegend {
-                                token_types: vec![
-                                    SemanticTokenType::TYPE,
-                                    SemanticTokenType::FUNCTION,
-                                    SemanticTokenType::PARAMETER,
-                                    SemanticTokenType::VARIABLE,
-                                    SemanticTokenType::NAMESPACE,
-                                ],
+                                token_types: SEM_TOKEN_LEGEND
+                                    .iter()
+                                    .map(|(_, t)| t.clone())
+                                    .collect(),
                                 token_modifiers: vec![],
                             },
                             full: Some(SemanticTokensFullOptions::Bool(true)),
                             range: Some(false),
-                            work_done_progress_options: Default::default(),
+                            work_done_progress_options: WorkDoneProgressOptions::default(),
                         },
                     ),
                 ),
@@ -1207,9 +1119,8 @@ impl LanguageServer for Backend {
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
-        let docs = match self.docs.lock() {
-            Ok(d) => d,
-            Err(_) => return Ok(None),
+        let Ok(docs) = self.docs.lock() else {
+            return Ok(None);
         };
         let Some(doc) = docs.get(uri) else {
             return Ok(None);
@@ -1221,7 +1132,7 @@ impl LanguageServer for Backend {
             .into_iter()
             .filter(AssetRef::is_file)
             .filter_map(|r| {
-                let target = wirescript::compile::resolve_prefab_path(&file, &r.path);
+                let target = resolve_prefab_path(&file, &r.path);
                 if !target.is_file() {
                     return None;
                 }
@@ -1247,7 +1158,7 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        if self.watch_files.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.watch_files.load(Ordering::Relaxed) {
             let _ = self
                 .client
                 .register_capability(vec![Registration {
@@ -1306,7 +1217,7 @@ impl LanguageServer for Backend {
             Ok(mut changes) => {
                 let entry = changes.entry(uri.clone()).or_default();
                 entry.0 += 1;
-                entry.1 = change.text.clone();
+                entry.1.clone_from(&change.text);
                 entry.0
             }
             Err(_) => return,
@@ -1395,15 +1306,15 @@ impl LanguageServer for Backend {
                 Some(doc) => {
                     let source = newest.as_deref().unwrap_or(&doc.source);
                     let col = lsp_col_to_char(source, line, pos.character);
-                    // Inside a `$```…``` ` nested-prefab block, complete against
-                    // the INNER program so the outer file's context (SpawnPrefab
-                    // params, outer symbols) doesn't leak into the isolated block.
+                    // Inside a `$```...``` ` nested-prefab block, complete against the inner
+                    // program so the outer file's context (`SpawnPrefab` parameters, outer
+                    // symbols) stays out of the isolated block.
                     if let Some((inner, il, ic)) =
                         nested_block_at(source, &uri_to_file_string(uri), line, col)
                     {
                         wirescript::on_big_stack(|| {
                             let resolved = resolve(&inner, "nested", &FsLoader);
-                            let tc = typecheck_with_inference(&resolved.ast, "nested").0;
+                            let tc = typecheck_with_inference(&resolved.ast).0;
                             let syms = collect_symbols_for_file(
                                 &resolved.ast,
                                 &tc.type_of_expr,
@@ -1424,22 +1335,14 @@ impl LanguageServer for Backend {
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         // "Fill record fields": inside a record literal whose expected type is a
-        // record, offer to insert the missing fields with type-appropriate
-        // defaults (recursing into nested records). Reuses the server's resolved
-        // symbols, so nested / aliased / imported record types work.
+        // record, insert the missing fields with default values, recursing into
+        // nested records.
         //
-        // "Fill missing match arms" (Task 22): on/inside a `match` whose written
-        // arms don't cover its scrutinee enum, offer to insert the missing arms
-        // as witness patterns (`typecheck::patterns::analyze`, Task 11, the same
-        // witness engine the compiler's own WS054 exhaustiveness diagnostic
-        // uses), so the arms it offers are exactly the ones WS054 would otherwise
-        // complain about. Each arm gets a plain `todo` placeholder body baked
-        // into `new_text`. This server advertises no snippet capability and the
-        // lsp-types version in use has no SnippetTextEdit, so LSP snippet syntax
-        // (`${N:todo}` tab-stops) would land in the buffer as literal characters
-        // that fail to parse; plain `todo` parses (an undefined identifier the
-        // author replaces) and is the correct behavior until snippet edits are
-        // supported.
+        // "Fill missing match arms": on or inside a `match` that does not cover its
+        // enum, insert the missing arms as the witness patterns
+        // `typecheck::patterns::analyze` gives (the same ones WS054 reports), each
+        // with a plain `todo` body. The server has no snippet support, so snippet
+        // tab-stops would land in the buffer as literal text.
         let uri = &params.text_document.uri;
         let pos = params.range.start;
         let line = pos.line as usize;
@@ -1455,7 +1358,6 @@ impl LanguageServer for Backend {
                         fill_record_at(&doc.source, &doc.symbols, line, col),
                         fill_match_arms_at(
                             &doc.source,
-                            &doc.symbols,
                             &doc.type_map,
                             &doc.pre_resolve_ast,
                             line,
@@ -1528,10 +1430,7 @@ impl LanguageServer for Backend {
                         &format!("Ignore {code} in this file"),
                         0,
                         0,
-                        format!(
-                            "// ws-ignore-file:{code}
-"
-                        ),
+                        format!("// ws-ignore-file:{code}\n"),
                     ));
                 }
             }
@@ -1547,35 +1446,35 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
 
-        if let Ok(docs) = self.docs.lock() {
-            if let Some(doc) = docs.get(uri) {
-                // `hover_at` walks the AST, so it gets the big stack like
-                // every other AST walk here.
-                if let Some(value) = wirescript::on_big_stack(|| {
-                    hover_at(
-                        &doc.source,
-                        &uri_to_file_string(uri),
-                        &doc.pre_resolve_ast,
-                        &doc.symbols,
-                        &doc.type_map,
-                        &doc.doc_comments,
-                        &doc.if_contexts,
-                        &doc.var_read_contexts,
-                        &doc.narrowed_reads,
-                        &doc.dropped_ranges,
-                        &doc.resource_estimates,
-                        pos.line as usize,
-                        lsp_col_to_char(&doc.source, pos.line as usize, pos.character),
-                    )
-                }) {
-                    return Ok(Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value,
-                        }),
-                        range: None,
-                    }));
-                }
+        if let Ok(docs) = self.docs.lock()
+            && let Some(doc) = docs.get(uri)
+        {
+            // `hover_at` walks the AST, so it gets the big stack like
+            // every other AST walk here.
+            if let Some(value) = wirescript::on_big_stack(|| {
+                hover_at(
+                    &doc.source,
+                    &uri_to_file_string(uri),
+                    &doc.pre_resolve_ast,
+                    &doc.symbols,
+                    &doc.type_map,
+                    &doc.doc_comments,
+                    &doc.if_contexts,
+                    &doc.var_read_contexts,
+                    &doc.narrowed_reads,
+                    &doc.dropped_ranges,
+                    &doc.resource_estimates,
+                    pos.line as usize,
+                    lsp_col_to_char(&doc.source, pos.line as usize, pos.character),
+                )
+            }) {
+                return Ok(Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value,
+                    }),
+                    range: None,
+                }));
             }
         }
         Ok(None)
@@ -1589,97 +1488,89 @@ impl LanguageServer for Backend {
         let pos = params.text_document_position_params.position;
         let line = pos.line as usize;
 
-        if let Ok(docs) = self.docs.lock() {
-            if let Some(doc) = docs.get(uri) {
-                let col = lsp_col_to_char(&doc.source, line, pos.character);
-                // `$./file.brz` prefab reference -> jump to the referenced file.
-                if let Some(r) = asset_ref_at(&doc.source, line, col) {
-                    if r.is_file() {
-                        let target = wirescript::compile::resolve_prefab_path(
-                            &uri_to_file_string(uri),
-                            &r.path,
-                        );
-                        if let Ok(target_uri) = Url::from_file_path(&target) {
-                            if target.is_file() {
-                                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                                    uri: target_uri,
-                                    range: Range::default(),
-                                })));
-                            }
-                        }
-                    }
-                    // Asset ref or missing file: nothing to navigate to.
-                    return Ok(None);
-                }
-
-                // Type field -> show all references. A cursor on a record FIELD
-                // NAME is deliberately excluded: it must fall through to the
-                // `definition_at` field-resolution path below, not resolve to
-                // the enclosing `type X = {…}` binding (whose coarse range spans
-                // the whole decl and would otherwise surface the type's own
-                // references instead of the clicked field's definition).
-                let in_type_def = doc.symbols.iter().any(|s| {
-                    s.kind == "type"
-                        && s.range.start.line.saturating_sub(1) as usize <= line
-                        && s.range.end.line.saturating_sub(1) as usize >= line
-                });
-                if in_type_def && !field_name_at(&doc.pre_resolve_ast, &doc.source, line, col) {
-                    let file = uri_to_file_string(uri);
-                    if let Some((target, current_sites)) =
-                        references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
+        if let Ok(docs) = self.docs.lock()
+            && let Some(doc) = docs.get(uri)
+        {
+            let col = lsp_col_to_char(&doc.source, line, pos.character);
+            // `$./file.brz` prefab reference -> jump to the referenced file.
+            if let Some(r) = asset_ref_at(&doc.source, line, col) {
+                if r.is_file() {
+                    let target = resolve_prefab_path(&uri_to_file_string(uri), &r.path);
+                    if let Ok(target_uri) = Url::from_file_path(&target)
+                        && target.is_file()
                     {
-                        let refs =
-                            collect_references_across_files(&docs, uri, &target, &current_sites);
-                        if !refs.is_empty() {
-                            let locations: Vec<Location> = refs
-                                .iter()
-                                .zip(ranges_in_files(&docs, &refs))
-                                .map(|((u, _), range)| Location {
-                                    uri: u.clone(),
-                                    range,
-                                })
-                                .collect();
-                            return Ok(Some(GotoDefinitionResponse::Array(locations)));
-                        }
+                        return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                            uri: target_uri,
+                            range: Range::default(),
+                        })));
                     }
                 }
+                // Asset ref or missing file: nothing to navigate to.
+                return Ok(None);
+            }
 
-                if let Some(loc) = definition_at(
-                    &doc.source,
-                    &doc.pre_resolve_ast,
-                    &doc.symbols,
-                    &uri_to_file_string(uri),
-                    &FsLoader,
-                    line,
-                    col,
-                ) {
-                    let target_uri = loc
-                        .file
-                        .as_ref()
-                        .and_then(|f| Url::from_file_path(f).ok())
-                        .unwrap_or_else(|| uri.clone());
-                    let target_src = source_for(&docs, &target_uri);
-                    let target_src = Ruler::new(&target_src);
-                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: target_uri.clone(),
-                        range: Range {
-                            // `Location`'s columns come from a `SourceRange`,
-                            // so they are byte columns too.
-                            start: Position {
-                                line: loc.start_line as u32,
-                                character: byte_off_to_lsp(
-                                    &target_src,
-                                    loc.start_line,
-                                    loc.start_col,
-                                ),
-                            },
-                            end: Position {
-                                line: loc.end_line as u32,
-                                character: byte_off_to_lsp(&target_src, loc.end_line, loc.end_col),
-                            },
-                        },
-                    })));
+            // Type field -> show all references. A cursor on a record FIELD
+            // NAME is deliberately excluded: it must fall through to the
+            // `definition_at` field-resolution path below, not resolve to
+            // the enclosing `type X = {...}` binding (whose coarse range spans
+            // the whole decl and would otherwise surface the type's own
+            // references instead of the clicked field's definition).
+            let in_type_def = doc.symbols.iter().any(|s| {
+                s.kind == "type"
+                    && s.range.start.line.saturating_sub(1) as usize <= line
+                    && s.range.end.line.saturating_sub(1) as usize >= line
+            });
+            if in_type_def && !field_name_at(&doc.pre_resolve_ast, &doc.source, line, col) {
+                let file = uri_to_file_string(uri);
+                if let Some((target, current_sites)) =
+                    references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
+                {
+                    let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
+                    if !refs.is_empty() {
+                        let locations: Vec<Location> = refs
+                            .iter()
+                            .zip(ranges_in_files(&docs, &refs))
+                            .map(|((u, _), range)| Location {
+                                uri: u.clone(),
+                                range,
+                            })
+                            .collect();
+                        return Ok(Some(GotoDefinitionResponse::Array(locations)));
+                    }
                 }
+            }
+
+            if let Some(loc) = definition_at(
+                &doc.source,
+                &doc.pre_resolve_ast,
+                &doc.symbols,
+                &uri_to_file_string(uri),
+                &FsLoader,
+                line,
+                col,
+            ) {
+                let target_uri = loc
+                    .file
+                    .as_ref()
+                    .and_then(|f| Url::from_file_path(f).ok())
+                    .unwrap_or_else(|| uri.clone());
+                let target_src = source_for(&docs, &target_uri);
+                let target_src = Ruler::new(&target_src);
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: target_uri.clone(),
+                    range: Range {
+                        // `Location`'s columns come from a `SourceRange`,
+                        // so they are byte columns too.
+                        start: Position {
+                            line: loc.start_line as u32,
+                            character: byte_off_to_lsp(&target_src, loc.start_line, loc.start_col),
+                        },
+                        end: Position {
+                            line: loc.end_line as u32,
+                            character: byte_off_to_lsp(&target_src, loc.end_line, loc.end_col),
+                        },
+                    },
+                })));
             }
         }
         Ok(None)
@@ -1690,33 +1581,32 @@ impl LanguageServer for Backend {
         let pos = params.text_document_position.position;
         let line = pos.line as usize;
 
-        if let Ok(docs) = self.docs.lock() {
-            if let Some(doc) = docs.get(uri) {
-                let col = lsp_col_to_char(&doc.source, line, pos.character);
-                let file = uri_to_file_string(uri);
-                // Atom `:name` find-references — atoms are global (one xxHash64
-                // value per name, no scope), so gather every `:name` occurrence
-                // across the workspace.
-                if let Some(a) = wirescript::analysis::atom_at(&doc.source, &file, line, col) {
-                    return Ok(Some(collect_atom_references(&docs, uri, &a.name)));
-                }
-                if is_field_or_keyword(&doc.pre_resolve_ast, &doc.source, line, col) {
-                    return Ok(None);
-                }
-                if let Some((target, current_sites)) =
-                    references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
-                {
-                    let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
-                    let locations: Vec<Location> = refs
-                        .iter()
-                        .zip(ranges_in_files(&docs, &refs))
-                        .map(|((u, _), range)| Location {
-                            uri: u.clone(),
-                            range,
-                        })
-                        .collect();
-                    return Ok(Some(locations));
-                }
+        if let Ok(docs) = self.docs.lock()
+            && let Some(doc) = docs.get(uri)
+        {
+            let col = lsp_col_to_char(&doc.source, line, pos.character);
+            let file = uri_to_file_string(uri);
+            // Atom `:name` find-references: atoms are global (one xxHash64 value per
+            // name, no scope), so gather every `:name` across the workspace.
+            if let Some(a) = wirescript::analysis::atom_at(&doc.source, &file, line, col) {
+                return Ok(Some(collect_atom_references(&docs, uri, &a.name)));
+            }
+            if is_field_or_keyword(&doc.pre_resolve_ast, &doc.source, line, col) {
+                return Ok(None);
+            }
+            if let Some((target, current_sites)) =
+                references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
+            {
+                let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
+                let locations: Vec<Location> = refs
+                    .iter()
+                    .zip(ranges_in_files(&docs, &refs))
+                    .map(|((u, _), range)| Location {
+                        uri: u.clone(),
+                        range,
+                    })
+                    .collect();
+                return Ok(Some(locations));
             }
         }
         Ok(None)
@@ -1730,18 +1620,18 @@ impl LanguageServer for Backend {
         let pos = params.position;
         let line = pos.line as usize;
 
-        if let Ok(docs) = self.docs.lock() {
-            if let Some(doc) = docs.get(uri) {
-                let col = lsp_col_to_char(&doc.source, line, pos.character);
-                let file = uri_to_file_string(uri);
-                if let Some((range, placeholder)) =
-                    prepare_rename_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
-                {
-                    return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                        range: range_to_lsp(&Ruler::new(&doc.source), &range),
-                        placeholder,
-                    }));
-                }
+        if let Ok(docs) = self.docs.lock()
+            && let Some(doc) = docs.get(uri)
+        {
+            let col = lsp_col_to_char(&doc.source, line, pos.character);
+            let file = uri_to_file_string(uri);
+            if let Some((range, placeholder)) =
+                prepare_rename_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
+            {
+                return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                    range: range_to_lsp(&Ruler::new(&doc.source), &range),
+                    placeholder,
+                }));
             }
         }
         Ok(None)
@@ -1753,64 +1643,61 @@ impl LanguageServer for Backend {
         let new_name = &params.new_name;
         let line = pos.line as usize;
 
-        if let Ok(docs) = self.docs.lock() {
-            if let Some(doc) = docs.get(uri) {
-                let col = lsp_col_to_char(&doc.source, line, pos.character);
-                let file = uri_to_file_string(uri);
-                if is_field_or_keyword(&doc.pre_resolve_ast, &doc.source, line, col) {
-                    return Ok(None);
+        if let Ok(docs) = self.docs.lock()
+            && let Some(doc) = docs.get(uri)
+        {
+            let col = lsp_col_to_char(&doc.source, line, pos.character);
+            let file = uri_to_file_string(uri);
+            if is_field_or_keyword(&doc.pre_resolve_ast, &doc.source, line, col) {
+                return Ok(None);
+            }
+            if let Some((target, current_sites)) =
+                references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
+            {
+                let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
+
+                let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+                for ((file_uri, r), range) in refs.iter().zip(ranges_in_files(&docs, &refs)) {
+                    changes.entry(file_uri.clone()).or_default().push(TextEdit {
+                        range,
+                        new_text: rename_edit_text(r, &target.name, new_name),
+                    });
                 }
-                if let Some((target, current_sites)) =
-                    references_at(&doc.pre_resolve_ast, &doc.source, &file, line, col)
-                {
-                    let refs = collect_references_across_files(&docs, uri, &target, &current_sites);
 
-                    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-                    for ((file_uri, r), range) in refs.iter().zip(ranges_in_files(&docs, &refs)) {
-                        changes.entry(file_uri.clone()).or_default().push(TextEdit {
-                            range,
-                            new_text: rename_edit_text(r, &target.name, new_name),
-                        });
-                    }
-
-                    let doc_changes: Vec<DocumentChangeOperation> = changes
-                        .into_iter()
-                        .map(|(file_uri, edits)| {
-                            DocumentChangeOperation::Edit(TextDocumentEdit {
-                                text_document: OptionalVersionedTextDocumentIdentifier {
-                                    uri: file_uri,
-                                    version: None,
-                                },
-                                edits: edits.into_iter().map(OneOf::Left).collect(),
-                            })
+                let doc_changes: Vec<DocumentChangeOperation> = changes
+                    .into_iter()
+                    .map(|(file_uri, edits)| {
+                        DocumentChangeOperation::Edit(TextDocumentEdit {
+                            text_document: OptionalVersionedTextDocumentIdentifier {
+                                uri: file_uri,
+                                version: None,
+                            },
+                            edits: edits.into_iter().map(OneOf::Left).collect(),
                         })
-                        .collect();
-                    return Ok(Some(WorkspaceEdit {
-                        document_changes: Some(DocumentChanges::Operations(doc_changes)),
-                        ..Default::default()
-                    }));
-                }
+                    })
+                    .collect();
+                return Ok(Some(WorkspaceEdit {
+                    document_changes: Some(DocumentChanges::Operations(doc_changes)),
+                    ..Default::default()
+                }));
             }
         }
         Ok(None)
     }
 
-    /// Corrective semantic-token overrides layered atop the TextMate
-    /// grammar's position-blind `support.type` coloring (see
-    /// `wirescript::analysis::semantic_tokens`'s doc comment) — a name in
-    /// type position highlights as a type (including a user `type` alias the
-    /// grammar's fixed builtin list can't know about), while a value binding
-    /// that merely shares a type's spelling (a `character` capture, a
-    /// capitalized `var`) highlights as its own kind instead.
+    /// Semantic tokens that correct the `TextMate` grammar's position-blind
+    /// `support.type` coloring (see `wirescript::analysis::semantic_tokens`): a name
+    /// in type position is a type (a user `type` alias included), and a value that
+    /// shares a type's spelling (a `character` capture, a capitalized `var`) keeps
+    /// its own kind.
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
 
-        let docs = match self.docs.lock() {
-            Ok(d) => d,
-            Err(_) => return Ok(None),
+        let Ok(docs) = self.docs.lock() else {
+            return Ok(None);
         };
         let Some(doc) = docs.get(uri) else {
             return Ok(None);
@@ -1829,9 +1716,8 @@ impl LanguageServer for Backend {
         let ruler = Ruler::new(&doc.source);
         let mut toks: Vec<Tok> = Vec::with_capacity(spans.len());
         for span in &spans {
-            // A coarse span (a whole-declaration/whole-type-expr range) must
-            // be narrowed to its precise name token first — an un-narrowable
-            // one is skipped rather than tokenizing its whole container.
+            // A coarse span (a whole declaration or type expression) is narrowed to
+            // its name token first; one that cannot be narrowed is skipped.
             let range = if span.coarse {
                 match find_name_range(&doc.source, &span.range, &span.name) {
                     Some(r) => r,
@@ -1840,13 +1726,7 @@ impl LanguageServer for Backend {
             } else {
                 span.range.clone()
             };
-            let token_type = match span.kind {
-                SemTokenKind::Type => 0,
-                SemTokenKind::Function => 1,
-                SemTokenKind::Parameter => 2,
-                SemTokenKind::Variable => 3,
-                SemTokenKind::Namespace => 4,
-            };
+            let token_type = sem_token_type(span.kind);
             // Both `col`s are 1-based byte columns; the protocol counts UTF-16
             // units, so the length has to be measured after converting, not
             // before. A span crossing lines has no single line to measure in;
@@ -1937,14 +1817,13 @@ impl LanguageServer for Backend {
         let uri = Url::parse(uri_str)
             .map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("invalid URI"))?;
         let file = uri_to_file_string(&uri);
-        let src = std::fs::read_to_string(&file).map_err(|e| {
+        let src = fs::read_to_string(&file).map_err(|e| {
             tower_lsp::jsonrpc::Error::invalid_params(format!("cannot read {file}: {e}"))
         })?;
 
-        // Everything below narrates the compile into the LSP output channel
-        // ("Wirescript Language Server" in VS Code) via window/logMessage. A
-        // compile is the one thing here that can take real time or fail deep in
-        // the pipeline, and until now it was entirely opaque from the editor.
+        // The compile reports its progress to the LSP output channel ("Wirescript
+        // Language Server" in VS Code) through window/logMessage, since it is the
+        // one request here that can take real time or fail deep in the pipeline.
         self.client
             .log_message(
                 MessageType::INFO,
@@ -1956,11 +1835,10 @@ impl LanguageServer for Backend {
         let client = self.client.clone();
         let src_owned = src.clone();
         let file_owned = file.clone();
-        // The compile runs on threads with no ambient tokio context (a
-        // blocking-pool thread, and inside that the library's big-stack
-        // compile worker) — capture an explicit runtime handle for the
-        // progress callback; a bare `tokio::spawn` there panics with "no
-        // reactor running" and takes the whole server down.
+        // The compile runs on threads with no tokio context (a blocking-pool thread,
+        // and the library's big-stack worker inside it), so the progress callback
+        // needs an explicit runtime handle: a bare `tokio::spawn` there panics with
+        // "no reactor running" and takes the server down.
         let rt = tokio::runtime::Handle::current();
         let compile_result = tokio::task::spawn_blocking(move || {
             let progress_cb: wirescript::ProgressCallback =
@@ -1985,12 +1863,7 @@ impl LanguageServer for Backend {
                     });
                 });
             wirescript::compile_with_progress(
-                wirescript::CompileInput {
-                    source: &src_owned,
-                    file: &file_owned,
-                    module_name: None,
-                    fold_mode: FoldMode::Auto,
-                },
+                CompileInput::new(&src_owned, &file_owned),
                 wirescript::EmitOptions::default(),
                 progress_cb,
             )
@@ -2023,7 +1896,7 @@ impl LanguageServer for Backend {
                     diags
                         .iter()
                         .map(|d| d.range.file.to_string())
-                        .collect::<std::collections::HashSet<_>>()
+                        .collect::<HashSet<_>>()
                         .into_iter()
                         .map(|f| {
                             let text = Url::from_file_path(&f)
@@ -2032,7 +1905,7 @@ impl LanguageServer for Backend {
                                     docs.as_ref()
                                         .and_then(|docs| docs.get(&u).map(|s| s.source.clone()))
                                 })
-                                .or_else(|| std::fs::read_to_string(&f).ok())
+                                .or_else(|| fs::read_to_string(&f).ok())
                                 .unwrap_or_default();
                             (f, text)
                         })
@@ -2062,8 +1935,8 @@ impl LanguageServer for Backend {
                     serde_json::json!({ "ok": false, "diagnostics": items }),
                 ));
             }
-            // Emit / IO failures have no per-source location — keep them as a plain
-            // error the extension can pop up.
+            // Emit and IO failures have no source location: keep them as a plain error
+            // the extension can show.
             Err(e) => {
                 self.client
                     .log_message(
@@ -2079,28 +1952,28 @@ impl LanguageServer for Backend {
             }
         };
 
-        if !out_path.is_empty() {
-            if let Err(e) = std::fs::write(out_path, &result.brz) {
-                self.client
-                    .log_message(MessageType::ERROR, format!("[compile] write failed: {e}"))
-                    .await;
-                return Err(tower_lsp::jsonrpc::Error {
-                    code: tower_lsp::jsonrpc::ErrorCode::InternalError,
-                    message: format!("write failed: {e}").into(),
-                    data: None,
-                });
-            }
+        if !out_path.is_empty()
+            && let Err(e) = fs::write(out_path, &result.brz)
+        {
+            self.client
+                .log_message(MessageType::ERROR, format!("[compile] write failed: {e}"))
+                .await;
+            return Err(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+                message: format!("write failed: {e}").into(),
+                data: None,
+            });
         }
 
         let warnings = result
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, wirescript::diagnostic::Severity::Warning))
+            .filter(|d| matches!(d.severity, Severity::Warning))
             .count();
         for d in result
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, wirescript::diagnostic::Severity::Warning))
+            .filter(|d| matches!(d.severity, Severity::Warning))
         {
             self.client
                 .log_message(
@@ -2132,38 +2005,36 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
-        if let Ok(docs) = self.docs.lock() {
-            if let Some(doc) = docs.get(uri) {
-                let hints = collect_inlay_hints(
-                    &doc.source,
-                    &doc.pre_resolve_ast,
-                    &doc.type_map,
-                    &uri_to_file_string(uri),
-                );
-                let ruler = Ruler::new(&doc.source);
-                let lsp_hints: Vec<InlayHint> = hints
-                    .into_iter()
-                    .map(|h| InlayHint {
-                        position: Position {
-                            line: h.line as u32,
-                            character: char_col_to_lsp(&ruler, h.line, h.col),
-                        },
-                        label: InlayHintLabel::String(h.label),
-                        kind: Some(match h.kind {
-                            InlayHintKind::Type => tower_lsp::lsp_types::InlayHintKind::TYPE,
-                            InlayHintKind::Parameter => {
-                                tower_lsp::lsp_types::InlayHintKind::PARAMETER
-                            }
-                        }),
-                        padding_left: None,
-                        padding_right: None,
-                        text_edits: None,
-                        tooltip: None,
-                        data: None,
-                    })
-                    .collect();
-                return Ok(Some(lsp_hints));
-            }
+        if let Ok(docs) = self.docs.lock()
+            && let Some(doc) = docs.get(uri)
+        {
+            let hints = collect_inlay_hints(
+                &doc.source,
+                &doc.pre_resolve_ast,
+                &doc.type_map,
+                &uri_to_file_string(uri),
+            );
+            let ruler = Ruler::new(&doc.source);
+            let lsp_hints: Vec<InlayHint> = hints
+                .into_iter()
+                .map(|h| InlayHint {
+                    position: Position {
+                        line: h.line as u32,
+                        character: char_col_to_lsp(&ruler, h.line, h.col),
+                    },
+                    label: InlayHintLabel::String(h.label),
+                    kind: Some(match h.kind {
+                        InlayHintKind::Type => tower_lsp::lsp_types::InlayHintKind::TYPE,
+                        InlayHintKind::Parameter => tower_lsp::lsp_types::InlayHintKind::PARAMETER,
+                    }),
+                    padding_left: None,
+                    padding_right: None,
+                    text_edits: None,
+                    tooltip: None,
+                    data: None,
+                })
+                .collect();
+            return Ok(Some(lsp_hints));
         }
         Ok(None)
     }
@@ -2177,42 +2048,42 @@ impl LanguageServer for Backend {
                 !params.options.insert_spaces,
                 params.options.tab_size as usize,
             )
-            .with_editorconfig(std::path::Path::new(&uri_to_file_string(uri)));
+            .with_editorconfig(Path::new(&uri_to_file_string(uri)));
 
-        if let Ok(docs) = self.docs.lock() {
-            if let Some(doc) = docs.get(uri) {
-                let formatted = format_with(&doc.source, &opts);
-                if formatted == doc.source {
-                    return Ok(None);
-                }
-                // The document's real end. `str::lines` drops a trailing
-                // newline, so pairing its count with the last line's length
-                // named a position one past the end of the document; clients
-                // clamp it, but a full-document edit should not need them to.
-                let newlines = doc.source.matches('\n').count() as u32;
-                let end = if doc.source.ends_with('\n') {
-                    Position {
-                        line: newlines,
-                        character: 0,
-                    }
-                } else {
-                    let last_line = doc.source.lines().last().unwrap_or("");
-                    Position {
-                        line: newlines,
-                        character: last_line.chars().map(char::len_utf16).sum::<usize>() as u32,
-                    }
-                };
-                return Ok(Some(vec![TextEdit {
-                    range: Range {
-                        start: Position {
-                            line: 0,
-                            character: 0,
-                        },
-                        end,
-                    },
-                    new_text: formatted,
-                }]));
+        if let Ok(docs) = self.docs.lock()
+            && let Some(doc) = docs.get(uri)
+        {
+            let formatted = format_with(&doc.source, &opts);
+            if formatted == doc.source {
+                return Ok(None);
             }
+            // The document's real end. `str::lines` drops a trailing
+            // newline, so pairing its count with the last line's length
+            // named a position one past the end of the document; clients
+            // clamp it, but a full-document edit should not need them to.
+            let newlines = doc.source.matches('\n').count() as u32;
+            let end = if doc.source.ends_with('\n') {
+                Position {
+                    line: newlines,
+                    character: 0,
+                }
+            } else {
+                let last_line = doc.source.lines().last().unwrap_or("");
+                Position {
+                    line: newlines,
+                    character: last_line.chars().map(char::len_utf16).sum::<usize>() as u32,
+                }
+            };
+            return Ok(Some(vec![TextEdit {
+                range: Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end,
+                },
+                new_text: formatted,
+            }]));
         }
         Ok(None)
     }
@@ -2252,7 +2123,7 @@ fn main() {
     rt.block_on(async {
         tokio::spawn(serve())
             .await
-            .expect("language server task panicked")
+            .expect("language server task panicked");
     });
     #[cfg(target_family = "wasm")]
     rt.block_on(serve());
@@ -2282,18 +2153,14 @@ async fn serve() {
 /// The Compile command's diagnostic payload. `sources` maps a diagnostic's
 /// `range.file` to that file's text.
 ///
-/// `Pos::col` is a BYTE column and the extension feeds `startChar`/`endChar`
-/// straight to a `vscode.Range`, whose characters are UTF-16 code units, so
-/// every column is converted here, against the text of the file the range
-/// names, since a build error can name an imported file. Handing the editor a
-/// raw byte column puts the squiggle right of the token on any line holding
-/// non-ASCII text, and disagreeing with the live diagnostics for that same
-/// file is how it shows up.
+/// `Pos::col` is a byte column, while the extension passes `startChar`/`endChar`
+/// to a `vscode.Range` in UTF-16 units, so each column is converted here against
+/// the text of the file its range names (a build error can name an import).
 fn compile_diagnostic_items(
     diags: &[wirescript::diagnostic::Diagnostic],
     sources: &HashMap<String, String>,
 ) -> Vec<serde_json::Value> {
-    let rulers: HashMap<&str, Ruler> = sources
+    let rulers: HashMap<&str, Ruler<'_>> = sources
         .iter()
         .map(|(f, s)| (f.as_str(), Ruler::new(s)))
         .collect();
@@ -2302,9 +2169,9 @@ fn compile_diagnostic_items(
         .iter()
         .map(|d| {
             let severity = match d.severity {
-                wirescript::diagnostic::Severity::Error => "error",
-                wirescript::diagnostic::Severity::Warning => "warning",
-                _ => "info",
+                Severity::Error => "error",
+                Severity::Warning => "warning",
+                Severity::Info => "info",
             };
             let text = rulers.get(&*d.range.file).unwrap_or(&none);
             let start_line = d.range.start.line.saturating_sub(1) as usize;
@@ -2340,7 +2207,7 @@ fn base64(bytes: &[u8]) -> String {
         let n = chunk
             .iter()
             .enumerate()
-            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
         for i in 0..4 {
             if i <= chunk.len() {
                 out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 63] as char);
@@ -2371,10 +2238,9 @@ fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
-/// If `(line, col)` sits inside a `$```…``` ` nested-prefab block, return the
-/// block's inner source and the cursor's position remapped into it. LSP features
-/// can then analyze the inner block as its own isolated program instead of
-/// leaking the outer file's context into it. Returns `None` outside any block.
+/// If `(line, col)` is inside a `$```...``` ` nested-prefab block, the block's
+/// inner source and the cursor remapped into it, so LSP features analyze the
+/// block as its own program. `None` outside every block.
 fn nested_block_at(
     source: &str,
     file: &str,
@@ -2393,7 +2259,7 @@ fn nested_block_at(
         if t.kind != wirescript::TokenKind::NestedPrefab {
             continue;
         }
-        let Some(wirescript::lexer::TokenValue::Str(inner)) = &t.value else {
+        let Some(wirescript::TokenValue::Str(inner)) = &t.value else {
             continue;
         };
         // Inner text begins just past the opening `$``` fence.
@@ -2423,7 +2289,7 @@ fn build_completions(
         line,
         col,
         prefab_paths,
-        &wirescript::typecheck::enums::EnumRegistry::editor_lookup,
+        &wirescript::EnumRegistry::editor_lookup,
     )
     .into_iter()
     .map(|c| completion_item(&ruler, line, col, c))
@@ -2432,7 +2298,7 @@ fn build_completions(
 
 /// `c` as an LSP item, its replaced span in UTF-16 columns.
 fn completion_item(
-    ruler: &Ruler,
+    ruler: &Ruler<'_>,
     line: usize,
     col: usize,
     c: wirescript::analysis::Completion,

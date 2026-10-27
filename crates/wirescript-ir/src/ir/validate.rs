@@ -59,8 +59,8 @@ pub enum PortSide {
 impl std::fmt::Display for PortSide {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            PortSide::Input => "input",
-            PortSide::Output => "output",
+            Self::Input => "input",
+            Self::Output => "output",
         })
     }
 }
@@ -68,10 +68,10 @@ impl std::fmt::Display for PortSide {
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ValidationError::UnknownClass { node, class } => {
+            Self::UnknownClass { node, class } => {
                 write!(f, "{node}: `{class}` is not a gate class in the inventory")
             }
-            ValidationError::UnknownPort {
+            Self::UnknownPort {
                 node,
                 class,
                 port,
@@ -82,7 +82,7 @@ impl std::fmt::Display for ValidationError {
                 "{node} ({class}) has no {side} port `{port}`; its {side} ports are: {}",
                 port_list(valid)
             ),
-            ValidationError::TypeMismatch {
+            Self::TypeMismatch {
                 from,
                 to,
                 from_type,
@@ -92,7 +92,7 @@ impl std::fmt::Display for ValidationError {
                 "wire {}.{} -> {}.{} carries `{from_type}` into a `{to_type}` input; an exec pulse carries no value",
                 from.node_id, from.port, to.node_id, to.port
             ),
-            ValidationError::FanIn { target, sources } => write!(
+            Self::FanIn { target, sources } => write!(
                 f,
                 "{}.{} is fed by {} wires ({}); an input takes one",
                 target.node_id,
@@ -104,7 +104,7 @@ impl std::fmt::Display for ValidationError {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            ValidationError::MissingNode {
+            Self::MissingNode {
                 node,
                 referenced_by,
             } => {
@@ -113,18 +113,18 @@ impl std::fmt::Display for ValidationError {
                     "{referenced_by} names {node}, which is not a node of this program"
                 )
             }
-            ValidationError::ChipIo {
+            Self::ChipIo {
                 module,
                 node,
                 problem,
             } => write!(f, "module `{module}`, {node}: {problem}"),
-            ValidationError::Coerce { node } => {
+            Self::Coerce { node } => {
                 write!(
                     f,
                     "{node} is a `coerce` node, which the backend does not emit; use a gate of the conversion's class"
                 )
             }
-            ValidationError::DuplicateId { node, modules } => {
+            Self::DuplicateId { node, modules } => {
                 write!(
                     f,
                     "{node} is defined in more than one module: {}",
@@ -155,7 +155,8 @@ impl Program {
     pub fn validate(&self) -> Vec<ValidationError> {
         let mut nodes: HashMap<NodeId, (&Node, Sym)> = HashMap::default();
         let mut dups: HashMap<NodeId, Vec<Sym>> = HashMap::default();
-        collect(&self.module, &mut nodes, &mut dups);
+        self.module
+            .walk(&mut |_, m| collect(m, &mut nodes, &mut dups));
         let mut errors = Vec::new();
         let mut dups: Vec<(NodeId, Vec<Sym>)> = dups.into_iter().collect();
         dups.sort_by_key(|(id, _)| *id);
@@ -173,9 +174,7 @@ impl Program {
 
         // Fan-in is across modules: a wire may be stored above its target.
         let mut feeds: HashMap<PortRef, Vec<PortRef>> = HashMap::default();
-        let mut all_wires = Vec::new();
-        wires(&self.module, &mut all_wires);
-        for w in &all_wires {
+        for w in self.module.wires_deep() {
             if w.target.port != WirePort::Layout {
                 feeds.entry(w.target).or_default().push(w.source);
             }
@@ -204,20 +203,6 @@ fn collect<'a>(
         } else {
             out.insert(*id, (n, m.name));
         }
-    }
-    let mut ids: Vec<&NodeId> = m.chips.keys().collect();
-    ids.sort();
-    for id in ids {
-        collect(&m.chips[id], out, dups);
-    }
-}
-
-fn wires(m: &Module, out: &mut Vec<super::Wire>) {
-    out.extend(m.wires.iter().copied());
-    let mut ids: Vec<&NodeId> = m.chips.keys().collect();
-    ids.sort();
-    for id in ids {
-        wires(&m.chips[id], out);
     }
 }
 

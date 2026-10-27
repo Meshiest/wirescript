@@ -42,8 +42,8 @@ fn range(file: &str, start_line: u32, start_col: u32, end_line: u32, end_col: u3
 
 #[test]
 fn find_name_range_is_word_boundary_aware() {
-    // `helper` must not match inside `helperX` or `myhelper` — only the
-    // whole-token occurrence counts.
+    // `helper` does not match inside `helperX` or `myhelper`; only the whole
+    // token counts.
     let source = "let helperX = 1\nlet myhelper = 2\nlet helper = 3\n";
     let decl_range = range("t.ws", 1, 1, 3, 1); // spans the whole snippet
     let found = find_name_range(source, &decl_range, "helper").expect("match found");

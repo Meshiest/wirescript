@@ -75,18 +75,22 @@ fn opaque_emits_to_world() {
     let r = compile_ok(src);
     let lr = crate::layout::layout(&r.module);
     let opts = crate::EmitOptions::default();
-    crate::build_world(&r.module, &Default::default(), &lr, &opts)
-        .expect("emit must handle rerouter nodes");
+    crate::build_world(
+        &r.module,
+        &crate::ir::ProgramSettings::default(),
+        &lr,
+        &opts,
+    )
+    .expect("emit must handle rerouter nodes");
 }
 
 #[test]
 fn opaque_scalar_inputs_materialize_as_constant_gates() {
-    // Silent-miscompile: a scalar literal wired to a dataless port
-    // (the rerouter's RER_Input) was inlined into nonexistent component data
-    // at emit and silently dropped in-game. It must materialize as a REAL
-    // pure gate carrying the value as unwired-input data defaults (MathAdd
-    // for numbers, LogicalOR for bools, String_Concatenate for strings) —
-    // NOT a Variable, whose Value output stays null until an exec write.
+    // A scalar literal wired to a dataless port (the rerouter's RER_Input) has no
+    // component data to inline into, so it materializes as a real pure gate carrying
+    // the value as unwired-input data defaults (MathAdd for numbers, LogicalOR for
+    // bools, String_Concatenate for strings). A Variable would not do: its Value
+    // output stays null until an exec write.
     for (src, feeder) in [
         ("out y = Opaque(2) == Opaque(3)", "MathAdd"),
         ("out y = Opaque(true) == Opaque(false)", "LogicalOR"),

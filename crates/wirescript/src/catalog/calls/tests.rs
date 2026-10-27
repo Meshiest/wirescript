@@ -76,11 +76,8 @@ fn set_visible_to_takes_a_player_or_team() {
 }
 
 /// Params that name a settable field the gate does not expose as a wire
-/// input. These only ever work as constants — lowering writes them into the
-/// component's data and drops the wire; a computed value has nowhere to go.
-///
-/// This list pins what the current inventory reports. It should shrink, not
-/// grow: a new entry means either a mistyped port or a gate whose ports
+/// input. They work only as constants: lowering writes them into the
+/// component's data. A new entry means a mistyped port or a gate whose ports
 /// changed in a game update.
 const DATA_ONLY_PARAMS: &[&str] = &[
     "AddComponent.componentType -> ComponentType",
@@ -134,7 +131,7 @@ const DATA_ONLY_PARAMS: &[&str] = &[
 #[test]
 fn every_call_param_targets_a_real_wire_input() {
     let mut found: Vec<String> = Vec::new();
-    for (name, spec) in calls().iter() {
+    for (name, spec) in calls() {
         // Pseudo/internal gates are absent from the inventory dump.
         if crate::catalog::default_catalog()
             .find_by_class(spec.gate_class)
@@ -149,7 +146,10 @@ fn every_call_param_targets_a_real_wire_input() {
         }
     }
     found.sort();
-    let expected: Vec<String> = DATA_ONLY_PARAMS.iter().map(|s| s.to_string()).collect();
+    let expected: Vec<String> = DATA_ONLY_PARAMS
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     let new: Vec<&String> = found.iter().filter(|f| !expected.contains(f)).collect();
     assert!(new.is_empty(), "params bound to non-wire ports: {new:#?}");
     let gone: Vec<&String> = expected.iter().filter(|e| !found.contains(e)).collect();
@@ -159,11 +159,9 @@ fn every_call_param_targets_a_real_wire_input() {
     );
 }
 
-/// Companion to `every_call_param_targets_a_real_wire_input`, for the other
-/// wire directions the param test doesn't cover: every CallSpec OUTPUT port,
-/// and every EVENT exec-out / data / wired-input port, must name a real port
-/// (right direction) on its gate per the inventory. A stale name here wires
-/// to a slot the game doesn't have — a silent load failure.
+/// Every `CallSpec` output port and every event exec-out, data and wired-input
+/// port must name a real port of the right direction on its gate. A stale name
+/// wires to a slot the game does not have, which fails silently at load.
 #[test]
 fn every_call_output_and_event_port_is_real() {
     let cat = crate::catalog::default_catalog();
@@ -178,7 +176,7 @@ fn every_call_output_and_event_port_is_real() {
         s
     };
     let mut bad: Vec<String> = Vec::new();
-    for (name, spec) in calls().iter() {
+    for (name, spec) in calls() {
         let Some(g) = cat.find_by_class(spec.gate_class) else {
             continue;
         };
@@ -190,7 +188,7 @@ fn every_call_output_and_event_port_is_real() {
             }
         }
     }
-    for (name, e) in crate::catalog::events::events().iter() {
+    for (name, e) in crate::catalog::events::events() {
         let Some(g) = cat.find_by_class(e.gate_class) else {
             continue;
         };
@@ -220,15 +218,12 @@ fn every_call_output_and_event_port_is_real() {
 /// Every data-only config param on a gate that has a component data struct
 /// must name a real field on that struct in the live brdb schema, and any
 /// enum-typed config param must resolve to a real schema enum with members.
-/// Guards against game-update drift (a renamed/removed config field, or a
-/// field that changed type). Gates absent from the component->struct pair
-/// table (pseudo/internal, or fields nested inside an emit-built sub-struct
-/// like GiveWeapon's) have no top-level struct here and are skipped.
+/// Gates absent from the component->struct table (pseudo/internal gates) are
+/// skipped.
 #[test]
 fn config_params_exist_in_schema() {
-    // Config fields the emitter writes into a nested sub-struct rather than
-    // a top-level field of the gate's data struct (so they legitimately do
-    // not appear on that struct directly).
+    // Config fields the emitter writes into a nested sub-struct, so they are
+    // not fields of the gate's data struct itself.
     const NESTED_FIELDS: &[(&str, &str)] = &[("GiveWeapon", "ItemTypeIfItem")];
     let schema = brdb::schemas::bricks_components_schema_max();
     let struct_of: std::collections::HashMap<&str, &str> =
@@ -236,7 +231,7 @@ fn config_params_exist_in_schema() {
             .iter()
             .copied()
             .collect();
-    for (name, spec) in calls().iter() {
+    for (name, spec) in calls() {
         let Some(strct) = struct_of.get(spec.gate_class) else {
             continue;
         };

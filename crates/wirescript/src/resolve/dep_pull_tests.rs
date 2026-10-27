@@ -32,8 +32,7 @@ fn record_let_pulls_array_deps_and_expands_let_annotation() {
         "resolve diags: {:?}",
         r.diagnostics
     );
-    let tc =
-        crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
     let errors: Vec<_> = tc
         .diagnostics
         .iter()

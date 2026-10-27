@@ -323,7 +323,7 @@ fn deciding_branch(m: &crate::ir::Module, store: crate::ir::NodeId) -> Option<cr
 }
 
 /// The other output of the Branch output `taken`.
-fn other_side(taken: &crate::ir::PortRef) -> crate::ir::PortRef {
+fn other_side(taken: crate::ir::PortRef) -> crate::ir::PortRef {
     let other = if taken.port == WirePort::ExecOutA {
         WirePort::ExecOutB
     } else {
@@ -388,7 +388,7 @@ fn shape(ctx: Ctx, src: &str, has_sentinel: bool) -> Shape {
         .collect();
     assert_eq!(o2.len(), 1, "the arm's `o2` store\n{src}");
     let arm_on_its_branch = deciding_branch(m, arm).is_some_and(|b| {
-        !reached_without(m, Some(b.clone()), o2[0]) && !reached_from(m, other_side(&b), o2[0])
+        !reached_without(m, Some(b), o2[0]) && !reached_from(m, other_side(b), o2[0])
     });
     let arm_leaves = !has_sentinel
         || stores_on(m, line_of(src, "n = 5"))

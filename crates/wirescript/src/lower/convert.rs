@@ -10,10 +10,10 @@ use super::*;
 use crate::types::mono::unwrap_ref;
 
 /// The scalar `value as T`, read where one value goes.
-pub(super) fn lower_as(ctx: &mut LowerCtx, value: &Expr, e: &Expr) -> PortRef {
+pub(super) fn lower_as(ctx: &mut LowerCtx<'_>, value: &Expr, e: &Expr) -> PortRef {
     let dst = ctx.type_of(e);
     // A constant whose conversion is measured is its result, with no gate.
-    if let Some(lit) = crate::lower::predeclare::expr_to_literal_in(e, &ctx.const_lookup()) {
+    if let Some(lit) = crate::const_eval::expr_to_literal_in(e, &ctx.const_lookup()) {
         return literal_node(ctx, e, dst, lit);
     }
     let src = unwrap_ref(&ctx.type_of(value));
@@ -24,7 +24,7 @@ pub(super) fn lower_as(ctx: &mut LowerCtx, value: &Expr, e: &Expr) -> PortRef {
 /// `port` (a `src`) as a `dst`: itself when the types already agree, else the
 /// output of a new Convert gate it feeds.
 pub(super) fn convert_port(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     port: PortRef,
     src: &Type,
     dst: &Type,
@@ -52,14 +52,10 @@ pub(super) fn convert_port(
 
 /// The fields of a record or tuple `value as T`, each converted to its target
 /// field type. `None` when the value has no fields to convert.
-pub(super) fn as_record_fields(
-    ctx: &mut LowerCtx,
-    value: &Expr,
-    e: &Expr,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+pub(super) fn as_record_fields(ctx: &mut LowerCtx<'_>, value: &Expr, e: &Expr) -> Option<Fields> {
     let src = unwrap_ref(&ctx.type_of(value));
     let dst = ctx.type_of(e);
-    let fields = crate::lower::stmt::value_record_fields(ctx, value)?;
+    let fields = value_record_fields(ctx, value)?;
     Some(convert_fields(ctx, fields, &src, &dst, e.range()))
 }
 
@@ -78,12 +74,12 @@ fn field_types(t: &Type) -> Vec<(String, Type)> {
 }
 
 fn convert_fields(
-    ctx: &mut LowerCtx,
-    mut fields: HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    mut fields: Fields,
     src: &Type,
     dst: &Type,
     range: &SourceRange,
-) -> HashMap<crate::intern::Sym, Binding> {
+) -> Fields {
     let src_fields = field_types(src);
     for (name, d) in field_types(dst) {
         let Some(s) = src_fields
@@ -96,7 +92,7 @@ fn convert_fields(
         if s == d {
             continue;
         }
-        let key = crate::intern::intern(&name);
+        let key = intern(&name);
         let Some(binding) = fields.get(&key).cloned() else {
             continue;
         };
@@ -120,13 +116,15 @@ fn convert_fields(
 pub(super) fn prune_unread_conversions(module: &mut Module) {
     loop {
         let mut read: HashSet<NodeId> = HashSet::default();
-        collect_sources(module, &mut read);
+        module.walk(&mut |_, m| collect_sources(m, &mut read));
         let mut dropped: HashSet<NodeId> = HashSet::default();
-        drop_unread(module, &read, &mut dropped);
+        module.walk_mut(&mut |_, m| drop_unread(m, &read, &mut dropped));
         if dropped.is_empty() {
             return;
         }
-        drop_wires_into(module, &dropped);
+        module.walk_mut(&mut |_, m| {
+            m.wires.retain(|w| !dropped.contains(&w.target.node_id));
+        });
     }
 }
 
@@ -135,9 +133,6 @@ fn collect_sources(module: &Module, read: &mut HashSet<NodeId>) {
     read.extend(module.dynamic_labels.values().map(|p| p.node_id));
     read.extend(module.root_dynamic_label.iter().map(|p| p.node_id));
     read.extend(module.style_sources().map(|p| p.node_id));
-    for child in module.chips.values() {
-        collect_sources(child, read);
-    }
 }
 
 fn drop_unread(module: &mut Module, read: &HashSet<NodeId>, dropped: &mut HashSet<NodeId>) {
@@ -150,16 +145,4 @@ fn drop_unread(module: &mut Module, read: &HashSet<NodeId>, dropped: &mut HashSe
         }
         !unread
     });
-    for child in module.chips.values_mut() {
-        drop_unread(child, read, dropped);
-    }
-}
-
-fn drop_wires_into(module: &mut Module, dropped: &HashSet<NodeId>) {
-    module
-        .wires
-        .retain(|w| !dropped.contains(&w.target.node_id));
-    for child in module.chips.values_mut() {
-        drop_wires_into(child, dropped);
-    }
 }

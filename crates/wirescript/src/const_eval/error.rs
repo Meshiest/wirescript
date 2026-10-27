@@ -1,101 +1,78 @@
 //! Why a const expression could not be evaluated, and how that reads as a
-//! diagnostic. Kept separate from the evaluator so the message wording is in
-//! one place — a const failure is usually a user-facing teaching moment, not
-//! an internal error.
+//! user-facing diagnostic. All the message wording lives here.
 
 use crate::diagnostic::SourceRange;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum ConstReason {
+pub(crate) enum ConstReason {
     /// Names a value that only exists at runtime.
     NotConstant(String),
     /// Calls a mod that is not declared `const`.
     NotAConstMod(String),
-    /// Calls a mod that IS declared `const mod`, from a position const
-    /// evaluation never descended to. `eval_expr` recurses through every
-    /// compound form it can evaluate — operators, constructor arguments,
-    /// array/map/record literals, `if` expressions, indexing, field access —
-    /// so a const-mod call inside any of THOSE is reached and run. What
-    /// remains is a call sitting inside a SURROUNDING expression that has no
-    /// compile-time form of its own: most often an argument to a call whose
-    /// own callee is not a `const mod` (an ordinary `mod`, or a builtin with
-    /// no certified constant form), where the enclosing arm declines before
-    /// ever descending into the arguments.
-    ///
-    /// Distinct from [`ConstReason::NotAConstMod`] because saying "not
-    /// declared `const mod`" about a mod that plainly IS one would be a false
-    /// statement about the user's code — this callee is fine; what encloses
-    /// it is what cannot be evaluated.
+    /// Calls a `const mod` inside an enclosing expression with no compile-time
+    /// form (usually an argument to a non-const call), so evaluation never
+    /// reached it. The callee is fine; the enclosing expression is the cause.
     NestedConstModCall(String),
     /// Calls a `const mod` the calling file neither declares nor imports. The
     /// call itself is the error (`WS002`/`WS036` at the call), so this is
     /// not reported again.
     UnnamedConstMod(String),
-    /// A syntactic form const evaluation does not handle. The string is a NOUN
-    /// PHRASE naming that form (`"a spread"`, `"string interpolation"`) — it is
-    /// wrapped in "not a compile-time constant: … cannot be evaluated at
-    /// compile time", so anything longer than a noun phrase reads as a garbled
-    /// run-on. Use [`ConstReason::UnsupportedMessage`] for a reason that needs
-    /// to explain itself.
+    /// A syntactic form const evaluation does not handle. The string is a noun
+    /// phrase (`"a spread"`), since the message wraps it in "... cannot be
+    /// evaluated at compile time"; use `UnsupportedMessage` for a sentence.
     Unsupported(&'static str),
-    /// [`ConstReason::Unsupported`] for a refusal whose explanation does not
-    /// fit a noun phrase: a rule that has to say WHY const and runtime would
-    /// disagree, or point at the spelling that does work. The string is the
-    /// COMPLETE message after "not a compile-time constant: " — the same
-    /// contract [`ConstReason::UnsupportedMethod`] has, and the reason this is
-    /// a separate variant rather than a longer `Unsupported` string: wrapping
-    /// a sentence in the noun-phrase template produced text like "… so the two
-    /// would disagree cannot be evaluated at compile time".
+    /// An unsupported form whose reason needs a full sentence (why const and
+    /// runtime would disagree, or what spelling works). The string is the
+    /// whole message after "not a compile-time constant: ".
     UnsupportedMessage(&'static str),
-    /// A method call on a compile-time constant array/map naming an
-    /// operation this evaluator does not implement as a mutation (anything
-    /// other than `push`/`set`/`clear`/`append` for an array, or
-    /// `set`/`remove`/`clear` for a map). Distinct from
-    /// [`ConstReason::Unsupported`] — whose reason is always a fixed
-    /// `&'static str` — because this one must NAME the actual method the
-    /// user wrote, so the diagnostic points at the offending call instead of
-    /// a generic "this statement".
+    /// A method on a constant array or map that is not a supported mutation.
+    /// The string is the whole message, naming the method the user wrote.
     UnsupportedMethod(String),
-    /// A tuple destructure (`const (a, b) = …`) whose pattern binds a
-    /// different number of positions than the value has. Distinct from
-    /// [`ConstReason::Unsupported`]: the value IS a compile-time constant and
-    /// IS positional — the pattern just has the wrong width, so the message
-    /// should say both counts. Mirrors the WS010 `bind_let` raises for the
-    /// same mismatch on the TYPES.
+    /// A tuple destructure (`const (a, b) = ...`) whose width differs from
+    /// the value's. Mirrors the WS010 `bind_let` reports for the types.
     TupleArityMismatch { expected: usize, got: usize },
-    /// The certified evaluator declined to compute this — overflow, a
-    /// non-ASCII string, an uncertified gate/operand combination. The value is
-    /// computable in principle; the compiler will not guess it.
+    /// The certified evaluator declined to compute this (overflow, a
+    /// non-ASCII string, an uncertified gate and operand combination). The
+    /// value is computable in principle; the compiler will not guess it.
     Refused(String),
-    /// A compile-time array index outside `0..len`. Distinct from
-    /// [`ConstReason::NotConstant`]/[`ConstReason::Unsupported`]: the array
-    /// AND the index are both perfectly constant — the position simply does
-    /// not exist. At runtime an out-of-range array read keeps the gate's
-    /// stale PREVIOUS value; at compile time there is no previous value to
-    /// fall back on, so this is refused outright instead of guessed.
+    /// A constant array index outside `0..len`. An out-of-range runtime read
+    /// keeps the gate's previous value; a constant has none to fall back on.
     ArrayIndexOutOfRange { index: i64, len: usize },
-    /// A compile-time map index (`m[k]`) whose key has no matching entry.
-    /// Same rationale as [`ConstReason::ArrayIndexOutOfRange`]: nothing to
-    /// fall back to at compile time.
+    /// A constant map read (`m[k]`) whose key has no entry, refused for the
+    /// same reason as [`ConstReason::ArrayIndexOutOfRange`].
     MapKeyNotFound,
-    /// Field access (`rec.field`) on a compile-time constant record whose
-    /// fields do NOT include `field`. Distinct from
-    /// [`ConstReason::NotConstant`]: the record itself evaluated fine — the
-    /// name just isn't one of its fields — so the diagnostic should say that,
-    /// not claim the whole expression is a runtime value.
+    /// `rec.field` on a constant record that has no such field (the record
+    /// itself is constant).
     RecordFieldNotFound(String),
     /// Call-chain depth or step count exceeded.
     BudgetExceeded,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ConstError {
+pub(crate) struct ConstError {
     pub reason: ConstReason,
     pub range: SourceRange,
 }
 
 impl ConstError {
-    pub fn code(&self) -> &'static str {
+    pub(crate) fn new(reason: ConstReason, range: &SourceRange) -> Self {
+        Self {
+            reason,
+            range: range.clone(),
+        }
+    }
+
+    /// A [`ConstReason::Unsupported`] error; `what` is a noun phrase.
+    pub(crate) fn unsupported(what: &'static str, range: &SourceRange) -> Self {
+        Self::new(ConstReason::Unsupported(what), range)
+    }
+
+    /// A [`ConstReason::Refused`] error.
+    pub(crate) fn refused(why: impl Into<String>, range: &SourceRange) -> Self {
+        Self::new(ConstReason::Refused(why.into()), range)
+    }
+
+    pub(crate) fn code(&self) -> &'static str {
         match self.reason {
             ConstReason::Refused(_) => "WS047",
             ConstReason::BudgetExceeded => "WS048",
@@ -105,11 +82,11 @@ impl ConstError {
 
     /// Whether another error already reports why this expression has no
     /// value (see [`ConstReason::UnnamedConstMod`]).
-    pub fn reported_elsewhere(&self) -> bool {
+    pub(crate) fn reported_elsewhere(&self) -> bool {
         matches!(self.reason, ConstReason::UnnamedConstMod(_))
     }
 
-    pub fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         match &self.reason {
             ConstReason::NotConstant(name) => {
                 format!("not a compile-time constant: '{name}' is a runtime value")

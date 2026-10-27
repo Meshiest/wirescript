@@ -65,11 +65,7 @@ fn user_receiver_methods_match_by_type() {
                    mod inc(self: int) -> int { return self + 1 }\n\
                    mod plain(a: vector) -> float { return 0.0 }\n";
     let resolved = resolve(src, "test", &FsLoader);
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = crate::typecheck::typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
 
     let on_vec: Vec<String> = user_receiver_methods("vector", &symbols)
@@ -109,7 +105,7 @@ fn collection_kind_resolves_direct_and_aliased() {
     let sd = |name: &str, ty: &str| crate::analysis::SymbolDef {
         name: name.into(),
         kind: "type",
-        range: Default::default(),
+        range: crate::diagnostic::SourceRange::default(),
         ty: Some(ty.to_string()),
         exec: false,
         is_const: false,

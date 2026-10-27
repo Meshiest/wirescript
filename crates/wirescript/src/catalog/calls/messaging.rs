@@ -28,7 +28,7 @@ fn dialog(
 }
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Messaging --------------------------------------------
+    // Messaging
     m.insert(
         "ShowChatMessage",
         controller_exec(
@@ -108,7 +108,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Audio -------------------------------------------------------------
+    // Audio
     // The audio asset is a `$BrickOneShotAudioDescriptor/...` reference,
     // inlined into the gate's AudioDescriptor data field (like GiveWeapon).
     m.insert(

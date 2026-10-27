@@ -237,8 +237,8 @@ fn dropped_var_initializers_warn() {
         ),
         (
             "in start: exec\non start { var f: int[] = [1, 2]\nvar g2: int[] = f\ng2.push(3) }",
-            1,
-            Some("array literal"),
+            0,
+            None,
         ),
     ];
     let mut failures = Vec::new();

@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     pub(super) fn parse_block(&mut self) -> Block {
         let start = self.expect(TokenKind::LBrace, None).start;
         if !self.enter_nesting() {
@@ -21,19 +21,15 @@ impl<'a> Parser<'a> {
             let stmt_start = self.peek().start;
             if let Some(s) = self.parse_stmt() {
                 if let Some(doc) = doc {
-                    // Key by the statement's own range start — this is the
-                    // offset lowering looks doc comments up by (e.g. a chip
-                    // decl's range starts at the `chip` keyword). When the
-                    // statement begins with annotations (`@label(...)`,
-                    // `@closed`, `@left`/etc.), `stmt_start` is the `@` token
-                    // instead, which no lookup ever queries — so also key
-                    // under `stmt_start` (harmless when it's the same offset)
-                    // to keep this the safest, most permissive insertion.
+                    // Lowering looks doc comments up by the statement's own
+                    // range start (a chip's starts at the `chip` keyword). An
+                    // annotated statement's `stmt_start` is its `@` token
+                    // instead, so the doc is keyed under both.
                     let decl_start = s.range().start.offset;
                     let file: std::sync::Arc<str> = self.file.into();
                     if decl_start != stmt_start.offset {
                         self.doc_comments
-                            .insert((file.clone(), decl_start), doc.clone());
+                            .insert((std::sync::Arc::clone(&file), decl_start), doc.clone());
                     }
                     self.doc_comments.insert((file, stmt_start.offset), doc);
                 }
@@ -161,14 +157,10 @@ impl<'a> Parser<'a> {
                     _ => return None,
                 }
             }
-            // `@nofold` (alone — no side/label/closed) is also legal directly on
-            // `var` / `static var` / `let` / `on`, at any nesting depth. `@label`
-            // (string or constant expression) is additionally legal directly on
-            // `var` / `static var` — it overrides the var's name-derived
-            // floating label, same as on a port — and so are `@color` and
-            // `@material`. Any other annotation combined with these still falls
-            // through to the generic "must be followed by ..." error below,
-            // unchanged.
+            // `@nofold` alone is also legal on `var` / `static var` / `let` /
+            // `on` at any depth; `@label`, `@color` and `@material` are legal on
+            // `var` / `static var` (the label overrides the name-derived one).
+            // Any other annotation falls through to the error below.
             let is_static_var = kw("static")
                 && self.peek_at(1).kind == TokenKind::Kw
                 && self.peek_at(1).text == "var";
@@ -301,10 +293,9 @@ impl<'a> Parser<'a> {
                         TopDecl::LetElse(v) => return Some(Stmt::LetElse(v)),
                         TopDecl::Await(a) => return Some(Stmt::Await(a)),
                         // A captured event parsed here has already consumed its
-                        // whole body; without an explicit `return None` control
-                        // fell through to the expression-statement fallback,
-                        // which re-parsed the trailing tokens into two unrelated
-                        // errors that never named the real problem.
+                        // whole body, so it must return here: the
+                        // expression-statement fallback would re-parse the
+                        // trailing tokens into unrelated errors.
                         TopDecl::Event(e) => {
                             self.error(
                                 "captured events (`let x = on Event { … }`) are only allowed at the top level"
@@ -327,7 +318,7 @@ impl<'a> Parser<'a> {
                     // `const chip` is rejected: a chip shares one compiled template
                     // across call sites, so "every parameter is const" is not a
                     // property of the declaration the way it is for an inlined mod.
-                    // Const PARAMETERS on a chip are supported — they extend its
+                    // Const PARAMETERS on a chip are supported: they extend its
                     // template key.
                     "chip" => {
                         let kw = self.peek().clone();
@@ -389,7 +380,7 @@ impl<'a> Parser<'a> {
                         TokenKind::Newline | TokenKind::Semi | TokenKind::RBrace | TokenKind::Eof
                     ) {
                         let first = self.parse_expr();
-                        // `return a, b, c` - parens optional on a tuple return.
+                        // `return a, b, c`: parens are optional on a tuple return.
                         // Collect the comma-separated list into the same
                         // index-keyed record `(a, b, c)` produces.
                         if self.check(TokenKind::Comma, None) {
@@ -545,9 +536,9 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `buffer(delay[, hold]) emit name [= value]` — a buffered emit. The
-    /// spec's Buffer gate delays the emit's exec (the tick-crossing barrier
-    /// that legalises loop back-edges).
+    /// `buffer(delay[, hold]) emit name [= value]`: a buffered emit. A Buffer
+    /// gate delays the emit's exec, the tick-crossing barrier that legalises
+    /// loop back-edges.
     fn parse_buffered_emit(&mut self) -> Stmt {
         let spec = self.parse_buffer_spec();
         let stmt = self.parse_emit();
@@ -562,8 +553,8 @@ impl<'a> Parser<'a> {
     }
 
     /// `buffer(delay[, hold])` with an optional `s` unit after each duration
-    /// (`buffer(0.5s)`, `buffer(myVar s)` — seconds; unadorned = ticks), or
-    /// bare `buffer` (before `emit`) — one tick.
+    /// (`buffer(0.5s)`, `buffer(myVar s)` are seconds; unadorned is ticks), or
+    /// bare `buffer` (before `emit`), one tick.
     fn parse_buffer_spec(&mut self) -> BufferSpec {
         let buffer_tok = self.expect(TokenKind::Kw, Some("buffer"));
         let start = buffer_tok.start;
@@ -709,7 +700,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `for <pat> [, <pat>]* in <source> [as <name>] { <body> }`
+    /// `for <pat> [, <pat>]* in <source> { <body> }`
     fn parse_for_stmt(&mut self) -> Stmt {
         self.parse_for_with_result(None, None)
     }
@@ -750,7 +741,7 @@ impl<'a> Parser<'a> {
         }
 
         self.expect(TokenKind::Kw, Some("in"));
-        // A bare `as` ends the source (`Parser::stop_at_as`): the retired
+        // A bare `as` ends the source (`Parser::stop_at_as`): the unsupported
         // `for .. as run` form lands below rather than reading as a conversion.
         let saved_as = std::mem::replace(&mut self.stop_at_as, true);
         let source = self.parse_for_source();
@@ -788,7 +779,7 @@ impl<'a> Parser<'a> {
 
     /// One binding slot: `name`, `_`, or `{ a, b: alias }`.
     fn parse_for_pat(&mut self) -> ForPat {
-        // `{ a, b: alias, ...rest }` - the same record-destructure shape
+        // `{ a, b: alias, ...rest }`: the same record-destructure shape
         // `let { .. } = ..` uses, via the shared per-field parser.
         if self.check(TokenKind::LBrace, None) {
             let brace_start = self.advance().start; // consume `{`
@@ -831,9 +822,8 @@ impl<'a> Parser<'a> {
     fn parse_for_source(&mut self) -> ForSource {
         let start = self.peek().start;
 
-        // `count(...)` - contextual, so `count` stays an ordinary identifier
-        // everywhere else. Only treated as the range spelling when it is
-        // immediately followed by `(`.
+        // `count(...)` is contextual: `count` is the range spelling only when
+        // immediately followed by `(`, and an ordinary identifier elsewhere.
         if self.peek().kind == TokenKind::Ident
             && self.peek().text == "count"
             && self.peek_at(1).kind == TokenKind::LParen
@@ -841,14 +831,9 @@ impl<'a> Parser<'a> {
             return ForSource::Range(self.parse_count_range(start));
         }
 
-        // Parse the first endpoint with `..` excluded from ITS OWN operator
-        // search (`parse_range_operand`, backed by `Parser::stop_at_dotdot`):
-        // `..` is tied with `+`/`-` at precedence 10 and left-associative, so
-        // parsing this the ordinary way would group `0..n-1` as `(0..n) - 1`
-        // instead of `0 .. (n-1)`. Excluding `..` here means `+`/`-` (and
-        // everything tighter) still fully group into this one endpoint, and
-        // the loop simply stops the moment it reaches a bare `..` rather than
-        // treating it as a same-tier continuation.
+        // `..` shares `+`/`-`'s precedence and is left-associative, so an
+        // ordinary parse groups `0..n-1` as `(0..n) - 1`. `parse_range_operand`
+        // stops at a bare `..` and keeps the endpoint's arithmetic whole.
         let left = self.parse_range_operand();
 
         // `..` may follow the endpoint after a line break, like any infix
@@ -880,9 +865,8 @@ impl<'a> Parser<'a> {
         self.pos = saved;
 
         // Not a bare range: either a parenthesized range, optionally with
-        // `.step(..)` / `.rev()` (`(a..b).step(2)` parsed its own `..`
-        // unrestricted, inside the parens - see `parse_expr_delimited`), or a
-        // plain array/map collection expression.
+        // `.step(..)` / `.rev()` (its `..` parsed unrestricted inside the
+        // parens, see `parse_expr_delimited`), or a plain array/map collection.
         let end = left.range().end;
         match self.range_from_expr(left, start, end) {
             Ok(r) => ForSource::Range(r),
@@ -894,7 +878,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Reinterpret a parsed expression as a range, or hand back its innermost
-    /// form when it is not one - the array/map case.
+    /// form when it is not one (the array/map case).
     ///
     /// Peeling a `.step()`/`.rev()` discards the wrapper, so nothing later can
     /// see one that was applied to an array or map. WS083 is reported here, at
@@ -908,8 +892,7 @@ impl<'a> Parser<'a> {
         let mut peeled: Vec<(&'static str, SourceRange)> = Vec::new();
 
         // Peel `.step(k)` and `.rev()` off the outside, innermost last. A
-        // method call parses as `Call { callee: FieldAccess, .. }` - there is
-        // no separate method-call node in this AST.
+        // method call parses as `Call { callee: FieldAccess, .. }`.
         loop {
             let is_step = match &cur {
                 Expr::Call {
@@ -963,7 +946,7 @@ impl<'a> Parser<'a> {
                 op, left, right, ..
             } if op == ".." => {
                 // Each peel overwrites the one below it rather than combining
-                // with it, so a repeated method silently keeps the innermost.
+                // with it, so a repeated method is reported (WS083).
                 if let Some((method, range)) = peeled
                     .iter()
                     .enumerate()

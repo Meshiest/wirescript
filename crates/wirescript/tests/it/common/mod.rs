@@ -1,12 +1,15 @@
 //! Helpers shared by the integration test modules, each of which pulls them in
 //! with `use crate::common;`. Not every test uses every helper.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "shared helpers stay available while no test module calls one"
+)]
 
 use brdb::schema::BrdbStruct;
 
 /// Every component in an emitted world, in grid then chunk order: what the
 /// game would load, read back from the save's bytes.
-pub fn world_components(brz: &[u8]) -> Vec<BrdbStruct> {
+pub(crate) fn world_components(brz: &[u8]) -> Vec<BrdbStruct> {
     wirescript_ir::readback::Save::read(brz).components()
 }
 
@@ -17,14 +20,14 @@ pub fn world_components(brz: &[u8]) -> Vec<BrdbStruct> {
 /// Asserts nothing on purpose. Several callers are checking that a stage DID
 /// produce a diagnostic, so a helper that panicked on one would make the test
 /// it is asserting for unwritable.
-pub fn run_stages(
+pub(crate) fn run_stages(
     source: &str,
     file: &str,
-    fold_mode: wirescript::lower::FoldMode,
+    fold_mode: wirescript::FoldMode,
 ) -> (
     wirescript::resolve::ResolveResult,
-    wirescript::typecheck::TypeCheckResult,
-    wirescript::lower::LowerResult,
+    wirescript::TypeCheckResult,
+    wirescript::LowerResult,
 ) {
     let fe = wirescript::front_end(
         source,
@@ -40,31 +43,21 @@ pub fn run_stages(
 ///
 /// Stops at typecheck on purpose: these are checker tests, and running lowering
 /// would fold in a second stage's diagnostics.
-pub fn diag_codes(src: &str) -> Vec<String> {
+pub(crate) fn diag_codes(src: &str) -> Vec<String> {
     let resolved = wirescript::resolve::resolve(src, "test", &wirescript::resolve::FsLoader);
-    let tc = wirescript::typecheck::typecheck(
-        &resolved.ast,
-        "test",
-        &wirescript::typecheck::CeSlotMap::default(),
-    );
+    let tc = wirescript::typecheck(&resolved.ast, &wirescript::CeSlotMap::default());
     tc.diagnostics.iter().map(|d| d.code.clone()).collect()
 }
 
 /// Whether `src` survives the whole pipeline to a `.brz`.
-pub fn compiles(src: &str) -> bool {
-    wirescript::compile(wirescript::CompileInput {
-        source: src,
-        file: "test",
-        module_name: None,
-        fold_mode: wirescript::FoldMode::Auto,
-    })
-    .is_ok()
+pub(crate) fn compiles(src: &str) -> bool {
+    wirescript::compile(wirescript::CompileInput::new(src, "test")).is_ok()
 }
 
 /// Every brick in a world, root shell and every child grid alike. A chip's
 /// shell brick sits on the bricks of the module that instantiates it, so a
 /// walk of only `world.bricks` misses every nested one.
-pub fn all_bricks(world: &brdb::World) -> Vec<&brdb::Brick> {
+pub(crate) fn all_bricks(world: &brdb::World) -> Vec<&brdb::Brick> {
     std::iter::once(&world.bricks)
         .chain(world.grids.iter().map(|(_, b)| b))
         .flat_map(|bricks| bricks.iter())
@@ -72,7 +65,7 @@ pub fn all_bricks(world: &brdb::World) -> Vec<&brdb::Brick> {
 }
 
 /// The brick-asset name of every brick in a world.
-pub fn brick_assets(world: &brdb::World) -> Vec<String> {
+pub(crate) fn brick_assets(world: &brdb::World) -> Vec<String> {
     all_bricks(world)
         .iter()
         .map(|b| b.asset.asset().to_string())
@@ -82,7 +75,7 @@ pub fn brick_assets(world: &brdb::World) -> Vec<String> {
 /// Asset name paired with component class, per typed component. The two are
 /// set independently at emit, so checking one alone passes while the pair the
 /// game validates is still wrong.
-pub fn brick_asset_components(world: &brdb::World) -> Vec<(String, String)> {
+pub(crate) fn brick_asset_components(world: &brdb::World) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for b in all_bricks(world) {
         let asset = b.asset.asset().to_string();
@@ -100,7 +93,7 @@ pub fn brick_asset_components(world: &brdb::World) -> Vec<(String, String)> {
 /// The `(Count, FirstIndex, Step)` of each counted-loop shell, in world order.
 /// Read from the encoded `.brz`, since a constant pin exists only as component
 /// data and the in-memory `World` would not prove what the game reads.
-pub fn count_for_shell_data(brz: &[u8]) -> Vec<(i64, i64, i64)> {
+pub(crate) fn count_for_shell_data(brz: &[u8]) -> Vec<(i64, i64, i64)> {
     use brdb::schema::BrdbValue;
     let mut out = Vec::new();
     for c in world_components(brz) {
@@ -116,24 +109,19 @@ pub fn count_for_shell_data(brz: &[u8]) -> Vec<(i64, i64, i64)> {
 
 /// The compile input for `src` named `file`, folded as a compile folds by
 /// default.
-pub fn input<'a>(src: &'a str, file: &'a str) -> wirescript::CompileInput<'a> {
-    wirescript::CompileInput {
-        source: src,
-        file,
-        module_name: None,
-        fold_mode: wirescript::FoldMode::Auto,
-    }
+pub(crate) fn input<'a>(src: &'a str, file: &'a str) -> wirescript::CompileInput<'a> {
+    wirescript::CompileInput::new(src, file)
 }
 
 /// `src` compiled to a world, or a panic.
-pub fn world(src: &str, file: &str) -> brdb::World {
+pub(crate) fn world(src: &str, file: &str) -> brdb::World {
     wirescript::compile_to_world(input(src, file), wirescript::emit::EmitOptions::default())
         .unwrap_or_else(|e| panic!("should compile to a world: {e:?}"))
         .world
 }
 
 /// `src` compiled to `.brz` bytes, or a panic.
-pub fn brz(src: &str, file: &str) -> Vec<u8> {
+pub(crate) fn brz(src: &str, file: &str) -> Vec<u8> {
     wirescript::compile(input(src, file))
         .unwrap_or_else(|e| panic!("should compile to brz: {e:?}"))
         .brz
@@ -141,7 +129,7 @@ pub fn brz(src: &str, file: &str) -> Vec<u8> {
 
 /// Every diagnostic code compiling `src` produces, whether it compiles or
 /// fails with errors.
-pub fn compile_diag_codes(src: &str, file: &str) -> Vec<String> {
+pub(crate) fn compile_diag_codes(src: &str, file: &str) -> Vec<String> {
     match wirescript::compile(input(src, file)) {
         Ok(result) => result.diagnostics.iter().map(|d| d.code.clone()).collect(),
         Err(wirescript::CompileError::HasErrors(errors)) => {
@@ -154,20 +142,24 @@ pub fn compile_diag_codes(src: &str, file: &str) -> Vec<String> {
 }
 
 /// `src` lowered, with no diagnostic from typecheck or lowering.
-pub fn lowered(src: &str, file: &str) -> wirescript::ir::Module {
-    let (_, tc, lowered) = run_stages(src, file, wirescript::lower::FoldMode::Auto);
+pub(crate) fn lowered(src: &str, file: &str) -> wirescript::ir::Module {
+    let (_, tc, lowered) = run_stages(src, file, wirescript::FoldMode::Auto);
     assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     lowered.module
 }
 
 /// The property `name` of node `n`.
-pub fn prop(n: &wirescript::ir::Node, name: &str) -> Option<wirescript::ir::Literal> {
+pub(crate) fn prop(n: &wirescript::ir::Node, name: &str) -> Option<wirescript::ir::Literal> {
     n.properties.get(&wirescript::intern::intern(name)).cloned()
 }
 
 /// Whether `c` is a text display.
-pub fn is_text_display(c: &Box<dyn brdb::BrdbComponent>) -> bool {
+#[expect(
+    clippy::borrowed_box,
+    reason = "passed by name to iterator adaptors over a brick's component list"
+)]
+pub(crate) fn is_text_display(c: &Box<dyn brdb::BrdbComponent>) -> bool {
     c.component_type()
         .map(|t| t.to_string() == "Component_TextDisplay")
         .unwrap_or(false)
@@ -175,7 +167,7 @@ pub fn is_text_display(c: &Box<dyn brdb::BrdbComponent>) -> bool {
 
 /// The `.ws` fixtures in `tests/fixtures/<subdir>`, sorted. Panics when there
 /// are none, so a suite cannot pass by finding nothing to check.
-pub fn ws_fixtures(subdir: &str) -> Vec<std::path::PathBuf> {
+pub(crate) fn ws_fixtures(subdir: &str) -> Vec<std::path::PathBuf> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(subdir);

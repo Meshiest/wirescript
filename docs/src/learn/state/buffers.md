@@ -82,7 +82,7 @@ output pin feeds itself:
 ```
 
 ```text
-Error: [WS005] cycle in the wire graph has no barrier (a Buffer, Queue or EdgeDetector must break it); 3 gate(s) in the loop:
+Error: [WS005] cycle in the wire graph has no barrier (a Buffer or Queue must break it); 3 gate(s) in the loop:
 ```
 
 The error goes on to list each gate in the loop. Put a `buffer` anywhere in it

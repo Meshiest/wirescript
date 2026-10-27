@@ -46,15 +46,15 @@ pub fn collect_inlay_hints(
 
 /// The hint a `let`, or a top-level `buffer`, gets when it names no type.
 fn hint_node(
-    source: &Text,
-    node: walk::Node,
+    source: &Text<'_>,
+    node: walk::Node<'_>,
     type_map: &TypeMap,
     file: &Arc<str>,
     hints: &mut Vec<InlayHintInfo>,
 ) {
     match node {
         walk::Node::Decl(TopDecl::Let(l)) | walk::Node::Stmt(Stmt::Let(l)) => {
-            hint_let(source, l, type_map, file, hints)
+            hint_let(source, l, type_map, file, hints);
         }
         walk::Node::Decl(TopDecl::Buffer(b)) => hint_buffer(source, b, type_map, file, hints),
         _ => {}
@@ -62,7 +62,7 @@ fn hint_node(
 }
 
 fn hint_let(
-    source: &Text,
+    source: &Text<'_>,
     l: &LetDecl,
     type_map: &TypeMap,
     file: &Arc<str>,
@@ -102,12 +102,12 @@ fn hint_let(
                 });
             }
         }
-        _ => {}
+        LetBinding::RecordDestruct { .. } => {}
     }
 }
 
 fn hint_buffer(
-    source: &Text,
+    source: &Text<'_>,
     b: &BufferDecl,
     type_map: &TypeMap,
     file: &Arc<str>,
@@ -134,7 +134,7 @@ fn hint_buffer(
 
 fn infer_from_map(type_map: &TypeMap, file: &Arc<str>, expr: &Expr) -> Option<Type> {
     let range = expr.range();
-    let key = (file.clone(), range.start.offset, range.end.offset);
+    let key = (Arc::clone(file), range.start.offset, range.end.offset);
     type_map.get(&key).cloned()
 }
 

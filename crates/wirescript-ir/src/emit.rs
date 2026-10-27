@@ -1,10 +1,10 @@
-//! IR + placement hints -> brdb::World -> .brz bytes OR .brdb file.
+//! IR + placement hints -> `brdb::World` -> .brz bytes OR .brdb file.
 //!
 //! Two output modes, same underlying pipeline:
-//! - [`emit_brz`] returns the bytes of a `.brz` bundle — zstd-packed,
-//!   portable, good for bundle transfer and in-memory preview.
-//! - [`emit_brdb`] writes a `.brdb` SQLite database to a given path —
-//!   this is what `BR.World.LoadAdditive <world_name>` accepts.
+//! - [`emit_brz`] returns the bytes of a `.brz` bundle (zstd-packed, portable, good for
+//!   bundle transfer and in-memory preview).
+//! - [`emit_brdb`] writes a `.brdb` `SQLite` database to a given path, the format
+//!   `BR.World.LoadAdditive <world_name>` accepts.
 //!
 //! The root module becomes one outer Microchip brick with its gates on the
 //! inner grid; each nested chip (`Module.chips`) is a chip brick in its
@@ -14,37 +14,24 @@
 //!
 //! The emit pipeline:
 //!   Module + Placements
-//!     -> brdb::World (main grid = outer chip + inner grid = gates)
-//!     -> World::to_brz_vec() (zstd-packed .brz bytes)
+//!     -> `brdb::World` (main grid = outer chip + inner grid = gates)
+//!     -> `World::to_brz_vec()` (zstd-packed .brz bytes)
 //!     OR
-//!     -> World::write_brdb(path) (SQLite database file)
+//!     -> `World::write_brdb(path)` (`SQLite` database file)
 
-use crate::collections::HashMap;
 #[cfg(feature = "brdb-full")]
 use std::path::Path;
 
-use std::collections::HashMap as StdMap;
+use brdb::{Collision, World};
 
-use brdb::{
-    AsBrdbValue, BString, BrickType, Collision, Color, IntVector, Position, Vector3f,
-    WireConnection, WirePort as BrdbWirePort, World, assets::LiteralComponent, schema::WireValue,
-};
+use crate::intern::resolve;
+use crate::ir::{Module, Program, ProgramSettings, StyleValue, brick_color};
+use crate::layout::wall::assign_wall_slots;
+use crate::layout::{LayoutOptions, LayoutResult, layout_with_opts};
 
-use crate::intern::{Sym, intern_static, resolve, sym};
-use crate::ir::port_registry::WirePort;
-use crate::ir::{
-    Literal, Module, Node, NodeId, NodeKind, PortRef, Program, ProgramSettings, Type, Wire,
-    gate_class as gc,
-};
-use crate::layout::wall::WallLayout;
-use crate::layout::{BusEnd, BusLayout, LayoutResult, NodeRotation};
-
-/// The collision mask of an `@invisible` brick: it stops nothing.
-///
-/// Spelled out field by field on purpose. `Collision::default()` collides with
-/// everything, so `..Default::default()` here would silently make invisible
-/// bricks solid again, and a channel added to brdb's `Collision` has to be
-/// switched off in this ONE place rather than at each `@invisible` site.
+/// The collision mask of an `@invisible` brick: it stops nothing. Spelled out field by
+/// field because `Collision::default()` collides with everything, and a channel added to
+/// brdb's `Collision` must be switched off here.
 pub(super) fn no_collision() -> Collision {
     Collision {
         player: false,
@@ -61,16 +48,13 @@ pub(super) fn no_collision() -> Collision {
 mod options;
 pub use options::*;
 mod colors;
-use colors::*;
-mod variants;
-use variants::*;
 mod schema_meta;
+mod variants;
 pub use schema_meta::*;
 mod components;
 #[cfg(any(test, feature = "test-internals"))]
 #[doc(hidden)]
 pub use components::roundtrip_adv_inventory_component;
-use components::*;
 pub use components::{SettingParamOf, check_native_settings};
 #[cfg(feature = "test-internals")]
 #[doc(hidden)]
@@ -86,18 +70,17 @@ pub fn data_struct_for_gate(
     schema_meta::data_struct_for_gate(gate_class)
 }
 mod labels;
-use labels::*;
+use labels::{chip_name_label, emit_plane_header};
 mod styles;
-use styles::*;
+use styles::apply_style;
 mod rerouters;
-use rerouters::*;
+use rerouters::emit_port_rerouters;
 mod partition;
 pub use partition::*;
 mod wires;
 pub use wires::is_spawnable;
-use wires::*;
 mod module;
-use module::*;
+use module::{EmitContext, emit_module};
 mod overlap;
 use overlap::check_no_overlap;
 mod handles;
@@ -122,19 +105,17 @@ pub fn assemble_with_phases(
     phase: &mut dyn FnMut(&'static str),
 ) -> Result<Assembly, EmitError> {
     phase("layout");
-    let layout = crate::layout::layout_with_opts(
+    let layout = layout_with_opts(
         &program.module,
-        &crate::layout::LayoutOptions::for_program(&program.settings),
+        &LayoutOptions::for_program(&program.settings),
     );
     phase("emit");
     let world = build_world(&program.module, &program.settings, &layout, opts)?;
     Ok(Assembly { world, layout })
 }
 
-/// IR + placements -> in-memory `brdb::World`. The core build step under
-/// [`assemble`], for a caller that already holds a layout; the two public
-/// `emit_*` functions wrap this and serialise to their respective on-disk
-/// format.
+/// IR + placements -> in-memory `brdb::World`. The core build step under [`assemble`], for
+/// a caller that already holds a layout; the `emit_*` functions wrap it and serialise.
 pub fn build_world(
     module: &Module,
     settings: &ProgramSettings,
@@ -142,9 +123,9 @@ pub fn build_world(
     opts: &EmitOptions,
 ) -> Result<World, EmitError> {
     let mut world = World::new();
-    world.meta.bundle.description = opts.description.clone();
+    world.meta.bundle.description.clone_from(&opts.description);
 
-    let wall = crate::layout::wall::assign_wall_slots(
+    let wall = assign_wall_slots(
         module,
         layout,
         (opts.chip_pos.x, opts.chip_pos.y, opts.chip_pos.z),
@@ -161,23 +142,21 @@ pub fn build_world(
     // Module-level `@invisible`: hide the shell brick `add_microchip` just
     // pushed and drop all its collision, mirroring the `@invisible` port
     // rerouter treatment in `emit_port_rerouters`.
-    if settings.invisible {
-        if let Some(chip_brick) = world.bricks.last_mut() {
-            chip_brick.visible = false;
-            chip_brick.collision = no_collision();
-        }
+    if settings.invisible
+        && let Some(chip_brick) = world.bricks.last_mut()
+    {
+        chip_brick.visible = false;
+        chip_brick.collision = no_collision();
     }
 
-    // Top-level chip label. The default is the root module's name (entry file
-    // stem, or an explicit module_name override); a module-level `@label`
-    // overrides it — a constant with baked text, a runtime value with an empty
-    // placeholder that Pass 3.5 drives by wire. The chip brick is the one
-    // `add_microchip` just pushed onto the main grid.
+    // Top-level chip label: the root module's name (entry file stem, or an explicit
+    // module_name override) unless a module-level `@label` overrides it. A constant `@label`
+    // bakes its text; a runtime one bakes an empty placeholder that Pass 3.5 drives by wire. The
+    // chip brick is the one `add_microchip` just pushed onto the main grid.
     if !settings.invisible {
         let dynamic_root = module.root_dynamic_label.is_some();
         let root_label: &str = if dynamic_root {
-            // Wire-driven — bake an empty placeholder (the wire supplies the
-            // text). `named`-style suppression doesn't apply to the root label.
+            // Wire-driven: bake an empty placeholder (the wire supplies the text).
             ""
         } else {
             module
@@ -199,20 +178,20 @@ pub fn build_world(
     if !module.root_style.is_empty()
         && let Some(chip_brick) = world.bricks.last_mut()
     {
-        let baked = |v: &Option<crate::ir::StyleValue>| match v {
-            Some(crate::ir::StyleValue::Baked(lit)) => Some(lit.clone()),
+        let baked = |v: &Option<StyleValue>| match v {
+            Some(StyleValue::Baked(lit)) => Some(lit.clone()),
             _ => None,
         };
-        let color = baked(&module.root_style.color).and_then(|lit| crate::ir::brick_color(&lit));
+        let color = baked(&module.root_style.color).and_then(|lit| brick_color(&lit));
         let material = baked(&module.root_style.material);
         let wired = [&module.root_style.color, &module.root_style.material]
             .into_iter()
-            .any(|v| v.as_ref().and_then(crate::ir::StyleValue::wired).is_some());
+            .any(|v| v.as_ref().and_then(StyleValue::wired).is_some());
         apply_style(chip_brick, color.as_ref(), material.as_ref(), wired);
     }
 
-    // Push root inner grid FIRST so it gets the lowest grid ID (persistent
-    // index 2). Child grids pushed during emit_module_bricks get 3, 4, etc.
+    // Push the root inner grid first so it gets the lowest grid ID (persistent index 2);
+    // child grids pushed during `emit_module` get 3, 4, and so on.
     let root_grid_idx = world.grids.len();
     world.grids.push((inner_pair.0.clone(), Vec::new()));
 
@@ -261,12 +240,12 @@ pub fn build_world(
     world.grids[root_grid_idx] = (inner_pair.0, shifted);
 
     // Outer rerouters for `@side`-annotated root ports, wired through the
-    // chip wall (remote wires — see save.rs add_wire).
+    // chip wall (remote wires, see `add_wire` in brdb).
     emit_port_rerouters(&mut world, &mut ctx, module, opts)?;
 
-    // Embed the full component catalog. `register_used_components()` below is a
-    // commented-out fallback that embeds only used components, for game builds
-    // whose schema reader rejects the full catalog.
+    // Embed the full component catalog. `register_used_components()` below is an alternative
+    // that embeds only used components, for game builds whose schema reader rejects the full
+    // catalog.
     // world.register_used_components();
     // Registers every component type -> struct name mapping and wire port name
     // on the World, so the save path can serialize component data.
@@ -283,14 +262,12 @@ pub fn build_world(
     Ok(world)
 }
 
-/// Shared upright rotation for every chip grid entity, PINNED IN-GAME via a
-/// quat sampler (a pure −90° about Y). MEASURED mapping of grid-local axes
-/// (edge-marker sampler, facing the pane from the chip's bottom-port side):
-/// local +X -> world up (dataflow runs bottom->top), local +Y -> viewer-right,
-/// local +Z (board front) -> toward the viewer (the chip's bottom-port side).
-/// Everything geometric hangs off this: the pane's TOP edge is the local +X
-/// edge (headers go there), its horizontal half-span is `extent.y`, and its
-/// vertical half-span is `extent.x` (see layout/wall.rs packing).
+/// Shared upright rotation for every chip grid entity: a pure -90 degrees about Y, pinned in
+/// game with a quat sampler. Grid-local axes, facing the pane from the chip's bottom-port
+/// side: local +X is world up (dataflow runs bottom to top), +Y is viewer-right, +Z (board
+/// front) points toward the viewer. So the pane's top edge is the local +X edge (headers go
+/// there), its horizontal half-span is `extent.y` and its vertical half-span is `extent.x`
+/// (see `layout::wall` packing).
 const WALL_ROT: brdb::Quat4f = brdb::Quat4f {
     x: 0.0,
     y: -std::f32::consts::FRAC_1_SQRT_2,
@@ -298,9 +275,8 @@ const WALL_ROT: brdb::Quat4f = brdb::Quat4f {
     w: std::f32::consts::FRAC_1_SQRT_2,
 };
 
-/// Emit `.brz` bundle bytes — zstd-packed, portable, good for bundle
-/// transfer and in-memory preview. `BR.World.LoadAdditive` doesn't accept
-/// these directly; use [`emit_brdb`] for that.
+/// Emit `.brz` bundle bytes (zstd-packed, portable, good for bundle transfer and in-memory
+/// preview). `BR.World.LoadAdditive` does not accept these directly; use [`emit_brdb`].
 pub fn emit_brz(
     module: &Module,
     settings: &ProgramSettings,
@@ -311,7 +287,7 @@ pub fn emit_brz(
     Ok(world.to_brz_vec()?)
 }
 
-/// Emit a `.brdb` SQLite database to `path`. This is the format
+/// Emit a `.brdb` `SQLite` database to `path`. This is the format
 /// `BR.World.LoadAdditive <name>` reads from `Saved/Worlds/<name>.brdb`.
 #[cfg(feature = "brdb-full")]
 pub fn emit_brdb(

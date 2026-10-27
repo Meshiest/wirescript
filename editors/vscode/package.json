@@ -2,7 +2,7 @@
   "name": "brickadia-wirescript",
   "displayName": "Brickadia Wirescript",
   "description": "Language support for Wirescript, a language that compiles to Brickadia's logic gates: errors as you type, completion, hover, formatting and one-key compile to a .brz",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "brickadia-community",
   "icon": "icon.png",
   "license": "CC0-1.0",

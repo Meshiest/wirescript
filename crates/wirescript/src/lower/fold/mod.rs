@@ -1,21 +1,16 @@
 //! Certified constant-fold driver: propagates known values through the
-//! lowered module tree (including across chip boundaries) and converts any
-//! node whose result is fully determined by the certified table/evaluator
-//! into a `_Literal`, in place. Also shorts a constant-conditioned `Select`
-//! to its chosen data source, truncates a constant-conditioned `Branch` to
-//! its taken exec side, and sweeps the structural debris both leave behind
-//! (dead exec chains, orphaned pure feeders, degenerate unions, emptied
-//! named-chip instances).
+//! lowered module tree, across chip boundaries, and turns any node the
+//! certified table fully determines into a `_Literal` in place. It also
+//! shorts constant `Select`s, truncates constant `Branch`es, and sweeps the
+//! dead nodes and chips both leave behind.
 //!
-//! Two-phase (analyze -> apply) so the propagation walk never has to fight
-//! `Module`'s tree-of-owned-maps borrows: the analyze phase only reads, the
-//! apply phase is a second, independent tree walk that mutates using the
-//! finished plan. The cleanup sweeps that follow are their own read/mutate
-//! passes, each run to a fixpoint, in the order the mechanics require:
-//! exec-reachability -> pure-demand -> union -> whole-chip elision.
-// `pub` (not `pub(crate)`): the `--fold-diff` fuzz harness needs `eval::eval`
-// + `eval::Value` — see the visibility note on `pub mod fold` in
-// `lower/mod.rs`. `table` has no external consumer and stays crate-private.
+//! Two-phase (analyze -> apply) because `Module` is a tree of owned maps: the
+//! analyze phase only reads, and a second tree walk mutates using the finished
+//! plan. The cleanup sweeps that follow each run to a fixpoint, in the order
+//! exec-reachability, pure-demand, union, whole-chip elision.
+// `pub` because the `--fold-diff` fuzz harness reaches `eval::eval` and
+// `eval::Value` through the `fold_eval` re-export in `lib.rs`. `table` has no
+// external consumer.
 #[doc(hidden)]
 pub mod eval;
 pub(crate) mod table;
@@ -23,43 +18,33 @@ pub(crate) mod table;
 use std::sync::Arc;
 
 use crate::collections::{HashMap, HashSet};
-use crate::intern::{intern_static, resolve, sym};
+use crate::intern::{Sym, intern_static, resolve, sym};
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire};
 use eval::Value;
 use table::{AnnihilatorKind, CertifiedTable, InVariant};
 
-/// Read-only facts about one node, gathered by the snapshot walk. Borrows
-/// the node straight out of the `Module` tree, since the analyze phase only
-/// reads and every borrow is dropped before `apply` mutates, plus a few
-/// pre-derived fields the fixpoint reads on every attempt.
+/// Read-only facts about one node, gathered by the snapshot walk: the node
+/// borrowed from the `Module` tree (every borrow ends before `apply` mutates)
+/// plus fields the fixpoint reads on every attempt.
 struct Info<'m> {
-    /// The node itself (gate class, kind, and the raw properties
-    /// `resolve_data_input` reads a call-argument literal from: a value
-    /// `lower/call.rs::literal_for_property_port` baked directly onto the
-    /// node instead of wiring a separate `_Literal`/`Make*` source).
+    /// The node itself, including the properties `resolve_data_input` reads a
+    /// baked call-argument literal from (see `expr.rs::literal_for_property_port`).
     node: &'m Node,
-    /// The `_nofold` pseudo-property is a barrier both to folding this node
-    /// AND to propagating a known value through it.
+    /// The `_nofold` pseudo-property bars both folding this node and
+    /// propagating a known value through it.
     nofold: bool,
-    /// The node's own constant value, when it's already a `_Literal` (any
-    /// certified variant, scalar or composite — `Value::from_literal`
-    /// handles Vector/Rotator/Quat/Color/LinearColor uniformly, so a
-    /// composite `_Literal` produced by AST-level `Vec(...)`-on-literals
-    /// folding, OR by THIS pass's own `BecomeLiteral` action on a prior
-    /// fixpoint round, seeds `known` exactly like a scalar one).
+    /// The node's own value when it is already a constant: a `_Literal` of any
+    /// certified variant, scalar or composite, or a portless string literal.
     lit: Option<Value>,
-    /// `STRING_FORMAT_TEXT`'s `FormatString` property (the template text) —
-    /// `None` for every other gate class, and also `None` for a FormatText
-    /// node whose "format" argument was itself non-literal (wired as a real
-    /// port instead of inlined as a property — never foldable, see
-    /// `try_resolve_format_text`).
+    /// `STRING_FORMAT_TEXT`'s `FormatString` property (the template). `None`
+    /// for every other gate class, and for a `FormatText` whose template is
+    /// wired as a port, which never folds.
     format_string: Option<String>,
-    /// Data (non-`Exec`) input ports, in `ports.inputs` declaration order —
-    /// exactly the slice `eval` expects. Shared per `Arc<GateIO>` (every
-    /// instance of a gate template carries the same `ports` Arc, so the
-    /// list is derived once per distinct GateIO, not once per node).
+    /// Data (non-`Exec`) input ports in `ports.inputs` order, the slice `eval`
+    /// expects. Derived once per distinct `Arc<GateIO>`, since every instance
+    /// of a gate template shares it.
     data_inputs: Arc<[WirePort]>,
     /// A foldable/propagatable node (literal, certified gate, or chip
     /// boundary) always has exactly one output port; anything else (Branch,
@@ -78,15 +63,15 @@ enum Feeds<T> {
 impl<T: Copy> Feeds<T> {
     fn push(&mut self, v: T) {
         match self {
-            Feeds::One(first) => *self = Feeds::Many(vec![*first, v]),
-            Feeds::Many(vs) => vs.push(v),
+            Self::One(first) => *self = Self::Many(vec![*first, v]),
+            Self::Many(vs) => vs.push(v),
         }
     }
 
     fn as_slice(&self) -> &[T] {
         match self {
-            Feeds::One(v) => std::slice::from_ref(v),
-            Feeds::Many(vs) => vs,
+            Self::One(v) => std::slice::from_ref(v),
+            Self::Many(vs) => vs,
         }
     }
 }
@@ -98,11 +83,11 @@ type WireIndex = HashMap<(NodeId, WirePort), Feeds<PortRef>>;
 /// Resolution state of one data input port, from a single read-only pass
 /// over the wire list plus the `known` map built so far.
 enum Resolved {
-    /// Zero incoming wires — the gate reads its port default.
+    /// Zero incoming wires: the gate reads its port default.
     Unwired,
     Known(Value),
-    /// Fan-in (>1 wire — invalid anyway, never folds) or a single wire whose
-    /// source isn't known yet (may still resolve later in the fixpoint).
+    /// Fan-in (more than one wire, which never folds) or a single wire whose
+    /// source is not known yet (it may resolve later in the fixpoint).
     Unresolved,
 }
 
@@ -115,42 +100,35 @@ enum PlanAction {
     ShortCircuit { chosen_src: PortRef },
     /// A `Branch` whose `BCond` condition resolved: remove the node and
     /// splice every exec source feeding it directly onto `taken_targets`
-    /// (the wire targets the taken `ExecOutA`/`ExecOutB` used to drive).
+    /// (the wire targets of the taken `ExecOutA`/`ExecOutB`).
     Truncate { taken_targets: Vec<PortRef> },
 }
 
-/// Fold every node whose output is fully determined by the certified table:
-/// literal-only expression chains collapse to a single `_Literal`, and a
-/// known value crosses chip-instance boundaries via `MicrochipInput`/
-/// `MicrochipOutput` pass-through so a constant argument can fold gates
-/// inside a callee (and its result can fold gates back outside). A
-/// constant-conditioned `Select`/`Branch` is shorted/truncated in the SAME
-/// fixpoint, and the structural debris that leaves behind (dead exec
-/// chains, orphaned pure feeders, degenerate unions, emptied named-chip
-/// instances) is swept away afterward.
+/// Fold every node whose output the certified table fully determines. Known
+/// values pass through `MicrochipInput`/`MicrochipOutput`, so a constant
+/// argument folds gates inside a callee and its result folds gates outside.
+/// Constant `Select`/`Branch` are rewritten in the same fixpoint, then the
+/// dead nodes and empty named chips are swept.
 ///
-/// `root` is walked with every nested chip module; a fold anywhere inside a
-/// chip clears that chip module's `template_key` (its emitted grid diverged
-/// from the shared template).
+/// A change anywhere inside a chip clears that chip module's `template_key`,
+/// since its grid then differs from the shared template.
 pub(crate) fn fold_certified_constants(root: &mut Module) {
     let table = CertifiedTable::certified();
 
-    // ---------------- snapshot (read-only) ----------------
-    let mut infos: HashMap<NodeId, Info> = HashMap::default();
+    // Snapshot (read-only)
+    let mut infos: HashMap<NodeId, Info<'_>> = HashMap::default();
     let mut ports_memo: HashMap<*const GateIO, (Arc<[WirePort]>, bool)> = HashMap::default();
-    collect_infos(root, &mut infos, &mut ports_memo);
+    root.walk(&mut |_, m| collect_infos(m, &mut infos, &mut ports_memo));
 
     let mut wires: Vec<Wire> = Vec::new();
     collect_wires(root, &mut wires);
 
     // (target node, target port) -> every wire source feeding it. Global
-    // across the whole tree — a wire can connect nodes in different modules
-    // (e.g. a literal in the parent feeding a chip's MicrochipInput), so
-    // resolution must not be scoped to one module's own `wires` Vec.
+    // across the tree, since a wire can connect nodes in different modules
+    // (a parent literal feeding a chip's MicrochipInput).
     let mut in_wires: WireIndex = HashMap::default();
-    // (source node, source port) -> every wire target it drives. Needed to
-    // find a truncated Branch's taken-side targets (an OUTPUT-port lookup,
-    // the mirror of `in_wires`).
+    // (source node, source port) -> every wire target it drives; finds a
+    // truncated Branch's taken-side targets.
     let mut out_wires: WireIndex = HashMap::default();
     // producer node -> consumer node ids, to drive the fixpoint worklist.
     let mut consumers: HashMap<NodeId, Feeds<NodeId>> = HashMap::default();
@@ -169,20 +147,15 @@ pub(crate) fn fold_certified_constants(root: &mut Module) {
             .or_insert(Feeds::One(w.target.node_id));
     }
 
-    // ---------------- propagate to fixpoint ----------------
+    // Propagate to a fixpoint
     let mut known: HashMap<NodeId, Value> = HashMap::default();
-    // Nodes planned for the apply phase. `known` also holds boundary
-    // pass-through values (MicrochipInput/Output) that are never planned —
-    // those nodes stay exactly as they are; only `plan` members get rewritten.
+    // Nodes the apply phase rewrites. `known` also holds boundary pass-through
+    // values (MicrochipInput/Output), which are never planned or rewritten.
     let mut plan: HashMap<NodeId, PlanAction> = HashMap::default();
 
-    // Deterministic seed order: `infos`/`in_wires` are FxHash maps, so their
-    // natural iteration order shifts with NodeId allocation noise (fresh ids
-    // are a process-global counter shared across every concurrently-running
-    // test). Sorting makes the fixpoint's *processing order* reproducible;
-    // the fixpoint's *result* is order-independent by construction (each
-    // node's resolution depends only on the current `known` set), but we
-    // still sort — same lesson as `partition_anon_chips`.
+    // `infos` is an FxHash map whose iteration order follows NodeId allocation
+    // (a process-global counter), so the seed order is sorted to make the
+    // fixpoint's processing order reproducible.
     let mut sorted_ids: Vec<NodeId> = infos.keys().copied().collect();
     sorted_ids.sort_unstable();
 
@@ -210,50 +183,29 @@ pub(crate) fn fold_certified_constants(root: &mut Module) {
         }
     }
 
-    // `plan` alone under-counts "did anything resolve": a chip boundary
-    // node's pass-through resolution (`try_resolve`'s MICROCHIP_INPUT/
-    // MICROCHIP_OUTPUT case) and an already-existing `_Literal`/portless-
-    // string-literal's own resolution (`info.lit.clone()`) both populate
-    // `known` WITHOUT ever touching `plan` — e.g. `chip Inc(v: int) -> (r:
-    // int) { out r = v }` called as `Inc(4)` (a bare-literal argument, no
-    // arithmetic anywhere) resolves `v` and `r` end to end without a single
-    // `BecomeLiteral`/`ShortCircuit`/`Truncate` action. `cleanup_boundary_feeds`
-    // below needs exactly that case (a Known boundary node whose feed is
-    // otherwise unreachable through `plan`), so the early-out must cover
-    // both maps, not just `plan`.
+    // Boundary pass-through and existing literals fill `known` without
+    // touching `plan` (`Inc(4)` on `chip Inc(v) -> (r) { out r = v }`), and
+    // `cleanup_boundary_feeds` still has work then, so both maps must be empty.
     if plan.is_empty() && known.is_empty() {
         return;
     }
 
-    // ---------------- apply ----------------
-    apply(root, &plan);
+    // Apply
+    root.walk_mut(&mut |_, m| apply(m, &plan));
 
-    // ---------------- boundary-delivery cleanup ----------------
-    // Two structural rules over chip-instance boundary nodes
-    // (`MicrochipInput`/`MicrochipOutput`) that neither the fixpoint above
-    // nor the sweeps below ever clean up on their own, because a boundary
-    // node is NEVER itself a planned node — it's the chip's visual port
-    // marker, kept in place even once a Known value has propagated straight
-    // through it (see the MICROCHIP_INPUT/MICROCHIP_OUTPUT case in
-    // `try_resolve`). Run before the sweeps (not after) so whatever either
-    // rule orphans is still there to be collected by `sweep_dead_pure`/
-    // `sweep_dead_exec` in the SAME pass, instead of surviving all the way
-    // to `materialize_unfoldable_constants` (a separate call, made later in
-    // `lower/mod.rs`, well outside this function) as a pointless
-    // `MathAdd(n, 0)`-style carrier feeding a boundary port nobody reads.
+    // Boundary-delivery cleanup. A boundary node is the chip's visual port marker and is never planned,
+    // so its feeds need their own cleanup. It runs before the sweeps so what
+    // it orphans is swept in this pass; otherwise each orphan survives to
+    // `materialize_unfoldable_constants` as a carrier gate nobody reads.
     cleanup_boundary_feeds(root, &known);
 
-    // Runtime `@label(<expr>)` sources (per-var `dynamic_labels` + the module
-    // `root_dynamic_label`) are consumed ONLY by a wire that emit materializes
-    // later (pass 3.5, into the label's `Component_TextDisplay.Text`). In the
-    // IR they therefore look like a pure node with zero outgoing wires — which
-    // is exactly what the demand sweep prunes. Protect them so the label
-    // survives folding instead of being silently dropped at emit.
+    // Runtime `@label(<expr>)` sources are read only by a wire emit adds later
+    // (into the label's `Component_TextDisplay.Text`), so in the IR they have
+    // no outgoing wire. Protected, or the demand sweep would delete the label.
     let mut protected: HashSet<NodeId> = HashSet::default();
-    collect_label_source_nodes(root, &mut protected);
+    root.walk(&mut |_, m| collect_label_source_nodes(m, &mut protected));
 
-    // ---------------- cleanup sweeps ----------------
-    // Order matters: a truncated Branch can strand its untaken side (exec
+    // Cleanup sweeps. Order matters: a truncated Branch can strand its untaken side (exec
     // cleanup), which can orphan a pure feeder that only fed the stranded
     // chain (demand sweep), and Branch removal can degrade a downstream
     // Union (union cleanup) before a named-chip instance emptied by all of
@@ -265,19 +217,14 @@ pub(crate) fn fold_certified_constants(root: &mut Module) {
 }
 
 /// Node ids that must survive the demand sweep despite having no outgoing IR
-/// wire, because their only consumer is a label wire materialized at emit time
-/// (see the `dynamic_labels`/`root_dynamic_label` handling in `emit.rs` pass
-/// 3.5). Recurses chips so a label source in any sub-module is covered too,
-/// though in practice these are only ever recorded on the root module.
+/// wire, because their only consumer is a label or style wire that emit adds
+/// (the `dynamic_labels` pass in `wirescript-ir`'s `emit/module.rs`).
 fn collect_label_source_nodes(module: &Module, out: &mut HashSet<NodeId>) {
     out.extend(module.dynamic_labels.values().map(|p| p.node_id));
     // A runtime `@color` / `@material` source is consumed the same way.
     out.extend(module.style_sources().map(|p| p.node_id));
     if let Some(p) = &module.root_dynamic_label {
         out.insert(p.node_id);
-    }
-    for child in module.chips.values() {
-        collect_label_source_nodes(child, out);
     }
 }
 
@@ -291,17 +238,10 @@ fn collect_infos<'m>(
         let lit = if n.gate_class == gc::LITERAL {
             n.properties.get(&*sym::VALUE).and_then(Value::from_literal)
         } else if n.gate_class == gc::STRING_CONCATENATE && n.ports.inputs.is_empty() {
-            // A portless `String_Concatenate` (no declared input ports at
-            // all — a REAL `..` concatenation always declares InputA/
-            // InputB/Separator) is how a bare string literal is actually
-            // represented: `lower/expr.rs::literal_node` emits string
-            // constants this way instead of `_Literal` ("String literals
-            // can't be inlined as wire_graph_variant immediate values on
-            // consumer gates"), and `materialize_unfoldable_constants` uses
-            // the identical shape for a string routed through a dataless
-            // sink. Without this, a plain string constant is invisible to
-            // `known` — `"a" == "b"` (certified: string equality IS
-            // covered) would never fold, even standing completely alone.
+            // A portless `String_Concatenate` is a bare string literal
+            // (`expr.rs::literal_node` emits string constants this way, since
+            // they cannot be wire_graph_variant immediates); a real `..`
+            // declares its inputs. Read here so `"a" == "b"` can fold.
             match n.properties.get(&*sym::INPUT_A) {
                 Some(Literal::String(s)) => Some(Value::Str(s.clone())),
                 _ => None,
@@ -309,10 +249,9 @@ fn collect_infos<'m>(
         } else {
             None
         };
-        // `STRING_FORMAT_TEXT`'s template lives in the `FormatString`
-        // property (`lower/ops.rs::build_format_text` / the `Fmt(...)`
-        // builtin's literal-argument inlining — both use the same property
-        // name), never as a wire input port — see `try_resolve_format_text`.
+        // A foldable `STRING_FORMAT_TEXT` carries its template in the
+        // `FormatString` property (`ops.rs::build_format_text`, or a literal
+        // `Fmt(...)` template baked by the call path).
         let format_string = if n.gate_class == gc::STRING_FORMAT_TEXT {
             match n.properties.get(&intern_static("FormatString")) {
                 Some(Literal::String(s)) => Some(s.clone()),
@@ -321,10 +260,8 @@ fn collect_infos<'m>(
         } else {
             None
         };
-        // `ports` is Arc-shared across every instance of a gate template,
-        // so the derived port list is memoized per distinct GateIO
-        // allocation rather than rebuilt (and re-resolved through the
-        // interner) once per node.
+        // `ports` is Arc-shared across every instance of a gate template, so
+        // the derived port list is memoized per distinct GateIO allocation.
         let (data_inputs, single_output) = ports_memo
             .entry(Arc::as_ptr(&n.ports))
             .or_insert_with(|| {
@@ -349,9 +286,6 @@ fn collect_infos<'m>(
                 single_output,
             },
         );
-    }
-    for child in module.chips.values() {
-        collect_infos(child, infos, ports_memo);
     }
 }
 
@@ -381,33 +315,16 @@ fn resolve_input(
     }
 }
 
-/// Like `resolve_input`, but for a port that may ALSO arrive as a baked,
-/// wireless node property instead of a wire: an ordinary data input, a
-/// Select/Branch condition, and a FormatText substitution slot are ALL
-/// call-argument ports subject to the exact same baking (`Select`'s `cond`
-/// and `Fmt`'s `a..g` are declared `CallParam`s exactly like any other
-/// builtin's, so a bare-literal argument to any of them inlines the same
-/// way — see `resolve_condition` and `try_resolve_format_text`, both of
-/// which route through here too). An unwired port additionally falls back
-/// to the node's own baked properties
-/// (`lower/call.rs::literal_for_property_port`'s inlining — a composite, or
-/// some scalar, CALL argument the emitted gate's data struct can carry
-/// directly, with no separate `_Literal`/`Make*` source or wire at all).
-/// Without this fallback, any certified gate reached via a CALL (as opposed
-/// to a binary operator — `lower_binop` always wires a real literal source,
-/// never bakes one) with such an argument is invisible to `known` and can
-/// never fold, no matter how determined its value actually is — confirmed
-/// via the `--fold-diff` fuzz harness (`Dot(Vec(1,0,0), Vec(0,1,0))` alone,
-/// no chip/opaque involved, reproduces it) and fixed here rather than in the
-/// harness, since the harness's OWN independent predictor (`predict()` in
-/// `examples/fuzz_programs.rs`) already implements this exact fallback —
-/// this driver was the one side actually missing it.
+/// Like `resolve_input`, but an unwired port falls back to the node's baked
+/// property: a literal call argument (`expr.rs::literal_for_property_port`)
+/// has no wire. This covers data inputs, Select/Branch conditions and
+/// `FormatText` slots; without it `Dot(Vec(1,0,0), Vec(0,1,0))` never folds.
 fn resolve_data_input(
     target: NodeId,
     port: WirePort,
     in_wires: &WireIndex,
     known: &HashMap<NodeId, Value>,
-    properties: &HashMap<crate::intern::Sym, Literal>,
+    properties: &HashMap<Sym, Literal>,
 ) -> Resolved {
     match resolve_input(target, port, in_wires, known) {
         Resolved::Unwired => match properties.get(&port.sym()).and_then(Value::from_literal) {
@@ -418,10 +335,9 @@ fn resolve_data_input(
     }
 }
 
-/// The single wire source feeding `port` on `target`, iff there's exactly
-/// one (zero = unwired, refuse; >1 = fan-in, refuse) — used by Select to
-/// find its chosen data source without requiring that source's VALUE to be
-/// known (an opaque, never-folding source can still be shorted to).
+/// The wire source feeding `port` on `target` when there is exactly one.
+/// Select uses it to find its chosen source without needing that source's
+/// value, so an opaque source can still be shorted to.
 fn single_wire_source(target: NodeId, port: WirePort, in_wires: &WireIndex) -> Option<PortRef> {
     match in_wires.get(&(target, port)).map(Feeds::as_slice) {
         Some([src]) => Some(*src),
@@ -429,21 +345,16 @@ fn single_wire_source(target: NodeId, port: WirePort, in_wires: &WireIndex) -> O
     }
 }
 
-/// Certified truthiness signature check + truthy/falsy resolution shared by
-/// Select's `BSelectB` and Branch's `BCond`. Returns `None` if the condition
-/// isn't resolvable yet (retry later in the fixpoint) or its signature was
-/// never certified for this gate (permanent refusal). Routes through
-/// `resolve_data_input` (not plain `resolve_input`) so a bare-literal
-/// condition argument — `Select(true, a, b)`'s `true` bakes onto `BSelectB`
-/// exactly like any other call-argument literal, see that function's doc —
-/// resolves instead of silently reading back as `Unwired`.
+/// Truthiness of Select's `BSelectB` or Branch's `BCond`, wired or baked
+/// (`Select(true, a, b)` bakes `true`). `None` if the condition is not known
+/// yet (retried later) or its signature is not certified for this gate.
 fn resolve_condition(
     id: NodeId,
     cond_port: WirePort,
     gate_class: &'static str,
     in_wires: &WireIndex,
     known: &HashMap<NodeId, Value>,
-    properties: &HashMap<crate::intern::Sym, Literal>,
+    properties: &HashMap<Sym, Literal>,
     table: &CertifiedTable,
 ) -> Option<bool> {
     let cond_val: Option<Value> =
@@ -459,18 +370,15 @@ fn resolve_condition(
     Some(eval::truthy(cond_val.as_ref()))
 }
 
-/// `Select` shorting: `BSelectB` truthy -> `InputB`, falsy -> `InputA`. The
-/// chosen port must have exactly one wire (an unwired chosen input is never
-/// probed — refuse). Plans a `ShortCircuit` as soon as the condition
-/// resolves, independent of whether the chosen source's own value is known
-/// (an opaque source is still a valid short target); if that source IS
-/// known, the Select's own entry in `known` is set too so its consumers can
-/// keep folding in the SAME worklist pass.
+/// `Select` shorting: `BSelectB` truthy picks `InputB`, falsy `InputA`. The
+/// chosen port must have exactly one wire (an unwired chosen input was never
+/// probed). Plans a `ShortCircuit` once the condition resolves, and returns
+/// the chosen source's value when it is known so consumers keep folding.
 fn try_resolve_select(
     id: NodeId,
     in_wires: &WireIndex,
     known: &HashMap<NodeId, Value>,
-    properties: &HashMap<crate::intern::Sym, Literal>,
+    properties: &HashMap<Sym, Literal>,
     table: &CertifiedTable,
     plan: &mut HashMap<NodeId, PlanAction>,
 ) -> Option<Value> {
@@ -493,18 +401,15 @@ fn try_resolve_select(
     known.get(&chosen_src.node_id).cloned()
 }
 
-/// `Branch` truncation: `BCond` truthy -> taken `ExecOutA`, falsy -> taken
-/// `ExecOutB`. Plans a `Truncate` carrying every current target of the
-/// taken exec-out port (the untaken side's targets are left to the
-/// exec-reachability sweep — their incoming wire simply disappears once the
-/// Branch is removed). A Branch never has a scalar "value" of its own, so
-/// this always reports `None` regardless of outcome.
+/// `Branch` truncation: `BCond` truthy takes `ExecOutA`, falsy `ExecOutB`.
+/// Plans a `Truncate` carrying every target of the taken port; the untaken
+/// side loses its incoming wire and is left to the exec-reachability sweep.
 fn try_resolve_branch(
     id: NodeId,
     in_wires: &WireIndex,
     out_wires: &WireIndex,
     known: &HashMap<NodeId, Value>,
-    properties: &HashMap<crate::intern::Sym, Literal>,
+    properties: &HashMap<Sym, Literal>,
     table: &CertifiedTable,
     plan: &mut HashMap<NodeId, PlanAction>,
 ) {
@@ -531,43 +436,14 @@ fn try_resolve_branch(
     plan.insert(id, PlanAction::Truncate { taken_targets });
 }
 
-/// `FormatText`: foldable when the node carries a `FormatString` property
-/// (always true for `${...}`-interpolation lowering; a `Fmt(...)` call whose
-/// template argument is itself non-literal wires `FormatString` as a real
-/// port instead and carries no property here — never foldable) AND every
-/// substituted slot (wired OR baked — see `resolve_data_input`'s doc: `Fmt`'s
-/// `a..g` are ordinary `CallParam`s, so a bare-literal argument bakes onto
-/// InputA..InputG with no wire at all, same as any other builtin CALL
-/// argument) resolves to a known value. A slot that's neither wired nor
-/// baked (no argument passed for it at all) does NOT block the fold —
-/// certified by the probed `fmtUnwiredSlot` case (`Fmt("{0}{1}", Opaque(1))`
-/// folds fine, rendering "0" for the unbound slot 1 — see
-/// `eval::format_text`'s own unwired/out-of-range handling), so it's passed
-/// through as `None` exactly like any other gate's unwired data input. A
-/// wired-but-not-yet-known (or fan-in) slot returns `Resolved::Unresolved`,
-/// which refuses the whole node for this round — the fixpoint retries it
-/// once that source resolves.
-///
-/// Requires at least one slot to be genuinely SUBSTITUTED — wired OR baked,
-/// not just declared (`Fmt(...)`'s optional `a..g` params are always
-/// declared ports regardless of whether an argument was passed, see
-/// `lower/call.rs::lower_builtin_call`) — before even attempting the fold. A
-/// template with NO substituted slots at all (`Fmt("literal{a}brace")`, no
-/// operands passed) is technically fully determined by the certified render
-/// law too, but is left alone here deliberately: `probes/gate_semantics.ws`'s
-/// `fmtLiteralBrace` is exactly this shape with zero `Opaque(...)` armor
-/// (every OTHER FormatText probe case wires its substitution operand(s)
-/// through `Opaque`, which never resolves — see the probe's own comment on
-/// why), so folding a zero-substituted-slot template is the one way this
-/// pass could visibly diverge `tests/it/fold_invariants.rs`'s structural-no-op
-/// guarantee without ever "seeing through" an `Opaque` value. A BAKED slot
-/// still satisfies this guard (unlike the zero-slot case, it means a real
-/// argument was passed and the template genuinely substitutes): with no
-/// argument at all, `fmtLiteralBrace` has neither a wire NOR a baked
-/// property for any slot, so it's unaffected by counting baked slots here.
+/// `FormatText`: folds when the node carries a `FormatString` property and
+/// every wired or baked slot resolves; a slot with no argument renders as
+/// unwired (probed `fmtUnwiredSlot`: "0"). At least one slot must be wired or
+/// baked, so the zero-slot probe `fmtLiteralBrace` stays unfolded and
+/// `tests/it/fold_invariants.rs` sees it unchanged.
 fn try_resolve_format_text(
     id: NodeId,
-    info: &Info,
+    info: &Info<'_>,
     in_wires: &WireIndex,
     known: &HashMap<NodeId, Value>,
     plan: &mut HashMap<NodeId, PlanAction>,
@@ -607,7 +483,7 @@ fn try_resolve_format_text(
 /// their own structural rewrite (`ShortCircuit`/`Truncate`) instead.
 fn try_resolve(
     id: NodeId,
-    infos: &HashMap<NodeId, Info>,
+    infos: &HashMap<NodeId, Info<'_>>,
     in_wires: &WireIndex,
     out_wires: &WireIndex,
     known: &HashMap<NodeId, Value>,
@@ -619,25 +495,19 @@ fn try_resolve(
         return None;
     }
 
-    // Already a constant — nothing to plan, just report its value.
+    // Already a constant: nothing to plan.
     if info.node.gate_class == gc::LITERAL {
         return info.lit.clone();
     }
 
-    // A portless `String_Concatenate` is `collect_infos`'s recognized
-    // stand-in for a bare string literal (see the `Info.lit` comment there)
-    // — report it the same way as `_Literal`: nothing to plan (it's already
-    // in its canonical form), just make its value visible to `known` so
-    // e.g. `"a" == "b"` can fold. `info.lit` is `None` for every OTHER
-    // `String_Concatenate` (a real, wired `..`), so this is a no-op for
-    // those — they fall through to the generic path below unaffected.
+    // A portless `String_Concatenate` is a bare string literal (see
+    // `collect_infos`); a real `..` has `lit == None` and falls through.
     if info.node.gate_class == gc::STRING_CONCATENATE && info.lit.is_some() {
         return info.lit.clone();
     }
 
-    // Chip-instance boundary: a known value flows straight through. The
-    // MicrochipInput/Output node itself is never folded (it's the visual
-    // port marker), only used to carry `known` across the module split.
+    // Chip-instance boundary: a known value flows through. The node itself is
+    // the chip's visual port marker and is never folded.
     if info.node.gate_class == gc::MICROCHIP_INPUT || info.node.gate_class == gc::MICROCHIP_OUTPUT {
         return match resolve_input(id, WirePort::RerInput, in_wires, known) {
             Resolved::Known(v) => Some(v),
@@ -645,15 +515,9 @@ fn try_resolve(
         };
     }
 
-    // `FormatText`'s template lives in a PROPERTY, not a wire input — the
-    // certified table's only recorded signature for this gate is the
-    // synthetic `[Tmpl]` marker (see `table::InVariant::Tmpl`'s doc
-    // comment), which no real `Value`-derived signature can ever match, so
-    // the generic `table.covers` path below would refuse this gate
-    // unconditionally regardless of how `info.data_inputs` are wired.
-    // Special-cased: resolve each substitution slot through the SAME
-    // wire-propagation machinery as any other gate's data inputs, then
-    // substitute via the certified `eval::format_text` law directly.
+    // `FormatText`'s table signature is the synthetic `[Tmpl]` marker, which
+    // no `Value` signature matches, so the generic `table.covers` path would
+    // always refuse it; its slots are resolved and rendered separately.
     if info.node.gate_class == gc::STRING_FORMAT_TEXT {
         return try_resolve_format_text(id, info, in_wires, known, plan);
     }
@@ -708,13 +572,11 @@ fn try_resolve(
                     Resolved::Unresolved => unreachable!("all_resolved excludes Unresolved"),
                 })
                 .collect();
-            // `eval::eval` is this crate's pure certified-table lookup (see
-            // fold/eval.rs) — a match over gate-class strings against
-            // probed truth tables, NOT a dynamic code-execution eval.
+            // `eval::eval` is the pure certified-table evaluator in
+            // `fold/eval.rs`, not dynamic code execution.
             if let Some(v) = eval::eval(info.node.gate_class, &eval_inputs) {
-                // Belt-and-suspenders: eval can return a non-finite float for
-                // a covered signature (e.g. float `x % 0.0` -> NaN). Never
-                // plan a fold that would bake a NaN/inf literal.
+                // A covered signature can still yield a non-finite float
+                // (float `x % 0.0` is NaN); a NaN/inf literal is never baked.
                 let non_finite = matches!(&v, Value::Float(f) if !f.is_finite());
                 if !non_finite {
                     plan.insert(id, PlanAction::BecomeLiteral(v.clone()));
@@ -724,10 +586,9 @@ fn try_resolve(
         }
     }
 
-    // Annihilator fallback: LogicalAND short-circuits on a known `false`,
-    // LogicalOR on a known `true`, on EITHER input — the other input may
-    // stay opaque/unresolved forever (e.g. an `Opaque(...)` probe) without
-    // blocking the fold.
+    // Annihilator fallback: LogicalAND folds on a known `false` and LogicalOR
+    // on a known `true` at either input, even if the other input never
+    // resolves (an `Opaque(...)` probe).
     if let Some(kind) = table.annihilator(info.node.gate_class) {
         let want = matches!(kind, AnnihilatorKind::OrTrue);
         for s in &states {
@@ -743,23 +604,10 @@ fn try_resolve(
     None
 }
 
-/// The `(properties, ports)` a `_Literal` node carrying `value` must have —
-/// shared by `apply`'s in-place `BecomeLiteral` conversion (an EXISTING
-/// node becomes a literal) and `cleanup_boundary_feeds`'s Rule B (a BRAND
-/// NEW node is minted as a literal), so the two never drift apart.
-///
-/// `Value` (fold/eval.rs) has four composite variants (Vector/Rotator/Quat/
-/// Color), and this match must stay exhaustive over the FULL enum for the
-/// crate to compile at all — there is no way to add those variants without
-/// touching every exhaustive `match value` site, and this is the only one
-/// in the crate (verified via `grep -rn "Value::" src/`; `fuzz_programs.rs`'s
-/// uses are all `matches!`/tuple patterns, not exhaustive matches).
-fn literal_properties_and_ports(
-    value: &Value,
-) -> (
-    Arc<crate::collections::HashMap<crate::intern::Sym, Literal>>,
-    Arc<GateIO>,
-) {
+/// The `(properties, ports)` of a `_Literal` carrying `value`. Shared by
+/// `apply`'s in-place `BecomeLiteral` and Rule B's freshly minted literals so
+/// the two shapes cannot drift apart.
+fn literal_properties_and_ports(value: &Value) -> (Arc<HashMap<Sym, Literal>>, Arc<GateIO>) {
     let ty = match value {
         Value::Int(_) => Type::Int,
         Value::Float(_) => Type::Float,
@@ -798,7 +646,7 @@ fn apply(module: &mut Module, plan: &HashMap<NodeId, PlanAction>) {
                 node.ports = ports;
                 mutated = true;
             }
-            Some(PlanAction::ShortCircuit { .. }) | Some(PlanAction::Truncate { .. }) => {
+            Some(PlanAction::ShortCircuit { .. } | PlanAction::Truncate { .. }) => {
                 module.nodes.remove(id);
                 mutated = true;
             }
@@ -806,12 +654,9 @@ fn apply(module: &mut Module, plan: &HashMap<NodeId, PlanAction>) {
         }
     }
 
-    // A folded/shorted/truncated node no longer has a matching operand-feed
-    // wire, its original output port name (a folded node's is always
-    // renamed to the canonical `_Literal` "Output" pin), or, for
-    // Select/Branch, exists at all — fixed up wherever the wire happens to
-    // live, not just in the planned node's own module (cross-scope wires
-    // are stored in either endpoint's owning module).
+    // Wires touching a planned node are rewritten in whichever module stores
+    // them: a cross-scope wire lives in either endpoint's module. A folded
+    // node's output becomes `_Literal`'s "Output"; Select/Branch are gone.
     let wires_touched = module
         .wires
         .iter()
@@ -824,19 +669,11 @@ fn apply(module: &mut Module, plan: &HashMap<NodeId, PlanAction>) {
     if mutated || wires_touched {
         module.template_key = None;
     }
-
-    for child in module.chips.values_mut() {
-        apply(child, plan);
-    }
 }
 
 /// Rewrite one module's wire list per `plan`, looping to a local fixpoint so
-/// a chain of removed nodes (e.g. a Select shorted straight into another
-/// Select's chosen input, or a Branch truncated straight into another
-/// Branch's exec-in) resolves correctly instead of leaving a wire that
-/// references an already-deleted node. `BecomeLiteral` never removes a
-/// node, so its rewrite is always stable on the first pass; only
-/// `ShortCircuit`/`Truncate` chains need more than one round.
+/// a chain of removed nodes (a Select shorted into another Select, a Branch
+/// truncated into another Branch) leaves no wire to a deleted node.
 fn rewrite_wires(wires: Vec<Wire>, plan: &HashMap<NodeId, PlanAction>) -> Vec<Wire> {
     let mut wires = wires;
     loop {
@@ -886,12 +723,9 @@ fn rewrite_wires(wires: Vec<Wire>, plan: &HashMap<NodeId, PlanAction>) -> Vec<Wi
                     }
                 }
                 Some(PlanAction::Truncate { .. }) => {
-                    // ExecOutA/ExecOutB wires sourced from the branch drop —
-                    // their targets were already re-homed via the
-                    // target-side arm above (when this SAME branch was the
-                    // wire's target on the OTHER end of the original
-                    // exec-source wire), or they're the untaken side, whose
-                    // targets the exec-reachability sweep will collect.
+                    // Wires out of the Branch drop: the taken side's targets
+                    // were re-homed by the target-side arm above, and the
+                    // untaken side is left to the exec-reachability sweep.
                     changed = true;
                     continue;
                 }
@@ -907,43 +741,23 @@ fn rewrite_wires(wires: Vec<Wire>, plan: &HashMap<NodeId, PlanAction>) -> Vec<Wi
     wires
 }
 
-/// Every `MicrochipInput`/`MicrochipOutput` id that belongs to a NAMED CHIP
-/// INSTANCE's own boundary — i.e. a `module.chips[...]` child's
-/// `inputs`/`outputs` list, recursively (a chip calling another chip nests
-/// arbitrarily deep). Deliberately does NOT include `root`'s own top-level
-/// `inputs`/`outputs`: the ROOT script's `in`/`out` declarations use the
-/// EXACT SAME node shape (same gate classes, same `add_input`/`add_output`
-/// builder calls — see `ir/build.rs`) but interface with the OUTSIDE
-/// WORLD, not a caller/callee this pass fully controls. A root-level `out`
-/// is terminal BY DESIGN (nothing in this compiled module ever wires FROM
-/// it) — so "zero outgoing wires" is the ORDINARY, expected shape for one,
-/// never evidence it's dead. Only excluding the caller's own top-level
-/// `module.inputs`/`module.outputs` (and recursing into `module.chips`
-/// instead of also collecting `module`'s own list) keeps the two shapes
-/// apart: this fires once per RECURSION STEP on the CHILD's lists, never
-/// on the `module` passed in at any given call.
-fn collect_call_boundary_ids(module: &Module, ids: &mut HashSet<NodeId>) {
-    for child in module.chips.values() {
-        ids.extend(child.inputs.iter().copied());
-        ids.extend(child.outputs.iter().copied());
-        collect_call_boundary_ids(child, ids);
-    }
+/// Every boundary node id of a named chip instance (each `module.chips`
+/// child's `inputs`/`outputs`, recursively). The root's own `in`/`out` have
+/// the same shape but face the outside world, where an `out` with no outgoing
+/// wire is normal, so they are excluded.
+fn collect_call_boundary_ids(root: &Module) -> HashSet<NodeId> {
+    root.modules_deep()
+        .into_iter()
+        .skip(1)
+        .flat_map(|chip| chip.inputs.iter().chain(&chip.outputs).copied())
+        .collect()
 }
 
-/// Boundary-delivery cleanup: Rule B, then Rule A (order matters — Rule B
-/// routinely creates the very "zero outgoing wires" state Rule A looks
-/// for, on the `Output` side in particular; see each rule's own doc for
-/// why). Both rules act only on a chip-instance CALL boundary node — a
-/// `MicrochipInput`/`MicrochipOutput` belonging to a NAMED CHIP INSTANCE's
-/// own child module (`collect_call_boundary_ids` below) — whose id is ALSO
-/// a key in `known`; that's the SAME barrier `info.nofold` already
-/// enforces one level up (a `_nofold` node's `try_resolve` returns `None`
-/// before ever reaching the pass-through case, so it can never enter
-/// `known` in the first place — `rewire_boundary_consumers` asserts this
-/// instead of just assuming it).
+/// Boundary-delivery cleanup on named-chip boundary nodes whose value is in
+/// `known`: Rule B, then Rule A, since Rule B creates the zero-outgoing-wire
+/// state Rule A removes. A `_nofold` boundary never enters `known`.
 fn cleanup_boundary_feeds(root: &mut Module, known: &HashMap<NodeId, Value>) {
-    let mut boundary_ids: HashSet<NodeId> = HashSet::default();
-    collect_call_boundary_ids(root, &mut boundary_ids);
+    let boundary_ids = collect_call_boundary_ids(root);
     if boundary_ids.is_empty() {
         return;
     }
@@ -952,56 +766,30 @@ fn cleanup_boundary_feeds(root: &mut Module, known: &HashMap<NodeId, Value>) {
     // from the CONSUMER of each rewired wire, and that consumer can live in a
     // different module than the wire (or the mutation cursor), so snapshot
     // exactly the consumers Rule B will touch before any mutation starts.
-    let mut consumer_ids: HashSet<NodeId> = HashSet::default();
-    collect_boundary_consumer_ids(root, known, &boundary_ids, &mut consumer_ids);
-    let mut meta: HashMap<NodeId, Node> = HashMap::default();
-    collect_consumer_meta(root, &consumer_ids, &mut meta);
+    let consumer_ids = collect_boundary_consumer_ids(root, known, &boundary_ids);
+    let meta = collect_consumer_meta(root, &consumer_ids);
     #[cfg(debug_assertions)]
     assert_no_nofold_known_boundary(root, known, &boundary_ids);
 
     rewire_boundary_consumers(root, known, &meta, &boundary_ids);
 
-    // Recomputed fresh, globally, AFTER Rule B: a wire counted here could
-    // have lived anywhere in the tree, and Rule B may just have removed the
-    // last one an `Output`-kind node had (an `Input`-kind node can also
-    // reach zero on its own, purely from the main fixpoint above — see
-    // `rewire_boundary_consumers`'s doc).
-    let mut outgoing: HashMap<NodeId, usize> = HashMap::default();
-    tally_boundary_outgoing(root, &boundary_ids, &mut outgoing);
+    // Counted over the whole tree after Rule B, which may have removed a
+    // node's last outgoing wire.
+    let outgoing = tally_boundary_outgoing(root, &boundary_ids);
     let dead_feeds: HashSet<NodeId> = boundary_ids
         .into_iter()
         .filter(|id| known.contains_key(id) && outgoing.get(id).copied().unwrap_or(0) == 0)
         .collect();
     if !dead_feeds.is_empty() {
-        drop_boundary_feeds(root, &dead_feeds);
+        root.walk_mut(&mut |_, m| drop_boundary_feeds(m, &dead_feeds));
     }
 }
 
-/// Rule B: for every wire whose SOURCE is a Known chip-boundary node,
-/// splice in a fresh `_Literal` carrying that value and re-home the wire
-/// onto it, bypassing the boundary node's rerouter wire entirely. The new
-/// literal is inserted into whichever module currently owns the wire being
-/// rewritten — the same "wherever the wire happens to live" convention
-/// `apply`'s own wire-fixup above already relies on for cross-scope wires —
-/// so it lands same-module as the wire it replaces, and typically
-/// same-module as the consumer it feeds; placement metadata (chip/row/
-/// scope) is copied from the CONSUMER (via `infos`), not the boundary node,
-/// so the new literal renders where it's read.
-///
-/// Safe for every surviving consumer, not just the "uncertified" ones this
-/// rule exists for: any wire still sourced from a Known boundary node at
-/// this point already survived the ENTIRE fixpoint above — a certified
-/// consumer whose other inputs were also known would already have folded
-/// itself there (dropping this very wire via `rewrite_wires`, same as any
-/// other `BecomeLiteral` target), so whatever's left here is either a gate
-/// `try_resolve` never attempts at all (not in the certified table — a
-/// `DisplayText` field, an entity-call argument, an array method's index,
-/// ...) or a certified gate still waiting on some OTHER not-yet-known
-/// input. Either way, handing it the value directly is behaviorally
-/// identical to the live rerouter wire it replaces — just no longer routed
-/// through a dataless boundary port that later forces
-/// `materialize_unfoldable_constants` to fabricate a carrier gate nobody
-/// upstream of it actually needed.
+/// Rule B: re-source every wire out of a known boundary node from a fresh
+/// `_Literal` with that value, inserted in the module that stores the wire.
+/// The literal copies the consumer's placement (`metas`) so it renders where
+/// it is read. The consumer receives the same value either way, so this is
+/// behaviour-preserving for every consumer, certified or not.
 fn rewire_boundary_consumers(
     module: &mut Module,
     known: &HashMap<NodeId, Value>,
@@ -1050,19 +838,16 @@ fn rewire_boundary_consumers(
 /// The target node id of every wire Rule B will rewire (source is a Known
 /// call-boundary node): the exact set `collect_consumer_meta` must cover.
 fn collect_boundary_consumer_ids(
-    module: &Module,
+    root: &Module,
     known: &HashMap<NodeId, Value>,
     boundary_ids: &HashSet<NodeId>,
-    out: &mut HashSet<NodeId>,
-) {
-    for w in &module.wires {
-        if boundary_ids.contains(&w.source.node_id) && known.contains_key(&w.source.node_id) {
-            out.insert(w.target.node_id);
-        }
-    }
-    for child in module.chips.values() {
-        collect_boundary_consumer_ids(child, known, boundary_ids, out);
-    }
+) -> HashSet<NodeId> {
+    root.wires_deep()
+        .filter(|w| {
+            boundary_ids.contains(&w.source.node_id) && known.contains_key(&w.source.node_id)
+        })
+        .map(|w| w.target.node_id)
+        .collect()
 }
 
 /// A `_nofold` node's `try_resolve` returns `None` before ever reaching
@@ -1070,21 +855,18 @@ fn collect_boundary_consumer_ids(
 /// here instead of just assumed.
 #[cfg(debug_assertions)]
 fn assert_no_nofold_known_boundary(
-    module: &Module,
+    root: &Module,
     known: &HashMap<NodeId, Value>,
     boundary_ids: &HashSet<NodeId>,
 ) {
-    for (id, n) in &module.nodes {
+    for n in root.nodes_deep() {
         debug_assert!(
-            !(boundary_ids.contains(id)
-                && known.contains_key(id)
+            !(boundary_ids.contains(&n.id)
+                && known.contains_key(&n.id)
                 && n.properties.contains_key(&*sym::NO_FOLD)),
             "cleanup_boundary_feeds: a _nofold boundary node must never enter `known` \
              (try_resolve's info.nofold check must return None before the pass-through case)"
         );
-    }
-    for child in module.chips.values() {
-        assert_no_nofold_known_boundary(child, known, boundary_ids);
     }
 }
 
@@ -1092,50 +874,30 @@ fn assert_no_nofold_known_boundary(
 /// gives the fresh `_Literal` it mints, so the new node renders where it's
 /// read (same chip/row/scope as the consumer), not off in the chip the value
 /// originated from.
-fn collect_consumer_meta(
-    module: &Module,
-    consumer_ids: &HashSet<NodeId>,
-    out: &mut HashMap<NodeId, Node>,
-) {
-    for (id, n) in &module.nodes {
-        if consumer_ids.contains(id) {
-            out.insert(*id, n.clone());
-        }
-    }
-    for child in module.chips.values() {
-        collect_consumer_meta(child, consumer_ids, out);
-    }
+fn collect_consumer_meta(root: &Module, consumer_ids: &HashSet<NodeId>) -> HashMap<NodeId, Node> {
+    root.nodes_deep()
+        .filter(|n| consumer_ids.contains(&n.id))
+        .map(|n| (n.id, n.clone()))
+        .collect()
 }
 
 fn tally_boundary_outgoing(
-    module: &Module,
+    root: &Module,
     boundary_ids: &HashSet<NodeId>,
-    out: &mut HashMap<NodeId, usize>,
-) {
-    for w in &module.wires {
+) -> HashMap<NodeId, usize> {
+    let mut out: HashMap<NodeId, usize> = HashMap::default();
+    for w in root.wires_deep() {
         if boundary_ids.contains(&w.source.node_id) {
             *out.entry(w.source.node_id).or_default() += 1;
         }
     }
-    for child in module.chips.values() {
-        tally_boundary_outgoing(child, boundary_ids, out);
-    }
+    out
 }
 
-/// Rule A: a boundary node with zero remaining outgoing wires anywhere in
-/// the tree has nothing left to deliver to — drop its own incoming feed
-/// wire(s) too, wherever THEY live, so the now-orphaned source (a literal,
-/// or the real gate chain that produced one via `BecomeLiteral`) demand-
-/// sweeps via the ordinary `sweep_dead_pure`/`sweep_dead_exec` passes right
-/// after `cleanup_boundary_feeds` returns, instead of surviving all the way
-/// to `materialize_unfoldable_constants` as a `MathAdd(n, 0)`-style carrier
-/// feeding a port nobody reads. Applies uniformly to `MicrochipInput` (an
-/// argument the callee's body never ends up reading once folded) and
-/// `MicrochipOutput` (a result nothing outside the chip ends up reading —
-/// typically only zero-outgoing as a RESULT of Rule B above, since an
-/// `Output` node's exterior consumers are what Rule B just finished
-/// rewiring away). The boundary node ITSELF is never removed — it's the
-/// chip's visual port marker; only its feed wire goes.
+/// Rule A: drop the feed wire of each boundary node in `dead_feeds` (no
+/// outgoing wire left anywhere), so its orphaned source is swept instead of
+/// becoming a carrier gate for a port nobody reads. The boundary node itself
+/// stays as the chip's visual port marker.
 fn drop_boundary_feeds(module: &mut Module, dead_feeds: &HashSet<NodeId>) {
     let before = module.wires.len();
     module.wires.retain(|w| {
@@ -1144,37 +906,12 @@ fn drop_boundary_feeds(module: &mut Module, dead_feeds: &HashSet<NodeId>) {
     if module.wires.len() != before {
         module.template_key = None;
     }
-    for child in module.chips.values_mut() {
-        drop_boundary_feeds(child, dead_feeds);
-    }
 }
 
-/// Exec-reachability cleanup: a `NodeKind::Gate` node declaring at least one
-/// `Type::Exec` input port whose TOTAL incoming exec wire count (summed across
-/// every such port) is zero has lost its trigger; remove it and every wire
-/// touching it. This eats a dead chain transitively: removing an untriggered
-/// gate strands its exec successors. Events, chip boundary IO
-/// (`Input`/`Output` kinds), Variables (no exec input port), and `_nofold`
-/// nodes survive by construction — the total-across-all-ports rule also keeps
-/// a `Union` alive as long as ANY of its several exec inputs still has a wire
-/// (only `prune_dead_exec_unions` may splice/remove those).
-///
-/// Rerouters (e.g. `Opaque`'s identity carrier) are excluded explicitly, not
-/// only by the "declares no exec input" test, so a future Rerouter variant that
-/// grows one doesn't silently start getting swept as untriggered.
-///
-/// Computes the dead set with a forward worklist over per-node exec-in totals:
-/// seed with untriggered gates, and when a gate dies decrement the exec total of
-/// each successor it fed, enqueuing any that reach zero. One scan plus the
-/// worklist is O(nodes + wires), where the old rescan-to-fixpoint was
-/// O(chain-length x (nodes + wires)); the least fixed point is identical.
 /// Whether `gate_class` produces exec without being driven: every exec input
 /// its call spec declares is optional, so an unwired exec pin is the normal
-/// state rather than a missing trigger.
-///
-/// Computed from the catalog rather than listed, so a new self-firing gate is
-/// covered the day it is added. A class with no call spec (`Var_Set`, the
-/// boundary pins, the rerouters) is not self-firing: it is a chain step.
+/// state rather than a missing trigger. Derived from the catalog; a class with
+/// no call spec (`Var_Set`, boundary pins, rerouters) is a chain step.
 fn self_firing(gate_class: &str) -> bool {
     static SELF_FIRING: std::sync::LazyLock<HashSet<&'static str>> =
         std::sync::LazyLock::new(|| {
@@ -1193,20 +930,17 @@ fn self_firing(gate_class: &str) -> bool {
     SELF_FIRING.contains(gate_class)
 }
 
+/// Exec-reachability cleanup: remove a gate whose exec inputs together carry
+/// no wire (it lost its trigger), transitively along its exec successors.
+/// Events, boundary IO, Variables, rerouters, self-firing gates and `_nofold`
+/// nodes survive; a `Union` survives while any exec input is wired.
 fn sweep_dead_exec(root: &mut Module) {
-    // Pass 1: each gate's exec input ports, and which gates are sweep-eligible.
-    // The port list derives entirely from the Arc-shared `GateIO`, so it's
-    // memoized per distinct allocation (a tiny slice per gate template) rather
-    // than built as a fresh set per node.
+    // Pass 1: each gate's exec input ports (memoized per Arc-shared `GateIO`)
+    // and which gates are sweep-eligible.
     let mut ports_memo: HashMap<*const GateIO, Arc<[WirePort]>> = HashMap::default();
     let mut exec_ports: HashMap<NodeId, Arc<[WirePort]>> = HashMap::default();
     let mut eligible: HashSet<NodeId> = HashSet::default();
-    fn scan_nodes(
-        module: &Module,
-        ports_memo: &mut HashMap<*const GateIO, Arc<[WirePort]>>,
-        exec_ports: &mut HashMap<NodeId, Arc<[WirePort]>>,
-        eligible: &mut HashSet<NodeId>,
-    ) {
+    root.walk(&mut |_, module| {
         for (id, n) in &module.nodes {
             if n.kind != NodeKind::Gate
                 || n.properties.contains_key(&*sym::NO_FOLD)
@@ -1214,66 +948,43 @@ fn sweep_dead_exec(root: &mut Module) {
             {
                 continue;
             }
-            // A gate whose exec inputs are all OPTIONAL fires on its own:
-            // `Timer`'s `restart`/`pause`/`resume` only control a countdown
-            // that runs regardless, so nothing drives its exec pins in an
-            // ordinary program. Seeding it as untriggered deleted it, and the
-            // cascade below then took the whole `on t.Expired` handler with
-            // it, silently: `Timer(10.0)` plus its handler compiled to one
-            // node. Only a gate that REQUIRES an exec input is a chain step
-            // that a missing trigger makes dead.
+            // A gate whose exec inputs are all optional fires on its own
+            // (`Timer` counts down with `restart`/`pause`/`resume` unwired).
+            // Sweeping it would also delete its `on t.Expired` handler.
             if self_firing(n.gate_class) {
                 continue;
             }
-            let ports = ports_memo
-                .entry(Arc::as_ptr(&n.ports))
-                .or_insert_with(|| {
-                    n.ports
-                        .inputs
-                        .iter()
-                        .filter(|p| p.ty == Type::Exec)
-                        .map(|p| WirePort::from_name(resolve(p.name)))
-                        .collect()
-                })
-                .clone();
+            let ports = Arc::clone(ports_memo.entry(Arc::as_ptr(&n.ports)).or_insert_with(|| {
+                n.ports
+                    .inputs
+                    .iter()
+                    .filter(|p| p.ty == Type::Exec)
+                    .map(|p| WirePort::from_name(resolve(p.name)))
+                    .collect()
+            }));
             if !ports.is_empty() {
                 eligible.insert(*id);
                 exec_ports.insert(*id, ports);
             }
         }
-        for child in module.chips.values() {
-            scan_nodes(child, ports_memo, exec_ports, eligible);
-        }
-    }
-    scan_nodes(root, &mut ports_memo, &mut exec_ports, &mut eligible);
+    });
 
     // Pass 2: exec-in total per gate, and for each gate the successors it feeds
     // exec into (so a removal can decrement their totals).
     let mut exec_total: HashMap<NodeId, usize> = HashMap::default();
     let mut exec_succ: HashMap<NodeId, Feeds<NodeId>> = HashMap::default();
-    fn scan_wires(
-        module: &Module,
-        exec_ports: &HashMap<NodeId, Arc<[WirePort]>>,
-        exec_total: &mut HashMap<NodeId, usize>,
-        exec_succ: &mut HashMap<NodeId, Feeds<NodeId>>,
-    ) {
-        for w in &module.wires {
-            if exec_ports
-                .get(&w.target.node_id)
-                .is_some_and(|ports| ports.contains(&w.target.port))
-            {
-                *exec_total.entry(w.target.node_id).or_default() += 1;
-                exec_succ
-                    .entry(w.source.node_id)
-                    .and_modify(|f| f.push(w.target.node_id))
-                    .or_insert(Feeds::One(w.target.node_id));
-            }
-        }
-        for child in module.chips.values() {
-            scan_wires(child, exec_ports, exec_total, exec_succ);
+    for w in root.wires_deep() {
+        if exec_ports
+            .get(&w.target.node_id)
+            .is_some_and(|ports| ports.contains(&w.target.port))
+        {
+            *exec_total.entry(w.target.node_id).or_default() += 1;
+            exec_succ
+                .entry(w.source.node_id)
+                .and_modify(|f| f.push(w.target.node_id))
+                .or_insert(Feeds::One(w.target.node_id));
         }
     }
-    scan_wires(root, &exec_ports, &mut exec_total, &mut exec_succ);
 
     let mut dead: HashSet<NodeId> = HashSet::default();
     let mut work: Vec<NodeId> = eligible
@@ -1297,65 +1008,38 @@ fn sweep_dead_exec(root: &mut Module) {
         }
     }
     if !dead.is_empty() {
-        remove_dead_nodes(root, &dead);
+        root.remove_nodes_tree(&dead);
     }
 }
 
-/// Pure demand sweep: a `NodeKind::Gate` node that is a literal or a pure
-/// `Expr_*` gate, not `_nofold`, with zero outgoing non-`Layout` wires has no
-/// consumer left; remove it and its incoming wires, which can strand whatever
-/// fed it. Rerouters/boundary nodes are never `Expr_*`-classed, so the
-/// opaque-probe barrier is preserved automatically.
-///
-/// Computes the dead set with a worklist over per-node out-degree: seed with
-/// zero-consumer pure gates, and when a gate dies decrement the out-degree of
-/// each source that fed it, enqueuing any that reach zero. One scan plus the
-/// worklist is O(nodes + wires), where the old rescan-to-fixpoint was
-/// O(chain-length x (nodes + wires)). The result is the identical least fixed
-/// point (a pure gate whose every consumer is dead or absent).
+/// Pure demand sweep: remove a literal or pure `Expr_*` gate (not `_nofold`,
+/// not `protected`) with no outgoing non-`Layout` wire, transitively up its
+/// feeders. Rerouters and boundary nodes are never `Expr_*`, so an `Opaque`
+/// barrier survives.
 fn sweep_dead_pure(root: &mut Module, protected: &HashSet<NodeId>) {
     let mut out_deg: HashMap<NodeId, usize> = HashMap::default();
     let mut in_sources: HashMap<NodeId, Feeds<NodeId>> = HashMap::default();
     let mut pure_eligible: HashSet<NodeId> = HashSet::default();
 
-    fn scan(
-        module: &Module,
-        protected: &HashSet<NodeId>,
-        out_deg: &mut HashMap<NodeId, usize>,
-        in_sources: &mut HashMap<NodeId, Feeds<NodeId>>,
-        pure_eligible: &mut HashSet<NodeId>,
-    ) {
-        for w in &module.wires {
-            if w.source.port != WirePort::Layout {
-                *out_deg.entry(w.source.node_id).or_default() += 1;
-                in_sources
-                    .entry(w.target.node_id)
-                    .and_modify(|f| f.push(w.source.node_id))
-                    .or_insert(Feeds::One(w.source.node_id));
-            }
-        }
-        for (id, n) in &module.nodes {
-            let is_pure_class =
-                n.gate_class == gc::LITERAL || n.gate_class.starts_with("BrickComponentType_Expr_");
-            if n.kind == NodeKind::Gate
-                && !n.properties.contains_key(&*sym::NO_FOLD)
-                && !protected.contains(id)
-                && is_pure_class
-            {
-                pure_eligible.insert(*id);
-            }
-        }
-        for child in module.chips.values() {
-            scan(child, protected, out_deg, in_sources, pure_eligible);
+    for w in root.wires_deep() {
+        if w.source.port != WirePort::Layout {
+            *out_deg.entry(w.source.node_id).or_default() += 1;
+            in_sources
+                .entry(w.target.node_id)
+                .and_modify(|f| f.push(w.source.node_id))
+                .or_insert(Feeds::One(w.source.node_id));
         }
     }
-    scan(
-        root,
-        protected,
-        &mut out_deg,
-        &mut in_sources,
-        &mut pure_eligible,
-    );
+    for n in root.nodes_deep() {
+        let is_pure_class = n.gate_class == gc::LITERAL || gc::is_pure_expr(n.gate_class);
+        if n.kind == NodeKind::Gate
+            && !n.properties.contains_key(&*sym::NO_FOLD)
+            && !protected.contains(&n.id)
+            && is_pure_class
+        {
+            pure_eligible.insert(n.id);
+        }
+    }
 
     let mut dead: HashSet<NodeId> = HashSet::default();
     let mut work: Vec<NodeId> = pure_eligible
@@ -1379,57 +1063,24 @@ fn sweep_dead_pure(root: &mut Module, protected: &HashSet<NodeId>) {
         }
     }
     if !dead.is_empty() {
-        remove_dead_nodes(root, &dead);
+        root.remove_nodes_tree(&dead);
     }
 }
 
-/// Remove every id in `dead` (and any wire touching one) from `module` and
-/// every nested chip.
-fn remove_dead_nodes(module: &mut Module, dead: &HashSet<NodeId>) {
-    module.nodes.retain(|id, _| !dead.contains(id));
-    module
-        .wires
-        .retain(|w| !dead.contains(&w.source.node_id) && !dead.contains(&w.target.node_id));
-    module.scope_captures.retain(|id| !dead.contains(id));
-    for child in module.chips.values_mut() {
-        remove_dead_nodes(child, dead);
-    }
-}
-
-/// Whole-chip elision: bottom-up, remove a NAMED chip instance (a
-/// `module.chips` entry) whose child module's `nodes` are entirely boundary
-/// IO (or empty), none of that boundary IO carries a wire ANYWHERE in the
-/// tree, and the chip node itself carries none of `NAME_LABEL`/
-/// `CHIP_CLOSED`/`DOC_TEXT`/`_nofold` (the same annotations that keep an
-/// empty ANON chip's shell alive through `emit::partition_anon_chips` —
-/// they mean the (possibly-empty) shell must still reach emit). Recurses
-/// bottom-up so a chip emptied by an inner elision can elide too.
-///
-/// Anon chips are NOT `module.chips` entries yet at this point in the
-/// pipeline (`partition_anon_chips` runs after this whole pass) — their
-/// elision is automatic: a fully-folded anon chip's tagged nodes are swept
-/// by `sweep_dead_pure`/`sweep_dead_exec` above like any other dead nodes,
-/// so partition never creates a child for them at all.
+/// Whole-chip elision, bottom-up: remove a named chip instance whose module
+/// holds only boundary IO with no wire anywhere in the tree, unless the chip
+/// node carries a label, closed, doc, color, material or `_nofold` property.
+/// Anon chips are not `module.chips` entries yet; their swept nodes simply
+/// never become a chip at partition.
 fn elide_empty_chips(root: &mut Module) {
-    // A boundary node's wire could, in principle, live anywhere in the tree
-    // (wires are stored in either endpoint's owning module) — computed once
-    // up front against the untouched wire graph; later removals in this
-    // same pass can only ever remove wires ON nodes we've already decided
-    // to elide, which can't retroactively change another node's touch
-    // status.
-    let mut touched: HashSet<NodeId> = HashSet::default();
-    collect_wire_endpoints(root, &mut touched);
+    // A boundary wire may live in either endpoint's module, so endpoints are
+    // collected tree-wide once; elision only removes wires on elided chips,
+    // which cannot change another node's status.
+    let touched: HashSet<NodeId> = root
+        .wires_deep()
+        .flat_map(|w| [w.source.node_id, w.target.node_id])
+        .collect();
     elide_empty_chips_rec(root, &touched);
-}
-
-fn collect_wire_endpoints(module: &Module, touched: &mut HashSet<NodeId>) {
-    for w in &module.wires {
-        touched.insert(w.source.node_id);
-        touched.insert(w.target.node_id);
-    }
-    for child in module.chips.values() {
-        collect_wire_endpoints(child, touched);
-    }
 }
 
 fn elide_empty_chips_rec(module: &mut Module, touched: &HashSet<NodeId>) {

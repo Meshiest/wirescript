@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use super::defaults::{is_ident_char, is_ident_start};
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Tok<'a> {
+pub(super) enum Tok<'a> {
     Ident(&'a str),
     /// `%name`, without the `%`.
     Value(&'a str),
@@ -28,7 +28,7 @@ pub enum Tok<'a> {
 
 impl Tok<'_> {
     /// How the token reads in an error message.
-    pub fn describe(&self) -> String {
+    pub(super) fn describe(&self) -> String {
         match self {
             Tok::Ident(s) => format!("`{s}`"),
             Tok::Value(s) => format!("`%{s}`"),
@@ -48,21 +48,21 @@ impl Tok<'_> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Token<'a> {
+pub(super) struct Token<'a> {
     pub tok: Tok<'a>,
     pub line: u32,
     pub col: u32,
 }
 
 #[derive(Debug)]
-pub struct LexError {
+pub(super) struct LexError {
     pub line: u32,
     pub col: u32,
     pub found: String,
     pub message: String,
 }
 
-pub fn lex(src: &str) -> Result<Vec<Token<'_>>, LexError> {
+pub(super) fn lex(src: &str) -> Result<Vec<Token<'_>>, LexError> {
     let mut lx = Lexer {
         src,
         b: src.as_bytes(),
@@ -167,7 +167,7 @@ impl<'a> Lexer<'a> {
             }
             b'!' => {
                 let j = self.i + 1;
-                if self.b.get(j).is_some_and(|c| c.is_ascii_digit()) {
+                if self.b.get(j).is_some_and(u8::is_ascii_digit) {
                     let mut end = j;
                     while end < self.b.len() && self.b[end].is_ascii_digit() {
                         end += 1;

@@ -4,11 +4,7 @@ use crate::typecheck::typecheck;
 
 fn estimates_for(source: &str) -> HashMap<String, ResourceEstimate> {
     let resolved = resolve(source, "test", &FsLoader);
-    let tc = typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     collect_estimates(&resolved.ast, &tc, "test")
 }
 
@@ -42,10 +38,8 @@ chip Wrap(a: *int) -> () {
 
 #[test]
 fn builtin_calls_do_not_count_as_microchips() {
-    // A `mod` whose body only calls a builtin gate (here
-    // `BroadcastChatMessage`) instantiates no microchip — the builtin is a
-    // single gate. A regression guard against `expand_estimate` fabricating
-    // a phantom microchip for every callee absent from `base_estimates`.
+    // A `mod` whose body only calls a builtin gate (`BroadcastChatMessage`)
+    // instantiates no microchip: the builtin is a single gate, not a chip.
     let est = estimates_for("mod say(m: string) { BroadcastChatMessage(m) }");
     let say = est.get("say").expect("should have say estimate");
     assert!(
@@ -106,10 +100,9 @@ chip Inner(a: int) -> (r: int) {{ out r = a + 1 }}
     }
 }
 
-/// A `import * as ns` member is stored in `symbols` — and looked up by
-/// hover — under its qualified `ns.member` name, while estimates are
-/// collected under the bare one. Without the qualified alias, hovering
-/// `card.draw(...)` rendered the signature with no gate count at all.
+/// An `import * as ns` member is stored in `symbols`, and looked up by hover,
+/// under its qualified `ns.member` name, while estimates are collected under the
+/// bare one; the qualified alias gives `card.draw(...)` its gate count.
 #[test]
 fn namespaced_member_is_reachable_by_its_qualified_name() {
     let loader = crate::resolve::MemLoader {
@@ -122,11 +115,7 @@ fn namespaced_member_is_reachable_by_its_qualified_name() {
     };
     let src = "import * as card from \"lib\"\nvar x: int = 0\non RoundStart { card.draw(x) }\n";
     let resolved = resolve(src, "main", &loader);
-    let tc = typecheck(
-        &resolved.ast,
-        "main",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let est = collect_estimates(&resolved.ast, &tc, "main");
 
     let bare = est.get("draw").expect("bare member key").gates;

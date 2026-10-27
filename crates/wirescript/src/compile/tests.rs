@@ -1,30 +1,24 @@
+use std::fmt::Write as _;
+
 use super::*;
 
 /// Compile recursion depth scales with program size (Tarjan SCC walk in
-/// analyze_cycles, lowering/emit recursion), and real callers invoke
-/// compile from small-stack threads — the LSP's compile command runs on a
-/// tokio blocking thread (2 MiB). The entry points must be safe no matter
-/// how small the caller's stack is. A stack overflow aborts the whole
-/// process, so without the internal big-stack worker this test crashes
-/// the test run rather than failing an assertion.
+/// `analyze_cycles`, lowering/emit recursion), and real callers invoke
+/// compile from small-stack threads (the LSP's compile command runs on a
+/// 2 MiB tokio blocking thread). The entry points must be safe no matter how
+/// small the caller's stack is: a stack overflow aborts the whole process, so
+/// without the internal big-stack worker this test crashes the test run
+/// rather than failing an assertion.
 #[test]
 fn compile_survives_small_caller_stack() {
     let mut src = String::from("in x: int\nlet a0 = x + 1\n");
     for i in 1..8000 {
-        src.push_str(&format!("let a{i} = a{} + 1\n", i - 1));
+        let _ = writeln!(src, "let a{i} = a{} + 1", i - 1);
     }
     src.push_str("out result = a7999\n");
     let out = std::thread::Builder::new()
         .stack_size(384 * 1024)
-        .spawn(move || {
-            compile(CompileInput {
-                source: &src,
-                file: "small_stack_test",
-                module_name: None,
-                fold_mode: FoldMode::Auto,
-            })
-            .map(|r| r.brz.len())
-        })
+        .spawn(move || compile(CompileInput::new(&src, "small_stack_test")).map(|r| r.brz.len()))
         .expect("spawn small-stack caller")
         .join()
         .expect("small-stack compile panicked");
@@ -36,7 +30,7 @@ fn compile_survives_small_caller_stack() {
 }
 
 /// The compile-progress total grows by one step per embedded prefab (each
-/// `$./file` reference / inline `$```…``` ` block), so the bar reflects the
+/// `$./file` reference / inline `$```...``` ` block), so the bar reflects the
 /// per-prefab sub-compiles instead of stalling on the emit phase.
 #[test]
 fn progress_total_counts_nested_prefabs() {
@@ -45,18 +39,13 @@ fn progress_total_counts_nested_prefabs() {
                    let b = SpawnPrefab(prefab = $```\nvar m: int = 0\n```)\n}";
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u32, u32, bool)>::new()));
     let cb: ProgressCallback = {
-        let seen = seen.clone();
+        let seen = std::sync::Arc::clone(&seen);
         std::sync::Arc::new(move |p: CompileProgress| {
             seen.lock().unwrap().push((p.step, p.total, p.done));
         })
     };
     let r = compile_with_progress(
-        CompileInput {
-            source: src,
-            file: "prog_test.ws",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        CompileInput::new(src, "prog_test.ws"),
         EmitOptions::default(),
         cb,
     );
@@ -104,17 +93,7 @@ fn ws_ignore_applies_through_diagnostics_only_but_never_to_errors() {
         .into_iter()
         .collect(),
     };
-    let run = |src: &str| {
-        diagnostics_only(
-            CompileInput {
-                source: src,
-                file: "ignore_main",
-                module_name: None,
-                fold_mode: FoldMode::Auto,
-            },
-            &loader,
-        )
-    };
+    let run = |src: &str| diagnostics_only(CompileInput::new(src, "ignore_main"), &loader);
 
     // A named import leaves the module's `on` handler behind, which is WS014.
     let program =
@@ -149,12 +128,10 @@ fn ws_ignore_applies_through_diagnostics_only_but_never_to_errors() {
 /// A failed compile prints where each error is, not only its message.
 #[test]
 fn a_compile_error_prints_its_location() {
-    let err = compile(CompileInput {
-        source: "var fo: float = 0.0\nin go: exec\non go { fo = \"s\" }\n",
-        file: "loc",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    })
+    let err = compile(CompileInput::new(
+        "var fo: float = 0.0\nin go: exec\non go { fo = \"s\" }\n",
+        "loc",
+    ))
     .err()
     .expect("a string into a float var is an error");
     let text = err.to_string();
@@ -181,8 +158,8 @@ fn a_location_prints_a_plain_path() {
         message: "m".into(),
         range: crate::diagnostic::SourceRange::new(
             r"\\?\C:\x\lib.ws",
-            Default::default(),
-            Default::default(),
+            crate::diagnostic::Pos::default(),
+            crate::diagnostic::Pos::default(),
         ),
     }]);
     assert!(err.to_string().contains(r"(C:\x\lib.ws:0:0)"), "{err}");
@@ -231,13 +208,8 @@ fn a_placeholder_in_a_program_with_no_other_error_is_an_error() {
     };
     for (what, imports, body, named) in cases {
         let src = format!("{imports}{head}{body}");
-        let input = CompileInput {
-            source: &src,
-            file: "main",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        };
-        let errors = match compile_with_loader(input, Default::default(), &loader) {
+        let input = CompileInput::new(&src, "main");
+        let errors = match compile_with_loader(input, EmitOptions::default(), &loader) {
             Err(CompileError::HasErrors(errors)) => errors,
             other => panic!("{what}: compiled: {:?}", other.map(|r| r.diagnostics)),
         };
@@ -251,17 +223,8 @@ fn a_placeholder_in_a_program_with_no_other_error_is_an_error() {
         );
     }
 
-    let check = |src: &str| {
-        diagnostics_only(
-            CompileInput {
-                source: src,
-                file: "main",
-                module_name: None,
-                fold_mode: FoldMode::Auto,
-            },
-            &crate::resolve::FsLoader,
-        )
-    };
+    let check =
+        |src: &str| diagnostics_only(CompileInput::new(src, "main"), &crate::resolve::FsLoader);
     let alone = check(&format!("{head}on go {{ n = k.nosuch() }}"));
     assert!(
         alone
@@ -302,30 +265,17 @@ fn ws_ignore_does_not_silence_a_promoted_placeholder() {
             format!("// ws-ignore-file:WSP001\n{head}on go {{ n = k.nosuch() }}\n"),
         ),
     ] {
-        let input = CompileInput {
-            source: &src,
-            file: "main",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        };
+        let input = CompileInput::new(&src, "main");
         match compile(input) {
             Err(CompileError::HasErrors(errors)) => {
                 assert!(
                     errors.iter().any(|d| d.code == "WSP001"),
                     "{what}: {errors:?}"
-                )
+                );
             }
             other => panic!("{what}: compiled: {:?}", other.map(|r| r.diagnostics)),
         }
-        let diags = diagnostics_only(
-            CompileInput {
-                source: &src,
-                file: "main",
-                module_name: None,
-                fold_mode: FoldMode::Auto,
-            },
-            &crate::resolve::FsLoader,
-        );
+        let diags = diagnostics_only(CompileInput::new(&src, "main"), &crate::resolve::FsLoader);
         assert!(
             diags
                 .iter()
@@ -335,12 +285,7 @@ fn ws_ignore_does_not_silence_a_promoted_placeholder() {
     }
     // A warning on the line is still silenced.
     let src = format!("{head}on go {{ static var z: int = k // ws-ignore-line:WSP001\nn = z }}\n");
-    let input = CompileInput {
-        source: &src,
-        file: "main",
-        module_name: None,
-        fold_mode: FoldMode::Auto,
-    };
+    let input = CompileInput::new(&src, "main");
     let out = compile(input).expect("a silenced warning compiles");
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
 }
@@ -374,12 +319,7 @@ fn a_promoted_placeholder_names_its_expression_and_the_fix() {
         ),
     ] {
         let src = format!("{head}{body}\n");
-        let input = CompileInput {
-            source: &src,
-            file: "main",
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        };
+        let input = CompileInput::new(&src, "main");
         let errors = match compile(input) {
             Err(CompileError::HasErrors(errors)) => errors,
             other => panic!("{what}: compiled: {:?}", other.map(|r| r.diagnostics)),

@@ -15,7 +15,11 @@
 //! [`TopNames::visible_decl`]). Storage is declared ahead of everything, so a
 //! read above every declaration of the name names it too.
 
+use std::sync::Arc;
+
 use crate::ast::{Block, Stmt, TopDecl};
+use crate::collections::HashMap;
+use crate::const_eval::bound_names;
 use crate::diagnostic::SourceRange;
 
 /// An anonymous chip of the top level and the value names it declares.
@@ -88,22 +92,16 @@ impl ReadAt {
 pub(crate) struct TopNames {
     chips: Vec<TopChip>,
     /// Each chip's index in `chips` by its range, the first when two share one.
-    chip_index: crate::collections::HashMap<SourceRange, usize>,
-    values: crate::collections::HashMap<(std::sync::Arc<str>, String), SourceRange>,
+    chip_index: HashMap<SourceRange, usize>,
+    values: HashMap<(Arc<str>, String), SourceRange>,
     /// Each name the top level of one file (outside every chip) declares more
     /// than once, with its declarations in source order.
-    dups: crate::collections::HashMap<(std::sync::Arc<str>, String), Vec<TopDup>>,
-}
-
-fn contains(outer: &SourceRange, inner: &SourceRange) -> bool {
-    outer.file == inner.file
-        && outer.start.offset <= inner.start.offset
-        && inner.end.offset <= outer.end.offset
+    dups: HashMap<(Arc<str>, String), Vec<TopDup>>,
 }
 
 /// Whether `inner` is written inside `outer`.
 pub(crate) fn within(outer: &SourceRange, inner: &SourceRange) -> bool {
-    contains(outer, inner)
+    outer.contains(inner)
 }
 
 /// The value names the top-level declaration `d` declares that a later
@@ -111,7 +109,7 @@ pub(crate) fn within(outer: &SourceRange, inner: &SourceRange) -> bool {
 /// storage: a `let` or `const`, a `var`, `buffer`, `array` or `map`.
 pub(crate) fn declared_names_of(d: &TopDecl) -> Vec<(String, bool)> {
     match d {
-        TopDecl::Let(l) => crate::const_eval::bound_names(&l.binding)
+        TopDecl::Let(l) => bound_names(&l.binding)
             .into_iter()
             .map(|n| (n, false))
             .collect(),
@@ -132,7 +130,7 @@ pub(crate) fn declared_names(stmts: &[Stmt]) -> Vec<String> {
             Stmt::Array(a) => out.push(a.name.clone()),
             Stmt::Map(m) => out.push(m.name.clone()),
             Stmt::Buffer(b) => out.push(b.name.clone()),
-            Stmt::Let(l) => out.extend(crate::const_eval::bound_names(&l.binding)),
+            Stmt::Let(l) => out.extend(bound_names(&l.binding)),
             _ => {}
         }
     }
@@ -155,9 +153,8 @@ impl TopNames {
             }
         }
         let mut chips = Vec::new();
-        let mut values = crate::collections::HashMap::default();
-        let mut dups: crate::collections::HashMap<(std::sync::Arc<str>, String), Vec<TopDup>> =
-            crate::collections::HashMap::default();
+        let mut values = HashMap::default();
+        let mut dups: HashMap<(Arc<str>, String), Vec<TopDup>> = HashMap::default();
         for d in decls {
             let r = d.range();
             for (name, storage) in declared_names_of(d) {
@@ -171,7 +168,9 @@ impl TopNames {
                     visible_from,
                     storage,
                 };
-                dups.entry((r.file.clone(), name)).or_default().push(dup);
+                dups.entry((Arc::clone(&r.file), name))
+                    .or_default()
+                    .push(dup);
             }
         }
         dups.retain(|_, v| v.len() > 1);
@@ -191,7 +190,7 @@ impl TopNames {
                     walk(&ac.body, &mut chips);
                     Vec::new()
                 }
-                TopDecl::Let(l) => crate::const_eval::bound_names(&l.binding),
+                TopDecl::Let(l) => bound_names(&l.binding),
                 TopDecl::Var(v) => vec![v.name.clone()],
                 TopDecl::Array(a) => vec![a.name.clone()],
                 TopDecl::Map(m) => vec![m.name.clone()],
@@ -202,11 +201,11 @@ impl TopNames {
             };
             for name in names {
                 values
-                    .entry((d.range().file.clone(), name))
+                    .entry((Arc::clone(&d.range().file), name))
                     .or_insert_with(|| d.range().clone());
             }
         }
-        let mut chip_index = crate::collections::HashMap::default();
+        let mut chip_index = HashMap::default();
         for (i, c) in chips.iter().enumerate() {
             chip_index.entry(c.range.clone()).or_insert(i);
         }
@@ -241,8 +240,9 @@ impl TopNames {
     }
 
     /// Whether `name` is declared more than once at the top level of `file`.
-    pub(crate) fn is_dup(&self, file: &std::sync::Arc<str>, name: &str) -> bool {
-        self.dups.contains_key(&(file.clone(), name.to_string()))
+    pub(crate) fn is_dup(&self, file: &Arc<str>, name: &str) -> bool {
+        self.dups
+            .contains_key(&(Arc::clone(file), name.to_string()))
     }
 
     /// For a name the top level of `at`'s file declares more than once, the
@@ -256,8 +256,14 @@ impl TopNames {
     /// code names none. The outer `None` means `name` is not declared more
     /// than once there; the inner, that no declaration of it is visible at
     /// `at` yet.
+    #[expect(
+        clippy::option_option,
+        reason = "outer `None` means not a duplicate name; inner, none visible yet"
+    )]
     pub(crate) fn visible_decl(&self, name: &str, at: &ReadAt) -> Option<Option<&TopDup>> {
-        let decls = self.dups.get(&(at.range.file.clone(), name.to_string()))?;
+        let decls = self
+            .dups
+            .get(&(Arc::clone(&at.range.file), name.to_string()))?;
         let seen = decls
             .iter()
             .rev()
@@ -275,7 +281,9 @@ impl TopNames {
     /// as a `let` initializer does (a `buffer` reads itself, the previous
     /// tick). `None` for any other declaration.
     pub(crate) fn initializer_read(&self, name: &str, range: &SourceRange) -> Option<ReadAt> {
-        let decls = self.dups.get(&(range.file.clone(), name.to_string()))?;
+        let decls = self
+            .dups
+            .get(&(Arc::clone(&range.file), name.to_string()))?;
         decls
             .iter()
             .any(|d| d.storage && d.range == *range)
@@ -289,10 +297,10 @@ impl TopNames {
         &self,
         imports: &crate::ast::ImportScope,
         file: &str,
-        decl_file: &std::sync::Arc<str>,
+        decl_file: &Arc<str>,
         name: &str,
     ) -> bool {
-        match self.values.get(&(decl_file.clone(), name.to_string())) {
+        match self.values.get(&(Arc::clone(decl_file), name.to_string())) {
             Some(decl) => imports.sees(file, decl),
             None => true,
         }
@@ -305,7 +313,7 @@ impl TopNames {
         self.chips
             .iter()
             .rev()
-            .find(|c| contains(&c.range, at) && c.names.iter().any(|n| n == name))
+            .find(|c| c.range.contains(at) && c.names.iter().any(|n| n == name))
             .map_or(Home::Top, Home::Chip)
     }
 
@@ -314,7 +322,7 @@ impl TopNames {
         &'t self,
         at: &'t SourceRange,
     ) -> impl Iterator<Item = &'t TopChip> + 't {
-        self.chips.iter().filter(move |c| contains(&c.range, at))
+        self.chips.iter().filter(move |c| c.range.contains(at))
     }
 
     /// The chip written exactly at `range`.
@@ -326,8 +334,7 @@ impl TopNames {
     /// top level: both outside every chip, or both written directly in the
     /// same chip.
     pub(crate) fn same_level(&self, a: &SourceRange, b: &SourceRange) -> bool {
-        let innermost =
-            |r: &SourceRange| self.chips.iter().rev().position(|c| contains(&c.range, r));
+        let innermost = |r: &SourceRange| self.chips.iter().rev().position(|c| c.range.contains(r));
         innermost(a) == innermost(b)
     }
 }

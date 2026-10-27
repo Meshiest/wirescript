@@ -16,13 +16,13 @@ pub mod types;
 pub mod visit;
 
 use crate::collections::HashMap;
+use crate::diagnostic::{RangeKey, StartKey};
 use crate::ir::Type;
 
-pub type TypeMap = HashMap<(std::sync::Arc<str>, usize, usize), Type>;
-pub type IfContextMap = HashMap<(std::sync::Arc<str>, usize), bool>;
-pub type VarReadContextMap = HashMap<(std::sync::Arc<str>, usize), bool>;
-pub type NarrowedReadMap =
-    HashMap<(std::sync::Arc<str>, usize, usize), crate::typecheck::NarrowedRead>;
+pub type TypeMap = HashMap<RangeKey, Type>;
+pub type IfContextMap = HashMap<StartKey, bool>;
+pub type VarReadContextMap = HashMap<StartKey, bool>;
+pub type NarrowedReadMap = HashMap<RangeKey, crate::typecheck::NarrowedRead>;
 
 pub use assets::{
     asset_exists, asset_names, asset_type_exists, asset_type_for_port, asset_types,

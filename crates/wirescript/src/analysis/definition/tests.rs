@@ -8,11 +8,7 @@ fn goto(main: &str, display: &str, line: usize, col: usize) -> Option<Location> 
     let loader = MemLoader { files };
     let pre = crate::parse(main, "main.ws");
     let resolved = resolve(main, "main.ws", &loader);
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "main.ws",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = crate::typecheck::typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("main.ws"));
     definition_at(main, &pre.ast, &symbols, "main.ws", &loader, line, col)
 }

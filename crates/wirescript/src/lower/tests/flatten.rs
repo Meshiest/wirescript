@@ -1,4 +1,4 @@
-//! `@flat` — the chip tree is inlined onto one module before boundary pins.
+//! `@flat`: the chip tree is inlined onto one module before boundary pins.
 
 use crate::ir::{Module, NodeId, NodeKind, gate_class as gc};
 
@@ -26,7 +26,7 @@ fn class_census(m: &Module) -> std::collections::BTreeMap<&'static str, usize> {
     out
 }
 
-// Two named-chip instances plus a nested chip and an anonymous chip — the
+/// Two named-chip instances plus a nested chip and an anonymous chip: the
 /// shapes that put nodes in a child module or tag them for one.
 const NESTED: &str = "\
 chip Inner(a: int) -> (r: int) {
@@ -117,8 +117,8 @@ fn flat_clears_every_chip_id_tag() {
 }
 
 /// `partition_anon_chips` inserts synthetic `WirePort::Layout` edges to keep
-/// partitioned chips inline in the DAG. Flat never partitions, so none exist
-/// — and any that a chip shell was an endpoint of are gone with it.
+/// partitioned chips inline in the DAG. Flat never partitions, so none exist,
+/// and any that had a chip shell as an endpoint are gone with it.
 #[test]
 fn flat_leaves_no_layout_edges() {
     let flattened = compile_ok_auto(&flat(NESTED));
@@ -134,9 +134,8 @@ fn flat_leaves_no_layout_edges() {
     assert_eq!(layout_edges, 0);
 }
 
-/// Every wire endpoint must name a node that exists in the one module. A
-/// dangling endpoint is exactly the silent miscompile flattening could
-/// cause, and nothing downstream reports it.
+/// Every wire endpoint names a node that exists in the one module: a dangling
+/// endpoint is a silent miscompile that nothing downstream reports.
 #[test]
 fn flat_leaves_no_wire_pointing_outside_the_module() {
     for src in [NESTED, DEEP_CHAIN] {
@@ -162,9 +161,8 @@ fn flat_leaves_no_wire_pointing_outside_the_module() {
     }
 }
 
-/// With the tree already flat, the boundary pin pass has nothing to do.
-/// Asserted, not assumed — if it ever did fire it would add
-/// MicrochipInput/Output rerouters for wires that no longer cross anything.
+/// With the tree already flat, the boundary pin pass adds no
+/// MicrochipInput/Output rerouters, since no wire crosses a chip wall.
 #[test]
 fn boundary_pins_is_a_no_op_on_a_flattened_module() {
     let flattened = compile_ok_auto(&flat(NESTED));
@@ -209,7 +207,7 @@ fn flat_reaches_the_deepest_chip() {
     );
     let flattened = compile_ok_auto(&flat(DEEP_CHAIN));
     assert_eq!(total_chips(&flattened.module), 0);
-    // The deepest body's own gates are in the one module now.
+    // The deepest body's own gates are in the one module.
     assert!(
         total_nodes(&flattened.module)
             >= total_nodes(&plain.module) - chip_node_count(&plain.module),
@@ -252,9 +250,8 @@ on go {
         m.scopes
     );
 
-    // Every node's scope must resolve in this module's table — an id left
-    // over from a child module would silently re-home the node onto the
-    // root region.
+    // Every node's scope resolves in this module's table: an id left over from a
+    // child module would silently re-home the node onto the root region.
     for n in m.nodes.values() {
         assert!(
             m.scopes.contains_key(&n.scope_id),
@@ -288,9 +285,9 @@ fn merged_chip_body_scopes_stay_parented() {
     }
 }
 
-/// Declared chip `in`/`out` pins are kept as ordinary rerouters, but must
-/// NOT join the host's `inputs`/`outputs` — those drive the outer rerouter
-/// bricks for the program's own top-level ports.
+/// Declared chip `in`/`out` pins are kept as ordinary rerouters, but do NOT
+/// join the host's `inputs`/`outputs`: those drive the outer rerouter bricks
+/// for the program's own top-level ports.
 #[test]
 fn merged_pins_stay_out_of_the_hosts_port_lists() {
     let plain = compile_ok_auto(NESTED);
@@ -340,7 +337,7 @@ fn flat_drops_no_chip_port_wire_on_real_programs() {
     }
 }
 
-/// `@flat` composes with `@layout(...)` and with `@fold` — it is a separate
+/// `@flat` composes with `@layout(...)` and with `@fold`: it is a separate
 /// switch, not part of the layout choice.
 #[test]
 fn flat_composes_with_the_other_module_annotations() {

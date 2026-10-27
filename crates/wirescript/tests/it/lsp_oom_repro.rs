@@ -1,25 +1,20 @@
-//! Repro harness for the 2026-07-01 LSP memory blowup (25+ GB).
-//!
-//! The workspace state at the time: projects/input/lib.ws contained mod
-//! signatures with `-> (...)` on a continuation line (a parse error — the
-//! param list doesn't eat newlines, so the arrow is never seen), and
-//! cursor.ws (open in the editor) imported it. The LSP analyze path is
-//! parse -> resolve -> typecheck -> collect_estimates; the CLI checker stops
-//! after typecheck and terminated fine, so the suspect is the estimates /
-//! template-compilation stage on the malformed resolved AST.
+//! The LSP analyze path (parse, resolve, typecheck, `collect_estimates`) must
+//! terminate in bounded time and memory on malformed and degenerate input:
+//! mod signatures with `-> (...)` on a continuation line, multi-line import
+//! braces, garbage tokens in imports, and recursive chips and mods.
 //!
 //! Each test arms a watchdog that hard-exits the process if the stage runs
-//! away, so a regression can't take the machine down with it.
+//! away, so a failure cannot exhaust the machine's memory.
 
 use wirescript::collections::HashMap;
 
 use wirescript::analysis::collect_estimates;
 use wirescript::resolve::{MemLoader, resolve};
-use wirescript::typecheck::typecheck;
+use wirescript::typecheck;
 
 /// Hard-exit the test process if the calling test is still running after
-/// `secs`, so a runaway loop cannot eat the machine (this repro once hit 25+ GB).
-/// Dropping the returned guard, when the test returns or panics, disarms it.
+/// `secs`, so a runaway loop cannot eat the machine. Dropping the returned
+/// guard, when the test returns or panics, disarms it.
 #[must_use = "the watchdog disarms when this guard drops"]
 fn arm_watchdog(secs: u64, label: &'static str) -> Watchdog {
     use std::sync::mpsc::{RecvTimeoutError, channel};
@@ -40,9 +35,9 @@ struct Watchdog {
     _done: std::sync::mpsc::Sender<()>,
 }
 
-/// The original broken lib.ws, verbatim shape: `-> (...)` return lists on
-/// their own continuation line after the parameter list's closing paren.
-const BROKEN_LIB: &str = r#"
+/// A lib with `-> (...)` return lists on their own continuation line after the
+/// parameter list's closing paren.
+const BROKEN_LIB: &str = r"
 let LINE_HEIGHT_PER_WORLD = 1.0
 let KERNING_PER_WORLD = 1.0
 let CHAR_ASPECT = 0.5
@@ -105,9 +100,9 @@ mod InBounds(px: float, py: float, planeDist: float,
   return px >= 0.0 && px <= width && py >= 0.0 && py <= height
       && abs(planeDist) < PLANE_EPS
 }
-"#;
+";
 
-/// cursor.ws as it was: imports the broken lib, calls the broken mods.
+/// A program that imports the broken lib and calls its mods.
 const CURSOR_WS: &str = r#"
 import { ProjectPoint, ToUnits, InBounds, MAX_DIST, ANCHOR_TL_X, ANCHOR_TL_Y, GLYPH_SCALE_X, GLYPH_SCALE_Y, GLYPH_BASE_X, GLYPH_BASE_Y, GLYPH_OFFSET_Z } from "lib"
 
@@ -162,8 +157,7 @@ out glyphOffsetZ: float = GLYPH_OFFSET_Z
 out glyphEnabled: bool = showing
 "#;
 
-/// cursor.ws EXACTLY as originally written: multi-line import braces with a
-/// trailing comma (no corpus precedent for this shape).
+/// A program with multi-line import braces and a trailing comma.
 const ORIG_CURSOR_WS: &str = r#"
 import {
   ProjectPoint, ToUnits, InBounds,
@@ -222,8 +216,8 @@ out glyphOffsetZ: float = GLYPH_OFFSET_Z
 out glyphEnabled: bool = showing
 "#;
 
-/// calibrate.ws EXACTLY as originally written: multi-line import + UNWRAPPED
-/// multi-line if-then-else chains at top level (no parens).
+/// A program with a multi-line import and unwrapped multi-line if-then-else
+/// chains at top level (no parens).
 const ORIG_CALIBRATE_WS: &str = r#"
 import {
   DisplayBasis, TextFit,
@@ -395,7 +389,7 @@ fn full_mem_loader() -> MemLoader {
     MemLoader { files }
 }
 
-/// One document's full LSP surface: everything Backend::analyze computes,
+/// One document's full LSP surface: everything `Backend::analyze` computes,
 /// plus the request handlers VS Code fires automatically (inlay hints) and
 /// on demand (formatting, hover).
 fn lsp_surface(label: &str, source: &str, file: &str, loader: &MemLoader, hover_sweep: bool) {
@@ -406,11 +400,7 @@ fn lsp_surface(label: &str, source: &str, file: &str, loader: &MemLoader, hover_
     let t = std::time::Instant::now();
     let pre = wirescript::parse(source, file);
     let resolved = resolve(source, file, loader);
-    let tc = typecheck(
-        &resolved.ast,
-        file,
-        &wirescript::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &wirescript::CeSlotMap::default());
     eprintln!("[{label}] parse+resolve+typecheck: {:?}", t.elapsed());
 
     let t = std::time::Instant::now();
@@ -467,10 +457,9 @@ fn lsp_surface(label: &str, source: &str, file: &str, loader: &MemLoader, hover_
     }
 }
 
-/// Regression for the 25 GB LSP blowup: a newline anywhere inside
-/// `import { ... }` braces used to spin parse_import_decl's binding loop
-/// forever (expect(Ident)/expect(Comma) both fail on Newline without
-/// consuming it), pushing an ImportBinding + two diagnostics per iteration.
+/// A newline anywhere inside `import { ... }` braces must not stall
+/// `parse_import_decl`'s binding loop (`expect(Ident)`/`expect(Comma)` both
+/// fail on a newline without consuming it); the bindings must parse.
 #[test]
 fn multiline_named_imports_parse() {
     let _watchdog = arm_watchdog(15, "multiline_named_imports_parse");
@@ -517,7 +506,7 @@ fn multiline_named_imports_parse() {
 }
 
 /// Garbage tokens inside import braces must terminate with diagnostics, not
-/// stall the loop (both expects fail without consuming).
+/// stall the binding loop.
 #[test]
 fn garbage_in_import_braces_terminates() {
     let _watchdog = arm_watchdog(15, "garbage_in_import_braces_terminates");
@@ -541,9 +530,8 @@ fn garbage_in_import_braces_terminates() {
     }
 }
 
-/// Regression for the silent-output-drop: `-> (...)` on the line after the
-/// parameter list used to be skipped entirely (param list never ate the
-/// newline), leaving the mod with zero outputs and a cascade of WS002s.
+/// `-> (...)` on the line after the parameter list must parse as the mod's
+/// outputs, not be skipped (which leaves zero outputs and a cascade of WS002).
 #[test]
 fn arrow_on_next_line_parses_outputs() {
     let _watchdog = arm_watchdog(15, "arrow_on_next_line_parses_outputs");
@@ -599,11 +587,7 @@ fn cursor_importing_broken_lib_full_lsp_path_terminates() {
     let resolved = resolve(CURSOR_WS, "cursor.ws", &loader);
     let rt = t.elapsed();
     let t2 = std::time::Instant::now();
-    let tc = typecheck(
-        &resolved.ast,
-        "cursor.ws",
-        &wirescript::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &wirescript::CeSlotMap::default());
     let tt = t2.elapsed();
     let t3 = std::time::Instant::now();
     let est = collect_estimates(&resolved.ast, &tc, "cursor.ws");
@@ -614,22 +598,18 @@ fn cursor_importing_broken_lib_full_lsp_path_terminates() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 2026-07-08 incident: recursive chip/mod calls overflow the lowering stack.
+// Recursive chip and mod calls must lower to a WS020 error, not overflow the
+// stack.
 //
 // A named chip's body is lowered at its first call site
-// (lower_chip_call_instance -> build_chip_module); the compiled template is
-// only inserted into the cache AFTER that build returns. A chip whose body
-// calls itself (directly or mutually) therefore always misses the cache and
-// re-enters the build, recursing until the stack overflows and the process
-// aborts. The LSP runs this on every keystroke via collect_estimates
-// (estimate_handler compiles a synthetic chip from each handler body), so
-// opening such a file killed the LSP outright. Inline mods hit the same
-// recursion through lower_chip_call_inline expanding the body in-place.
-// ---------------------------------------------------------------------------
+// (lower_chip_call_instance -> build_chip_module), and the compiled template
+// is cached only after that build returns, so a chip that calls itself
+// (directly or mutually) re-enters the build. The LSP lowers on every
+// keystroke via collect_estimates, so an overflow would kill it. Inline mods
+// recurse the same way through lower_chip_call_inline.
 
-/// Minimised shape of the crashing file: a chip declared inside an `on`
-/// handler, calling itself from its own body, plus a kick-off call.
+/// A chip declared inside an `on` handler, calling itself from its own body,
+/// plus a kick-off call.
 const RECURSIVE_CHIP_WS: &str = r#"
 var items: controller[]
 
@@ -649,23 +629,23 @@ chip Greet(who: controller) {
 "#;
 
 /// Mutual recursion through two top-level chips.
-const MUTUAL_RECURSION_WS: &str = r#"
+const MUTUAL_RECURSION_WS: &str = r"
 chip Ping(n: int) { Pong(n + 1) }
 chip Pong(n: int) { Ping(n + 1) }
 on RoundStart() { Ping(0) }
-"#;
+";
 
-/// Self-recursive inline mod (expanded at the call site, same blowup).
-const RECURSIVE_MOD_WS: &str = r#"
+/// Self-recursive inline mod, expanded at the call site.
+const RECURSIVE_MOD_WS: &str = r"
 mod Again(n: int) { Again(n + 1) }
 on RoundStart() { Again(0) }
-"#;
+";
 
-fn lower_source(src: &str, file: &str) -> wirescript::lower::LowerResult {
+fn lower_source(src: &str, file: &str) -> wirescript::LowerResult {
     let loader = MemLoader {
         files: HashMap::default(),
     };
-    wirescript::front_end(src, file, None, wirescript::lower::FoldMode::Auto, &loader).lowered
+    wirescript::front_end(src, file, None, wirescript::FoldMode::Auto, &loader).lowered
 }
 
 fn assert_recursion_error(label: &str, src: &str) {

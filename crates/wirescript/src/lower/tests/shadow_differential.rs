@@ -27,7 +27,12 @@ pub(super) struct Outcome {
 /// The gates and wires of `m` and its chips, as text. A literal gate is read
 /// as the value it gives each consumer, which is what the save holds whether
 /// one gate feeds several consumers or each holds the value itself.
-fn ir_shape(m: &Module, out: &mut Vec<String>) {
+/// [`module_shape`] for `root` and every chip module below it.
+fn ir_shape(root: &Module, out: &mut Vec<String>) {
+    root.walk(&mut |_, m| module_shape(m, out));
+}
+
+fn module_shape(m: &Module, out: &mut Vec<String>) {
     let class = |id: &crate::ir::NodeId| m.nodes.get(id).map_or("pin", |n| n.gate_class);
     let literal = |id: &crate::ir::NodeId| {
         m.nodes
@@ -35,7 +40,7 @@ fn ir_shape(m: &Module, out: &mut Vec<String>) {
             .filter(|n| n.gate_class == crate::ir::gate_class::LITERAL)
             .and_then(|n| n.properties.get(&*crate::intern::sym::VALUE))
     };
-    let mut fed: crate::collections::HashMap<crate::ir::NodeId, Vec<String>> = Default::default();
+    let mut fed: crate::collections::HashMap<crate::ir::NodeId, Vec<String>> = HashMap::default();
     for w in &m.wires {
         if let Some(v) = literal(&w.source.node_id) {
             fed.entry(w.target.node_id)
@@ -84,9 +89,6 @@ fn ir_shape(m: &Module, out: &mut Vec<String>) {
             w.target.port
         ));
     }
-    for c in m.chips.values() {
-        ir_shape(c, out);
-    }
 }
 
 type OutcomeKey = (String, Vec<(String, String)>, bool);
@@ -105,7 +107,7 @@ pub(super) fn memoized<T>(f: impl FnOnce() -> T) -> T {
             MEMO.with(|m| *m.borrow_mut() = None);
         }
     }
-    MEMO.with(|m| *m.borrow_mut() = Some(Default::default()));
+    MEMO.with(|m| *m.borrow_mut() = Some(HashMap::default()));
     let _clear = Clear;
     f()
 }
@@ -152,20 +154,20 @@ fn compile_outcome(src: &str, deps: &[(&str, &str)], fold: bool) -> Outcome {
         module_name: None,
         fold_mode,
     };
-    let (lowered, result) =
-        crate::compile::compile_keeping_lowered(input, Default::default(), &loader);
+    let (lowered, result) = crate::compile::compile_keeping_lowered(
+        input,
+        crate::emit::EmitOptions::default(),
+        &loader,
+    );
     let (compiled, mut codes, comps) = match result {
         Ok(out) => (
             true,
-            out.diagnostics.iter().map(|d| d.code.to_string()).collect(),
+            out.diagnostics.iter().map(|d| d.code.clone()).collect(),
             save_components(&out.brz),
         ),
         Err(crate::CompileError::HasErrors(errors)) => (
             false,
-            errors
-                .iter()
-                .map(|d| d.code.to_string())
-                .collect::<Vec<_>>(),
+            errors.iter().map(|d| d.code.clone()).collect::<Vec<_>>(),
             Vec::new(),
         ),
         Err(e) => panic!("{e:?}\n{src}"),
@@ -190,7 +192,7 @@ pub(super) fn save_components(brz: &[u8]) -> Vec<String> {
     let mut out: Vec<String> = wirescript_ir::readback::Save::read(brz)
         .components()
         .iter()
-        .map(|c| c.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     out.sort();
     out
@@ -343,7 +345,7 @@ fn assert_rejected(got: &[(String, Vec<String>)], expected: &[(&str, &[&str], &s
         .map(|(pair, codes, _why)| {
             (
                 pair.to_string(),
-                codes.iter().map(|c| c.to_string()).collect(),
+                codes.iter().map(std::string::ToString::to_string).collect(),
             )
         })
         .collect();
@@ -455,13 +457,13 @@ const USES: &[(&str, &str)] = &[
 /// names it copies the binding's elements, never the constant's.
 #[test]
 fn a_container_binding_hides_an_outer_constant_container() {
-    a_container_binding_hides_an_outer_constant_container_matrix(false)
+    a_container_binding_hides_an_outer_constant_container_matrix(false);
 }
 
 #[test]
 #[ignore = "exhaustive"]
 fn a_container_binding_hides_an_outer_constant_container_exhaustive() {
-    a_container_binding_hides_an_outer_constant_container_matrix(true)
+    a_container_binding_hides_an_outer_constant_container_matrix(true);
 }
 
 /// Every kind x binding x initializer when `full`; otherwise every kind x
@@ -573,8 +575,8 @@ const K_PARTS: [std::ops::Range<usize>; 4] = [0..5, 5..10, 10..15, 15..20];
 
 /// The bindings in `part` with every reader, both folds.
 fn k_matrix_part(part: usize) {
-    let mut covered: Vec<usize> = K_PARTS.iter().flat_map(|r| r.clone()).collect();
-    covered.sort();
+    let mut covered: Vec<usize> = K_PARTS.iter().flat_map(std::clone::Clone::clone).collect();
+    covered.sort_unstable();
     assert_eq!(
         covered,
         (0..BINDINGS.len()).collect::<Vec<_>>(),
@@ -613,35 +615,35 @@ fn k_matrix_part(part: usize) {
 
 #[test]
 fn a_binding_hides_an_outer_constant_from_every_reader() {
-    k_matrix_part(0)
+    k_matrix_part(0);
 }
 
 #[test]
 fn a_binding_hides_an_outer_constant_from_every_reader_part2() {
-    k_matrix_part(1)
+    k_matrix_part(1);
 }
 
 #[test]
 fn a_binding_hides_an_outer_constant_from_every_reader_part3() {
-    k_matrix_part(2)
+    k_matrix_part(2);
 }
 
 #[test]
 fn a_binding_hides_an_outer_constant_from_every_reader_part4() {
-    k_matrix_part(3)
+    k_matrix_part(3);
 }
 
 /// A binding named like a bare enum variant (an `int` here) is that binding
 /// for every reader: none takes it for the variant `Blue`.
 #[test]
 fn a_binding_named_like_a_variant_hides_it_from_every_reader() {
-    a_binding_named_like_a_variant_hides_it_from_every_reader_matrix(false)
+    a_binding_named_like_a_variant_hides_it_from_every_reader_matrix(false);
 }
 
 #[test]
 #[ignore = "exhaustive"]
 fn a_binding_named_like_a_variant_hides_it_from_every_reader_exhaustive() {
-    a_binding_named_like_a_variant_hides_it_from_every_reader_matrix(true)
+    a_binding_named_like_a_variant_hides_it_from_every_reader_matrix(true);
 }
 
 /// Every pair in both fold modes when `full`, else each pair in one (the
@@ -679,13 +681,13 @@ const ALIAS_LIB: &str = "pub const K = 4\npub type R = { K: int, y: int }\n";
 /// for every reader, never the namespace's constant `K`.
 #[test]
 fn a_binding_named_like_a_namespace_alias_hides_its_members() {
-    a_binding_named_like_a_namespace_alias_hides_its_members_matrix(false)
+    a_binding_named_like_a_namespace_alias_hides_its_members_matrix(false);
 }
 
 #[test]
 #[ignore = "exhaustive"]
 fn a_binding_named_like_a_namespace_alias_hides_its_members_exhaustive() {
-    a_binding_named_like_a_namespace_alias_hides_its_members_matrix(true)
+    a_binding_named_like_a_namespace_alias_hides_its_members_matrix(true);
 }
 
 /// Every pair in both fold modes when `full`, else each pair in one (the
@@ -991,7 +993,7 @@ fn a_const_of_a_binding_hiding_a_constant_is_ws046() {
 }
 
 /// A mod of an `import * as` module reads its module's constants as
-/// constants, as the type check does: a constant-only argument bakes (it was
+/// constants, as the type check does: a constant-only argument bakes (no
 /// `WS028`) and an integer constant in a `float` place is that float.
 #[test]
 fn a_namespaced_mod_reads_its_modules_constants() {
@@ -1050,10 +1052,6 @@ fn a_name_bound_again_in_its_frame_reads_the_new_binding() {
     }
 }
 
-/// A `var` initializer reads the names around the declaration, as a `let`'s
-/// does, never the variable it declares; and in a `mod` or `chip` body a read
-/// above a `var` reads the binding that `var` later shadows. `%` is the outer
-/// name in both twins.
 /// A `mod` or `chip` body's `var` named like a variant or an enum is not
 /// there before its declaration: a read above it, and its own initializer,
 /// read the variant or the enum, in typecheck and lowering alike, as the
@@ -1143,6 +1141,10 @@ fn a_body_var_named_like_a_variant_or_enum_is_not_there_before_it() {
     }
 }
 
+/// A `var` initializer reads the names around the declaration, as a `let`'s
+/// does, never the variable it declares; and in a `mod` or `chip` body a read
+/// above a `var` reads the binding that `var` later shadows. `%` is the outer
+/// name in both twins.
 #[test]
 fn a_var_initializer_reads_the_name_around_it() {
     let head = "in go: exec\nin a: int\nin c: bool\nvar n: int = 0\nout on1: int = n\n\

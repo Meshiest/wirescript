@@ -25,7 +25,7 @@ pub(super) fn desugar_gate_call(
             };
         }
     };
-    // `GetVariable(v)` reads `v` — desugar to the bare receiver expression.
+    // `GetVariable(v)` reads `v`: desugar to the bare receiver expression.
     if name == gb::GET_VARIABLE && args.len() == 1 && matches!(args[0], CallArg::Positional(_)) {
         if let Some(CallArg::Positional(v)) = args.into_iter().next() {
             return v;
@@ -36,9 +36,8 @@ pub(super) fn desugar_gate_call(
         && matches!(args.first(), Some(CallArg::Positional(_)))
     {
         let mut it = args.into_iter();
-        let container = match it.next() {
-            Some(CallArg::Positional(c)) => c,
-            _ => unreachable!(),
+        let Some(CallArg::Positional(container)) = it.next() else {
+            unreachable!()
         };
         let rest: Vec<CallArg> = it.collect();
         let fa = Expr::FieldAccess {

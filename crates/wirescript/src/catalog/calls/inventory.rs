@@ -3,10 +3,10 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Character inventory -------------------------------
-    // `char.GiveWeapon($BRItemBase/Weapon_Pistol, slot)` — sets an inventory
-    // slot to an item asset. The weapon asset is carried as the nested
-    // EntryPlan.ItemTypeIfItem; the emitter builds the EntryPlan struct.
+    // Character inventory
+    // `char.GiveWeapon($BRItemBase/Weapon_Pistol, slot)` sets an inventory slot
+    // to an item asset, carried as the nested EntryPlan.ItemTypeIfItem that the
+    // emitter builds.
     m.insert(
         "GiveWeapon",
         character_exec(
@@ -21,7 +21,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Character inventory family ------------------------------
+    // Character inventory family
     // Asset args ($BRItemBase/..., $BrickTypeAsset/..., entity types) inline
     // into the gate's class/object data fields (like GiveWeapon).
     m.insert(
@@ -167,7 +167,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Character ammo / inventory --------------------------------------
+    // Character ammo / inventory
     m.insert(
         "GetAmmo",
         character_exec(

@@ -1,17 +1,17 @@
 //! Queries against the brdb component schema: a gate's data struct,
 //! its field kinds, and which ports accept an inlined value.
 
-use super::*;
+use crate::collections::HashMap;
+use crate::intern::{Sym, intern_static};
+use crate::ir::Literal;
+use crate::ir::port_registry::WirePort;
 
-/// Returns `(struct_name, field_names, use_wire_variant)` for gates whose
-/// component data struct must be serialized.
+/// Returns `(struct_name, field_names, use_wire_variant)` for gates whose component data
+/// struct must be serialized.
 ///
-/// Fully derived: `brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS` (the
-/// game-extracted component->struct table, exhaustive over the game's
-/// components) supplies the struct, the max schema supplies the field list —
-/// see [`derived_gate_data`]. A class in neither place has no data component.
-/// Per-field schema checks in `build_gate_component` decide variant vs native
-/// handling, so the `use_wire_variant` flag is always false here.
+/// Both the struct and its field list come from [`derived_gate_data`]; a class absent there
+/// has no data component. `use_wire_variant` is always false: `build_gate_component` decides
+/// variant vs native handling per field from the schema.
 pub(crate) fn data_struct_for_gate(
     gate_class: &str,
 ) -> Option<(&'static str, &'static [&'static str], bool)> {
@@ -21,10 +21,7 @@ pub(crate) fn data_struct_for_gate(
 }
 
 /// (struct name, full field list) per component class, derived from
-/// `brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS` + the max schema.
-/// Hand-written arms in [`data_struct_for_gate`] take precedence — they
-/// encode the deliberate exceptions (wire-only gates, struct overrides,
-/// classes absent from the pair table).
+/// `brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS` and the max schema.
 pub(super) fn derived_gate_data()
 -> &'static HashMap<&'static str, (&'static str, Vec<&'static str>)> {
     static MAP: std::sync::OnceLock<HashMap<&'static str, (&'static str, Vec<&'static str>)>> =
@@ -46,9 +43,8 @@ pub(super) fn derived_gate_data()
     })
 }
 
-/// Per-field emit classification, resolved once per gate data struct
-/// instead of re-querying the schema (several interner probes plus a
-/// `String` allocation per predicate) for every field of every brick.
+/// Per-field emit classification, resolved once per gate data struct so emit does not
+/// re-query the schema for every field of every brick.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum FieldKind {
     /// `WireValue`
@@ -60,7 +56,7 @@ pub(super) enum FieldKind {
     /// Schema enum type (payload = the enum's type name in the schema)
     Enum(&'static str),
     /// A native `Vector`/`Rotator`/`Quat` struct field (payload = the schema
-    /// struct name), which the inlined literal is reshaped to fit — see
+    /// struct name), which the inlined literal is reshaped to fit by
     /// [`super::variants::reshape_literal_for_struct`].
     NativeStruct(&'static str),
     /// A native integer field (payload = its schema type, `i8` .. `u64`)
@@ -69,7 +65,7 @@ pub(super) enum FieldKind {
     Real(&'static str),
     /// A native `bool` field
     Boolean,
-    /// Anything else — serialized as a native literal
+    /// Anything else, serialized as a native literal
     Native,
 }
 
@@ -102,7 +98,7 @@ pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> 
                     let kind = match prop {
                         BrdbSchemaStructProperty::Type(t) => match schema.intern.lookup_ref(*t) {
                             Some("WireValue") => FieldKind::WireValue,
-                            Some("class") | Some("object") => FieldKind::AssetRef,
+                            Some("class" | "object") => FieldKind::AssetRef,
                             Some("str") => FieldKind::Str,
                             Some(n) if schema.get_enum(n).is_some() => FieldKind::Enum(n),
                             Some(n @ ("Vector" | "Rotator" | "Quat")) => FieldKind::NativeStruct(n),
@@ -113,8 +109,7 @@ pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> 
                             Some("bool") => FieldKind::Boolean,
                             _ => FieldKind::Native,
                         },
-                        // Array/FlatArray/Map fields have no special emit
-                        // handling — the native literal path covers them.
+                        // Array/FlatArray/Map fields take the native literal path.
                         _ => FieldKind::Native,
                     };
                     Some(FieldMeta {
@@ -129,10 +124,10 @@ pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> 
         m
     })
     .get(gate_class)
-    .map(|f| f.as_slice())
+    .map(std::vec::Vec::as_slice)
 }
 
-/// Check if `schema_str` contains `"field_name: type_name"` as an exact type match.
+/// The schema type of `field` on `struct_name`, rendered as a string, if both exist.
 pub(super) fn schema_field_type_str(struct_name: &str, field: &str) -> Option<String> {
     let schema = brdb::schemas::bricks_components_schema_max();
     let s = schema.get_struct(struct_name)?;
@@ -141,10 +136,9 @@ pub(super) fn schema_field_type_str(struct_name: &str, field: &str) -> Option<St
     Some(prop.as_string(schema))
 }
 
-/// The enum variant names a gate's data `field` accepts, if that field is an
-/// enum — e.g. DisplayText's `Justification` -> `["Left", "Center", "Right"]`.
-/// Names are returned bare (the `EnumType::` prefix stripped). Used by the
-/// editor to complete enum-valued named args like `justify = Center`.
+/// The enum variant names a gate's data `field` accepts, if that field is an enum, e.g.
+/// `DisplayText`'s `Justification` -> `["Left", "Center", "Right"]`. Names are bare (the
+/// `EnumType::` prefix stripped).
 pub fn field_enum_values(gate_class: &str, field: &str) -> Option<Vec<String>> {
     // Delegate to the catalog's schema-backed enum helpers, which drop the
     // trailing `<Enum>_MAX` / bare `MAX` sentinel (not a selectable member).
@@ -157,8 +151,7 @@ pub fn field_enum_values(gate_class: &str, field: &str) -> Option<Vec<String>> {
 }
 
 /// The schema enum type name of a gate's data field, if it is an enum (e.g.
-/// `ColorBlend.BlendSpace` -> `EBRColorSpace`). Used to name the enum in
-/// completions/hover for a config param that is surfaced as a plain int.
+/// `ColorBlend.BlendSpace` -> `EBRColorSpace`).
 pub fn field_enum_type(gate_class: &str, field: &str) -> Option<&'static str> {
     crate::catalog::config_field_enum_type(gate_class, field)
 }
@@ -168,26 +161,14 @@ fn schema_field_is_wire_value(struct_name: &str, field: &str) -> bool {
     schema_field_type_str(struct_name, field).as_deref() == Some("WireValue")
 }
 
-/// Can a folded constant (`Vec/Rotation/Color` on literal args, lowered to a
-/// `_Literal` node) be delivered to this (gate, port) sink as inlined
-/// component data? True for `WireValue` fields and for a native
-/// `Vector`/`Rotator`/`Quat` struct field whose shape MATCHES `lit` (the
-/// gate stores an unwired input's value in its data — entity `Set*` gates,
-/// Sweep, …). Everything else — `LinearColor` fields, `Split*` inputs, chip
-/// IO, unmapped gates, and any shape mismatch — must keep a real `Make*`
-/// gate, which the lowering pass materializes on demand.
+/// Whether a folded constant (`Vec/Rotation/Color` on literal args, lowered to a `_Literal`
+/// node) can be delivered to this (gate, port) sink as inlined component data.
 ///
-/// The shape matters because a native struct field is written field-by-field
-/// through the schema and so holds exactly ONE representation: a `Rotator`
-/// (Pitch/Yaw/Roll) has no `X` to hand a `Quat` field (X/Y/Z/W). The
-/// wire-level `Rotator` <-> `Quat` interchange `types::coerce` allows —
-/// `v.Rotate(Rotation(0, -90, 0))` type-checks because
-/// `RotateVector.Rotation` accepts either — therefore needs an explicit
-/// conversion once the value is baked rather than wired, which
-/// [`super::variants::reshape_literal_for_struct`] performs at emit. A shape
-/// this accepts is one that function can produce; anything else is rejected
-/// here and keeps its carrier gate, the same rejection principle as
-/// [`port_accepts_inline_scalar`] one level up in the types.
+/// True for `WireValue` fields and for a native `Vector`/`Rotator`/`Quat` struct field whose
+/// shape `lit` matches or that [`super::variants::reshape_literal_for_struct`] can produce
+/// (a `Rotator` literal is accepted for a `Quat` field). Everything else (`LinearColor`
+/// fields, `Split*` inputs, chip IO, unmapped gates, shape mismatches) keeps a real `Make*`
+/// gate, which lowering materializes on demand.
 pub fn port_accepts_inline_variant(gate_class: &str, port: WirePort, lit: &Literal) -> bool {
     let Some((struct_name, fields, use_wire_variant)) = data_struct_for_gate(gate_class) else {
         return false;
@@ -199,8 +180,8 @@ pub fn port_accepts_inline_variant(gate_class: &str, port: WirePort, lit: &Liter
     if use_wire_variant || schema_field_is_wire_value(struct_name, field) {
         return true;
     }
-    // Split* gates keep materialized Make* inputs — not yet verified that
-    // they read an unwired input from data like the Set* gates do.
+    // Split* gates keep materialized Make* inputs (not verified to read an unwired input
+    // from data).
     if gate_class.contains("_Expr_Split") {
         return false;
     }
@@ -212,16 +193,12 @@ pub fn port_accepts_inline_variant(gate_class: &str, port: WirePort, lit: &Liter
     )
 }
 
-/// Whether the constant `lit` may be BAKED into this gate's data field named by
-/// `port` as a NATIVE scalar (dropping the carrying wire), i.e. `port` names a
-/// plain scalar field on the gate's data struct AND `lit`'s type matches the
-/// field's storage type. A matching constant is written into the gate's data and
-/// read from the unwired input — this is a native-scalar inline, distinct from
-/// the wire-variant inline in [`port_accepts_inline_variant`] (a plain `i64` /
-/// `bool` field can hold a native constant but NOT a wire variant). A TYPE
-/// MISMATCH (e.g. a float into an `i64` field) is rejected here, so it falls
-/// through to a carrier gate that supplies — and converts — the value over a
-/// wire. Enum / object / class / composite fields are not baked here.
+/// Whether the constant `lit` can be baked into this gate's data field `port` as a native
+/// scalar, dropping the carrying wire: `port` must name a plain scalar field and `lit`'s
+/// type must match the field's storage type. A mismatch (a float into an `i64` field) falls
+/// through to a carrier gate that converts the value over a wire. Enum, object, class and
+/// composite fields are not baked here; wire-variant fields go through
+/// [`port_accepts_inline_variant`].
 pub fn port_accepts_inline_scalar(gate_class: &str, port: WirePort, lit: &Literal) -> bool {
     let Some((struct_name, fields, _)) = data_struct_for_gate(gate_class) else {
         return false;
@@ -252,24 +229,24 @@ pub(super) fn try_resolve_enum(struct_name: &str, field: &str, lit: &Literal) ->
     resolve_enum_value(&type_name, lit)
 }
 
-/// Resolve a literal against a schema enum type by name — exact match
-/// first (`EBRDisplayTextJustification::Left`), then bare suffix (`Left`).
+/// Resolve a literal against a schema enum type by name: exact match first
+/// (`EBRDisplayTextJustification::Left`), then bare suffix (`Left`).
 pub(super) fn resolve_enum_value(type_name: &str, lit: &Literal) -> Option<u8> {
     let schema = brdb::schemas::bricks_components_schema_max();
     let enum_def = schema.get_enum(type_name)?;
     match lit {
         Literal::Int(n) => Some(*n as u8),
         Literal::String(s) => {
-            if let Some(id) = schema.intern.get(s) {
-                if let Some(&v) = enum_def.get(&id) {
-                    return Some(v as u8);
-                }
+            if let Some(id) = schema.intern.get(s)
+                && let Some(&v) = enum_def.get(&id)
+            {
+                return Some(v as u8);
             }
             let prefixed = format!("{type_name}::{s}");
             let id = schema.intern.get(&prefixed)?;
             Some(*enum_def.get(&id)? as u8)
         }
-        Literal::Bool(b) => Some(if *b { 1 } else { 0 }),
+        Literal::Bool(b) => Some(u8::from(*b)),
         _ => None,
     }
 }

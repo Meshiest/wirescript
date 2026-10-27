@@ -31,6 +31,12 @@ pub fn display_path(file: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// A range as a map key: its file and its start and end byte offsets.
+pub type RangeKey = (Arc<str>, usize, usize);
+
+/// A position as a map key: its file and start byte offset.
+pub type StartKey = (Arc<str>, usize);
+
 impl SourceRange {
     pub fn new(file: impl Into<Arc<str>>, start: Pos, end: Pos) -> Self {
         Self {
@@ -38,6 +44,21 @@ impl SourceRange {
             start,
             end,
         }
+    }
+
+    pub fn key(&self) -> RangeKey {
+        (Arc::clone(&self.file), self.start.offset, self.end.offset)
+    }
+
+    pub fn start_key(&self) -> StartKey {
+        (Arc::clone(&self.file), self.start.offset)
+    }
+
+    /// Whether `inner` lies within this range, in the same file.
+    pub fn contains(&self, inner: &Self) -> bool {
+        self.file == inner.file
+            && self.start.offset <= inner.start.offset
+            && inner.end.offset <= self.end.offset
     }
 }
 

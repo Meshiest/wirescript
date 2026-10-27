@@ -1,7 +1,7 @@
-//! Gates from the game build that made several gates procedural bricks and
-//! added player dialogs and brick properties. Each test compiles a real
-//! program and checks what the game would load: the brick a gate sits on, the
-//! wire a branch leaves from, the setting baked into a gate's data.
+//! Gates for procedural-brick gates, player dialogs and brick properties. Each
+//! test compiles a real program and checks what the game would load: the brick
+//! a gate sits on, the wire a branch leaves from, the setting baked into a
+//! gate's data.
 
 use wirescript::compile::{CompileInput, FoldMode, compile, compile_to_world};
 use wirescript::emit::EmitOptions;
@@ -100,7 +100,7 @@ fn custom_event_gates_are_sized_by_their_data_count() {
 
 /// The sweep result's `HitBrick` is a `brick` value that a brick-property
 /// setter takes, and `Color` there names the `BrickProperty` member while
-/// `Color(...)` still builds a color.
+/// `Color(...)` builds a color.
 #[test]
 fn a_sweep_hit_brick_is_recolored() {
     let src = "in go: exec\n\
@@ -174,7 +174,7 @@ fn a_yes_no_question_branches_on_the_answer() {
 }
 
 /// Each dialog's answering player and typed answer are values a program can
-/// read, and the message box's new `OkClicked` reaches code too.
+/// read, and the message box's `OkClicked` reaches code too.
 #[test]
 fn dialogs_expose_the_player_who_answered() {
     let src = "var who: string = \"\"\n\
@@ -304,8 +304,8 @@ fn a_brick_property_read_has_the_property_type() {
     );
 }
 
-/// Get Bricks In Zone left the game, so `fillFromZoneBricks` and its
-/// gate-named form no longer compile, and the gate is gone from the inventory.
+/// Get Bricks In Zone is not in the game: `fillFromZoneBricks` and its
+/// gate-named form do not compile, and the gate is absent from the inventory.
 #[test]
 fn get_bricks_in_zone_is_gone() {
     assert!(
@@ -398,9 +398,9 @@ fn every_dialog_reports_declined() {
     }
 }
 
-/// The dialogs' per-button cancel/no outputs and `FailedToOpen` merged into
-/// `Declined`, and Player Left lost its player reference: a program reading
-/// any of them is an error, not a silent no-op.
+/// The dialogs have no per-button cancel/no outputs or `FailedToOpen` (all are
+/// `Declined`), and Player Left has no player reference: a program reading any
+/// of them is an error, not a silent no-op.
 #[test]
 fn removed_dialog_and_player_left_outputs_are_errors() {
     for body in [
@@ -411,8 +411,8 @@ fn removed_dialog_and_player_left_outputs_are_errors() {
         "on ControllerJoined() -> (c) {\n  let r = c.ShowYesNoBox(\"yes?\")\n  on !r.NoClicked { n = 1 }\n}\n",
         "on ControllerJoined() -> (c) {\n  let r = c.ShowYesNoBox(\"yes?\")\n  on r.YesClicked | r.NoClicked { n = 1 }\n}\n",
         "on ControllerLeft() -> { controller: controller } {\n  n = 1\n}\n",
-        // Captures bind by slot: an old capture of the player would now bind
-        // the user id, and every name after it the slot after that.
+        // Captures bind by slot: a capture of the player would bind the user
+        // id, and every name after it the slot after that.
         "on ControllerLeft() -> (controller) {\n  n = 1\n}\n",
         "on ControllerLeft() -> (c, userId) {\n  n = 1\n}\n",
         "on ControllerLeft(ctrl, uid) {\n  n = 1\n}\n",
@@ -436,7 +436,7 @@ fn removed_dialog_and_player_left_outputs_are_errors() {
     }
 }
 
-/// Item Spawn's `PickupMeshColors` input left the game.
+/// Item Spawn has no `PickupMeshColors` input.
 #[test]
 fn item_spawn_has_no_pickup_mesh_colors() {
     let spawn = wirescript::catalog::default_catalog()

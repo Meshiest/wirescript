@@ -1,22 +1,51 @@
-use crate::collections::HashMap;
+use std::sync::Arc;
 
+use crate::collections::HashMap;
 use crate::diagnostic::{Diagnostic, Severity};
-use crate::emit::Placement;
-use crate::emit::{Assembly, EmitError, EmitOptions, PrefabResolver, assemble_with_phases};
-use crate::ir::{LayoutMode, NodeId, Program, ProgramSettings};
+use crate::emit::{
+    Assembly, EmitError, EmitOptions, NestedCompiler, Placement, PrefabResolver,
+    assemble_with_phases,
+};
+use crate::ir::{LayoutMode, Literal, Module, NodeId, Program, ProgramSettings};
 use crate::lower::{LowerInput, lower};
-use crate::resolve::{FileLoader, FsLoader, resolve};
+use crate::resolve::{FileLoader, FsLoader, ResolveResult, resolve};
 use crate::template_cache::TemplateCache;
 use crate::typecheck::typecheck_with_inference;
 
 pub use crate::lower::FoldMode;
 
+#[derive(Clone, Copy)]
 pub struct CompileInput<'a> {
     pub source: &'a str,
     pub file: &'a str,
     pub module_name: Option<&'a str>,
-    /// Whether the certified constant-fold pass runs — see [`FoldMode`].
+    /// Whether the certified constant-fold pass runs; see [`FoldMode`].
     pub fold_mode: FoldMode,
+}
+
+impl<'a> CompileInput<'a> {
+    /// `source` read from `file`, under the module name the file gives and
+    /// the default fold mode.
+    pub fn new(source: &'a str, file: &'a str) -> Self {
+        Self {
+            source,
+            file,
+            module_name: None,
+            fold_mode: FoldMode::Auto,
+        }
+    }
+
+    #[must_use]
+    pub fn module_name(mut self, name: &'a str) -> Self {
+        self.module_name = Some(name);
+        self
+    }
+
+    #[must_use]
+    pub fn fold_mode(mut self, mode: FoldMode) -> Self {
+        self.fold_mode = mode;
+        self
+    }
 }
 
 pub struct CompileResult {
@@ -36,13 +65,13 @@ impl std::error::Error for CompileError {}
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CompileError::HasErrors(diags) => {
+            Self::HasErrors(diags) => {
                 for d in diags {
                     write!(f, "{d} ")?;
                 }
                 Ok(())
             }
-            CompileError::Emit(e) => write!(f, "emit: {}", e),
+            Self::Emit(e) => write!(f, "emit: {e}"),
         }
     }
 }
@@ -51,13 +80,11 @@ pub fn compile(input: CompileInput<'_>) -> Result<CompileResult, CompileError> {
     compile_with_opts(input, EmitOptions::default())
 }
 
-/// Stack reserved for a compile run. Some compile recursion still scales
-/// with program structure (lowering/emit), and callers routinely invoke
-/// compile from small-stack threads — the LSP's compile command runs on a
-/// ~2 MiB tokio blocking thread, which large programs overflowed, aborting
-/// the whole process. Reserved address space only — pages are committed as
-/// used, so the worker costs nothing beyond what the compile actually
-/// touches.
+/// Stack reserved for a compile run. Compile recursion scales with program
+/// structure (lowering/emit), and callers routinely invoke compile from
+/// small-stack threads (the LSP's compile command runs on a ~2 MiB tokio
+/// blocking thread), where a large program overflows and aborts the process.
+/// Reserved address space only: pages are committed as used.
 #[cfg(not(target_arch = "wasm32"))]
 const COMPILE_STACK_SIZE: usize = 256 * 1024 * 1024; // 256 MiB reserved
 
@@ -82,7 +109,7 @@ fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     })
 }
 
-/// wasm32 has no threads — run inline (wasm callers control their own stack).
+/// wasm32 has no threads: run inline (wasm callers control their own stack).
 #[cfg(target_arch = "wasm32")]
 fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     let _ids = crate::ir::NodeId::compile_scope();
@@ -96,9 +123,6 @@ fn on_compile_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 /// diagnostic. An editor answers each request on a ~2 MiB tokio worker, which
 /// a legal but deeply nested program outgrows, so every entry point that walks
 /// a user AST should come through here.
-///
-/// Reserved address space only: pages are committed as touched, and the spawn
-/// itself is around 100 us.
 pub fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     on_compile_stack(f)
 }
@@ -129,12 +153,12 @@ pub fn resolve_prefab_path(entry_file: &str, path: &str) -> std::path::PathBuf {
 }
 
 /// A [`PrefabResolver`] that resolves `$./file` prefab references from disk.
-/// A `.brz` path is read as raw prefab bytes; a `.ws` path is **compiled on the
-/// spot** (its own source -> `.brz` bytes), so `$./control.ws` embeds the
+/// A `.brz` path is read as raw prefab bytes; a `.ws` path is compiled on the
+/// spot (its own source -> `.brz` bytes), so `$./control.ws` embeds the
 /// compiled result of `control.ws` exactly like `$./control.brz` embeds a
 /// prebuilt one. `$./rel` resolves relative to `entry_file`'s directory;
-/// `$/abs` is filesystem-absolute. (Relative refs in imported files also
-/// resolve against the entry file's directory.)
+/// `$/abs` is filesystem-absolute. Relative refs in imported files also
+/// resolve against the entry file's directory.
 pub fn disk_prefab_resolver(entry_file: &str, fold_mode: FoldMode) -> PrefabResolver {
     disk_prefab_resolver_depth(entry_file, fold_mode, 1)
 }
@@ -146,7 +170,7 @@ fn disk_prefab_resolver_depth(
 ) -> PrefabResolver {
     let base = std::path::Path::new(entry_file)
         .parent()
-        .map(|p| p.to_path_buf())
+        .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
     // Per-resolver memo: a program that spawns the same `$./file` prefab from
     // many sites resolves it once; repeat references reuse the bytes (the
@@ -161,8 +185,8 @@ fn disk_prefab_resolver_depth(
             return Ok(bytes.clone());
         }
         // A `.ws` reference is a SOURCE prefab: compile it here and embed the
-        // result, mirroring `default_nested_compiler` for inline `$```…````
-        // blocks (its own `$./…` refs resolve relative to the `.ws` file).
+        // result, mirroring `default_nested_compiler` for inline `$```...````
+        // blocks (its own `$./...` refs resolve relative to the `.ws` file).
         if full
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("ws"))
@@ -181,12 +205,7 @@ fn disk_prefab_resolver_depth(
                 ..Default::default()
             };
             let result = compile_to_world(
-                CompileInput {
-                    source: &src,
-                    file: &full_str,
-                    module_name: None,
-                    fold_mode,
-                },
+                CompileInput::new(&src, &full_str).fold_mode(fold_mode),
                 inner_opts,
             )
             .map_err(|e| format!("prefab {} failed to compile: {e}", full.display()))?;
@@ -204,39 +223,31 @@ fn disk_prefab_resolver_depth(
     })
 }
 
-/// Maximum `$```…``` nesting depth before compilation refuses (runaway guard).
+/// Maximum nesting depth of `$` prefab blocks before compilation refuses
+/// (runaway guard).
 const MAX_NESTED_DEPTH: usize = 8;
 
 /// A default nested-prefab compiler for blocks at `depth` levels of nesting.
 /// Recursively compiles the inner source into prefab `.brz` bytes. The closure
 /// ignores the `depth` argument the emit layer passes (always 1) and uses its
 /// own captured `depth` for the guard and for the next level's compiler.
-fn default_nested_compiler(
-    depth: usize,
-    file: String,
-    fold_mode: FoldMode,
-) -> crate::emit::NestedCompiler {
-    crate::emit::NestedCompiler::new(move |inner_src: &str, _embed_depth: usize| {
+fn default_nested_compiler(depth: usize, file: String, fold_mode: FoldMode) -> NestedCompiler {
+    NestedCompiler::new(move |inner_src: &str, _embed_depth: usize| {
         if depth > MAX_NESTED_DEPTH {
             return Err(format!(
                 "nested prefab blocks are nested too deeply (limit {MAX_NESTED_DEPTH})"
             ));
         }
-        // Compile the inner source as its own isolated program. Its OWN nested
-        // blocks get the next depth level's compiler (this is what accumulates
-        // the depth — NOT the emit arg). Imports resolve relative to the outer
+        // Compile the inner source as its own isolated program. Its own nested
+        // blocks get the next depth level's compiler (that is what accumulates
+        // the depth, not the emit arg). Imports resolve relative to the outer
         // file (reuse `file`).
         let inner_opts = EmitOptions {
             nested_compiler: Some(default_nested_compiler(depth + 1, file.clone(), fold_mode)),
             ..Default::default()
         };
         let result = compile_to_world(
-            CompileInput {
-                source: inner_src,
-                file: &file,
-                module_name: None,
-                fold_mode,
-            },
+            CompileInput::new(inner_src, &file).fold_mode(fold_mode),
             inner_opts,
         )
         .map_err(|e| format!("nested prefab failed to compile: {e}"))?;
@@ -253,13 +264,12 @@ pub struct CompileProgress {
     pub total: u32,
     pub done: bool,
     /// The phase this step is about to run ("resolve", "lower", "layout",
-    /// "emit", "prefab"), or "done" on the terminal event. Reported so a
-    /// caller's progress UI and logs can name the phase rather than showing a
-    /// bare step counter -- which is all you got when a compile appeared stuck.
+    /// "emit", "prefab"), or "done" on the terminal event. Lets a caller's
+    /// progress UI and logs name the phase rather than show a bare step counter.
     pub label: &'static str,
 }
 
-pub type ProgressCallback = std::sync::Arc<dyn Fn(CompileProgress) + Send + Sync>;
+pub type ProgressCallback = Arc<dyn Fn(CompileProgress) + Send + Sync>;
 
 pub fn compile_with_progress(
     input: CompileInput<'_>,
@@ -290,7 +300,7 @@ pub fn compile_with_loader(
 
 /// What the front end makes of one source file: each stage's result.
 pub struct FrontEnd {
-    pub resolved: crate::resolve::ResolveResult,
+    pub resolved: ResolveResult,
     pub typecheck: crate::typecheck::TypeCheckResult,
     /// The custom-event slot types inference found, which lowering read.
     pub ce_slots: crate::typecheck::CeSlotMap,
@@ -316,7 +326,7 @@ pub enum FrontEndStage<'a> {
     Resolve,
     Typecheck,
     /// Lowering `resolved`, which type checking has seen.
-    Lower(&'a crate::resolve::ResolveResult),
+    Lower(&'a ResolveResult),
 }
 
 /// [`front_end`], calling `stage` before each stage runs: for a caller that
@@ -332,7 +342,7 @@ pub fn front_end_staged(
     stage(FrontEndStage::Resolve);
     let resolved = resolve(source, file, loader);
     stage(FrontEndStage::Typecheck);
-    let (typecheck, ce_slots) = typecheck_with_inference(&resolved.ast, file);
+    let (typecheck, ce_slots) = typecheck_with_inference(&resolved.ast);
     stage(FrontEndStage::Lower(&resolved));
     let lowered = lower(LowerInput {
         ast: &resolved.ast,
@@ -341,7 +351,7 @@ pub fn front_end_staged(
         resolutions: &typecheck.resolutions,
         file,
         module_name,
-        template_cache: std::sync::Arc::new(TemplateCache::new()),
+        template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &resolved.doc_comments,
         fold_mode,
         ce_slots: &ce_slots,
@@ -355,12 +365,11 @@ pub fn front_end_staged(
 }
 
 /// Run the front-end through lowering (resolve -> typecheck -> lower -> cycle
-/// analysis) and return EVERY diagnostic, without emitting. This is the diagnostic
-/// surface `wirescript-check` reports: it includes the lowering-stage `WSP001`
-/// placeholder warnings a typecheck-only pass can't see. A program that lowers to
-/// an `_Unsupported` gate is "no errors" to typecheck yet a real miscompile, so a
-/// check that stops at typecheck silently passes it. Runs on the big compile
-/// stack like the other entry points.
+/// analysis) and return every diagnostic, without emitting. This is the
+/// diagnostic surface `wirescript-check` reports: it includes the lowering-stage
+/// `WSP001` placeholder warnings a typecheck-only pass can't see (a program that
+/// lowers to an `_Unsupported` gate has no typecheck errors yet is a real
+/// miscompile). Runs on the big compile stack like the other entry points.
 pub fn diagnostics_only(
     input: CompileInput<'_>,
     loader: &(dyn FileLoader + Sync),
@@ -400,7 +409,7 @@ pub fn diagnostics_only(
 /// The module-level settings a resolved program asks for: its `@layout`
 /// engine, `@invisible`, the root plane's doc, and, for `@layout("code")`,
 /// the entry file's source map.
-pub fn program_settings(resolved: &crate::resolve::ResolveResult, file: &str) -> ProgramSettings {
+pub fn program_settings(resolved: &ResolveResult, file: &str) -> ProgramSettings {
     let ast = &resolved.ast;
     let layout = match ast.layout {
         Some(crate::ast::LayoutName::Code) => LayoutMode::Code,
@@ -429,7 +438,7 @@ pub fn program_settings(resolved: &crate::resolve::ResolveResult, file: &str) ->
                 })
                 .cloned()
         }),
-        source_map: (layout == LayoutMode::Code).then(|| resolved.source_map.clone()),
+        source_map: (layout == LayoutMode::Code).then(|| Arc::clone(&resolved.source_map)),
     }
 }
 
@@ -455,19 +464,19 @@ fn compile_to_world_keeping(
     mut opts: EmitOptions,
     progress: Option<ProgressCallback>,
     loader: &dyn FileLoader,
-    rejected: Option<&mut Option<crate::ir::Module>>,
+    rejected: Option<&mut Option<Module>>,
 ) -> Result<CompileWorldResult, CompileError> {
     use std::sync::atomic::{AtomicU32, Ordering};
     // Four fixed phases (resolve, lower, layout, emit), plus one step per embedded
-    // prefab — each is its own sub-compile during emit, so the total grows to
+    // prefab: each is its own sub-compile during emit, so the total grows to
     // `4 + <nested prefab count>` once the AST is parsed (below). Shared via Arc
     // so the per-prefab wrappers (which must be `Send + Sync`) can advance it too.
     const BASE_STEPS: u32 = 4;
-    let step = std::sync::Arc::new(AtomicU32::new(0));
-    let total = std::sync::Arc::new(AtomicU32::new(BASE_STEPS));
+    let step = Arc::new(AtomicU32::new(0));
+    let total = Arc::new(AtomicU32::new(BASE_STEPS));
     let report = {
-        let step = step.clone();
-        let total = total.clone();
+        let step = Arc::clone(&step);
+        let total = Arc::clone(&total);
         let progress = progress.clone();
         move |label: &'static str| {
             let s = step.fetch_add(1, Ordering::Relaxed) + 1;
@@ -510,7 +519,7 @@ fn compile_to_world_keeping(
             FrontEndStage::Typecheck => {}
             FrontEndStage::Lower(resolved) => {
                 // Grow the progress total by the number of embedded prefabs (each `$./file`
-                // reference and each inline `$```…``` ` block is a sub-compile the emit step
+                // reference and each inline `$```...``` ` block is a sub-compile the emit step
                 // does), so the bar advances through them instead of stalling on emit. Only
                 // `total`, which nothing reads unless a callback is running, so the walk is
                 // skipped entirely when it is.
@@ -540,7 +549,7 @@ fn compile_to_world_keeping(
     let mut settings = program_settings(&resolved, file);
     settings.no_fold = input.fold_mode == FoldMode::ForceOff;
 
-    // Every wire-graph cycle must cross a tick barrier (Buffer/Queue) — an
+    // Every wire-graph cycle must cross a tick barrier (Buffer/Queue). An
     // unbarriered cycle (e.g. an emit/await loop back-edge without `buffer`)
     // would retrigger within a single tick (WS005).
     let cycles = crate::analyze::analyze_cycles(&lowered.module);
@@ -590,11 +599,10 @@ fn compile_to_world_keeping(
     // (and their exact behavior) untouched. Clamp to the total in case emit
     // resolves a prefab more often than the source references it.
     if progress.is_some() {
-        let tick: std::sync::Arc<dyn Fn() + Send + Sync> = {
-            let step = step.clone();
-            let total = total.clone();
+        let tick: Arc<dyn Fn() + Send + Sync> = {
+            let total = Arc::clone(&total);
             let progress = progress.clone();
-            std::sync::Arc::new(move || {
+            Arc::new(move || {
                 if let Some(cb) = &progress {
                     let tot = total.load(Ordering::Relaxed);
                     let s = (step.fetch_add(1, Ordering::Relaxed) + 1).min(tot);
@@ -608,14 +616,14 @@ fn compile_to_world_keeping(
             })
         };
         if let Some(inner) = opts.nested_compiler.take() {
-            let tick = tick.clone();
-            opts.nested_compiler = Some(crate::emit::NestedCompiler::new(move |src, depth| {
+            let tick = Arc::clone(&tick);
+            opts.nested_compiler = Some(NestedCompiler::new(move |src, depth| {
                 tick();
                 (inner.0)(src, depth)
             }));
         }
         if let Some(inner) = opts.prefab_resolver.take() {
-            let tick = tick.clone();
+            let tick = Arc::clone(&tick);
             opts.prefab_resolver = Some(PrefabResolver::new(move |path| {
                 tick();
                 (inner.0)(path)
@@ -672,10 +680,7 @@ pub(crate) fn compile_keeping_lowered(
     input: CompileInput<'_>,
     opts: EmitOptions,
     loader: &(dyn FileLoader + Sync),
-) -> (
-    Option<crate::ir::Module>,
-    Result<CompileResult, CompileError>,
-) {
+) -> (Option<Module>, Result<CompileResult, CompileError>) {
     on_compile_stack(move || {
         let mut rejected = None;
         match compile_to_world_keeping(input, opts, None, loader, Some(&mut rejected)) {
@@ -707,10 +712,7 @@ pub struct CompileWorldResult {
     /// Set only when the caller asked for progress, carrying the callback and
     /// the final step total so `compile` can send the terminal `done` event
     /// after the `.brz` encode rather than before it.
-    progress: Option<(
-        ProgressCallback,
-        std::sync::Arc<std::sync::atomic::AtomicU32>,
-    )>,
+    progress: Option<(ProgressCallback, Arc<std::sync::atomic::AtomicU32>)>,
 }
 
 pub fn compile_to_world(
@@ -749,17 +751,17 @@ pub fn prepare_program_for_text(
 }
 
 struct PrefabRewrite {
-    nested: crate::emit::NestedCompiler,
+    nested: NestedCompiler,
     source_dir: std::path::PathBuf,
     ir_dir: std::path::PathBuf,
 }
 
-fn rewrite_module_prefabs(m: &mut crate::ir::Module, ctx: &PrefabRewrite) -> Result<(), String> {
+fn rewrite_module_prefabs(m: &mut Module, ctx: &PrefabRewrite) -> Result<(), String> {
     for node in m.nodes.values_mut() {
         if !node.properties.values().any(has_prefab) {
             continue;
         }
-        for lit in std::sync::Arc::make_mut(&mut node.properties).values_mut() {
+        for lit in Arc::make_mut(&mut node.properties).values_mut() {
             rewrite_literal(lit, ctx)?;
         }
     }
@@ -769,8 +771,7 @@ fn rewrite_module_prefabs(m: &mut crate::ir::Module, ctx: &PrefabRewrite) -> Res
     Ok(())
 }
 
-fn has_prefab(lit: &crate::ir::Literal) -> bool {
-    use crate::ir::Literal;
+fn has_prefab(lit: &Literal) -> bool {
     match lit {
         Literal::PrefabRef { .. } | Literal::NestedPrefab { .. } => true,
         Literal::Array(items) => items.iter().any(has_prefab),
@@ -780,8 +781,7 @@ fn has_prefab(lit: &crate::ir::Literal) -> bool {
     }
 }
 
-fn rewrite_literal(lit: &mut crate::ir::Literal, ctx: &PrefabRewrite) -> Result<(), String> {
-    use crate::ir::Literal;
+fn rewrite_literal(lit: &mut Literal, ctx: &PrefabRewrite) -> Result<(), String> {
     match lit {
         Literal::NestedPrefab { source } => {
             let bytes = (ctx.nested.0)(source, 1).map_err(|e| format!("nested prefab: {e}"))?;

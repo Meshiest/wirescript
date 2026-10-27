@@ -12,15 +12,16 @@
 //! indented under a `chip <node_id>` header.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use wirescript::TemplateCache;
 use wirescript::ir::{Module, NodeId};
-use wirescript::lower::{FoldMode, LowerInput, lower};
 use wirescript::parser::parse;
-use wirescript::template_cache::TemplateCache;
-use wirescript::typecheck::typecheck;
+use wirescript::typecheck;
+use wirescript::{FoldMode, LowerInput, lower};
 use wirescript::{LayoutResult, layout};
 
 fn fixtures_dir() -> PathBuf {
@@ -37,19 +38,15 @@ fn compile_to_module(src: &str, name: &str) -> Module {
         name,
         parsed.diagnostics
     );
-    let tc = typecheck(
-        &parsed.ast,
-        name,
-        &wirescript::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&parsed.ast, &wirescript::CeSlotMap::default());
     assert!(
         tc.diagnostics.is_empty(),
         "typecheck diagnostics in {}: {:?}",
         name,
         tc.diagnostics
     );
-    // Unfolded: goldens under tests/fixtures/*.layout.snap predate the
-    // certified fold pass and encode the pre-fold gate shape.
+    // Unfolded: the goldens under tests/fixtures/*.layout.snap encode the
+    // pre-fold gate shape.
     let lr = lower(LowerInput {
         ast: &parsed.ast,
         type_of_expr: &tc.type_of_expr,
@@ -60,7 +57,7 @@ fn compile_to_module(src: &str, name: &str) -> Module {
         template_cache: Arc::new(TemplateCache::new()),
         doc_comments: &parsed.doc_comments,
         fold_mode: FoldMode::ForceOff,
-        ce_slots: &wirescript::typecheck::CeSlotMap::default(),
+        ce_slots: &wirescript::CeSlotMap::default(),
     });
     lr.module
 }
@@ -68,8 +65,9 @@ fn compile_to_module(src: &str, name: &str) -> Module {
 fn dump_layout(l: &LayoutResult, m: &Module, indent: usize) -> String {
     let pad = "  ".repeat(indent);
     let mut out = String::new();
-    out.push_str(&format!(
-        "{}bounds: min=({},{},{}) max=({},{},{})\n",
+    let _ = writeln!(
+        out,
+        "{}bounds: min=({},{},{}) max=({},{},{})",
         pad,
         l.bounds_min.x,
         l.bounds_min.y,
@@ -77,7 +75,7 @@ fn dump_layout(l: &LayoutResult, m: &Module, indent: usize) -> String {
         l.bounds_max.x,
         l.bounds_max.y,
         l.bounds_max.z,
-    ));
+    );
     // Use the node's debug note (deterministic path) for display, not the
     // numeric NodeId (which changes across runs).
     let node_label = |id: &NodeId| -> String {
@@ -85,7 +83,7 @@ fn dump_layout(l: &LayoutResult, m: &Module, indent: usize) -> String {
             .get(id)
             .map(|n| {
                 n.note
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .unwrap_or_else(|| n.gate_class.to_string())
             })
             .unwrap_or_else(|| "?".to_string())
@@ -112,8 +110,9 @@ fn dump_layout(l: &LayoutResult, m: &Module, indent: usize) -> String {
             .get(id)
             .map(|n| format!("s{}", n.scope_id))
             .unwrap_or_else(|| "s?".into());
-        out.push_str(&format!(
-            "{}  {:<40} ({:>5},{:>5},{:>3}) {:<10} {}\n",
+        let _ = writeln!(
+            out,
+            "{}  {:<40} ({:>5},{:>5},{:>3}) {:<10} {}",
             pad,
             node_label(id),
             p.x,
@@ -121,12 +120,12 @@ fn dump_layout(l: &LayoutResult, m: &Module, indent: usize) -> String {
             p.z,
             kind,
             scope,
-        ));
+        );
     }
     let mut chip_ids: Vec<&NodeId> = l.chip_layouts.keys().collect();
     chip_ids.sort_by_key(|id| node_label(id));
     for chip_id in chip_ids {
-        out.push_str(&format!("{}chip {}:\n", pad, node_label(chip_id)));
+        let _ = writeln!(out, "{}chip {}:", pad, node_label(chip_id));
         if let Some(chip_mod) = m.chips.get(chip_id) {
             out.push_str(&dump_layout(&l.chip_layouts[chip_id], chip_mod, indent + 1));
         }
@@ -140,8 +139,8 @@ fn dump_layout(l: &LayoutResult, m: &Module, indent: usize) -> String {
 /// share an (x, y, z). Every failing check is reported.
 fn check_fixture(name: &str) {
     let dir = fixtures_dir();
-    let ws_path = dir.join(format!("{}.ws", name));
-    let snap_path = dir.join(format!("{}.layout.snap", name));
+    let ws_path = dir.join(format!("{name}.ws"));
+    let snap_path = dir.join(format!("{name}.layout.snap"));
 
     let src = fs::read_to_string(&ws_path)
         .unwrap_or_else(|e| panic!("read {}: {}", ws_path.display(), e));
@@ -157,8 +156,8 @@ fn check_fixture(name: &str) {
         match fs::read_to_string(&snap_path) {
             Ok(expected) if expected == actual => {}
             Ok(expected) => {
-                eprintln!("=== EXPECTED ===\n{}", expected);
-                eprintln!("=== ACTUAL ===\n{}", actual);
+                eprintln!("=== EXPECTED ===\n{expected}");
+                eprintln!("=== ACTUAL ===\n{actual}");
                 failures.push(format!(
                     "snapshot mismatch: run `BLESS=1 cargo test -p wirescript --test it layout_snapshots::{name}` to update"
                 ));

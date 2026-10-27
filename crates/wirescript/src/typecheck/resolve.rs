@@ -2,46 +2,35 @@
 //! declaration may store.
 
 use super::*;
+use crate::analysis::types::type_str;
+use crate::types::resolve::{GenericAlias, primitive};
 
-// ---------- type expression resolution ----------
+// Type expression resolution
 //
-// `any` (in annotation position) maps onto the *wildcard* type
-// (`Type::Opaque`, the same type `Opaque(...)` produces) rather than the
-// internal `Type::Any` error-fallback — see `reject_any_storage` below for
-// why: `any` can flow through ports/lets/params but can't back a
-// var/array/buffer's storage gate. That mapping lives in the crate's single
-// primitive-name table, `types::resolve::primitive`.
+// `any` in an annotation is the wildcard `Type::Opaque` (what `Opaque(...)`
+// produces), not the error-fallback `Type::Any`: it can flow through ports,
+// lets and parameters but cannot back a var, array or buffer's storage gate
+// (`reject_any_storage`). The mapping is in `types::resolve::primitive`.
 
-/// Resolve a type annotation against the current scope. Delegates to the
-/// crate's single canonical resolver (`types::resolve::resolve_type`): the
-/// scope's currently-visible `SymbolKind::Type` aliases are snapshotted (scope
-/// doesn't mutate during a type expression's resolution, so this is
-/// equivalent to the old per-`Name`-node live `ctx.scope.lookup`) and handed
-/// in as `type_aliases`, and any WS002 the resolver raises is forwarded to
-/// `ctx.diagnostics` — preserving both the alias-resolution and diagnostic
-/// behavior of the resolver this replaced.
-pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
+/// Resolve a type annotation against the current scope through
+/// `types::resolve::resolve_type`, with the scope's visible `SymbolKind::Type`
+/// aliases snapshotted as `type_aliases` (the scope does not change while one
+/// type expression resolves); its WS002 diagnostics go to `ctx.diagnostics`.
+pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx<'_>, t: &TypeExpr) -> Type {
     reserve_record_fields(ctx, t);
-    // Fast path: a primitive name needs no alias snapshot. Primitives always win
-    // over aliases in `resolve_type` (it checks `primitive` before the alias
-    // map), so this is behaviour-identical — but it skips building the full
-    // in-scope alias map (an O(D) frame scan + deep `Type` clones) on the
-    // overwhelmingly common case, where annotations are `int`/`float`/`bool`/…
-    // Without it that snapshot was rebuilt for every annotation, incl. per
-    // cartesian combo inside a generic body — an accidental O(D²).
+    // A primitive name needs no alias snapshot: `resolve_type` checks primitives
+    // before aliases, so this skips building the in-scope alias map (a frame scan
+    // and deep clones) for the common annotation, including per combination in a
+    // generic body.
     if let TypeExpr::Name { name, .. } = t
-        && let Some(prim) = crate::types::resolve::primitive(name)
+        && let Some(prim) = primitive(name)
     {
         return prim;
     }
-    // A known non-generic enum name resolves directly to `Type::Enum`,
-    // ahead of the alias-map fallback below. `ctx.enum_defs` is populated
-    // by the `collect_enum_defs` pre-pass before any decl is registered, so
-    // this resolves regardless of where the `enum` itself sits in the file
-    // (the scope-declared `SymbolKind::Type` symbol registration order is
-    // NOT a safe substitute for that). A generic enum (`enum Option<T>`)
-    // falls through to the ordinary alias/WS002 path here: instantiating
-    // it against concrete type args is a later phase, not this fast path.
+    // A known non-generic enum name resolves to `Type::Enum` before the alias
+    // fallback. `ctx.enum_defs` is filled before any declaration registers, so
+    // this works wherever the `enum` is declared (scope registration order would
+    // not). A generic enum falls through to the alias and WS002 path.
     if let TypeExpr::Name { name, range } = t
         && let Some(def) = ctx.enum_defs.written_name(name)
         && def.type_params.is_empty()
@@ -53,13 +42,11 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
             args: vec![],
         };
     }
-    // A known enum applied to type arguments (`Option<int>`) resolves to a
-    // concrete `Type::Enum { args }`, arity-checked against the enum's declared
-    // type parameters (mirrors the generic type-alias arity check in the
-    // canonical resolver). Handled here rather than in `types::resolve`, which
-    // carries no enum registry - same reason the non-generic enum name resolves
-    // in this fast path above. `Array`/`Map`/`Ref` and a generic type alias
-    // aren't enums, so they fall through to the canonical resolver unchanged.
+    // A known enum with type arguments (`Option<int>`) resolves to
+    // `Type::Enum { args }`, arity-checked against its type parameters as generic
+    // aliases are. Done here because `types::resolve` has no enum registry.
+    // `Array`, `Map`, `Ref` and generic aliases are not enums and go to the
+    // canonical resolver.
     if let TypeExpr::Generic { name, args, range } = t
         && let Some(arity) = ctx
             .enum_defs
@@ -134,16 +121,16 @@ pub(super) fn resolve_type_expr(ctx: &mut TypeCheckCtx, t: &TypeExpr) -> Type {
 
 /// Whether `name` is, where it is read, a type parameter (or what one is bound
 /// to) rather than the enum of that name, which the parameter hides.
-fn names_a_type_parameter(ctx: &TypeCheckCtx, name: &str) -> bool {
+fn names_a_type_parameter(ctx: &TypeCheckCtx<'_>, name: &str) -> bool {
     ctx.scope.lookup(name).is_some_and(|s| {
         s.kind == SymbolKind::Type && !matches!(&s.ty, Type::Enum { name: n, .. } if n == name)
     })
 }
 
-/// A type param's mask — the set of concrete types it may be inferred to.
-/// Unbound (`T`, no `: Bound`) is the full `Variant` mask; a bound narrows it
-/// (see `types::mono::mask_for_param`).
-pub(super) fn type_param_mask(ctx: &TypeCheckCtx, tp: &TypeParam) -> Vec<Type> {
+/// A type parameter's mask: the concrete types it may be inferred to. Unbound
+/// (`T`) is the full `Variant` mask; a bound narrows it
+/// (`types::mono::mask_for_param`).
+pub(super) fn type_param_mask(ctx: &TypeCheckCtx<'_>, tp: &TypeParam) -> Vec<Type> {
     // The bound -> mask resolution lives in the shared `types::mono` module so
     // the lowering-side monomorphizer can rebuild the same masks.
     crate::types::mono::mask_for_param(tp.bound.as_ref(), &quiet_resolver(ctx, &tp.range.file))
@@ -154,18 +141,18 @@ pub(super) fn type_param_mask(ctx: &TypeCheckCtx, tp: &TypeParam) -> Vec<Type> {
 /// has already reported on. The aliases are gathered (an O(scope) scan) only
 /// once a name that is not a primitive is resolved.
 pub(super) fn quiet_resolver<'c>(
-    ctx: &'c TypeCheckCtx,
+    ctx: &'c TypeCheckCtx<'_>,
     file: &Arc<str>,
 ) -> impl Fn(&TypeExpr) -> Type + 'c {
     type Views = (
         Arc<HashMap<String, Type>>,
-        Option<Arc<HashMap<String, crate::types::resolve::GenericAlias>>>,
+        Option<Arc<HashMap<String, GenericAlias>>>,
     );
-    let file = file.clone();
+    let file = std::sync::Arc::clone(file);
     let views: std::cell::OnceCell<Views> = std::cell::OnceCell::new();
     move |te: &TypeExpr| {
         if let TypeExpr::Name { name, .. } = te
-            && let Some(prim) = crate::types::resolve::primitive(name)
+            && let Some(prim) = primitive(name)
         {
             return prim;
         }
@@ -187,7 +174,7 @@ pub(super) fn quiet_resolver<'c>(
 #[derive(Default)]
 pub(crate) struct FileAliases {
     own: Arc<HashMap<String, Type>>,
-    generic: Arc<HashMap<String, crate::types::resolve::GenericAlias>>,
+    generic: Arc<HashMap<String, GenericAlias>>,
     /// The `WS002` each of its own aliases' bodies has, by alias: a name the
     /// file can name as no type (also through another of its aliases).
     unknown: Arc<HashMap<String, Vec<Diagnostic>>>,
@@ -200,7 +187,7 @@ pub(crate) struct FileAliases {
 /// (see [`FileAliases`]), never one its importer declares, so a library's
 /// `F` is the library's whatever the program calls `F`, and a name the
 /// library never declared is unknown there.
-pub(super) fn aliases_for(ctx: &TypeCheckCtx, file: &Arc<str>) -> Arc<HashMap<String, Type>> {
+pub(super) fn aliases_for(ctx: &TypeCheckCtx<'_>, file: &Arc<str>) -> Arc<HashMap<String, Type>> {
     if !ctx.imports.aliases.contains_key(file) {
         return ctx.scope.type_aliases();
     }
@@ -210,7 +197,7 @@ pub(super) fn aliases_for(ctx: &TypeCheckCtx, file: &Arc<str>) -> Arc<HashMap<St
     if let Some((at, view)) = &entry.view
         && *at == generation
     {
-        return view.clone();
+        return std::sync::Arc::clone(view);
     }
     let base = ctx.scope.type_aliases();
     let stack = ctx.scope.stack();
@@ -241,7 +228,7 @@ pub(super) fn aliases_for(ctx: &TypeCheckCtx, file: &Arc<str>) -> Arc<HashMap<St
         view.entry(name.clone()).or_insert_with(|| ty.clone());
     }
     let view = Arc::new(view);
-    entry.view = Some((generation, view.clone()));
+    entry.view = Some((generation, std::sync::Arc::clone(&view)));
     view
 }
 
@@ -249,7 +236,7 @@ pub(super) fn aliases_for(ctx: &TypeCheckCtx, file: &Arc<str>) -> Arc<HashMap<St
 /// program's own file names every enum. An imported file names the enums it
 /// declares and those its imports bring, as it does aliases, unless one of
 /// its own aliases takes the name.
-pub(super) fn enum_visible_in(ctx: &TypeCheckCtx, name: &str, file: &Arc<str>) -> bool {
+pub(super) fn enum_visible_in(ctx: &TypeCheckCtx<'_>, name: &str, file: &Arc<str>) -> bool {
     if !ctx.imports.aliases.contains_key(file) {
         return true;
     }
@@ -275,22 +262,24 @@ pub(super) fn enum_visible_in(ctx: &TypeCheckCtx, name: &str, file: &Arc<str>) -
 /// The generic aliases a type written in `file` can name, when `file` is an
 /// imported file; `None` for the program's own, which reads them all.
 pub(super) fn generic_aliases_for(
-    ctx: &TypeCheckCtx,
+    ctx: &TypeCheckCtx<'_>,
     file: &Arc<str>,
-) -> Option<Arc<HashMap<String, crate::types::resolve::GenericAlias>>> {
+) -> Option<Arc<HashMap<String, GenericAlias>>> {
     if !ctx.imports.aliases.contains_key(file) {
         return None;
     }
     let mut cache = ctx.file_aliases.borrow_mut();
-    Some(file_entry(ctx, &mut cache, file).generic.clone())
+    Some(std::sync::Arc::clone(
+        &file_entry(ctx, &mut cache, file).generic,
+    ))
 }
 
 fn file_entry<'c>(
-    ctx: &TypeCheckCtx,
+    ctx: &TypeCheckCtx<'_>,
     cache: &'c mut HashMap<Arc<str>, FileAliases>,
     file: &Arc<str>,
 ) -> &'c mut FileAliases {
-    cache.entry(file.clone()).or_insert_with(|| {
+    cache.entry(std::sync::Arc::clone(file)).or_insert_with(|| {
         let decls = ctx
             .imports
             .aliases
@@ -312,7 +301,7 @@ fn file_entry<'c>(
 /// the file can name: not a builtin type, one of its aliases or type
 /// parameters, or an enum. An alias naming such an alias has its errors too.
 fn unknown_alias_names(
-    ctx: &TypeCheckCtx,
+    ctx: &TypeCheckCtx<'_>,
     decls: &[TopDecl],
     types: &crate::const_eval::DeclaredTypes,
 ) -> HashMap<String, Vec<Diagnostic>> {
@@ -340,11 +329,12 @@ fn unknown_alias_names(
                 if !matches!(name.as_str(), "Map" | "Array" | "Ref") {
                     name_at(name, range, out);
                 }
-                args.iter()
-                    .for_each(|a| walk(a, params, known, unknown, out));
+                for a in args {
+                    walk(a, params, known, unknown, out);
+                }
             }
             TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => {
-                walk(inner, params, known, unknown, out)
+                walk(inner, params, known, unknown, out);
             }
             TypeExpr::Tuple { fields, .. } => fields
                 .iter()
@@ -358,7 +348,7 @@ fn unknown_alias_names(
         }
     }
     let known = |name: &str| {
-        crate::types::resolve::primitive(name).is_some()
+        primitive(name).is_some()
             || types.alias(name).is_some()
             || ctx.enum_defs.written_name(name).is_some()
     };
@@ -392,7 +382,7 @@ fn unknown_alias_names(
 /// The errors in the bodies of the aliases of `file` (an imported file) that
 /// `t`, written there, names through `aliases` (see [`unknown_alias_names`]).
 fn unknown_in_own_aliases(
-    ctx: &TypeCheckCtx,
+    ctx: &TypeCheckCtx<'_>,
     file: &Arc<str>,
     t: &TypeExpr,
     aliases: &HashMap<String, Type>,
@@ -403,7 +393,10 @@ fn unknown_in_own_aliases(
     let (own, unknown) = {
         let mut cache = ctx.file_aliases.borrow_mut();
         let entry = file_entry(ctx, &mut cache, file);
-        (entry.own.clone(), entry.unknown.clone())
+        (
+            std::sync::Arc::clone(&entry.own),
+            std::sync::Arc::clone(&entry.unknown),
+        )
     };
     if unknown.is_empty() {
         return Vec::new();
@@ -415,7 +408,9 @@ fn unknown_in_own_aliases(
             TypeExpr::Name { name, .. } => out.push(name),
             TypeExpr::Generic { name, args, .. } => {
                 out.push(name);
-                args.iter().for_each(|a| names_in(a, out));
+                for a in args {
+                    names_in(a, out);
+                }
             }
             TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => names_in(inner, out),
             TypeExpr::Tuple { fields, .. } => fields.iter().for_each(|f| names_in(f, out)),
@@ -435,10 +430,7 @@ fn unknown_in_own_aliases(
 }
 
 /// Whether `t` applies a generic alias of `generic` anywhere in it.
-fn names_generic_alias(
-    t: &TypeExpr,
-    generic: &HashMap<String, crate::types::resolve::GenericAlias>,
-) -> bool {
+fn names_generic_alias(t: &TypeExpr, generic: &HashMap<String, GenericAlias>) -> bool {
     if generic.is_empty() {
         return false;
     }
@@ -462,7 +454,7 @@ fn names_generic_alias(
 /// generic alias's body is written: none of the type parameters of the body
 /// being checked, which hide a top-level alias of their name only where that
 /// body writes them.
-fn declaring_aliases(ctx: &TypeCheckCtx, file: &Arc<str>) -> HashMap<String, Type> {
+fn declaring_aliases(ctx: &TypeCheckCtx<'_>, file: &Arc<str>) -> HashMap<String, Type> {
     let mut top: HashMap<String, Type> = ctx
         .scope
         .stack()
@@ -486,12 +478,10 @@ fn declaring_aliases(ctx: &TypeCheckCtx, file: &Arc<str>) -> HashMap<String, Typ
     top
 }
 
-/// Cartesian product of per-type-param masks: each inner
-/// `Vec<Type>` in `masks` is one type param's candidate concrete members;
-/// the result has one `Vec<Type>` per combination, index-aligned with
-/// `masks` (and so with the decl's `type_params`). Materializes the full
-/// result — callers must cap the product size (e.g. against
-/// `MAX_BODY_CHECK_COMBOS`) before calling this.
+/// The cartesian product of per-parameter masks: each inner `Vec<Type>` of
+/// `masks` is one parameter's candidates, and the result has one `Vec<Type>`
+/// per combination, aligned with `masks`. It materializes the whole product, so
+/// callers cap its size first (`MAX_BODY_CHECK_COMBOS`).
 pub(super) fn cartesian_product(masks: &[Vec<Type>]) -> Vec<Vec<Type>> {
     let mut result: Vec<Vec<Type>> = vec![Vec::new()];
     for mask in masks {
@@ -508,9 +498,9 @@ pub(super) fn cartesian_product(masks: &[Vec<Type>]) -> Vec<Vec<Type>> {
     result
 }
 
-/// The type of a constant-literal expression, used to infer an unannotated
-/// var's (or array var's element) type at registration, before the full type
-/// map exists. Returns `None` for anything that isn't a compile-time literal.
+/// The type of a constant literal expression, to infer an unannotated var's
+/// (or array var's element) type at registration, before the type map exists.
+/// `None` for anything that is not a compile-time literal.
 pub(super) fn literal_expr_type(e: &Expr) -> Option<Type> {
     match e {
         Expr::IntLit { .. } => Some(Type::Int),
@@ -519,8 +509,8 @@ pub(super) fn literal_expr_type(e: &Expr) -> Option<Type> {
         Expr::BoolLit { .. } => Some(Type::Bool),
         Expr::StringLit { .. } | Expr::InterpLit { .. } => Some(Type::String),
         Expr::UnOp { op, operand, .. } if op == "-" => literal_expr_type(operand),
-        // Constructor calls type by name alone — the value folds to a constant
-        // later only if the args are constant, but the type holds regardless.
+        // A constructor call types by its name alone; whether its value folds depends
+        // on its arguments, but the type does not.
         Expr::Call { callee, .. } => match callee.as_ref() {
             Expr::Ident { name, .. } => match name.as_str() {
                 "Vec" => Some(Type::Vector),
@@ -534,7 +524,7 @@ pub(super) fn literal_expr_type(e: &Expr) -> Option<Type> {
     }
 }
 
-/// Types a Variable gate can hold as a wire variant — the safe targets when
+/// The types a Variable gate can hold as a wire variant: the safe targets for
 /// refining an unannotated `var`'s placeholder `any` from its initializer.
 pub(super) fn var_storable(t: &Type) -> bool {
     matches!(
@@ -571,14 +561,14 @@ pub(super) fn type_expr_range(t: &TypeExpr) -> SourceRange {
 /// (`zone`/`teleport`/`prefab`) are not: like a var ref, they can only be
 /// wired or rerouted. Only fires on an *explicit* annotation.
 pub(super) fn reject_any_storage(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     resolved: &Type,
     range: SourceRange,
     what: &str,
 ) {
     match resolved {
         Type::Zone | Type::Teleport | Type::PrefabRef => {
-            let n = crate::analysis::types::type_str(resolved);
+            let n = type_str(resolved);
             ctx.emit(
                 "WS025",
                 format!(
@@ -613,8 +603,8 @@ pub(super) fn reject_any_storage(
         Type::Ref(inner)
             if matches!(inner.as_ref(), Type::Array(_) | Type::Map(_, _)) && nested(what) =>
         {
-            let n = crate::analysis::types::type_str(resolved);
-            let plain = crate::analysis::types::type_str(inner);
+            let n = type_str(resolved);
+            let plain = type_str(inner);
             ctx.emit(
                 "WS025",
                 format!("'{n}' cannot be an element: an array or map is already a ref, so write '{plain}'"),
@@ -630,7 +620,7 @@ pub(super) fn reject_any_storage(
                     Type::Array(_) | Type::Map(_, _) | Type::Any | Type::Opaque | Type::Param(_)
                 ) =>
         {
-            let n = crate::analysis::types::type_str(resolved);
+            let n = type_str(resolved);
             ctx.emit(
                 "WS025",
                 format!(
@@ -650,7 +640,7 @@ pub(super) fn reject_any_storage(
                 elem.as_ref(),
                 Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }
             ) {
-                let n = crate::analysis::types::type_str(resolved);
+                let n = type_str(resolved);
                 let (kind, parts) = match elem.as_ref() {
                     Type::Record(_) => ("records", "one container per field"),
                     Type::Tuple(_) => ("tuples", "one container per element"),
@@ -686,12 +676,12 @@ fn nested(what: &str) -> bool {
 
 /// A map key is hashed by value, and a var, array or map ref has none to hash.
 /// A brick is the exception: the game keys a map by the brick it names.
-pub(super) fn reject_ref_key(ctx: &mut TypeCheckCtx, key: &Type, range: SourceRange) {
+pub(super) fn reject_ref_key(ctx: &mut TypeCheckCtx<'_>, key: &Type, range: SourceRange) {
     if key
         .ref_kind()
         .is_some_and(|k| k != crate::ir::RefKind::Brick)
     {
-        let n = crate::analysis::types::type_str(key);
+        let n = type_str(key);
         ctx.emit(
             "WS025",
             format!("'{n}' cannot be a map key: a key needs a plain value (int, string, bool or an object)"),
@@ -700,11 +690,9 @@ pub(super) fn reject_ref_key(ctx: &mut TypeCheckCtx, key: &Type, range: SourceRa
     }
 }
 
-/// True if `t` is, or structurally contains, the wildcard `any` type
-/// (`Type::Opaque`). A `*any`/`any[]`/`Map<_, any>`/`{ a: any }` annotation
-/// wraps the `Opaque` under a `Ref`/`Array`/`Map`/`Record`/…, so a shallow
-/// `matches!(t, Type::Opaque)` would miss it — recurse through every compound
-/// so `warn_any_annotation` fires on the whole annotation regardless of nesting.
+/// True if `t` is or contains the wildcard `any` (`Type::Opaque`): `*any`,
+/// `any[]`, `Map<_, any>` and `{ a: any }` wrap it, so this recurses through
+/// every compound and `warn_any_annotation` fires however deep it is.
 fn contains_opaque(t: &Type) -> bool {
     match t {
         Type::Opaque => true,
@@ -716,10 +704,9 @@ fn contains_opaque(t: &Type) -> bool {
     }
 }
 
-/// True if `t` is, or structurally contains, a `Type::Param` — i.e. an
-/// unresolved generic type parameter. A call whose param still carries one
-/// (its `T` couldn't be inferred) is left to the WS033 inference diagnostics,
-/// not the concrete arg-vs-param coercion check.
+/// True if `t` is or contains a `Type::Param`, an unresolved generic type
+/// parameter. A call parameter still carrying one is left to WS033, not the
+/// concrete argument coercion.
 pub(crate) fn type_has_param(t: &Type) -> bool {
     match t {
         Type::Param(_) => true,
@@ -731,20 +718,14 @@ pub(crate) fn type_has_param(t: &Type) -> bool {
     }
 }
 
-/// Warns (does not error) when a user's *non-storage* type annotation — a
-/// mod/chip param or output, a handler's typed destructure param, a `let`, or
-/// a `type X = ...` alias body — resolves to `any`
-/// (`Type::Opaque`), including when the `any` is wrapped in a compound
-/// (`*any`, `any[]`, `Map<_, any>`, `{ a: any }`, …). `any` still works there
-/// (the value just flows through as a wildcard), but a generic type parameter
-/// would let the type flow instead of erasing it. Storage positions
-/// (var/array/buffer/map — see `reject_any_storage` above) are deliberately NOT
-/// routed through this: an explicit `any` there is already a hard error
-/// (WS025), and warning on top would double-fire the same annotation. Fires
-/// once per annotation (at the top-level annotation range), not once per nested
-/// `Opaque`. An `in`/`out` port is not routed through it either: a port cannot
-/// take a type parameter, so the advice would have nothing to follow.
-pub(super) fn warn_any_annotation(ctx: &mut TypeCheckCtx, resolved: &Type, range: SourceRange) {
+/// Warns when a non-storage annotation (a mod or chip parameter or output, a
+/// handler's typed destructure parameter, a `let`, a `type` alias body)
+/// resolves to `any`, wrapped or not (`*any`, `any[]`, `Map<_, any>`): it works
+/// as a wildcard, but a type parameter would keep the type. Once per
+/// annotation, at its range. Storage positions (var, array, buffer, map) are
+/// WS025 errors instead (`reject_any_storage`), and `in`/`out` ports are skipped,
+/// since a port cannot take a type parameter.
+pub(super) fn warn_any_annotation(ctx: &mut TypeCheckCtx<'_>, resolved: &Type, range: SourceRange) {
     if contains_opaque(resolved) {
         ctx.diagnostics.push(Diagnostic {
             severity: Severity::Warning,
@@ -757,8 +738,15 @@ pub(super) fn warn_any_annotation(ctx: &mut TypeCheckCtx, resolved: &Type, range
     }
 }
 
+/// Resolve the annotation `te`, with [`warn_any_annotation`]'s WS032.
+pub(super) fn resolve_annotation(ctx: &mut TypeCheckCtx<'_>, te: &TypeExpr) -> Type {
+    let ty = resolve_type_expr(ctx, te);
+    warn_any_annotation(ctx, &ty, type_expr_range(te));
+    ty
+}
+
 /// Note every record field name in `t` for WS093 (`TypeCheckCtx::reserve_check`).
-fn reserve_record_fields(ctx: &mut TypeCheckCtx, t: &TypeExpr) {
+fn reserve_record_fields(ctx: &mut TypeCheckCtx<'_>, t: &TypeExpr) {
     match t {
         TypeExpr::Record { fields, .. } => {
             for f in fields {
@@ -767,13 +755,15 @@ fn reserve_record_fields(ctx: &mut TypeCheckCtx, t: &TypeExpr) {
             }
         }
         TypeExpr::Array { inner, .. } | TypeExpr::Ref { inner, .. } => {
-            reserve_record_fields(ctx, inner)
+            reserve_record_fields(ctx, inner);
         }
         TypeExpr::Tuple { fields, .. } => fields.iter().for_each(|f| reserve_record_fields(ctx, f)),
         TypeExpr::Union { options, .. } => {
-            options.iter().for_each(|f| reserve_record_fields(ctx, f))
+            for f in options {
+                reserve_record_fields(ctx, f);
+            }
         }
         TypeExpr::Generic { args, .. } => args.iter().for_each(|f| reserve_record_fields(ctx, f)),
-        _ => {}
+        TypeExpr::Name { .. } => {}
     }
 }

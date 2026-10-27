@@ -1,7 +1,15 @@
 //! The intra-line engine: group a line's nodes into depth columns, measure
 //! the result, and soft-wrap it into sub-rows.
 
-use super::*;
+use std::collections::BTreeSet;
+
+use crate::collections::{HashMap, HashSet};
+use crate::ir::{Module, NodeId};
+use crate::layout::NodeRotation;
+
+use super::adjacency::{Adjacency, is_spine_exec_gate, on_exec_spine};
+use super::nodes::{cell_half_size, rotation_of};
+use super::{ANNOTATION_SIZE, CONTINUATION_INDENT, CodeBudgets, INDENT_UNIT, TAP_RESERVE};
 
 struct SubRow {
     height: i32,
@@ -20,11 +28,10 @@ struct LineGroup {
 /// Split a line's entries into connected groups, each arranged as
 /// columns.
 ///
-/// Column 0 is the exec spine: every node [`on_exec_spine`] accepts is
-/// PINNED there, whatever its position in the value graph. A statement's
-/// sink — the `Var_Set` under an expression, say — therefore heads its
-/// line on the left and takes its value from the right. An exec gate whose
-/// value IS read on the line, such as a variable read inside an
+/// Column 0 is the exec spine: every node [`on_exec_spine`] accepts is PINNED there,
+/// whatever its position in the value graph. A statement's sink (the `Var_Set` under an
+/// expression, say) therefore heads its line on the left and takes its value from the
+/// right. An exec gate whose value IS read on the line, such as a variable read inside an
 /// expression, is not a sink and stays in the value columns.
 ///
 /// Everything else is a value node, columned by dependency depth. The
@@ -56,7 +63,7 @@ fn line_groups(
     let n = entries.len();
     let ord: HashMap<NodeId, usize> = entries.iter().enumerate().map(|(i, id)| (*id, i)).collect();
 
-    // `operands[i]`: the nodes feeding entry i — its depth predecessors.
+    // `operands[i]`: the nodes feeding entry i (its depth predecessors).
     // `consumers[i]`: the nodes entry i feeds, which sit right of it.
     let mut operands: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -107,10 +114,9 @@ fn line_groups(
         }
     }
 
-    // Depth becomes a column: the exec spine is pinned to column 0 and
-    // every value node sits one step right of it, ordered by its own
-    // depth. A spine node's depth is discarded — it is a sink in the value
-    // graph and would otherwise land right of the operands it reads.
+    // Depth becomes a column: the exec spine is pinned to column 0 and every value node sits
+    // one step right of it, ordered by its own depth. A spine node's depth is discarded since
+    // it is a sink in the value graph and would otherwise land right of the operands it reads.
     let column: Vec<usize> = (0..n)
         .map(|i| {
             if on_exec_spine(&module.nodes[&entries[i]], &consumers[i]) {
@@ -149,15 +155,13 @@ fn line_groups(
         }
         let mut nodes = Vec::with_capacity(m.len());
 
-        // Pass 1 — the horizontal frame, in column order. Column 0 keeps the
-        // group's left edge whether or not its nodes end up on the top row,
-        // so the drop below is purely vertical and the spine stays a straight
-        // column down the left margin.
+        // Pass 1: the horizontal frame, in column order. Column 0 keeps the group's left edge
+        // whether or not its nodes end up on the top row, so the drop below is purely vertical and
+        // the spine stays a straight column down the left margin.
         //
-        // A group with no spine node leaves column 0 empty; an empty column
-        // claims nothing, so its value nodes still start flush at the group's
-        // left edge — bar the tap reserve every occupied column opens in
-        // front of itself.
+        // A group with no spine node leaves column 0 empty; an empty column claims nothing, so its
+        // value nodes still start flush at the group's left edge, apart from the tap reserve every
+        // occupied column opens in front of itself.
         let mut x = 0i32;
         let mut col_x: Vec<i32> = vec![0; cols.len()];
         for (col_idx, col) in cols.iter().enumerate() {
@@ -167,7 +171,7 @@ fn line_groups(
             x += TAP_RESERVE;
             col_x[col_idx] = x;
             let mut col_w = 0i32;
-            for &i in col.iter() {
+            for &i in col {
                 let node = &module.nodes[&entries[i]];
                 let rot = if col_idx == 0 && is_spine_exec_gate(node, &consumers[i]) {
                     rotations.insert(entries[i], NodeRotation::Deg90);
@@ -180,10 +184,9 @@ fn line_groups(
             x += col_w;
         }
 
-        // Pass 2 — the value columns take the group's UPPER rows, filling
-        // left to right. A node follows the row of the operands feeding it,
-        // so a subtree stays together rather than interleaving with its
-        // siblings'; those operands sit in a column already filled.
+        // Pass 2: the value columns take the group's UPPER rows, filling left to right. A node
+        // follows the row of the operands feeding it, so a subtree stays together rather than
+        // interleaving with its siblings'; those operands sit in a column already filled.
         let mut value_rows = 0usize;
         for (col_idx, col) in cols.iter_mut().enumerate().skip(1) {
             if col.is_empty() {
@@ -197,17 +200,15 @@ fn line_groups(
             value_rows = value_rows.max(col.len());
         }
 
-        // Pass 3 — and the statement's own gates drop BELOW all of it, still
-        // in column 0. Values flow left to right into a sink, so a sink level
-        // with its operands is read by a run coming back leftward across the
-        // line; from the bottom row the same run is a descent.
+        // Pass 3: the statement's own gates drop BELOW all of it, still in column 0. Values flow
+        // left to right into a sink, so a sink level with its operands is read by a run coming
+        // back leftward across the line; from the bottom row the same run is a descent.
         //
-        // `value_rows` is 0 for a group that is nothing but its statement —
-        // a call whose arguments all inlined, say — so that sink stays on the
-        // top row and the line does not grow a row for nothing. A spine node
-        // reads nothing back in line (that is what `on_exec_spine` means), so
-        // it never appears as another node's operand and no value column's
-        // row ordering depends on where it lands.
+        // `value_rows` is 0 for a group that is nothing but its statement (a call whose arguments
+        // all inlined, say), so that sink stays on the top row and the line does not grow a row for
+        // nothing. A spine node reads nothing back in line (what `on_exec_spine` means), so it
+        // never appears as another node's operand and no value column's row ordering depends on
+        // where it lands.
         cols[0].sort_unstable();
         for (k, &i) in cols[0].iter().enumerate() {
             let row = value_rows + k;
@@ -266,7 +267,7 @@ fn measure_line(
             // so a rotated gate contributes its swapped height here.
             let height = entries
                 .iter()
-                .map(|(id, _)| cell_half_size(&module.nodes[id], rotation_of(rotations, id)).0 * 2)
+                .map(|(id, _)| cell_half_size(&module.nodes[id], rotation_of(rotations, *id)).0 * 2)
                 .max()
                 .unwrap_or(0);
             SubRow { height, entries }
@@ -302,7 +303,7 @@ pub(super) fn plan_line(
     let mut width = 0i32;
     for subrow in &subrows {
         for &(id, x) in &subrow.entries {
-            let (_, hsy) = cell_half_size(&module.nodes[&id], rotation_of(rotations, &id));
+            let (_, hsy) = cell_half_size(&module.nodes[&id], rotation_of(rotations, id));
             nodes.push((id, x, height));
             width = width.max(x + hsy * 2);
         }

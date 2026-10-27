@@ -4,38 +4,36 @@ use super::*;
 
 // ---------- `@label(expr)` constant-folding check (WS040) ----------
 
-/// Walk every top-level decl, recursing into chip/anon-chip bodies (and the
-/// blocks nested inside them — `if`/`on`), and flag any `@label(expr)` whose
-/// expression doesn't fold to a compile-time constant.
-pub(super) fn check_label_exprs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+/// Walk every top-level declaration, into chip and anonymous chip bodies and
+/// the `if` and `on` blocks inside them, and flag any `@label(expr)` whose
+/// expression does not fold to a constant.
+pub(super) fn check_label_exprs(ctx: &mut TypeCheckCtx<'_>, decls: &[TopDecl]) {
     for d in decls {
         check_label_expr_decl(ctx, d);
     }
 }
 
-fn check_label_expr_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
+fn check_label_expr_decl(ctx: &mut TypeCheckCtx<'_>, d: &TopDecl) {
     match d {
-        // A TOP-LEVEL `var` accepts a runtime `@label(expr)` — it becomes a
-        // dynamic label wired into the text component's `Text` port at emit
-        // (`lower::resolve_dynamic_var_labels`). So no WS040 here; the
-        // expression is instead type-checked in `check_dynamic_var_labels`
-        // after every top-level symbol is in scope. (A CONSTANT label still
-        // bakes statically — that path folds it and never reaches the wire.)
+        // A top-level `var` accepts a runtime `@label(expr)`: it becomes a dynamic
+        // label wired into the text component's `Text` port
+        // (`lower::resolve_dynamic_var_labels`), so it is not WS040 and is type-checked
+        // in `check_dynamic_var_labels` once every top-level symbol is in scope. A
+        // constant label still bakes statically.
         TopDecl::Var(_) => {}
-        TopDecl::In(i) => check_one_label_expr(ctx, &i.label_expr),
-        TopDecl::Out(o) => check_one_label_expr(ctx, &o.label_expr),
+        TopDecl::In(i) => check_one_label_expr(ctx, i.label_expr.as_ref()),
+        TopDecl::Out(o) => check_one_label_expr(ctx, o.label_expr.as_ref()),
         TopDecl::Chip(c) => {
-            check_one_label_expr(ctx, &c.label_expr);
+            check_one_label_expr(ctx, c.label_expr.as_ref());
             check_label_exprs_in_block(ctx, &c.body);
         }
         TopDecl::AnonChip(ac) => {
-            check_one_label_expr(ctx, &ac.label_expr);
+            check_one_label_expr(ctx, ac.label_expr.as_ref());
             check_label_exprs_in_block(ctx, &ac.body);
         }
-        // A decl can also live inside a top-level `on Event { ... }` handler
-        // (the standard Wirescript pattern) or a top-level `if` — recurse into
-        // those blocks too, or a non-constant `@label` there would silently
-        // fall back to the name instead of erroring.
+        // A declaration can also sit in a top-level `on Event { ... }` handler or a
+        // top-level `if`, so those blocks are walked too; a runtime `@label` there
+        // would otherwise fall back to the name silently.
         TopDecl::Handler(h) => check_label_exprs_in_block(ctx, &h.body),
         TopDecl::If(i) => {
             check_label_exprs_in_block(ctx, &i.then_block);
@@ -50,23 +48,23 @@ fn check_label_expr_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
 /// Visit every statement in `block`, recursing into nested chip/handler/if
 /// bodies. Shared by the decl-level and statement-level walks so the two
 /// stay in step.
-fn check_label_exprs_in_block(ctx: &mut TypeCheckCtx, block: &Block) {
+fn check_label_exprs_in_block(ctx: &mut TypeCheckCtx<'_>, block: &Block) {
     for s in &block.stmts {
         check_label_expr_stmt(ctx, s);
     }
 }
 
-fn check_label_expr_stmt(ctx: &mut TypeCheckCtx, s: &Stmt) {
+fn check_label_expr_stmt(ctx: &mut TypeCheckCtx<'_>, s: &Stmt) {
     match s {
-        Stmt::Var(v) => check_one_label_expr(ctx, &v.label_expr),
-        Stmt::In(i) => check_one_label_expr(ctx, &i.label_expr),
-        Stmt::OutBinding(o) => check_one_label_expr(ctx, &o.label_expr),
+        Stmt::Var(v) => check_one_label_expr(ctx, v.label_expr.as_ref()),
+        Stmt::In(i) => check_one_label_expr(ctx, i.label_expr.as_ref()),
+        Stmt::OutBinding(o) => check_one_label_expr(ctx, o.label_expr.as_ref()),
         Stmt::ChipDecl(c) => {
-            check_one_label_expr(ctx, &c.label_expr);
+            check_one_label_expr(ctx, c.label_expr.as_ref());
             check_label_exprs_in_block(ctx, &c.body);
         }
         Stmt::AnonChip(ac) => {
-            check_one_label_expr(ctx, &ac.label_expr);
+            check_one_label_expr(ctx, ac.label_expr.as_ref());
             check_label_exprs_in_block(ctx, &ac.body);
         }
         Stmt::If(i) => {
@@ -77,16 +75,16 @@ fn check_label_expr_stmt(ctx: &mut TypeCheckCtx, s: &Stmt) {
         }
         Stmt::Handler(h) => check_label_exprs_in_block(ctx, &h.body),
         Stmt::For(f) => {
-            check_one_label_expr(ctx, &f.label_expr);
+            check_one_label_expr(ctx, f.label_expr.as_ref());
             check_label_exprs_in_block(ctx, &f.body);
         }
         _ => {}
     }
 }
 
-fn check_one_label_expr(ctx: &mut TypeCheckCtx, label_expr: &Option<Expr>) {
+fn check_one_label_expr(ctx: &mut TypeCheckCtx<'_>, label_expr: Option<&Expr>) {
     let Some(expr) = label_expr else { return };
-    if crate::lower::expr_to_literal_in(expr, &ctx.const_lookup()).is_some() {
+    if crate::const_eval::expr_to_literal_in(expr, &ctx.const_lookup()).is_some() {
         return;
     }
     ctx.emit(
@@ -97,21 +95,20 @@ fn check_one_label_expr(ctx: &mut TypeCheckCtx, label_expr: &Option<Expr>) {
     );
 }
 
-/// Type-check the runtime `@label(expr)` on each top-level `var` so an undefined
-/// symbol or a bad type surfaces (the lowering pass then wires the value into
-/// the label component's `Text` port). Only the non-constant labels reach here —
-/// a constant one bakes its text statically and needs no wire. Runs after the
-/// main decl loop so every top-level symbol is already declared.
-pub(super) fn check_dynamic_var_labels(ctx: &mut TypeCheckCtx, script: &Script) {
+/// Type-check the runtime `@label(expr)` of each top-level `var`, so an undefined
+/// symbol or a bad type is reported (lowering then wires the value into the
+/// label's `Text` port). Constant labels bake statically and do not come here.
+/// Runs after the declaration loop, so every top-level symbol is declared.
+pub(super) fn check_dynamic_var_labels(ctx: &mut TypeCheckCtx<'_>, script: &Script) {
     for d in &script.decls {
-        if let TopDecl::Var(v) = d {
-            if let Some(le) = &v.label_expr {
-                let view = ctx.top_view(crate::scope::top::ReadAt::code(&v.range));
-                if crate::lower::expr_to_literal_in(le, &ctx.const_lookup()).is_none() {
-                    infer::infer(ctx, le);
-                }
-                ctx.restore_top_view(view);
+        if let TopDecl::Var(v) = d
+            && let Some(le) = &v.label_expr
+        {
+            let view = ctx.top_view(crate::scope::top::ReadAt::code(&v.range));
+            if crate::const_eval::expr_to_literal_in(le, &ctx.const_lookup()).is_none() {
+                infer::infer(ctx, le);
             }
+            ctx.restore_top_view(view);
         }
     }
 }

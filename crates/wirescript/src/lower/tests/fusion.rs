@@ -1,7 +1,7 @@
 use super::*;
 use crate::ir::gate_class as gc;
 
-/// A NOT over AND/OR fuses into the one NAND/NOR gate; `^^` is one LogicalXOR;
+/// A NOT over AND/OR fuses into the one NAND/NOR gate; `^^` is one `LogicalXOR`;
 /// a lone NOT stays a NOT. Each row: the gate present exactly once, and the
 /// unfused gates that must be absent.
 #[test]

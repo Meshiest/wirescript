@@ -1,16 +1,16 @@
-//! The probe and verifier circuits are saturated with Opaque/@nofold —
-//! the fold pass must be a structural no-op on them. This is the standing
-//! proof that the optimizer cannot touch the instruments that certify it.
+//! The probe and verifier circuits are saturated with Opaque/@nofold, so the
+//! fold pass must be a structural no-op on them: the optimizer must not touch
+//! the circuits that certify it.
 
 use crate::common;
 
+use wirescript::FoldMode;
 use wirescript::Severity;
 use wirescript::ir::Module;
-use wirescript::lower::FoldMode;
 
 /// Recursively sum (node count, wire count) over `m` and every nested chip
-/// module — the fold pass operates tree-wide (chip boundaries included), so
-/// the invariant must hold over the whole tree, not just the root module.
+/// module. The fold pass operates tree-wide, so the invariant must hold over
+/// the whole tree, not just the root module.
 fn count_module(m: &Module) -> (usize, usize) {
     let (mut nodes, mut wires) = (0, 0);
     m.walk(&mut |_, sub| {
@@ -21,18 +21,14 @@ fn count_module(m: &Module) -> (usize, usize) {
 }
 
 /// Resolve + typecheck + lower `file` with the fold pass forced on or off
-/// (`fold_mode`), then count the resulting IR tree. This mirrors the CLI's
-/// `--dump-ir` path (`resolve` -> `typecheck` -> `lower`), the same public
-/// entry points the CLI uses to reach the lowered `Module` — the `compile*`
-/// entries in `src/compile.rs` only return emitted bytes/world, not the
-/// intermediate `Module`, so there's nothing further to count there.
+/// (`fold_mode`), then count the resulting IR tree. This follows the CLI's
+/// `--dump-ir` path (`resolve`, `typecheck`, `lower`), since the `compile*`
+/// entries in `src/compile.rs` return only emitted bytes or a world, not the
+/// intermediate `Module`.
 ///
-/// Deliberately `ForceOn`/`ForceOff` on the two sides, NOT `Auto`: the
-/// invariant is that folding is a structural no-op on these files, so the two
-/// sides must differ in whether the pass runs. `Auto` now folds by default
-/// (identical to `ForceOn`), so using it for both calls would run the pass on
-/// both sides and the test would be trivially green without ever comparing
-/// folded to unfolded — defeating the whole point of the invariant.
+/// Callers pass `ForceOn` and `ForceOff`, never `Auto`: `Auto` folds by default,
+/// so using it on both sides would run the pass on both and never compare
+/// folded to unfolded.
 fn counts(file: &str, fold_mode: FoldMode) -> (usize, usize) {
     let source = std::fs::read_to_string(file)
         .unwrap_or_else(|e| panic!("cannot read probe file {file}: {e}"));

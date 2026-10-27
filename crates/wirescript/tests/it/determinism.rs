@@ -1,14 +1,11 @@
 //! Compiling the same source twice produces the same bytes.
 //!
-//! Node ids used to come from a process-global counter, so a second compile in
-//! the same process numbered its nodes differently, and through them ordered
-//! bricks differently and produced a different byte length. Fresh processes
-//! agreed with each other, which is what made it survive: nothing compiled the
-//! same program twice in one process except a test harness, and no test
-//! compared two compilations.
-//!
-//! This is the test that could not be written before, and it is the reason the
-//! "never byte-diff compiler output" rule existed.
+//! Node ids are minted per compile, so a second compile in the same process
+//! numbers its nodes identically and orders bricks identically. A
+//! process-global counter would change node numbering, and through it brick
+//! order and byte length, between compiles in one process.
+
+use std::fmt::Write as _;
 
 use crate::common;
 
@@ -35,11 +32,11 @@ fn many_chip_instances(n: usize) -> String {
     let mut s =
         String::from("chip Add(a: int, b: int) -> (r: int) { out r = a + b }\nin go: exec\n");
     for i in 0..n {
-        s += &format!("var v{i}: int\n");
+        let _ = writeln!(s, "var v{i}: int");
     }
     s += "on go {\n";
     for i in 0..n {
-        s += &format!("  let s{i} = Add({i}, 1)\n  v{i} = s{i}\n");
+        let _ = writeln!(s, "  let s{i} = Add({i}, 1)\n  v{i} = s{i}");
     }
     s + "}\n"
 }
@@ -78,8 +75,8 @@ fn repeated_compiles_in_one_process_are_byte_identical() {
     }
 }
 
-/// Two DIFFERENT programs compiled in between must not disturb the third's
-/// numbering either: the reset is per compile, not per process.
+/// Different programs compiled in between must not disturb the next compile's
+/// numbering: the id counter resets per compile, not per process.
 #[test]
 fn an_interleaved_compile_does_not_change_the_next_one() {
     let target = PROGRAMS[1];

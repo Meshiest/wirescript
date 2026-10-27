@@ -1,23 +1,19 @@
 //! Wire-completeness fuzzer.
 //!
-//! The recurring bug class in chip/mod lowering is an OUTPUT that ships with no
-//! incoming wire: the exec output orphaned on `return`, then the value output
-//! orphaned when the enclosing module had an `out`. Both are silent - the graph
-//! compiles, the port just reads its default at runtime.
-//!
-//! This walks a combinatorial matrix of the features that interact with output
-//! wiring (function kind, return shape, body exec, a parent `out`, call context,
-//! output arity) and asserts every declared MicrochipOutput in every emitted
-//! chip is driven. A failure prints the exact program so the case is minimal.
+//! A chip/mod OUTPUT with no incoming wire is silent: the graph compiles and the
+//! port reads its default at runtime. This walks a combinatorial matrix of the
+//! features that interact with output wiring (function kind, return shape, body
+//! exec, a parent `out`, call context, output arity) and asserts every declared
+//! `MicrochipOutput` in every emitted chip is driven. A failure prints the program.
 
 use super::compile;
 use crate::diagnostic::Severity;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{Module, NodeId, NodeKind};
 
-/// Recursively collect declared outputs (MicrochipOutput nodes) that have no
-/// incoming wire, i.e. a return/output value that was dropped. `_exec_out`
-/// counts too - an orphaned exec output is the same bug.
+/// Recursively collect declared outputs (`MicrochipOutput` nodes) that have no
+/// incoming wire, i.e. a dropped return/output value. `_exec_out` counts too:
+/// an orphaned exec output is as silent as an orphaned value.
 fn unwired_outputs(module: &Module, path: &str, acc: &mut Vec<String>) {
     for out_id in &module.outputs {
         let Some(node) = module.nodes.get(out_id) else {
@@ -62,7 +58,7 @@ fn program(kind: &str, body: &str, parent_out: &str, call: &str, sig: &str) -> S
 
 #[test]
 fn wire_completeness_matrix() {
-    // (label, sig, body) — single-output return shapes.
+    // (label, sig, body): single-output return shapes.
     let single_bodies = [
         (
             "select_find",
@@ -135,7 +131,7 @@ fn wire_completeness_matrix() {
 #[test]
 fn wire_completeness_multi_output_and_nested() {
     // Higher-risk shapes: multi-output (`emit`) chips, multi-`return` (pseudo-var
-    // path) with selects, and a chip that returns another chip's result - each
+    // path) with selects, and a chip that returns another chip's result, each
     // crossed with a parent `out` and an exec body.
     let cases: &[(&str, &str)] = &[
         (
@@ -173,7 +169,7 @@ fn wire_completeness_multi_output_and_nested() {
 
     let mut failures = Vec::new();
     for (label, snippet) in cases {
-        // Always with a parent `out` present (the trigger for the value-drop bug).
+        // Always with a parent `out` present, which is what can drop the value output.
         let src =
             format!("var a: int[]\nout extra: int[] = a\nvar r: int = 0\nin z: exec\n{snippet}\n");
         let r = compile(&src);
@@ -201,15 +197,14 @@ fn wire_completeness_multi_output_and_nested() {
     );
 }
 
-/// A chip called from N sites with N *distinct* scalar args must produce N
-/// instances whose value-input is wired to a *distinct* source. If the second
-/// instance's input collapses to the first caller's arg (or is unwired), every
-/// call evaluates the same key -> the "everyone maps to slot 0" runtime bug.
+/// A chip called from N sites with N *distinct* scalar args produces N instances
+/// whose value-input is wired to a *distinct* source. An input collapsed to the
+/// first caller's arg (or unwired) makes every call evaluate the same key.
 #[test]
 fn multi_call_site_distinct_inputs() {
-    // Mirror the 2raab slotOfUser shape: module-level string array exposed as an
-    // `out`, a chip that find()s it and returns via a select, called 3x with
-    // distinct string args inside one exec handler.
+    // A module-level string array exposed as an `out`, a chip that find()s it and
+    // returns via a select, called 3x with distinct string args inside one exec
+    // handler.
     let src = "\
 var userIds: string[]\n\
 out ui: string[] = userIds\n\
@@ -224,7 +219,7 @@ on z {\n\
   let s2 = slotOfUser(\"ccc\")\n\
   BroadcastChatMessage(\"${s0} ${s1} ${s2}\")\n\
 }\n";
-    let r = compile(&src);
+    let r = compile(src);
     assert!(
         !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
         "unexpected errors: {:?}",
@@ -281,21 +276,21 @@ on z {\n\
 }
 
 /// Valid wire-endpoint IDs for `module`: its own nodes, its external
-/// scope-captures, and the boundary (input/output/key) nodes of its direct
-/// child chips — since parent wires legitimately cross into a chip's I/O.
+/// scope-captures, and the boundary (input/output/key) nodes of its direct child
+/// chips, since parent wires legitimately cross into a chip's I/O.
 fn valid_endpoints(module: &Module) -> crate::collections::HashSet<NodeId> {
-    let mut ok: crate::collections::HashSet<NodeId> = module.nodes.keys().cloned().collect();
-    ok.extend(module.scope_captures.iter().cloned());
+    let mut ok: crate::collections::HashSet<NodeId> = module.nodes.keys().copied().collect();
+    ok.extend(module.scope_captures.iter().copied());
     for (chip_key, child) in &module.chips {
         ok.insert(*chip_key);
-        ok.extend(child.inputs.iter().cloned());
-        ok.extend(child.outputs.iter().cloned());
+        ok.extend(child.inputs.iter().copied());
+        ok.extend(child.outputs.iter().copied());
     }
     ok
 }
 
 /// Recursively collect wires whose endpoints reference a node that exists
-/// nowhere reachable from the module — i.e. a dangling wire left behind when
+/// nowhere reachable from the module, i.e. a dangling wire left behind when
 /// template instantiation failed to remap an endpoint.
 fn dangling_wires(module: &Module, path: &str, acc: &mut Vec<String>) {
     let ok = valid_endpoints(module);
@@ -320,12 +315,10 @@ fn dangling_wires(module: &Module, path: &str, acc: &mut Vec<String>) {
 }
 
 /// A chip call nested inside an inline `mod` that is expanded multiple times.
-/// Each expansion must re-instantiate the embedded chip AND keep the
-/// parent<->chip boundary wires (arg -> uid input, output -> reader) pointing
-/// at the fresh chip instance. If instantiation remaps the chip's internal IDs
-/// but not the parent wires that cross into it, those wires dangle: rows 2..N
-/// lose their `uid` feed, every find() reads the default, and all calls
-/// collapse to index 0 (the 2raab "everyone on slot 0" bug).
+/// Each expansion re-instantiates the embedded chip AND keeps the parent<->chip
+/// boundary wires (arg -> uid input, output -> reader) pointing at the fresh
+/// instance; dangling ones leave rows 2..N without their `uid` feed, so every
+/// `find()` reads the default and all calls collapse to index 0.
 #[test]
 fn chip_nested_in_repeated_inline_mod_keeps_boundary_wires() {
     // `slotOf` is an inline mod wrapping a chip call; it is expanded 3x with
@@ -347,7 +340,7 @@ on z {\n\
   let s2 = slotOf(\"ccc\")\n\
   BroadcastChatMessage(\"${s0} ${s1} ${s2}\")\n\
 }\n";
-    let r = compile(&src);
+    let r = compile(src);
     assert!(
         !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
         "unexpected errors: {:?}",
@@ -370,12 +363,10 @@ on z {\n\
     assert!(acc.is_empty(), "unwired outputs:\n{}", acc.join("\n"));
 }
 
-/// The real 2raab rosterRow shape: an inline mod expanded N times passes a
-/// value *derived from its own param* (an array read `arr[i]`) into the chip,
-/// rather than the param directly. Each expansion must recompute that derived
-/// arg and feed a distinct source into its own chip instance. If the derived
-/// arg gate is frozen/shared across expansions, every chip instance searches
-/// the same key -> everyone collapses to slot 0.
+/// An inline mod expanded N times passes a value *derived from its own param*
+/// (an array read `arr[i]`) into the chip. Each expansion recomputes that derived
+/// arg and feeds a distinct source into its own chip instance; a shared arg gate
+/// makes every instance search the same key.
 #[test]
 fn chip_arg_derived_from_mod_param_in_repeated_mod() {
     let src = "\
@@ -398,7 +389,7 @@ on z {\n\
   let c = rosterRow(2, count)\n\
   BroadcastChatMessage(\"${a} ${b} ${c}\")\n\
 }\n";
-    let r = compile(&src);
+    let r = compile(src);
     assert!(
         !r.diagnostics.iter().any(|d| d.severity == Severity::Error),
         "unexpected errors: {:?}",
@@ -419,7 +410,7 @@ on z {\n\
     // Each of the 3 chip instances must have its `uid` input fed by a DISTINCT
     // source (the per-row array read), not collapsed to one.
     let mut input_sources: Vec<Option<NodeId>> = Vec::new();
-    for (_chip_nid, child) in &r.module.chips {
+    for child in r.module.chips.values() {
         let Some(&val_input) = child.inputs.first() else {
             continue;
         };
@@ -489,11 +480,10 @@ fn wires_to_deleted_nodes(
     }
 }
 
-/// A top-level `let sig: exec` consumed INSIDE a chip. The hub union is a
-/// pass-through (one incoming wire) and gets spliced out, which redirects the
-/// hub's consumers to the emitter — but the splice only ever rewrote the
-/// ROOT module's wire list, so a consumer living in a chip sub-module kept a
-/// wire from the now-deleted hub and emit failed with `DroppedWire`.
+/// A top-level `let sig: exec` consumed INSIDE a chip. The pass-through hub union
+/// (one incoming wire) is spliced out and its consumers redirected to the
+/// emitter, in chip sub-modules too; a consumer left wired to the deleted hub
+/// fails emit with `DroppedWire`.
 #[test]
 fn exec_signal_consumed_inside_a_chip_survives_the_hub_splice() {
     let cases: &[&str] = &[
@@ -508,10 +498,9 @@ fn exec_signal_consumed_inside_a_chip_survives_the_hub_splice() {
          on ReadBrickGrid() {\n  emit init\n}\n\
          chip Break() {\n  on init { n = n + 1 }\n}\n\
          Break()\n",
-        // TWO emitters: the hub splice now leaves a real union behind, whose
-        // only consumer is inside the chip. `prune_dead_exec_unions` counts
-        // degrees from a single module's wire list, so that union read as a
-        // dead sink and was deleted out from under the chip's wire.
+        // TWO emitters: the hub splice leaves a real union behind whose only consumer
+        // is inside the chip, so `prune_dead_exec_unions` must count that chip's wire
+        // and keep the union.
         "in a: exec\n\
          in b: exec\n\
          let init: exec\n\
@@ -539,14 +528,10 @@ fn exec_signal_consumed_inside_a_chip_survives_the_hub_splice() {
 }
 
 /// Every wire endpoint that lands on a boundary pin, anywhere in the tree. A
-/// `MicrochipInput`/`MicrochipOutput` component carries exactly two ports,
-/// `RER_Input` and `RER_Output` (`data/logic_gate_inventory.simple.json`), so a
-/// wire naming any other port on one names a port the game does not have.
-/// `WirePort::Layout` is a synthetic layout-only edge that never reaches a
-/// brick port, so it is exempt.
-///
-/// Pins are collected tree-wide before the walk because a parent's wire
-/// legitimately names a pin node owned by a child chip.
+/// `MicrochipInput`/`MicrochipOutput` component has only `RER_Input` and
+/// `RER_Output` (`data/logic_gate_inventory.simple.json`), so any other port on
+/// one does not exist in game. `WirePort::Layout` (layout-only) is exempt. Pins are
+/// collected tree-wide first, since a parent's wire may name a child chip's pin.
 pub(super) fn pin_port_violations(root: &Module) -> Vec<String> {
     fn walk(
         m: &Module,
@@ -593,11 +578,9 @@ pub(super) fn pin_port_violations(root: &Module) -> Vec<String> {
 }
 
 /// A chip parameter of array/Map/record-of-array type is bound to the chip's
-/// own `MicrochipInput` pin, and every read of it in the body asks that binding
-/// for a storage-gate ref port (`ArrayVarRef`, `MapVarRef`, `VarRef`). A pin has
-/// no such port, so those reads emitted a wire the game cannot load, silently:
-/// all four programs below type-check and compile with no diagnostic.
-/// `gba/src/main.ws` shipped 620 such wires.
+/// own `MicrochipInput` pin, which has no storage-gate ref port (`ArrayVarRef`,
+/// `MapVarRef`, `VarRef`). Every read of it in the body wires only the pin's
+/// rerouter ports; any other wire fails to load in game with no diagnostic.
 #[test]
 fn chip_container_params_wire_only_rerouter_ports() {
     let cases: &[(&str, &str)] = &[

@@ -3,25 +3,23 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Prefab spawner -------------------------------------------------
+    // Prefab spawner
     m.insert(
         "SpawnPrefab",
         CallSpec {
             name: "SpawnPrefab",
             gate_class: gc::PREFAB_SPAWNER,
             params: vec![
-                // The prefab to spawn: a `$./file.brz` / `$/abs/file.brz`
-                // reference (or nested `$``` … ``` `). Embedded into the bundle at
-                // emit; the gate's `Prefab` path string gets the
-                // resulting path. Compile-time reference-only, hence `PrefabRef`.
+                // The prefab to spawn: a `$./file.brz` / `$/abs/file.brz` or nested
+                // `$``` ... ``` ` reference, embedded into the bundle at emit and
+                // named by the gate's `Prefab` path. Compile-time only (`PrefabRef`).
                 CallParam::opt("prefab", WirePort::Prefab, Type::PrefabRef),
                 CallParam::opt("offset", WirePort::SpawnOffset, Type::Vector),
                 CallParam::opt("rotation", WirePort::SpawnOffsetRotation, Type::Rotator),
                 CallParam::opt("velocity", WirePort::SpawnVelocity, Type::Vector),
                 CallParam::opt("lifetime", WirePort::Lifetime, Type::Float),
                 CallParam::opt("limit", WirePort::Limit, Type::Int),
-                // Wire an exec pulse here to destroy every prefab this gate has
-                // spawned (exposes the gate's existing `DestroyAll` input port).
+                // An exec pulse here destroys every prefab this gate has spawned.
                 CallParam::opt("destroyAll", WirePort::DestroyAll, Type::Exec),
             ],
             exec: true,
@@ -35,8 +33,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             name: "SpawnExplosion",
             gate_class: gc::EXEC_SPAWN_EXPLOSION,
             params: vec![
-                // The explosion type — a class/projectile asset reference
-                // (`$…` inlines as data; a wired value also works).
+                // The explosion type: a class/projectile asset reference (a `$...`
+                // literal inlines as data; a wired value also works).
                 CallParam::req("projectileType", WirePort::ProjectileType, Type::Entity),
                 // Who caused it (wire-only input, not baked in the data struct).
                 CallParam::opt("instigator", WirePort::Instigator, Type::Entity),
@@ -54,7 +52,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
     // listening on the same `eventName`, passing up to 8 data values. `eventName`
     // is the constant channel name, baked into the gate's data. `target` is an
     // optional entity whose grid receives the matching object events. Delivery is
-    // same-owner only — the ownership-agnostic counterpart is SendGlobalCustomEvent.
+    // same-owner only; SendGlobalCustomEvent ignores ownership.
     m.insert(
         "SendCustomEvent",
         CallSpec {
@@ -74,17 +72,15 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             exec: true,
             outputs: vec![],
-            // Receiver form: `entity.SendCustomEvent("x", …)` auto-binds the
-            // entity to `target` (see `receiver_target_param`), so the object
-            // event reaches that entity's grid.
+            // Receiver form: `entity.SendCustomEvent("x", ...)` binds the entity
+            // to `target` (see `receiver_target_param`), so the object event
+            // reaches that entity's grid.
             receiver: Some(Type::Entity),
         },
     );
 
-    // Send Global Custom Event: the ownership-agnostic counterpart of
-    // SendCustomEvent — delivers to every matching `GlobalCustomEvent` receiver
-    // regardless of owner. Same shape (constant `eventName`, up to 8 data values,
-    // optional `target` entity for object-scoped delivery).
+    // Send Global Custom Event: delivers to every matching `GlobalCustomEvent`
+    // receiver regardless of owner. Same shape as SendCustomEvent.
     m.insert(
         "SendGlobalCustomEvent",
         CallSpec {
@@ -104,9 +100,9 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             exec: true,
             outputs: vec![],
-            // Receiver form: `entity.SendCustomEvent("x", …)` auto-binds the
-            // entity to `target` (see `receiver_target_param`), so the object
-            // event reaches that entity's grid.
+            // Receiver form: `entity.SendCustomEvent("x", ...)` binds the entity
+            // to `target` (see `receiver_target_param`), so the object event
+            // reaches that entity's grid.
             receiver: Some(Type::Entity),
         },
     );
@@ -120,8 +116,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             gate_class: gc::EXEC_SPAWN_EXPLOSION_AT,
             params: vec![
                 CallParam::req("worldPosition", WirePort::WorldPosition, Type::Vector),
-                // The explosion type — a class/projectile asset reference
-                // (`$…` inlines as data; a wired value also works).
+                // The explosion type: a class/projectile asset reference (a `$...`
+                // literal inlines as data; a wired value also works).
                 CallParam::req("projectileType", WirePort::ProjectileType, Type::Entity),
                 // Who caused it (wire-only input, not baked in the data struct).
                 CallParam::opt("instigator", WirePort::Instigator, Type::Entity),
@@ -134,7 +130,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Sweep (raycasting) ---------------------------------------------
+    // Sweep (raycasting)
     m.insert(
         "Sweep",
         CallSpec {
@@ -165,7 +161,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("ignoreOwningGrid", WirePort::BIgnoreOwningGrid, Type::Bool),
                 // Wire input selecting the sweep's collision channel
                 // (EBRSweepCollisionChannel: 0 Physics, 1 Weapon, 2 Interaction,
-                // 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction — int at the wire).
+                // 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction; an int on the wire).
                 CallParam::opt("collisionChannel", WirePort::CollisionChannel, Type::Int),
                 // Config-only (settings menu, not a wire input on Sweep).
                 CallParam::opt(
@@ -192,11 +188,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Player lookup (exec gate) ------------------------------------------
-    // Has Exec/ExecOut ports and emits the found player on its `Player` output —
-    // the game's persistent PlayerState, modeled here as `controller` (same type
-    // the join/left events and every PlayerState gate use), NOT a character. Get
-    // the body from it with `CharacterOf(FindPlayer(...))`.
+    // Player lookup (exec gate)
+    // Emits the found player on its `Player` output: the persistent PlayerState,
+    // typed `controller` like every PlayerState gate, not a character. The body
+    // is `CharacterOf(FindPlayer(...))`.
     m.insert(
         "FindPlayer",
         CallSpec {

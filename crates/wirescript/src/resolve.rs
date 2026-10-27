@@ -4,7 +4,7 @@ use crate::collections::{HashMap, HashSet};
 
 use crate::ast::walk;
 use crate::ast::*;
-use crate::diagnostic::{Diagnostic, Suppressions};
+use crate::diagnostic::{Diagnostic, StartKey, Suppressions};
 use crate::parser::{ParseResult, parse};
 
 pub trait FileLoader {
@@ -74,15 +74,14 @@ pub struct ResolveResult {
     pub diagnostics: Vec<Diagnostic>,
     pub doc_comments: crate::parser::DocComments,
     /// The ENTRY file's source map. Imported files contribute declarations
-    /// but no line geometry — same rule as `@layout("code")` itself, which
-    /// is only read off the entry file. Shared behind an `Arc` because the
-    /// layout options that carry it are cloned per chip.
+    /// but no line geometry, as `@layout("code")` is read only off the entry
+    /// file. Shared behind an `Arc` because the layout options that carry it
+    /// are cloned per chip.
     pub source_map: Arc<SourceMap>,
-    /// Canonical paths of every file this resolve loaded, TRANSITIVELY (an
-    /// import's own imports included) — the entry file is not listed. Lets a
+    /// Canonical paths of every file this resolve loaded, transitively (an
+    /// import's own imports included); the entry file is not listed. Lets a
     /// caller tell whether a given file feeds this one, e.g. so the LSP
-    /// re-analyzes only the open documents a changed file actually reaches
-    /// instead of every open document on every keystroke.
+    /// re-analyzes only the open documents a changed file reaches.
     pub imported_files: Vec<String>,
     /// `// ws-ignore-line` / `// ws-ignore-file` directives from EVERY file
     /// this resolve read, the entry file included. `diagnostics` below is
@@ -105,7 +104,6 @@ fn is_importable(d: &TopDecl) -> bool {
     matches!(
         d,
         TopDecl::Chip(_)
-            | TopDecl::Fn(_)
             | TopDecl::Let(_)
             | TopDecl::Event(_)
             | TopDecl::Var(_)
@@ -119,15 +117,12 @@ fn is_importable(d: &TopDecl) -> bool {
             // it.
             | TopDecl::Enum(_)
             // A top-level `on` handler in an imported file runs as part of the
-            // importing program (a library that installs behaviour). Without
-            // this the handler would be dropped, and an `on <expr>` handler's
-            // desugared `let _on_expr_N = <expr>` (a Let, which IS importable)
-            // would still leak in — a dangling trigger gate with no body.
+            // importing program (a library that installs behaviour). Excluding
+            // it would still import an `on <expr>` handler's desugared
+            // `let _on_expr_N = <expr>`, leaving a trigger gate with no body.
             | TopDecl::Handler(_)
-            // An anonymous `chip { … }` (including the `chip on t { … }`
-            // desugar) in an imported library installs behaviour just like a
-            // top-level handler. Without this it would be filtered out before
-            // the merge and silently dropped, taking its writes with it.
+            // An anonymous `chip { ... }` (including the `chip on t { ... }`
+            // desugar) installs behaviour just like a top-level handler.
             | TopDecl::AnonChip(_)
     )
 }
@@ -140,23 +135,11 @@ fn installs_behaviour(d: &TopDecl) -> bool {
     matches!(d, TopDecl::Handler(_) | TopDecl::AnonChip(_))
 }
 
-/// Every top-level name a declaration introduces.
-///
-/// [`decl_name`] answers "what is this declaration CALLED", which is a
-/// different question for the one form that binds several names at once: a
-/// destructuring `let`/`const` (`const { x, y } = p`) has no single name, so
-/// `decl_name` returns `None` for it — and every import path keyed on
-/// `decl_name` alone would behave as though the declaration introduced
-/// NOTHING: a named import of `x` would report WS012 "not found", a
-/// duplicate check couldn't see `x`, and the declaration-order restore would
-/// sort the binding to the end. (`import "lib"` is unaffected: it pushes
-/// every importable declaration and only consults `decl_name` to skip
-/// duplicates.)
-///
-/// Uses `const_eval::bound_names` — the same syntactic name list the constant
-/// environment and both typecheck sites split a destructured value with — so
-/// the import system cannot disagree with them about which names a binding
-/// form introduces.
+/// Every top-level name a declaration introduces. Differs from [`decl_name`]
+/// for a destructuring `let`/`const` (`const { x, y } = p`), which has no
+/// single name: keyed on `decl_name`, a named import of `x` would report
+/// WS012 and the duplicate check would miss `x`. Uses `const_eval::bound_names`, the name list const evaluation and
+/// lowering split a destructured value with, so imports agree with them.
 fn decl_names(d: &TopDecl) -> Vec<String> {
     match d {
         TopDecl::Let(l) => crate::const_eval::bound_names(&l.binding),
@@ -174,7 +157,6 @@ fn decl_binds(d: &TopDecl, name: &str) -> bool {
 fn decl_name(d: &TopDecl) -> Option<&str> {
     match d {
         TopDecl::Chip(c) => Some(&c.name),
-        TopDecl::Fn(f) => Some(&f.name),
         TopDecl::Let(l) => match &l.binding {
             LetBinding::Ident { name, .. } => Some(name),
             _ => None,
@@ -192,13 +174,12 @@ fn decl_name(d: &TopDecl) -> Option<&str> {
     }
 }
 
-/// The accumulated import-merged declaration list, with the two indexes the
+/// The accumulated import-merged declaration list, with the indexes the
 /// per-import passes query: `used` is the union of every runtime identifier
-/// referenced by the decls so far (what [`collect_idents`] with
-/// [`Uses::Code`] would recompute from scratch per fixpoint sweep), and `bound` maps each bound
-/// top-level name to the source files that bind it (what the diamond-dedup
-/// checks rescanned the whole list for). Declarations are only ever added, so
-/// both indexes update monotonically on `push`/`insert_front`.
+/// the decls so far reference ([`collect_idents`] with [`Uses::Code`]), and
+/// `bound` maps each bound top-level name to the source files that bind it.
+/// Declarations are only ever added, so the indexes update monotonically on
+/// `push`/`insert_front`.
 #[derive(Default)]
 struct DeclAccum {
     decls: Vec<TopDecl>,
@@ -209,7 +190,7 @@ struct DeclAccum {
     /// it, and a module reached twice would install its behaviour twice; a
     /// file may declare a name twice, and its second declaration is not the
     /// first reached again.
-    installed: HashSet<(Arc<str>, usize)>,
+    installed: HashSet<StartKey>,
     /// Each declaration merged, with each name it was merged under: one
     /// imported under an alias is not merged under its own name.
     merged: HashSet<(Arc<str>, usize, String)>,
@@ -218,20 +199,22 @@ struct DeclAccum {
 impl DeclAccum {
     fn index(&mut self, d: &TopDecl) {
         collect_idents(walk::Node::Decl(d), Uses::Code, &mut self.used);
-        let file = d.range().file.clone();
+        let file = Arc::clone(&d.range().file);
         for n in decl_names(d) {
-            self.bound.entry(n.clone()).or_default().push(file.clone());
+            self.bound
+                .entry(n.clone())
+                .or_default()
+                .push(Arc::clone(&file));
             self.merged
-                .insert((file.clone(), d.range().start.offset, n));
+                .insert((Arc::clone(&file), d.range().start.offset, n));
         }
-        self.installed.insert((file, d.range().start.offset));
+        self.installed.insert(decl_id(d));
     }
 
     /// Whether the declaration `d` has already been merged (the same
     /// declaration of the same file, reached by another import edge).
     fn already_installed(&self, d: &TopDecl) -> bool {
-        self.installed
-            .contains(&(d.range().file.clone(), d.range().start.offset))
+        self.installed.contains(&decl_id(d))
     }
     fn push(&mut self, d: TopDecl) {
         self.index(&d);
@@ -241,7 +224,7 @@ impl DeclAccum {
         self.index(&d);
         self.decls.insert(0, d);
     }
-    /// `decls.iter().any(|e| decl_binds(e, name) && e.range().file == file)`.
+    /// Whether a merged declaration from `file` binds `name`.
     fn binds_in_file(&self, name: &str, file: &Arc<str>) -> bool {
         self.bound
             .get(name)
@@ -256,13 +239,13 @@ impl DeclAccum {
         let (file, at) = decl_id(d);
         names
             .iter()
-            .any(|n| self.merged.contains(&(file.clone(), at, n.clone())))
+            .any(|n| self.merged.contains(&(Arc::clone(&file), at, n.clone())))
     }
 }
 
 /// A declaration's identity in [`ImportScope`]: its file and start offset.
-fn decl_id(d: &TopDecl) -> (Arc<str>, usize) {
-    (d.range().file.clone(), d.range().start.offset)
+fn decl_id(d: &TopDecl) -> StartKey {
+    d.range().start_key()
 }
 
 /// The canonical module an `import * as` alias names.
@@ -294,23 +277,19 @@ fn resolve_file(
 ) -> Option<String> {
     let canon = loader.canonical_path(path, relative_to);
     if stack.contains(&canon) {
-        return None; // cycle — caller emits diagnostic
+        return None; // cycle: caller emits the diagnostic
     }
     if cache.contains_key(&canon) {
         return Some(canon);
     }
-    let source = match loader.load(path, relative_to) {
-        Ok(s) => s,
-        Err(_) => return None,
+    let Ok(source) = loader.load(path, relative_to) else {
+        return None;
     };
     stack.insert(canon.clone());
     let parsed = parse(&source, &canon);
-    // Surface the imported file's OWN parse diagnostics. Without this a parse
-    // error in an imported module would be silently swallowed — it would
-    // compile clean while the identical source errored as an entry file. Each
-    // file is parsed exactly once (the cache check above returns before
-    // re-parsing), so these are collected once; the ranges point into the
-    // imported file.
+    // The imported file's own parse diagnostics, with ranges into that file.
+    // Each file is parsed once (the cache check above returns first), so these
+    // are collected once.
     diagnostics.extend(parsed.diagnostics.iter().cloned());
 
     let mut imported_ast = parsed.ast.clone();
@@ -324,7 +303,7 @@ fn resolve_file(
         }
     });
     // Collect into a separate list and prepend, so this file's own decls stay
-    // after the ones it imports — chips/mods register in source order during
+    // after the ones it imports: chips/mods register in source order during
     // lowering, so appending would make every call into an imported module a
     // use-before-declaration.
     let mut sub_decls = DeclAccum::default();
@@ -375,7 +354,10 @@ fn resolve_file(
     Some(canon)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an import reads the loader and writes every resolve-wide table"
+)]
 fn resolve_import(
     imp: &ImportDecl,
     relative_to: &str,
@@ -397,7 +379,7 @@ fn resolve_import(
         return;
     }
 
-    let canon = match resolve_file(
+    let Some(canon) = resolve_file(
         &imp.path,
         relative_to,
         loader,
@@ -405,16 +387,13 @@ fn resolve_import(
         stack,
         diagnostics,
         scope,
-    ) {
-        Some(c) => c,
-        None => {
-            diagnostics.push(Diagnostic::error(
-                "WS012",
-                format!("cannot resolve import '{}'", imp.path),
-                imp.range.clone(),
-            ));
-            return;
-        }
+    ) else {
+        diagnostics.push(Diagnostic::error(
+            "WS012",
+            format!("cannot resolve import '{}'", imp.path),
+            imp.range.clone(),
+        ));
+        return;
     };
 
     let parsed = cache.get(&canon).unwrap();
@@ -429,7 +408,7 @@ fn resolve_import(
         .collect();
     // The imported file's own `import * as Ns` bindings. These are not
     // importable by name, but a declaration we pull in may call through one
-    // (`Ns.helper()`), so they travel with it — see the closure pass below.
+    // (`Ns.helper()`), so they travel with it (see the closure pass below).
     let source_namespaces: Vec<&TopDecl> = parsed
         .ast
         .decls
@@ -452,7 +431,7 @@ fn resolve_import(
                 .get(&module_file)
                 .is_some_and(|s| s.contains(&decl_id(d)))
     };
-    let named_here: Vec<(Arc<str>, usize)> = match &imp.kind {
+    let named_here: Vec<StartKey> = match &imp.kind {
         ImportKind::All => importable
             .iter()
             .filter(|d| module_names(d))
@@ -471,26 +450,23 @@ fn resolve_import(
     };
     scope
         .named
-        .entry(imp.range.file.clone())
+        .entry(Arc::clone(&imp.range.file))
         .or_default()
         .extend(named_here);
     scope
         .files
-        .entry(imp.range.file.clone())
+        .entry(Arc::clone(&imp.range.file))
         .or_default()
-        .insert(module_file.clone());
+        .insert(Arc::clone(&module_file));
 
     match &imp.kind {
         ImportKind::All => {
             for d in importable {
                 // Diamond-import dedup: skip a decl already merged under its
-                // names (the same declaration of a module reached via two
-                // import paths). A same-named decl from a DIFFERENT file is a
-                // genuine collision in the flat merged scope — keep it so the
-                // duplicate-name check (WS013) fires, rather than silently
-                // dropping one and aliasing the two onto a single storage gate.
-                // A second declaration of the name in the SAME file is kept
-                // too: the module reads its names by position (WS108).
+                // names (one module reached via two import paths). A same-named
+                // decl from a different file is a real collision and is kept so
+                // WS013 fires; a second declaration in the same file is kept
+                // because the module reads its names by position (WS108).
                 let is_diamond = if installs_behaviour(d) {
                     target.already_installed(d)
                 } else {
@@ -503,15 +479,11 @@ fn resolve_import(
             }
         }
         ImportKind::Named(bindings) => {
-            // The aliases this import has ALREADY contributed, so the closure
-            // pass below does not push a module declaration spelled like one
-            // of them. Keyed on the effective (post-`as`) name, because that is
-            // what was pushed: keyed on the pre-alias name, `import { addK, K
-            // as KK }` would block the closure from restoring `klib`'s own `K`,
-            // leaving the module's `x + K` to bind to whatever the IMPORTER
-            // called `K`. A name imported as itself is the declaration pushed
-            // (`merged_as`); another declaration of it in the module, which
-            // the module reads by position, still travels.
+            // The effective (post-`as`) names this import has contributed, so
+            // the closure pass below does not push a module declaration spelled
+            // like one. Keyed on the pre-alias name, `import { addK, K as KK }`
+            // would stop the closure restoring the module's own `K`, and its
+            // `x + K` would bind to the importer's `K`.
             let binding_names: HashSet<&str> =
                 bindings.iter().filter_map(|b| b.alias.as_deref()).collect();
             // Everything this import contributes goes after here; the closure
@@ -530,12 +502,10 @@ fn resolve_import(
                     ));
                     continue;
                 };
-                // Diamond-import dedup vs genuine collision, same rule as
-                // `ImportKind::All`: skip only when `effective_name` is already
-                // bound FROM THE SAME source file (the same module reached twice).
-                // A same name selected from a DIFFERENT file is a real collision —
-                // keep it so WS013 fires instead of silently aliasing them.
-                let d_file = d.range().file.clone();
+                // Same dedup rule as `ImportKind::All`: skip only when
+                // `effective_name` is already bound from the same source file.
+                // The same name from a different file is kept so WS013 fires.
+                let d_file = Arc::clone(&d.range().file);
                 if target.binds_in_file(effective_name, &d_file) {
                     continue;
                 }
@@ -582,12 +552,10 @@ fn resolve_import(
                     imp.range.clone(),
                 ));
             }
-            // Pull in non-requested declarations that are referenced by
-            // the imported ones. Covers both transitive imports (from other
-            // files) and same-file helpers (e.g. timer_tick used by
-            // timers_advance). Iterates to a fixed point so transitive
-            // chains (A calls B calls C) are fully resolved.
-            // TypeAlias declarations are NOT pulled — they are inlined below.
+            // Pull in the declarations the imported ones reference, from other
+            // files and the same file, iterating to a fixed point so chains
+            // (A calls B calls C) resolve. Type aliases are not pulled; they
+            // are inlined below.
             loop {
                 let mut added = false;
                 for d in &importable {
@@ -595,13 +563,10 @@ fn resolve_import(
                         continue;
                     }
                     let names = decl_names(d);
-                    // Same diamond-dedup rule as the `ImportKind::All` path, and
-                    // for the same reason: a name already bound FROM ANOTHER
-                    // FILE is a different declaration that happens to share a
-                    // spelling, so skipping on it would wire this module's
-                    // private `helper` to the other module's `helper` with no
-                    // diagnostic at all. Comparing the declaration keeps the
-                    // pull, and WS013 then reports the collision.
+                    // Same dedup rule as `ImportKind::All`: a name bound from
+                    // another file is a different declaration, so it is pulled
+                    // anyway and WS013 reports the collision, rather than this
+                    // module's private `helper` silently wiring to the other's.
                     let called_as_method = matches!(d, TopDecl::Chip(c)
                         if c.is_self_receiver() && target.used.contains(&format!(".{}", c.name)));
                     if !names.is_empty()
@@ -618,14 +583,12 @@ fn resolve_import(
                     break;
                 }
             }
-            // Restore the provider's own declaration order across everything
-            // this import contributed. The closure pass appends dependencies
-            // AFTER the declaration that needed them, but a top-level `let` is
-            // declared as it is checked — so a constant discovered via an array
-            // initializer would land after the array and read as undeclared.
-            // The source file already orders constants before their users,
-            // and a name it declares twice in the order it reads them.
-            let order: HashMap<(Arc<str>, usize), usize> = importable
+            // Restore the provider's declaration order across everything this
+            // import contributed. The closure pass appends dependencies after
+            // their user, and a top-level `let` is declared as it is checked,
+            // so a constant pulled in by an array initializer would read as
+            // undeclared.
+            let order: HashMap<StartKey, usize> = importable
                 .iter()
                 .enumerate()
                 .map(|(i, d)| (decl_id(d), i))
@@ -643,7 +606,7 @@ fn resolve_import(
                 })
                 .collect();
             if !type_aliases.is_empty() {
-                for d in target.decls.iter_mut() {
+                for d in &mut target.decls {
                     expand_type_aliases_in_decl(d, &type_aliases);
                 }
             }
@@ -662,8 +625,8 @@ fn resolve_import(
 
             // Inline the module's own type aliases into its declarations, as a
             // named import already does. A namespaced `mod f() -> MyType` is
-            // used from the importing module, where `MyType` is not in scope —
-            // leaving the name unexpanded fails there with "unknown type".
+            // used from the importing module, where `MyType` is not in scope,
+            // so an unexpanded name fails there with "unknown type".
             let mut decls: Vec<TopDecl> = importable.into_iter().cloned().collect();
             let type_aliases: HashMap<String, Alias> = decls
                 .iter()
@@ -673,24 +636,21 @@ fn resolve_import(
                 })
                 .collect();
             if !type_aliases.is_empty() {
-                for d in decls.iter_mut() {
+                for d in &mut decls {
                     expand_type_aliases_in_decl(d, &type_aliases);
                 }
             }
 
-            // An alias is WRITTEN per file, but the namespace it binds is
-            // merged into one flat program-wide list keyed by name, and
-            // lowering resolves by that name alone outside a namespaced mod's
-            // own body. So a second alias under this name is reported wherever
-            // it was written, not only when it was written here. Compare
-            // canonical targets, not spellings: one module reached twice under
-            // one alias (`"utils"` and `"./utils"`) is a redundant import, not
-            // a collision.
+            // An alias is written per file, but namespaces merge into one
+            // program-wide list keyed by name, so a second alias under this
+            // name is reported wherever it was written. Canonical targets are
+            // compared, so `"utils"` and `"./utils"` under one alias are a
+            // redundant import, not a collision.
             let prior = bound_namespace(&target.decls, ns_name).map(|n| {
                 (
                     namespace_target(n, loader),
                     n.source_path.clone(),
-                    n.range.file.clone(),
+                    Arc::clone(&n.range.file),
                 )
             });
             if let Some((prior_canon, prior_path, prior_file)) = prior {
@@ -758,20 +718,12 @@ fn resolve_import(
                 if target.binds_in_file(name, &nsd.range.file) {
                     continue;
                 }
-                // Whether a same-named alias from ANOTHER file really coexists
-                // depends on how this import spells itself. `import * as`
-                // wraps what it pulls in a `NamespaceDecl`, and lowering
-                // scopes a namespaced mod's body against its own module's
-                // aliases first (`ns_mod_scopes` / `ns_by_file` in
-                // `lower/decl.rs`), so those two are independent. A bare or
-                // named import pushes the same declarations FLAT, where there
-                // is no per-body scope: typecheck still resolves each `U.f` by
-                // the file it was written in, but lowering has one binding per
-                // name for the whole program, so two libraries that each
-                // privately wrote `import * as U` type-check clean and then
-                // both call whichever module registered last. Report that; the
-                // namespace is still pushed, so the WS012 is the only thing
-                // the user has to read.
+                // Under `import * as`, lowering scopes a namespaced mod's body
+                // against its own module's aliases (`LowerCtx::ns_mod_scopes`),
+                // so same-named aliases from two files are independent. A bare
+                // or named import pushes declarations flat, where lowering has
+                // one binding per name, so both libraries' `U.f` would call
+                // whichever registered last: report WS012, and still push.
                 if !matches!(imp.kind, ImportKind::Namespace(_))
                     && let Some(prior) = bound_namespace(&target.decls, name)
                     && namespace_target(prior, loader) != namespace_target(nsd, loader)
@@ -804,14 +756,11 @@ fn resolve_import(
 
 /// Rename the single bound name `old` to `new_name` inside `d`, for
 /// `import { old as new_name }`. Returns `false` when the declaration binds
-/// `old` but cannot express the rename — the caller turns that into a
-/// diagnostic rather than pushing a declaration that silently still binds the
-/// original name.
+/// `old` but cannot express the rename; the caller reports that.
 ///
-/// A `RecordDestruct` field renames through its own `alias` slot, which is
-/// exactly what that slot means. A `Record` (`const { x, y } = p`) cannot:
-/// its names ARE the field names it reads, so renaming one would change which
-/// field it binds, and a `Tuple`'s `rest` has no positional identity to keep.
+/// A `RecordDestruct` field renames through its `alias` slot. A `Record`
+/// (`const { x, y } = p`) cannot, since its names are the fields it reads,
+/// and a `Tuple`'s `rest` has no positional identity to keep.
 fn rename_bound_name(d: &mut TopDecl, old: &str, new_name: &str) -> bool {
     let TopDecl::Let(l) = d else {
         rename_decl(d, new_name);
@@ -840,14 +789,12 @@ fn rename_bound_name(d: &mut TopDecl, old: &str, new_name: &str) -> bool {
             }
             false
         }
-        LetBinding::Record { .. } => false,
     }
 }
 
 fn rename_decl(d: &mut TopDecl, new_name: &str) {
     match d {
         TopDecl::Chip(c) => c.name = new_name.to_string(),
-        TopDecl::Fn(f) => f.name = new_name.to_string(),
         TopDecl::Let(l) => {
             if let LetBinding::Ident { name, .. } = &mut l.binding {
                 *name = new_name.to_string();
@@ -868,10 +815,9 @@ pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResu
     resolve_parsed(parse(source, file), file, loader)
 }
 
-/// `resolve` for a caller that ALREADY parsed the entry file. The LSP keeps the
-/// pre-resolve AST for local analysis; re-parsing the same buffer a second
-/// time in here costs ~21% of a keystroke on a 2.5k-line file, which this
-/// avoids. Consumes the `ParseResult`; clone it first if you need it.
+/// `resolve` for a caller that already parsed the entry file (the LSP keeps
+/// the pre-resolve AST for local analysis), so the buffer is not parsed twice.
+/// Consumes the `ParseResult`; clone it first if you need it.
 pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) -> ResolveResult {
     let mut diagnostics = parsed.diagnostics.clone();
     let mut doc_comments = parsed.doc_comments.clone();
@@ -883,7 +829,7 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
     let mut import_scope = ImportScope::default();
 
     let canon_self = loader.canonical_path(file, ".");
-    stack.insert(canon_self.clone());
+    stack.insert(canon_self);
 
     for d in &parsed.ast.decls {
         if let TopDecl::Import(imp) = d {
@@ -904,8 +850,8 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
     }
 
     // Check for unused named imports. An import counts as used when the main
-    // file OR another imported declaration references it — imported mods
-    // reference their defining module's constants inside their bodies. A
+    // file or another imported declaration references it (imported mods read
+    // their defining module's constants inside their bodies). A
     // `self` mod also counts when it is called with method syntax (`v.f()`).
     let mut used_idents = HashSet::default();
     for d in main_decls.iter().chain(&merged.decls) {
@@ -915,9 +861,6 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
         used_idents.contains(&format!(".{name}"))
             && merged.decls.iter().any(|d| match d {
                 TopDecl::Chip(c) => c.name == name && c.is_self_receiver(),
-                TopDecl::Fn(f) => {
-                    f.name == name && f.params.first().is_some_and(|p| p.name == "self")
-                }
                 _ => false,
             })
     };
@@ -930,7 +873,7 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
                 if !used_idents.contains(check_name) && !called_as_method(check_name) {
                     diagnostics.push(Diagnostic::warning(
                         "WS014",
-                        format!("unused import '{}'", check_name),
+                        format!("unused import '{check_name}'"),
                         b.range.clone(),
                     ));
                 }
@@ -958,20 +901,18 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
             decls,
             range: parsed.ast.range,
             module_doc: parsed.ast.module_doc.clone(),
-            // Module-level @nofold/@fold apply to the ENTRY file's
-            // compilation (imported decls lower as part of it and are
-            // covered too) — an @fold/@nofold in an IMPORTED file is never
-            // consulted here, so it's inert.
+            // Module-level @nofold/@fold come from the entry file and cover
+            // the imported decls lowered with it; an imported file's are inert.
             no_fold: parsed.ast.no_fold,
             fold: parsed.ast.fold,
             // Same rule as @fold/@nofold above: only the entry file's
             // @layout is consulted; an imported file's is inert.
             layout: parsed.ast.layout,
-            // Same rule again — the entry file decides whether the whole
-            // program flattens; an imported file's @flat is inert.
+            // Only the entry file's @flat decides whether the whole program
+            // flattens; an imported file's is inert.
             flat: parsed.ast.flat,
-            // Same rule again — only the entry file's @invisible hides the
-            // emitted shell; an imported file's is inert.
+            // Only the entry file's @invisible hides the emitted shell; an
+            // imported file's is inert.
             invisible: parsed.ast.invisible,
             // Only the entry file's module `@label` labels the root chip; an
             // imported file's is inert. Cloned so the entry expr survives.
@@ -1007,9 +948,10 @@ pub(crate) enum Uses {
 }
 
 /// Every name `node`, or anything below it, uses (see [`Uses`]).
-pub(crate) fn collect_idents(node: walk::Node, uses: Uses, idents: &mut HashSet<String>) {
-    let skipped =
-        |n: walk::Node| uses == Uses::All && matches!(n, walk::Node::Decl(TopDecl::Namespace(_)));
+pub(crate) fn collect_idents(node: walk::Node<'_>, uses: Uses, idents: &mut HashSet<String>) {
+    let skipped = |n: walk::Node<'_>| {
+        uses == Uses::All && matches!(n, walk::Node::Decl(TopDecl::Namespace(_)))
+    };
     if skipped(node) {
         return;
     }
@@ -1024,7 +966,7 @@ pub(crate) fn collect_idents(node: walk::Node, uses: Uses, idents: &mut HashSet<
 }
 
 /// The names `node` itself uses, not counting its children.
-fn leaf_idents(node: walk::Node, uses: Uses, idents: &mut HashSet<String>) {
+fn leaf_idents(node: walk::Node<'_>, uses: Uses, idents: &mut HashSet<String>) {
     let mut ty = |t: &TypeExpr| collect_idents_in_type_expr(t, idents);
     match node {
         walk::Node::Expr(e) => match e {
@@ -1055,11 +997,6 @@ fn leaf_idents(node: walk::Node, uses: Uses, idents: &mut HashSet<String>) {
                 captured: Some(h), ..
             }) => handler_idents(h, idents),
             TopDecl::Chip(c) => chip_idents(c, idents),
-            TopDecl::Fn(f) => {
-                for p in &f.params {
-                    ty(&p.typ);
-                }
-            }
             TopDecl::Var(v) => v.typ.iter().for_each(ty),
             TopDecl::Let(l) => l.typ.iter().for_each(ty),
             TopDecl::Out(o) => o.typ.iter().for_each(ty),
@@ -1176,13 +1113,10 @@ fn alias_of(t: &crate::ast::TypeAliasDecl) -> Alias {
 
 fn expand_type_aliases_in_decl(d: &mut TopDecl, aliases: &HashMap<String, Alias>) {
     match d {
-        // An alias body may name another alias (`type Rect = { a: Point, b: Point }`).
-        // Expanding it here makes the alias self-contained, which is what a
-        // namespace import needs: the module's aliases are declared to the
-        // importer only under their qualified name (`Ns.Rect`), so a bare
-        // `Point` surviving inside the body has nothing to resolve against.
-        // Seeded with its own name so a self-referential alias stops after one
-        // level instead of expanding forever, and with its type parameters,
+        // Expand aliases inside an alias body (`type Rect = { a: Point, b:
+        // Point }`): a namespace import declares them only as `Ns.Rect`, so a
+        // bare `Point` left inside would not resolve. Seeded with its own name
+        // (a self-reference stops after one level) and its type parameters,
         // which shadow an alias of the same name.
         TopDecl::TypeAlias(t) => {
             let params: Vec<String> = t.type_params.iter().map(|p| p.name.clone()).collect();
@@ -1195,14 +1129,6 @@ fn expand_type_aliases_in_decl(d: &mut TopDecl, aliases: &HashMap<String, Alias>
             }
             for o in &mut c.outputs {
                 expand_aliases(&mut o.typ, aliases, &params, &mut Vec::new());
-            }
-        }
-        TopDecl::Fn(f) => {
-            for p in &mut f.params {
-                expand_type_aliases_in_type_expr(&mut p.typ, aliases);
-            }
-            if let Some(t) = &mut f.return_type {
-                expand_type_aliases_in_type_expr(t, aliases);
             }
         }
         TopDecl::Let(l) => {
@@ -1236,22 +1162,18 @@ fn expand_type_aliases_in_type_expr(t: &mut TypeExpr, aliases: &HashMap<String, 
     expand_aliases(t, aliases, &[], &mut Vec::new());
 }
 
-/// Substitute alias names by their bodies, *including inside a body just
-/// substituted in* — an alias whose body names another alias (`type Rect = {
-/// a: Point, b: Point }`) otherwise leaves the inner name behind, unresolvable
-/// in the importing module, and the field silently types as `any`. A generic
-/// alias applied to arguments (`Pair<int>`) is instantiated the same way, so
-/// `type IP = Pair<int>` needs no `Pair` where it is read.
+/// Substitute alias names by their bodies, including inside a body just
+/// substituted in; an inner alias name left behind would not resolve in the
+/// importing module and the field would type as `any`. A generic alias
+/// applied to arguments (`Pair<int>`) is instantiated the same way.
 ///
 /// `params` are the type parameters of the declaration `t` is written in,
-/// which hide an alias of the same name there. An alias body is written at the
-/// top level, so none of them reach into it: its own names are expanded as its
-/// declaration reads them, and a generic alias's arguments are substituted
-/// only after its body is written out.
+/// which hide an alias of the same name there but never reach into an alias
+/// body (written at the top level); a generic alias's arguments are
+/// substituted after its body is written out.
 ///
-/// `active` is the chain of aliases being substituted on the current path. A
-/// name already on it is left alone, so a self-referential or mutually
-/// recursive alias expands one level and stops rather than looping forever.
+/// `active` is the chain of aliases being substituted on the current path; a
+/// name already on it is left alone, so a recursive alias expands one level.
 fn expand_aliases(
     t: &mut TypeExpr,
     aliases: &HashMap<String, Alias>,

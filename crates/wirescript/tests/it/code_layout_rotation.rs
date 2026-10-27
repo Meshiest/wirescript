@@ -4,9 +4,9 @@
 //! A rotated brick's footprint swaps its x and y half-sizes. The layout
 //! decides the rotation and reserves the swapped cell; emit must apply the
 //! identical swap when it centers the brick. Nothing downstream catches a
-//! disagreement — `brdb::Brick::local_bounds()` is rotation-blind, so the
-//! bricks would look fine in every checker and be silently dropped by the
-//! game at load. These tests are the gate for that contract.
+//! disagreement: `brdb::Brick::local_bounds()` is rotation-blind, so the
+//! bricks would pass every other checker and be dropped by the game at load.
+//! These tests are the gate for that contract.
 
 use crate::common;
 
@@ -14,23 +14,19 @@ use std::collections::HashMap;
 
 use wirescript::catalog::default_catalog;
 use wirescript::emit::EmitOptions;
-use wirescript::{CompileInput, FoldMode, compile_to_world};
+use wirescript::{CompileInput, compile_to_world};
 
-/// `DisplayText` is a statement sink — it takes an exec input and nothing
-/// on its line reads its value back — so it is pinned to that line's
-/// leftmost column and rotates. It is 8×5, so the swap moves real geometry
-/// (a 16×10 footprint becomes 10×16); a fixture of 5×5 gates could not
-/// tell a correct swap from a missing one.
+/// `DisplayText` is a statement sink (an exec input, nothing on its line reads
+/// its value back), so it is pinned to that line's leftmost column and rotates.
+/// It is 8x5, so the swap moves real geometry (a 16x10 footprint becomes
+/// 10x16); square gates could not tell a correct swap from a missing one.
 ///
-/// The same line carries the `Var_Get` and `FormatText` that build its
-/// text, both in the value columns to its right and both unrotated — so
-/// an under-reserved cell puts the wide brick through a real neighbour
-/// instead of into empty space.
+/// The same line carries the unrotated `Var_Get` and `FormatText` that build
+/// its text, in the value columns to its right, so an under-reserved cell puts
+/// the wide brick through a real neighbour.
 ///
-/// The own-line comments are load-bearing for the overlap sweep: each one
-/// emits an invisible `PB_DefaultBrick` carrier on a row of its own, and an
-/// invisible brick landing inside a gate is the one collision nothing on
-/// screen would ever show.
+/// The own-line comments matter for the overlap sweep: each emits an invisible
+/// `PB_DefaultBrick` carrier on a row of its own.
 const SRC: &str = "@layout(\"code\")\n\
                    \n\
                    // a counter, bumped twice per join\n\
@@ -51,9 +47,8 @@ fn half_sizes_by_asset() -> HashMap<String, (i32, i32)> {
         let hs = (g.half_size.x, g.half_size.y);
         out.entry(g.brick_asset.clone())
             .and_modify(|e| {
-                // One asset backing two half-sizes would make any footprint
-                // claim here ambiguous; take the larger so the sweep stays
-                // conservative rather than silently under-measuring.
+                // One asset backing two half-sizes: take the larger so the
+                // sweep stays conservative.
                 e.0 = e.0.max(hs.0);
                 e.1 = e.1.max(hs.1);
             })
@@ -62,15 +57,12 @@ fn half_sizes_by_asset() -> HashMap<String, (i32, i32)> {
     out
 }
 
-/// Brick asset -> half-size for the OVERLAP sweep: the catalog, plus the one
+/// Brick asset -> half-size for the overlap sweep: the catalog, plus the one
 /// brick emit places that no gate catalog knows about.
 ///
-/// `PB_DefaultBrick` is the carrier under a comment annotation and under a
-/// plane's header text. It is a 1×1 procedural plate — half-extents (5, 5) —
-/// and it is `visible: false`, so nothing on screen would ever show it landing
-/// inside a gate; the game would just drop one of the two at load and orphan
-/// the survivor's components. Absent from the catalog it was silently filtered
-/// out of the sweep, which is precisely the wrong brick to leave unmeasured.
+/// `PB_DefaultBrick` is the invisible 1x1 procedural plate (half-extents 5, 5)
+/// under a comment annotation and under a plane's header text. The game drops
+/// one of two overlapping bricks at load, so it must be measured too.
 fn overlap_half_sizes() -> HashMap<String, (i32, i32)> {
     let mut out = half_sizes_by_asset();
     out.insert("PB_DefaultBrick".to_string(), (5, 5));
@@ -80,17 +72,14 @@ fn overlap_half_sizes() -> HashMap<String, (i32, i32)> {
 /// The footprint a brick actually occupies, as `(half_x, half_y)`, with
 /// the swap applied for a quarter-turned brick.
 ///
-/// Only the QUARTER turns swap. A half turn lands the brick the way round it
-/// started, so `Deg180` measures like `Deg0`. Every arm is spelled out rather
-/// than leaning on a catch-all: which side of this match a facing falls on is
-/// exactly the mistake these sweeps exist to catch, and a `_` would decide it
-/// silently for whatever gets added next.
+/// Only quarter turns swap: `Deg180` measures like `Deg0`. Every rotation is
+/// matched explicitly so a newly added facing must be classified.
 fn brick_half_size(brick: &brdb::Brick, sizes: &HashMap<String, (i32, i32)>) -> Option<(i32, i32)> {
     // A procedural gate (`PB_Gate_*`) is placed at a variant size of its own,
     // which the per-asset catalog default would understate.
     let known = *sizes.get(brick.asset.asset().as_ref())?;
     let (hx, hy) = match &brick.asset {
-        brdb::BrickType::Procedural { size, .. } => (size.x as i32, size.y as i32),
+        brdb::BrickType::Procedural { size, .. } => (i32::from(size.x), i32::from(size.y)),
         brdb::BrickType::Basic(_) => known,
     };
     Some(match brick.rotation {
@@ -135,20 +124,16 @@ fn emitted_brick_corners_match_the_cells_layout_reserved() {
         .expect("should compile");
 
     let sizes = half_sizes_by_asset();
-    // `r.layout.placements` is the root module's layout — the very map emit read.
+    // `r.layout.placements` is the root module's layout, the map emit read.
     // A brick's min corner is its center minus its (possibly swapped)
-    // half-extent, so recomputing it must reproduce the reserved cells. If
-    // emit swapped when layout did not, or centered with the unswapped
-    // half-size, that brick's corner shifts by the difference of its
-    // half-sizes while every other brick stays put.
+    // half-extent, so recomputing it must reproduce the reserved cells; a swap
+    // mismatch between layout and emit shifts that brick's corner alone.
     //
-    // Emit translates a grid's contents as a block when it centers the
-    // plane, so both sets are normalised by their own minimum first — the
-    // comparison is translation-invariant but not per-brick forgiving.
+    // Emit translates a grid's contents as a block when it centers the plane,
+    // so both sets are normalised by their own minimum first.
     //
     // Gutter bus rerouters have no `NodeId` and so no entry in `placements`;
-    // their reserved cells come straight off the layout's bus, and they are
-    // held to the same corner contract as every gate brick.
+    // their reserved cells come off the layout's bus and meet the same contract.
     let mut reserved: Vec<(i32, i32, i32)> = r
         .layout
         .placements
@@ -183,7 +168,7 @@ fn emitted_brick_corners_match_the_cells_layout_reserved() {
         let mz = v.iter().map(|p| p.2).min().unwrap();
         let mut out: Vec<(i32, i32, i32)> =
             v.iter().map(|p| (p.0 - mx, p.1 - my, p.2 - mz)).collect();
-        out.sort();
+        out.sort_unstable();
         out
     }
 
@@ -200,22 +185,17 @@ fn emitted_brick_corners_match_the_cells_layout_reserved() {
 /// gate therefore has to carry a counter-rotated label, or its variable tag
 /// reads a quarter-turn off from every other tag on the plane.
 ///
-/// The fixture's `spin` name appears twice — full size (2.4) on the
-/// unrotated `Pseudo_Var` brick, and as the small tag (1.2) on the rotated
-/// exec gate that writes it — so one source pins both sides of the rule.
+/// The fixture's `spin` name appears twice: full size (2.4) on the unrotated
+/// `Pseudo_Var` brick, and as the small tag (1.2) on the rotated exec gate that
+/// writes it, so one source pins both sides of the rule.
 #[test]
 fn a_rotated_gates_label_is_counter_rotated() {
     use brdb::schema::BrdbValue;
 
     /// `(text, line height)` -> the label rotations emitted for it.
     fn labels(src: &str, file: &str) -> Vec<(String, f32, f32)> {
-        let cr = wirescript::compile::compile(CompileInput {
-            source: src,
-            file,
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        })
-        .expect("should compile to brz");
+        let cr = wirescript::compile::compile(CompileInput::new(src, file))
+            .expect("should compile to brz");
         let mut out: Vec<(String, f32, f32)> = Vec::new();
         for c in common::world_components(&cr.brz) {
             let (
@@ -279,8 +259,7 @@ fn no_emitted_bricks_overlap_with_rotation_aware_footprints() {
         .expect("should compile");
 
     let sizes = overlap_half_sizes();
-    // The carriers must actually be in the sweep, or adding them to `sizes`
-    // proved nothing.
+    // The carriers must be present, or measuring them proves nothing.
     let carriers = r
         .world
         .grids

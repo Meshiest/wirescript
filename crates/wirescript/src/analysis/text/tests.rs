@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn word_at_survives_multibyte_neighbors() {
-    // Regression: the word boundary search used `rfind(...) + 1`, which
-    // lands INSIDE a multi-byte char (`─` is 3 bytes) and panicked the
-    // whole LSP on hover over comments like `// ── Tunables ──…`.
+    // The word-boundary search steps past a multi-byte char with `after_char`:
+    // `rfind(...) + 1` lands inside a three-byte box-drawing char, as in a
+    // `// Tunables` banner comment drawn with rules, and slicing there panics.
     let l = "// ── Tunables ──";
     assert_eq!(word_at(l, 0, 6).as_deref(), Some("Tunables"));
     // Cursor ON the box-drawing char: no word, no panic.

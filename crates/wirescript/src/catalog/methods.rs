@@ -33,15 +33,15 @@ impl ArgTy {
     /// The source-level type of this argument on a receiver of `kind`.
     pub fn ty(self, kind: &ContainerKind) -> Type {
         match (self, kind) {
-            (ArgTy::Elem, ContainerKind::Array { elem }) => elem.clone(),
-            (ArgTy::Key, ContainerKind::Map { key, .. }) => key.clone(),
-            (ArgTy::MapValue, ContainerKind::Map { value, .. }) => value.clone(),
-            (ArgTy::Elem | ArgTy::Key | ArgTy::MapValue, _) => Type::Any,
-            (ArgTy::Int, _) => Type::Int,
-            (ArgTy::Bool, _) => Type::Bool,
-            (ArgTy::String, _) => Type::String,
-            (ArgTy::Entity, _) => Type::Entity,
-            (ArgTy::Zone, _) => Type::Zone,
+            (Self::Elem, ContainerKind::Array { elem }) => elem.clone(),
+            (Self::Key, ContainerKind::Map { key, .. }) => key.clone(),
+            (Self::MapValue, ContainerKind::Map { value, .. }) => value.clone(),
+            (Self::Elem | Self::Key | Self::MapValue, _) => Type::Any,
+            (Self::Int, _) => Type::Int,
+            (Self::Bool, _) => Type::Bool,
+            (Self::String, _) => Type::String,
+            (Self::Entity, _) => Type::Entity,
+            (Self::Zone, _) => Type::Zone,
         }
     }
 
@@ -52,8 +52,8 @@ impl ArgTy {
     /// float the game rejects on a string-keyed map.
     pub fn port_type(self, kind: &ContainerKind) -> Type {
         match self {
-            ArgTy::Elem => Type::Any,
-            ArgTy::Zone => Type::Entity,
+            Self::Elem => Type::Any,
+            Self::Zone => Type::Entity,
             other => other.ty(kind),
         }
     }
@@ -159,8 +159,8 @@ impl Lowering {
     /// The arguments, empty for a `Custom` method.
     pub fn args(&self) -> &'static [MethodArg] {
         match self {
-            Lowering::Generic { args, .. } => args,
-            Lowering::Custom => &[],
+            Self::Generic { args, .. } => args,
+            Self::Custom => &[],
         }
     }
 

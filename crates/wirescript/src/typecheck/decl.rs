@@ -1,24 +1,20 @@
 //! Pass 2: declaration checking.
 
 use super::*;
+use crate::analysis::types::type_str;
+use crate::const_scope::Admit;
+use crate::ir::Literal;
 use crate::types::mono::unwrap_ref;
 
-// ---------- decl checking (2nd pass) ----------
+// Declaration checking (second pass)
 
-/// A type-shaped stand-in for a `const` parameter's real (call-site-only)
-/// value, used solely to seed the body frame's constants so structural constant checks
-/// (WS028 and friends, via `expr_to_literal_in`) see the param as constant
-/// during a mod/chip body's one-time check. Never observed by anything that
-/// cares about the actual value — see the call site in the `TopDecl::Chip`
-/// body-check loop.
-///
-/// Delegates to lowering's zero-value table so the placeholder's TYPE is
-/// always right (a `const vector` param gets a `Vector`, not a `Float`).
-/// Harmless while every reader is presence-only, but a landmine for any
-/// future check that inspects the literal's type — and sharing the one table
-/// keeps the two from drifting as types are added.
-fn const_param_placeholder(t: &Type) -> crate::ir::Literal {
-    crate::lower::default_literal_for_var_type(t).unwrap_or(crate::ir::Literal::Float(0.0))
+/// A type-shaped stand-in for a `const` parameter's call-site value, seeded into
+/// the body frame's constants during `check_chip_body` so structural constant
+/// checks (WS028 and others, through `expr_to_literal_in`) see the parameter as
+/// constant. Only its presence is read. It comes from lowering's zero-value
+/// table, so its type matches the parameter's (`const vector` gets a `Vector`).
+fn const_param_placeholder(t: &Type) -> Literal {
+    crate::const_eval::default_literal_for_var_type(t).unwrap_or(Literal::Float(0.0))
 }
 
 /// Validate a top-level (non-exec) var initializer: every element must be a
@@ -27,7 +23,7 @@ fn const_param_placeholder(t: &Type) -> crate::ir::Literal {
 /// name), which is baked into the save as a reference. Spreads and other
 /// values are only meaningful when the array is built at runtime, so they're
 /// rejected here with a pointer to assigning the array in an exec handler.
-fn check_top_level_array_init(ctx: &mut TypeCheckCtx, elements: &[ArrayElem], elem_ty: &Type) {
+fn check_top_level_array_init(ctx: &mut TypeCheckCtx<'_>, elements: &[ArrayElem], elem_ty: &Type) {
     for el in elements {
         let e = el.expr();
         let t = ctx.in_pure(|ctx| infer::infer(ctx, e));
@@ -37,7 +33,7 @@ fn check_top_level_array_init(ctx: &mut TypeCheckCtx, elements: &[ArrayElem], el
                 "spread `...` in an array initializer is only allowed when building the array inside an exec handler",
                 e.range().clone(),
             );
-        } else if crate::lower::holds_refs(elem_ty) && crate::lower::ref_shaped(e) {
+        } else if crate::const_eval::holds_refs(elem_ty) && crate::const_eval::ref_shaped(e) {
             if !coerces_at_a_baked_literal(&t, elem_ty)
                 && !coerces_at_a_baked_literal(&unwrap_ref(&t), elem_ty)
             {
@@ -52,15 +48,12 @@ fn check_top_level_array_init(ctx: &mut TypeCheckCtx, elements: &[ArrayElem], el
                 );
             }
         } else if let Some(lit) = fold_array_init_element(ctx, e) {
-            // Asset / prefab references are object references — they lower to
-            // their own reference gate (e.g. AudioReference) whose output must be
-            // WIRED into the array, so they can't be baked into the initializer's
-            // constant value list. Inlined here they'd be silently dropped.
+            // Asset and prefab references lower to their own reference gate (e.g.
+            // AudioReference) whose output must be wired into the array; a baked
+            // initializer value would be silently dropped.
             if matches!(
                 lit,
-                crate::ir::Literal::Asset { .. }
-                    | crate::ir::Literal::PrefabRef { .. }
-                    | crate::ir::Literal::NestedPrefab { .. }
+                Literal::Asset { .. } | Literal::PrefabRef { .. } | Literal::NestedPrefab { .. }
             ) {
                 ctx.diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
@@ -72,9 +65,8 @@ fn check_top_level_array_init(ctx: &mut TypeCheckCtx, elements: &[ArrayElem], el
                     range: e.range().clone(),
                 });
             } else if !matches!(elem_ty, Type::Any) && !coerces_at_a_baked_literal(&t, elem_ty) {
-                // A string-format coercion is the case worth naming: it reads
-                // as a legal conversion everywhere else in the language, and
-                // the reason it isn't one here is invisible from the source.
+                // A string-format coercion is legal everywhere else, so the
+                // message names why it fails here.
                 let why = if coerce(&t, elem_ty) == CoerceRule::ViaString {
                     "; an array initializer element can't be string-formatted, \
                      so write a matching-type literal"
@@ -97,43 +89,18 @@ fn check_top_level_array_init(ctx: &mut TypeCheckCtx, elements: &[ArrayElem], el
     }
 }
 
-/// Fold one array-initializer element to a constant, EMITTING the diagnostic
-/// itself when it can't. Returns `None` after emitting, so the caller has
-/// nothing left to report — which is the point: the two failure kinds want
-/// different messages and must not both fire.
-///
-/// `expr_to_literal_in` alone only resolves literals, named constants and
-/// operators over them — it has no notion of a `const mod` CALL. The full
-/// const evaluator runs as a fallback (it retries `expr_to_literal_in` first
-/// internally, so every element that already folded keeps folding exactly the
-/// same way; this only ADDS the const-mod-call surface), which is what lets an
-/// element like `size(1)` be recognised as constant HERE — without it, the
-/// bake in `lower::predeclare` never runs at all, because this check rejects
-/// the initializer before lowering ever sees it.
-///
-/// On failure the reason decides the message. An out-of-range index, a
-/// missing map key, or a missing record field describes a collection/record
-/// that IS fully constant but was subscripted/accessed past what it has, so
-/// the evaluator's own wording is emitted verbatim — telling the user to
-/// "build the array in an exec handler" is actively misleading advice for
-/// `[[1, 2][9]]`, whose problem is the index.
-///
-/// Every OTHER reason keeps the generic WS003, deliberately — including
-/// `Refused` (e.g. `[1 << 64]`, an operator declining its operands), whose
-/// WS003 is pinned by `lower::tests::const_init::out_of_range_shift_is_not_folded`.
-/// Widening this to `Refused`/`BudgetExceeded` would produce a more accurate
-/// message, but it would change a diagnostic code that test asserts, so it's
-/// left as WS003.
-fn fold_array_init_element(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<crate::ir::Literal> {
-    if let Some(lit) = crate::lower::expr_to_literal_in(e, &ctx.const_lookup()) {
+/// Fold one array-initializer element to a constant, reporting why when it
+/// cannot (and returning `None`, so the caller reports nothing more). The full
+/// evaluator follows `expr_to_literal_in`, so a `const mod` call (`size(1)`)
+/// counts as constant and the bake in `lower::predeclare` runs. An out-of-range
+/// index, missing key or field, or tuple arity mismatch is reported in the
+/// evaluator's words; any other reason, `Refused` (`[1 << 64]`) included, is
+/// WS003 (`lower::tests::const_init::a_non_constant_initializer_is_ws003`).
+fn fold_array_init_element(ctx: &mut TypeCheckCtx<'_>, e: &Expr) -> Option<Literal> {
+    if let Some(lit) = crate::const_eval::expr_to_literal_in(e, &ctx.const_lookup()) {
         return Some(lit);
     }
-    let evaluated = {
-        let lookup = |n: &str| ctx.resolve_mod(n);
-        let mut budget = crate::const_eval::Budget::default();
-        crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget)
-    };
-    match evaluated {
+    match ctx.const_eval(e, Admit::All) {
         Ok(lit) => Some(lit),
         Err(err) => {
             use crate::const_eval::ConstReason as R;
@@ -142,7 +109,7 @@ fn fold_array_init_element(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<crate::ir
                 | R::MapKeyNotFound
                 | R::RecordFieldNotFound(_)
                 | R::TupleArityMismatch { .. } => {
-                    ctx.emit(err.code(), err.message(), err.range.clone())
+                    ctx.emit(err.code(), err.message(), err.range.clone());
                 }
                 R::UnnamedConstMod(_) => {}
                 R::NotConstant(_)
@@ -163,22 +130,10 @@ fn fold_array_init_element(ctx: &mut TypeCheckCtx, e: &Expr) -> Option<crate::ir
     }
 }
 
-/// Check a map literal's entries against `Map<K, V>`: each key must coerce to
-/// `k`, each value to `v`. This is deliberately STRICTER than the `coerce_or_emit`
-/// sink assignment checking uses — a map *literal* entry additionally rejects
-/// `ViaString` (and any coercion that isn't `Same`/`Coerce`), because the literal
-/// entry has no gate to run a string-format coercion through (an assignment does).
-/// Call this from the VALID slots — a `var` initializer or an assignment
-/// RHS to a map var — so the literal never reaches the generic `infer`
-/// `MapLit` arm, which is the position-guard for every other use.
-///
 /// The entries of a map initializer for a `Map<K, V>` slot: a real `MapLit`, or
-/// an empty `{}`. The parser emits `{}` as an empty `RecordLit` (with no keys it
-/// can't tell an empty map from an empty record), but in a `Map`-typed slot it
-/// is the natural spelling of an empty-map initializer — equivalent to no
-/// initializer, since lowering's `bake_map_init` starts the map empty for any
-/// non-`MapLit` init. Returns `None` for anything else (a non-empty record, a
-/// scalar, …) so it still hits the generic coerce / position guard.
+/// an empty `{}`, which the parser emits as an empty `RecordLit` and which
+/// lowering's `bake_map_init` treats as an empty map. Returns `None` for
+/// anything else, so it still reaches the generic coerce and position guard.
 pub(super) fn map_init_entries(init: &Expr) -> Option<&[MapLitEntry]> {
     match init {
         Expr::MapLit { entries, .. } => Some(entries),
@@ -187,28 +142,27 @@ pub(super) fn map_init_entries(init: &Expr) -> Option<&[MapLitEntry]> {
     }
 }
 
-/// Whether `got` reaches `want` at a BAKED literal, where there is no gate to
-/// run a coercion through.
-///
-/// Map literal entries and array literal elements are both written into their
-/// storage gate's `InitialValue` as constants, so a `ViaString` coercion has
-/// nowhere to put its `FormatText` gate: only the coercions that hold at the
-/// literal itself (`Same`/`Coerce`) are valid. `Coerce` holds because lowering
-/// rewrites the literal in the declared type's shape as it bakes
-/// (`bake_string_bool`, `const_eval::scalar_in_type`); `ViaString` has no such
-/// rewrite, so it is baked raw and then destroyed at emit -
-/// `emit::variants` renders a non-`String` literal in a `string[]` as `""`,
-/// which is how `var s: string[] = [1, 2]` shipped two empty strings.
-///
-/// Deliberately STRICTER than the `coerce_or_emit` sink assignment checking
-/// uses, where a real wire exists for the gate to sit on.
+/// Whether `got` reaches `want` at a baked literal, where no gate can run a
+/// coercion. Map entries and array elements are written into their storage
+/// gate's `InitialValue`, so a `ViaString` coercion has nowhere to put its
+/// `FormatText` gate; only `Same` and `Coerce` hold. Lowering rewrites a
+/// `Coerce` literal into the declared type as it bakes (`bake_string_bool`,
+/// `const_eval::scalar_in_type`), while a `ViaString` one would bake raw and a
+/// non-`String` literal in a `string[]` renders as `""`. Stricter than
+/// `coerce_or_emit`, whose sinks have a wire for the coercion gate.
 pub(super) fn coerces_at_a_baked_literal(got: &Type, want: &Type) -> bool {
     matches!(coerce(got, want), CoerceRule::Same | CoerceRule::Coerce)
 }
 
 /// One side (key or value) of a map literal entry, checked against the map's
 /// declared type for that side.
-fn check_map_entry_side(ctx: &mut TypeCheckCtx, got: &Type, want: &Type, side: &str, at: &Expr) {
+fn check_map_entry_side(
+    ctx: &mut TypeCheckCtx<'_>,
+    got: &Type,
+    want: &Type,
+    side: &str,
+    at: &Expr,
+) {
     if coerces_at_a_baked_literal(got, want) {
         return;
     }
@@ -217,15 +171,20 @@ fn check_map_entry_side(ctx: &mut TypeCheckCtx, got: &Type, want: &Type, side: &
         format!(
             "map literal {side}: expected {}, got {}. A map literal entry \
              can't be string-formatted; write a matching-type literal",
-            crate::analysis::types::type_str(want),
-            crate::analysis::types::type_str(got),
+            type_str(want),
+            type_str(got),
         ),
         at.range().clone(),
     );
 }
 
+/// Check a map literal's entries against `Map<K, V>`: each key must reach `k`
+/// and each value `v` by a baked-literal coercion (see
+/// [`coerces_at_a_baked_literal`]). Call it from the valid slots (a `var`
+/// initializer, or an assignment RHS to a map var) so the literal never reaches
+/// `infer`'s `MapLit` arm, which reports every other position.
 pub(super) fn check_map_literal(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     entries: &[MapLitEntry],
     k: &Type,
     v: &Type,
@@ -240,23 +199,14 @@ pub(super) fn check_map_literal(
     }
 }
 
-/// The `Map<K, V>` a `const m = { … }` binds, with its entries validated.
+/// The `Map<K, V>` a `const m = { ... }` binds, with its entries validated.
 ///
-/// A `const` binding is a THIRD valid slot for a map literal, alongside a `var`
-/// initializer and an assignment RHS — those two route through
-/// [`check_map_literal`] rather than the generic `Expr::MapLit` arm in `infer`,
-/// which is a POSITION GUARD (WS026) and would report a valid position as an
-/// error. This is the same routing for the slot the other two can't serve:
-/// a `const` carries no declared container type, so K and V are inferred from
-/// the first entry (mirroring the array literal's element-type inference) and
-/// every entry is then checked against them with the same per-side rule, so a
-/// heterogeneous entry is still rejected.
-///
-/// The guard itself is untouched: a map literal in a genuinely invalid position
-/// still reaches `infer` and still reports WS026.
-pub(super) fn check_const_map_literal(ctx: &mut TypeCheckCtx, entries: &[MapLitEntry]) -> Type {
-    // Every entry is inferred ONCE, up front — inferring the first entry
-    // separately to source K/V would report any diagnostic inside it twice.
+/// A `const` binding is a valid map-literal slot that bypasses `infer`'s
+/// `Expr::MapLit` position guard (WS026). It has no declared container type, so
+/// K and V come from the first entry and every entry is checked against them.
+pub(super) fn check_const_map_literal(ctx: &mut TypeCheckCtx<'_>, entries: &[MapLitEntry]) -> Type {
+    // Each entry is inferred once, so a diagnostic inside the first entry is
+    // not reported twice.
     let inferred: Vec<(Type, Type)> = entries
         .iter()
         .map(|e| (infer::infer(ctx, &e.key), infer::infer(ctx, &e.value)))
@@ -272,9 +222,9 @@ pub(super) fn check_const_map_literal(ctx: &mut TypeCheckCtx, entries: &[MapLitE
 /// The type of a `let`/`const` initializer. Shared by the `TopDecl::Let` and
 /// `Stmt::Let` arms so the two scopes can't drift.
 ///
-/// `infer`, except for the one position `infer`'s map-literal guard would
-/// wrongly reject: `const m = { … }` (see [`check_const_map_literal`]).
-pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) -> Type {
+/// `infer`, except for `const m = { ... }`, which `infer`'s map-literal guard
+/// would reject (see [`check_const_map_literal`]).
+pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx<'_>, l: &crate::ast::LetDecl) -> Type {
     // `let s: T` with no `= value` declares a signal when `T` is `exec`, also
     // through a `type` alias; any other type needs its value.
     if !l.has_initializer()
@@ -284,9 +234,7 @@ pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) ->
             },
         ) = &l.typ
     {
-        let before = ctx.diagnostics.len();
-        let resolved = resolve_type_expr(ctx, te);
-        ctx.diagnostics.truncate(before);
+        let resolved = ctx.discarding_diagnostics(|ctx| resolve_type_expr(ctx, te));
         let name = match &l.binding {
             LetBinding::Ident { name, .. } => name.as_str(),
             _ => "x",
@@ -346,19 +294,14 @@ pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) ->
         ctx.record_expr_type(range, &t);
         return t;
     }
-    // Expose the let's annotation as the expected-type hint, so a generic enum
-    // construction whose variant can't pin a type parameter takes it from the
-    // annotation (`let n: Option<int> = Option.None`) instead of WS063 - the
-    // same push `check` does for an annotated `out`. The annotation's own
-    // value-vs-type check (`check_let_type_annotation`) re-resolves and owns the
-    // authoritative diagnostics, so any this resolution emits is dropped to
-    // avoid double-reporting a malformed annotation.
-    let annotated = l.typ.as_ref().map(|te| {
-        let before = ctx.diagnostics.len();
-        let resolved = resolve_type_expr(ctx, te);
-        ctx.diagnostics.truncate(before);
-        resolved
-    });
+    // The annotation is the expected-type hint, so a generic enum construction
+    // whose variant can't pin a type parameter takes it from the annotation
+    // (`let n: Option<int> = Option.None`) instead of WS063. Its diagnostics are
+    // dropped: `check_let_type_annotation` re-resolves it and reports them.
+    let annotated = l
+        .typ
+        .as_ref()
+        .map(|te| ctx.discarding_diagnostics(|ctx| resolve_type_expr(ctx, te)));
     // `null` takes the annotation's type, as it does in every other typed slot.
     if let (Expr::NullLit { .. }, Some(slot)) = (&l.value, &annotated) {
         return infer::check(ctx, &l.value, slot);
@@ -374,13 +317,10 @@ pub(super) fn infer_let_init(ctx: &mut TypeCheckCtx, l: &crate::ast::LetDecl) ->
     t
 }
 
-/// Whether this declaration carries `@nofold`. Mirrors the set of
-/// `ctx.with_nofold(<decl>.no_fold, …)` wraps in `lower::decl::lower_decl` (Out,
-/// Handler, Event, Let, Var) plus `ChipDecl`, whose body lowering marks via
-/// `build_chip_module`'s own `nofold_depth` seed. Wrapping the whole dispatch
-/// on this — rather than per arm — is what keeps the two stages from drifting
-/// as arms are added: a variant with no `no_fold` field simply reports `false`
-/// and behaves exactly as before.
+/// Whether this declaration carries `@nofold`. Mirrors the `ctx.with_nofold`
+/// wraps in `lower::decl::lower_decl` (Out, Handler, Event, Let, Var) plus a
+/// chip, whose body lowering seeds `nofold_depth` in `build_chip_module`.
+/// A variant with no `no_fold` field reports `false`.
 pub(super) fn decl_no_fold(d: &TopDecl) -> bool {
     match d {
         TopDecl::Out(b) => b.no_fold,
@@ -394,21 +334,18 @@ pub(super) fn decl_no_fold(d: &TopDecl) -> bool {
     }
 }
 
-pub(super) fn check_decl(ctx: &mut TypeCheckCtx, d: &TopDecl) {
+pub(super) fn check_decl(ctx: &mut TypeCheckCtx<'_>, d: &TopDecl) {
     ctx.with_nofold(decl_no_fold(d), |ctx| check_decl_inner(ctx, d));
 }
 
-/// A record used as var/array/map STORAGE decomposes into one backing gate per
-/// field (see `lower::predeclare::declare_record_container`), so every leaf must
-/// be a value that a gate can hold. A reference-only field (`ref T`/zone/
-/// teleport/prefab) or an `exec` can't — reject it with WS049. Nested records
-/// recurse; variant, array, and map fields are fine on a record VARIABLE.
-///
-/// A record stored as an array ELEMENT or map VALUE (`var hs: H[]`, and a
-/// record variable's `pts: P[]` field) is one column per field, and a column
-/// can't hold an array or map, so such a record may not contain one at any
-/// depth.
-pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &SourceRange) {
+/// A record used as var, array or map storage has one backing gate per field
+/// (`lower::predeclare::declare_record_container`), so every leaf must be a
+/// value a gate holds: a reference-only field (`ref T`, zone, teleport,
+/// prefab) or an `exec` is WS049. Nested records recurse; variant, array and
+/// map fields are fine on a record variable. A record stored as an array
+/// element or map value is one column per field, and a column cannot hold an
+/// array or map, so such a record may contain none at any depth.
+pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx<'_>, ty: &Type, range: &SourceRange) {
     fn reason(ft: &Type) -> Option<&'static str> {
         match ft {
             Type::Ref(_) => Some("a reference (`*T`)"),
@@ -442,7 +379,7 @@ pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &
                 .map(|p| format!("{name}.{p}")),
         })
     }
-    fn walk(ctx: &mut TypeCheckCtx, fields: &[(String, Type)], range: &SourceRange) {
+    fn walk(ctx: &mut TypeCheckCtx<'_>, fields: &[(String, Type)], range: &SourceRange) {
         for (name, ft) in fields {
             match ft {
                 Type::Record(sub) => walk(ctx, sub, range),
@@ -467,7 +404,7 @@ pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &
     }
     /// A tuple is walked only for the containers it holds; its other elements
     /// keep their existing rules.
-    fn tuple_containers(ctx: &mut TypeCheckCtx, t: &Type, range: &SourceRange) {
+    fn tuple_containers(ctx: &mut TypeCheckCtx<'_>, t: &Type, range: &SourceRange) {
         match t {
             Type::Array(elem) | Type::Map(_, elem) => element(ctx, elem, range),
             Type::Tuple(elems) => {
@@ -479,7 +416,7 @@ pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &
             _ => {}
         }
     }
-    fn element(ctx: &mut TypeCheckCtx, elem: &Type, range: &SourceRange) {
+    fn element(ctx: &mut TypeCheckCtx<'_>, elem: &Type, range: &SourceRange) {
         let Some(fields) = parts(elem) else {
             return;
         };
@@ -514,25 +451,22 @@ pub(super) fn check_aggregate_record(ctx: &mut TypeCheckCtx, ty: &Type, range: &
     }
 }
 
-/// A value crossing a port (an `in`/`out` port or a chip parameter/output) is
-/// one pin per record field, and a pin carries a single reference. An array or
-/// map of records (or tuples or payload-carrying enums) is several columns with
-/// no single reference, so neither it nor a record holding one at any depth can
-/// cross (WS049). Inside a record, an array of ANY enum counts, since a record
-/// variable stores that field as columns.
-///
-/// `boundary` is a top-level `in`/`out` port, where a payload-free enum crosses
-/// as its tag; at a chip parameter or output, and nested in any port type, an
-/// enum does not cross at all.
+/// A value crossing a port (an `in`/`out` port, a chip parameter or output) is
+/// one pin per record field, and a pin carries one reference. An array or map
+/// of records (or tuples, or payload enums) is several columns with no single
+/// reference, so neither it nor a record holding one at any depth can cross
+/// (WS049); inside a record, an array of any enum counts. `boundary` is a
+/// top-level `in`/`out` port, where a payload-free enum crosses as its tag;
+/// elsewhere an enum does not cross.
 pub(super) fn check_port_record(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     name: &str,
     ty: &Type,
     range: &SourceRange,
     boundary: bool,
 ) {
     // A payload-free enum array is one column, which a single pin carries.
-    let enums = ctx.enum_defs.clone();
+    let enums = std::sync::Arc::clone(&ctx.enum_defs);
     let columnar = |t: &Type| match t {
         Type::Record(_) | Type::Tuple(_) => true,
         t @ Type::Enum { .. } => enums.of(t).is_some_and(|d| {
@@ -612,7 +546,7 @@ pub(super) fn check_port_record(
     }
 }
 
-fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
+fn check_decl_inner(ctx: &mut TypeCheckCtx<'_>, d: &TopDecl) {
     // A record used as var/array/map storage must have only storable leaf fields.
     let storage_type = match d {
         TopDecl::Var(v) => Some((ctx.scope.lookup(&v.name).map(|s| s.ty.clone()), &v.range)),
@@ -640,13 +574,12 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     .top_names
                     .initializer_read(&v.name, &v.range)
                     .map(|at| ctx.top_view(at));
-                // An array-valued `var` declared at top level (no exec context)
-                // is baked into the gate just like an `array` decl — its elements
-                // must be constant literals.
+                // A top-level array-valued `var` is baked into the gate like an
+                // `array` decl, so its elements must be constant literals.
                 if let Expr::Array { elements, .. } = init {
-                    // Type the whole array expr so its element type lands in the
-                    // map — lowering reads it to infer an unannotated var's type.
-                    // An `any[]` is its expected type, so its elements may mix.
+                    // Type the whole array expr so its element type is recorded;
+                    // lowering reads it to infer an unannotated var's type. An
+                    // `any[]` is its expected type, so its elements may mix.
                     let any_elems = matches!(&inner, Type::Array(e) if matches!(**e, Type::Opaque));
                     ctx.in_pure(|ctx| {
                         infer::infer_hinted(ctx, init, any_elems.then_some(&inner));
@@ -659,10 +592,9 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 } else if let Some(entries) = map_init_entries(init)
                     && let Type::Map(k, v_ty) = &inner
                 {
-                    // A map-valued `var` initializer: validate entries against
-                    // the declared `Map<K, V>` directly, bypassing the generic
-                    // `infer` `MapLit` arm (the position guard) — this IS
-                    // the valid initializer slot. An empty `{}` is an empty-map init.
+                    // A map-valued `var` initializer is a valid map-literal slot,
+                    // so its entries are checked directly against `Map<K, V>`
+                    // rather than through `infer`'s `MapLit` position guard.
                     ctx.in_pure(|ctx| {
                         check_map_literal(ctx, entries, k, v_ty);
                     });
@@ -681,9 +613,8 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                         if v.typ.is_none() {
                             reject_never_value(ctx, &unwrap_ref(&t), init.range(), &v.name);
                         }
-                        // Unannotated var with a non-literal init (`var v =
-                        // Vec(…)`): refine the placeholder `any` from the RHS,
-                        // like buffers do.
+                        // An unannotated var with a non-literal init (`var v =
+                        // Vec(...)`) refines its placeholder `any` from the RHS.
                         if v.typ.is_none() && matches!(inner, Type::Any) {
                             // A ref value is what the var holds, not a place to read.
                             let u = match &t {
@@ -735,10 +666,9 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             }
         }
         TopDecl::Map(m) => {
-            // Optional literal initializer: `var m: Map<K, V> = { k => v, ... }`.
-            // Key/value types were already resolved in registration — reuse the
-            // registered symbol instead of re-resolving (avoids double-emitting
-            // an "unknown type" diagnostic if `key_type`/`value_type` is bad).
+            // An optional literal initializer, `var m: Map<K, V> = { k => v, ... }`. The
+            // key and value types come from the registered symbol, so a bad type is not
+            // reported twice.
             if let Some(init) = &m.init {
                 let (key, value) = match ctx.scope.lookup(&m.name) {
                     Some(SymbolInfo {
@@ -775,9 +705,7 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             if b.value.is_none()
                 && let Some(te) = &b.typ
             {
-                let before = ctx.diagnostics.len();
-                let ty = resolve_type_expr(ctx, te);
-                ctx.diagnostics.truncate(before);
+                let ty = ctx.discarding_diagnostics(|ctx| resolve_type_expr(ctx, te));
                 check_port_record(ctx, &b.name, &ty, &b.range, true);
             }
             if let Some(value) = &b.value {
@@ -789,16 +717,13 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     if matches!(resolved, Type::Ref(_))
                         && let Expr::Ident { range, .. } = value
                     {
-                        ctx.var_read_contexts
-                            .remove(&(range.file.clone(), range.start.offset));
+                        ctx.var_read_contexts.remove(&range.start_key());
                     }
-                    // An annotated out must accept its value: `check` coerces it
-                    // into the port type (WS003 on a genuine mismatch; the string
-                    // -> bool `!= ""` compare and friends pass) AND resolves a
-                    // bidirectional literal like `null` to the port's type. A
-                    // `*T` port carries a ref, so `out y: *int = &x` fits it and
-                    // `out y: *int = x` (x's value) does not; an array or map
-                    // ref is the container itself, so `*int[]` and `int[]` agree.
+                    // An annotated `out` must accept its value: `check` coerces it into the port
+                    // type (WS003 on a mismatch; the string to bool `!= ""` compare and others
+                    // pass) and resolves a bidirectional literal such as `null` to it. A `*T` port
+                    // carries a ref, so `out y: *int = &x` fits and `out y: *int = x` does not; an
+                    // array or map ref is the container, so `*int[]` and `int[]` agree.
                     let value_ty = ctx.in_pure(|ctx| {
                         infer::check(ctx, value, &resolved.clone().container_ref_as_value())
                     });
@@ -832,7 +757,7 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                             code: "WS017".into(),
                             message: {
                                 let held = unwrap_ref(&sym.ty);
-                                let held_str = crate::analysis::types::type_str(&held);
+                                let held_str = type_str(&held);
                                 let o = &b.name;
                                 // A var holding a ref has no ref to itself to
                                 // offer: `**int` is WS086.
@@ -860,33 +785,16 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             }
             record_single_output_alias(ctx, &l.binding, &l.value);
             record_let_ref_values(ctx, &l.binding, &l.value);
-            // Same is_const/let split as the `Stmt::Let` arm (typecheck/stmt.rs):
-            // `let` folds opportunistically, `const` must fold or it's an error.
-            // A top-level constant is already recorded in the module's
-            // constants by the whole-program fixpoint pass (`typecheck()`, run
-            // before any decl is checked), and no frame is open at the top
-            // level, so recording below is a no-op there; this evaluation
-            // exists to surface the WS046/WS047/WS048 a `const` binding failed
-            // with. Inside the frame `TopDecl::Namespace` checks a namespaced
-            // module's members in, every name the binding introduces is
-            // recorded. Evaluated before the binding exists, so the
-            // initializer reads the names around it.
-            let (evaluated, uncertified) = {
-                let lookup = |n: &str| ctx.resolve_mod(n);
-                let mut budget = crate::const_eval::Budget::default();
-                let evaluated = crate::const_eval::eval_let_value(
-                    l,
-                    &ctx.const_ctx(Some(&lookup)),
-                    &mut budget,
-                )
+            // As for `Stmt::Let`: a `let` folds when it can, a `const` must fold or it is
+            // an error. A top-level constant is already in the module's constants (the
+            // whole-program fixpoint in `typecheck()` runs first) and no frame is open
+            // here, so this evaluation surfaces the WS046, WS047 or WS048 a `const` failed
+            // with; inside the frame `TopDecl::Namespace` opens, every bound name is
+            // recorded. It runs before the binding exists, so it reads the names around it.
+            let evaluated = ctx
+                .const_eval_let(l)
                 .and_then(|lit| crate::const_eval::bind_destructured(&l.binding, lit));
-                let certified = evaluated.is_ok()
-                    && crate::const_eval::integer_ops_certified(
-                        &l.value,
-                        &ctx.certified_const_ctx(Some(&lookup)),
-                    );
-                (evaluated, !certified)
-            };
+            let uncertified = !(evaluated.is_ok() && ctx.integer_ops_certified(&l.value));
             let bound = let_binding_type(ctx, l, &t);
             bind_let(ctx, &l.binding, &bound, &l.value);
             ctx.consts.bound_at_top(&l.range);
@@ -914,46 +822,13 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
         // A top-level `let ... else` is checked exactly like the statement form
         // (`Stmt::LetElse`) - the `LetElse` struct is shared.
         TopDecl::LetElse(l) => check_stmt(ctx, &Stmt::LetElse(l.clone())),
-        TopDecl::Fn(f) => {
-            ctx.push_scope();
-            for p in &f.params {
-                let pt = resolve_type_expr(ctx, &p.typ);
-                ctx.scope.declare(
-                    &p.name,
-                    SymbolInfo {
-                        kind: SymbolKind::Param,
-                        name: p.name.clone(),
-                        ty: pt,
-                        decl_range: p.range.clone(),
-                        signature: None,
-                        event_data: None,
-                    },
-                );
-            }
-            ctx.in_pure(|ctx| {
-                infer::infer(ctx, &f.body);
-            });
-            if let Some(rt) = &f.return_type {
-                // Resolved where the signature is registered, which reports
-                // a malformed one.
-                let before = ctx.diagnostics.len();
-                let rt = resolve_type_expr(ctx, rt);
-                ctx.diagnostics.truncate(before);
-                infer::int_constants_in_slot(ctx, &f.body, &rt);
-            }
-            ctx.pop_scope();
-        }
         TopDecl::Chip(c) => {
             super::fn_decl::check_signature(ctx, c);
-            // Bounded-polymorphism body checking. Body-check the
-            // decl once per concrete member of the cartesian product of its
-            // type params' masks — an operation on a type param (`a + 1`)
-            // can't resolve against the signature's `Type::Param`
-            // placeholder (registration, untouched by this
-            // arm), and even where it somehow could, the body must be valid
-            // for EVERY concrete type the mask allows, not just checked once
-            // symbolically. A non-generic decl (`type_params` empty) gets
-            // the single trivial "no bindings" combo below.
+            // A generic declaration's body is checked once per member of the cartesian
+            // product of its type parameters' masks: an operation on a type parameter
+            // (`a + 1`) cannot resolve against `Type::Param`, and the body must be valid
+            // for every type the masks allow. A non-generic declaration gets the single
+            // empty combination.
             const MAX_BODY_CHECK_COMBOS: usize = 64;
             // Budget is a whole-PATH cap, not per-decl: a nested generic decl is
             // re-checked once per OUTER combo, so divide the cap by the combos
@@ -985,22 +860,13 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     }
                 }
                 if capped {
-                    // Too many combinations for the full cartesian product.
-                    // A single all-first-member combo is unsound: a param's
-                    // first mask member is the MOST permissive for arithmetic
-                    // (an unbounded param's is `bool`, which coerces into every
-                    // numeric op), so a body op invalid for other members would
-                    // slip through unchecked (a silent miscompile at any call
-                    // site that picks those members). Instead vary each param
-                    // across its WHOLE mask while the others hold a fixed
-                    // representative (mask[0]). This checks every operation
-                    // whose validity depends on a single param's type — the
-                    // realistic case — at O(sum of mask sizes) rather than
-                    // O(product), then truncates to the path budget so nested
-                    // generics stay bounded. Residual: an op valid for every
-                    // single-param variation yet invalid only for a specific
-                    // multi-param COMBINATION is not caught (needs ≥2 unbounded
-                    // params AND a cross-param-only type dependency).
+                    // Too many combinations for the full product. All-first-members is unsound:
+                    // a parameter's first mask member is the most permissive for arithmetic (an
+                    // unbounded one's is `bool`, which coerces into every numeric op). Instead each
+                    // parameter varies across its whole mask while the others hold `mask[0]`,
+                    // which checks every operation depending on one parameter's type at
+                    // O(sum of mask sizes), truncated to the path budget. An operation invalid only
+                    // for a particular combination of two or more parameters is not caught.
                     let rep: Vec<Type> = masks.iter().map(|m| m[0].clone()).collect();
                     let mut combos = vec![rep.clone()];
                     for (i, m) in masks.iter().enumerate() {
@@ -1020,7 +886,7 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             // multi-combo generic check; the non-generic single combo
             // writes straight into `ctx.diagnostics`.
             let multi_pass = combos.len() > 1;
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = HashSet::default();
             let mut deduped: Vec<Diagnostic> = Vec::new();
             // Commit this decl's combos to the path budget so any nested generic
             // decl checked inside the loop divides the REMAINING cap (restored
@@ -1073,9 +939,9 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             check_every_path_returns(ctx, c);
         }
         TopDecl::AnonChip(ac) => {
-            // Anon chip shares parent scope — NO scope push/pop.
-            // Vars already pre-registered in pass 1; use check_decl (not
-            // check_stmt) for them to avoid duplicate-declaration errors.
+            // An anonymous chip shares its parent's scope, so no scope is pushed. Its
+            // vars were registered in pass 1, so `check_decl` (not `check_stmt`) avoids
+            // duplicate-declaration errors.
             check_anon_chip_stmts(ctx, &ac.body.stmts, true);
         }
         TopDecl::Event(e) => {
@@ -1110,38 +976,27 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             check_stmt(ctx, &Stmt::Assign(a.clone()));
         }
         TopDecl::If(i) => {
-            if ctx.exec_mode() != ExecMode::Exec {
-                ctx.emit(
-                    "WS007",
-                    "top-level 'if' outside an exec context",
-                    i.range.clone(),
-                );
-            }
+            ctx.require_exec("top-level 'if'", &i.range);
             check_stmt(ctx, &Stmt::If(i.clone()));
         }
         // A top-level `if let` is checked exactly like the statement form
         // (`Stmt::IfLet`) - the `IfLet` struct is shared.
         TopDecl::IfLet(i) => check_stmt(ctx, &Stmt::IfLet(i.clone())),
         TopDecl::Namespace(ns) => {
-            // A namespaced (`import * as ns`) mod body references its sibling
-            // constants and mods by BARE name, and those mods are inlined at
-            // call sites in the importing module. Typecheck the bodies here in
-            // an isolated scope (siblings registered as bare names) so operator
-            // resolutions and expression types get recorded — otherwise the
-            // inlined body's arithmetic and sibling calls lower to _Unsupported.
-            // A namespace this module imported for ITSELF (`import * as D` in
-            // the file we are namespacing) travels in beside us as its own
-            // top-level namespace, and our members name it. It lives in an
-            // OUTER frame, which the seal below hides, so re-declare it inside
-            // this frame first. Matched by origin file, the same rule
-            // `namespace_visible` applies at the use site, so this admits only
-            // the namespaces our own members were written against - never the
-            // importer's.
-            // Taken from the per-FILE table, not the scope: the flat scope keeps
-            // one symbol per name, so an alias shadowed by a same-named one in
-            // the importer would be invisible here -- which is exactly the case
-            // this frame exists to serve.
-            let member_file = ns.decls.first().map(|d| d.range().file.clone());
+            // A namespaced (`import * as ns`) mod body names its sibling constants and
+            // mods by bare name, and those mods inline into the importer. The bodies are
+            // checked here in an isolated scope with the siblings declared bare, so their
+            // operator resolutions and types are recorded for lowering.
+            // A namespace this module imported for itself (`import * as D` in the file
+            // being namespaced) travels beside it as a top-level namespace in an outer
+            // frame, which the seal below hides, so it is declared again in this frame.
+            // Matched by origin file, as `namespace_visible` does, so only the namespaces
+            // the members were written against come in. Taken from the per-file table,
+            // since the flat scope keeps one symbol per name and the importer may shadow it.
+            let member_file = ns
+                .decls
+                .first()
+                .map(|d| std::sync::Arc::clone(&d.range().file));
             let traveling: Vec<(String, SymbolInfo)> = match &member_file {
                 Some(file) => ctx
                     .namespaces_by_file
@@ -1150,17 +1005,15 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                     .unwrap_or_default()
                     .into_iter()
                     .map(|n| {
-                        let info = SymbolInfo {
-                            kind: SymbolKind::Namespace,
-                            name: n.clone(),
-                            ty: Type::Any,
-                            decl_range: SourceRange {
-                                file: file.clone(),
+                        let info = SymbolInfo::new(
+                            SymbolKind::Namespace,
+                            n.clone(),
+                            Type::Any,
+                            SourceRange {
+                                file: std::sync::Arc::clone(file),
                                 ..Default::default()
                             },
-                            signature: None,
-                            event_data: None,
-                        };
+                        );
                         (n, info)
                     })
                     .collect(),
@@ -1173,14 +1026,12 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
             for d in &ns.decls {
                 register_decl(ctx, d);
             }
-            // Seal name resolution at this frame: a free name in a namespaced
-            // body must bind to a SIBLING member (registered just above) or a
-            // language global (events / math / builtin types resolve via the
-            // catalog and `resolve_type_expr`, not this stack), never fall
-            // through to the importer's same-named top-level state. Without
-            // this, `lib` `on go { q = q + 1 }` with no `q`/`go` of its own
-            // silently type-checks against — and wires to — main's `go`/`q`
-            // (N1). Restored before the frame pops.
+            // Seal name resolution at this frame: a free name in a namespaced body binds
+            // to a sibling member or a language global (events, math and builtin types
+            // resolve through the catalog and `resolve_type_expr`), never to the
+            // importer's top level. Otherwise `lib`'s `on go { q = q + 1 }` with no `q` or
+            // `go` of its own would check against, and wire to, main's. Restored before
+            // the frame pops.
             let sealed_floor = ctx.scope.depth() - 1;
             let prev_floor = ctx.scope.set_floor(sealed_floor);
             for d in &ns.decls {
@@ -1192,16 +1043,13 @@ fn check_decl_inner(ctx: &mut TypeCheckCtx, d: &TopDecl) {
                 }
             }
             for d in &ns.decls {
-                if matches!(d, TopDecl::Chip(_) | TopDecl::Fn(_)) {
+                if matches!(d, TopDecl::Chip(_)) {
                     check_decl(ctx, d);
                 }
             }
-            // Handlers (and anon chips) in an imported module lower as part
-            // of the importing program, so their bodies must be checked here too
-            // — otherwise operators / sibling calls inside a namespaced
-            // `on …` handler get no `op_resolutions` and lower to `_Unsupported`
-            // (the same failure the value/chip checks above prevent). Checked
-            // last, once every member is registered.
+            // Handlers and anonymous chips in an imported module lower as part of the
+            // importer, so their bodies are checked here too, after every member is
+            // registered, or their operators and sibling calls get no `op_resolutions`.
             for d in &ns.decls {
                 if matches!(d, TopDecl::Handler(_) | TopDecl::AnonChip(_)) {
                     check_decl(ctx, d);
@@ -1235,7 +1083,7 @@ fn narrow_to_clean_members(
             let Some(t) = combo.get(k).filter(|_| *ok) else {
                 continue;
             };
-            let t = crate::analysis::types::type_str(t);
+            let t = type_str(t);
             if !members.contains(&t) {
                 members.push(t);
             }
@@ -1264,15 +1112,11 @@ fn narrow_to_clean_members(
 
 /// Check `c`'s body once, with its type parameters bound to `combo` (empty for
 /// a non-generic `c`), under the enclosing body's substitution.
-pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Type]) {
-    // Concatenate onto the ENCLOSING substitution rather than
-    // replacing it: a nested generic decl (`Stmt::ChipDecl`,
-    // body-checked once per outer combo) must key its own body's
-    // resolutions by the outer combo too, or every outer pass
-    // would overwrite the same `(range, combo)` key with the
-    // last-checked outer type. `combo` is empty for a non-generic
-    // decl, so this leaves the key unchanged (inherits whatever
-    // the enclosing decl set, `[]` at the top level).
+pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx<'_>, c: &ChipDecl, combo: &[Type]) {
+    // Extend the enclosing substitution rather than replacing it: a nested
+    // generic declaration (`Stmt::ChipDecl`, checked once per outer combination)
+    // keys its body's resolutions by the outer combination too, or every outer pass
+    // would overwrite the same key. `combo` is empty for a non-generic declaration.
     let saved_resolution_subst = std::mem::take(&mut ctx.resolution_subst);
     ctx.resolution_subst = saved_resolution_subst
         .iter()
@@ -1280,25 +1124,20 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
         .chain(combo.iter().cloned())
         .collect();
     let checked = (
-        c.range.file.clone(),
+        std::sync::Arc::clone(&c.range.file),
         c.range.start.offset,
         c.range.end.offset,
-        ctx.resolution_subst.clone(),
+        std::sync::Arc::clone(&ctx.resolution_subst),
     );
     ctx.resolutions.checked_bodies.insert(checked);
     // The body reads the top level as its declaration sees it, wherever it
     // is checked from.
     let top_view = ctx.top_view(crate::scope::top::ReadAt::body(&c.range));
     ctx.push_scope();
-    // Same registration as the signature pass (register_decl),
-    // but in the body scope: covers annotations inside the body
-    // (e.g. `let x: T = a`). For a generic decl each type param
-    // is bound to THIS combo's concrete mask member (not
-    // `Type::Param` — an operation like `a + 1` must resolve
-    // against a real type); `combo` is empty for a non-generic
-    // decl, so this loop is a no-op there. Scope is popped at
-    // the end of each pass, so params never leak to sibling
-    // decls.
+    // The signature's registration again (`register_decl`), in the body scope, for
+    // annotations inside the body (`let x: T = a`). Each type parameter binds this
+    // combination's concrete member rather than `Type::Param`, so `a + 1`
+    // resolves; the scope pops at the end of each pass, so nothing leaks.
     let saved_unbounded = ctx.unbounded_type_params.len();
     let saved_unbounded_params = ctx.unbounded_typed_params.len();
     let saved_bounded = ctx.bounded_type_params.len();
@@ -1317,46 +1156,22 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
                 }
             }
         }
-        ctx.scope.declare(
-            &tp.name,
-            SymbolInfo {
-                kind: SymbolKind::Type,
-                name: tp.name.clone(),
-                ty: ty.clone(),
-                decl_range: tp.range.clone(),
-                signature: None,
-                event_data: None,
-            },
-        );
+        ctx.scope
+            .declare_new(SymbolKind::Type, &tp.name, ty.clone(), tp.range.clone());
     }
     for p in &c.inputs {
         let pt = resolve_type_expr(ctx, &p.typ);
         if !c.inline {
             check_port_record(ctx, &p.name, &pt, &p.range, false);
         }
-        // `name: const T` means "inside the body the parameter
-        // reads as [a compile-time constant]" (ast.rs's own doc
-        // comment on `Param::is_const`) — a mod is inlined per
-        // call site with the real argument value, so any call
-        // site's actual constant is always literal by the time it
-        // reaches a config port (see `lower/call/inline.rs`). This
-        // one-time, non-generic body-check can't know that value,
-        // so it records a type-shaped PLACEHOLDER in the body
-        // frame's constants instead, just enough for
-        // `expr_to_literal_in`/`ctx.const_lookup()`-based checks
-        // (e.g. `validate_scalar_config_arg`'s WS028) to see the
-        // param as "some constant" and accept it structurally.
-        // Its VALUE must never be used for anything beyond that
-        // presence check; lowering discards it entirely in favor
-        // of the real argument. Recording it AS a placeholder
-        // is what ENFORCES that: the `Stmt::If` const-elision arm evaluates against
-        // an environment with placeholders removed, so this zero
-        // can never select a branch (which lowering, holding the
-        // real argument, would then pick the other way — shipping
-        // a block this pass never checked).
-        // `name: const T` IS a `const` declaration, recorded as one (though
-        // being a placeholder already excludes it from the `if`-condition
-        // environment either way).
+        // `name: const T` reads as a compile-time constant inside the body
+        // (`Param::is_const`): a mod inlines per call site with the real argument
+        // (`lower/call/inline.rs`), but this one check cannot know it, so the body
+        // frame records a type-shaped placeholder, enough for the structural checks
+        // (`validate_scalar_config_arg`'s WS028) to accept it. Being a placeholder,
+        // it never selects an `if` branch (the elision evaluates without
+        // placeholders), since lowering, with the real argument, might pick the other
+        // one. It is recorded as a `const` declaration.
         if p.is_const {
             let marks = crate::const_scope::Marks {
                 declared: true,
@@ -1379,21 +1194,11 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
         // synthetic name with the full type, then also register each
         // destructured field with its resolved field type.
         if let Some(pattern) = &p.pattern {
-            ctx.scope.declare(
-                &p.name,
-                SymbolInfo {
-                    kind: SymbolKind::Param,
-                    name: p.name.clone(),
-                    ty: pt.clone(),
-                    decl_range: p.range.clone(),
-                    signature: None,
-                    event_data: None,
-                },
-            );
+            ctx.scope
+                .declare_new(SymbolKind::Param, &p.name, pt.clone(), p.range.clone());
             match pattern {
                 crate::ast::ParamPattern::Record { fields, .. } => {
-                    let mut consumed: crate::collections::HashSet<&str> =
-                        crate::collections::HashSet::default();
+                    let mut consumed: HashSet<&str> = HashSet::default();
                     for field in fields {
                         match field {
                             crate::ast::RecordDestructField::Named { name, alias, .. } => {
@@ -1408,16 +1213,11 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
                                     Type::Any
                                 };
                                 consumed.insert(name.as_str());
-                                ctx.scope.declare(
+                                ctx.scope.declare_new(
+                                    SymbolKind::Param,
                                     bind_name,
-                                    SymbolInfo {
-                                        kind: SymbolKind::Param,
-                                        name: bind_name.clone(),
-                                        ty: field_ty,
-                                        decl_range: p.range.clone(),
-                                        signature: None,
-                                        event_data: None,
-                                    },
+                                    field_ty,
+                                    p.range.clone(),
                                 );
                             }
                             crate::ast::RecordDestructField::Rest { name, .. } => {
@@ -1432,16 +1232,11 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
                                 } else {
                                     Type::Any
                                 };
-                                ctx.scope.declare(
+                                ctx.scope.declare_new(
+                                    SymbolKind::Param,
                                     name,
-                                    SymbolInfo {
-                                        kind: SymbolKind::Param,
-                                        name: name.clone(),
-                                        ty: rest_ty,
-                                        decl_range: p.range.clone(),
-                                        signature: None,
-                                        event_data: None,
-                                    },
+                                    rest_ty,
+                                    p.range.clone(),
                                 );
                             }
                         }
@@ -1455,78 +1250,37 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
                     };
                     for (i, name) in names.iter().enumerate() {
                         let field_ty = field_types.get(i).cloned().unwrap_or(Type::Any);
-                        ctx.scope.declare(
-                            name,
-                            SymbolInfo {
-                                kind: SymbolKind::Param,
-                                name: name.clone(),
-                                ty: field_ty,
-                                decl_range: p.range.clone(),
-                                signature: None,
-                                event_data: None,
-                            },
-                        );
+                        ctx.scope
+                            .declare_new(SymbolKind::Param, name, field_ty, p.range.clone());
                     }
                 }
             }
         } else {
-            ctx.scope.declare(
-                &p.name,
-                SymbolInfo {
-                    kind,
-                    name: p.name.clone(),
-                    ty: pt,
-                    decl_range: p.range.clone(),
-                    signature: None,
-                    event_data: None,
-                },
-            );
+            ctx.scope.declare_new(kind, &p.name, pt, p.range.clone());
         }
     }
-    // A `...rest` variadic capture is bound once here with arity
-    // unknown (the body is checked a single time; each call site
-    // captures a different tuple). Type it `any` so a `...rest`
-    // spread in the body forwards leniently (an arity-dynamic
-    // spread the callee accepts) and any incidental `rest` use stays
-    // quiet — lowering supplies the real per-call elements.
+    // A `...rest` capture is bound once here with unknown arity (each call site
+    // captures a different tuple), typed `any` so a spread of it forwards leniently;
+    // lowering supplies the real elements per call.
     if let Some(rest_name) = &c.rest {
-        ctx.scope.declare(
-            rest_name,
-            SymbolInfo {
-                kind: SymbolKind::Param,
-                name: rest_name.clone(),
-                ty: Type::Any,
-                decl_range: c.range.clone(),
-                signature: None,
-                event_data: None,
-            },
-        );
+        ctx.scope
+            .declare_new(SymbolKind::Param, rest_name, Type::Any, c.range.clone());
     }
-    // Push this combo's declared-output frame (nearest wins over
-    // the module frame) so `return`/`emit`/an unannotated `out`
-    // inside the body can be checked against it. Built AFTER the
-    // param binding above so a generic output type (`-> (r: T)`)
-    // resolves against THIS combo's concrete type param bindings,
-    // not a leftover `Type::Param`.
-    //
-    // `resolve_type_expr` emits (e.g. WS002 "unknown type"); these
-    // same output annotations are already resolved+reported by
-    // `register_decl`, so DISCARD this frame build's diagnostics by
-    // truncating back to the pre-build length. The snapshot is taken
-    // after the input-param loop, so this only drops the frame build's
-    // own diagnostics; the caller's dedup window (which starts before
-    // this body) keeps every real input-param and body diagnostic.
-    let chip_diag_mark = ctx.diagnostics.len();
-    let chip_outs: Vec<EventDataField> = c
-        .outputs
-        .iter()
-        .map(|o| EventDataField {
-            name: o.name.clone(),
-            ty: resolve_type_expr(ctx, &o.typ),
-            is_const: false,
-        })
-        .collect();
-    ctx.diagnostics.truncate(chip_diag_mark);
+    // Push this combination's declared-output frame (nearest wins over the module
+    // frame), so `return`, `emit` and an unannotated `out` in the body are checked
+    // against it. Built after the parameters, so a generic output (`-> (r: T)`)
+    // resolves against this combination. Its diagnostics are dropped:
+    // `register_decl` already resolved and reported these annotations.
+    let chip_outs: Vec<EventDataField> = ctx.discarding_diagnostics(|ctx| {
+        c.outputs
+            .iter()
+            .map(|o| EventDataField {
+                name: o.name.clone(),
+                ty: resolve_type_expr(ctx, &o.typ),
+                is_const: false,
+            })
+            .collect()
+    });
     if !c.inline {
         for (o, f) in c.outputs.iter().zip(&chip_outs) {
             check_port_record(ctx, &o.name, &f.ty, &o.range, false);
@@ -1542,7 +1296,7 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
     // `on` handlers: `out x = expr`, `emit x (= expr)`, or a plain
     // `x = expr` assignment.
     if !c.outputs.is_empty() && !block_has_return_value(&c.body) {
-        let mut assigned = std::collections::HashSet::default();
+        let mut assigned = HashSet::default();
         collect_output_assignments(&c.body, &mut assigned);
         for out in &c.outputs {
             if !assigned.contains(&out.name) {
@@ -1563,15 +1317,14 @@ pub(super) fn check_chip_body(ctx: &mut TypeCheckCtx, c: &ChipDecl, combo: &[Typ
     ctx.resolution_subst = saved_resolution_subst;
 }
 
-/// WS090: a `mod`/`chip` with a value output that uses `return`, where some
+/// WS090: a `mod` or `chip` with a value output that uses `return`, where some
 /// path ends (a bare `return`, or the end of the body) before every value
-/// output has a value on that path. With one `return <value>` in the body its
-/// value is wired to the output unconditionally, and with several the output
-/// keeps whatever the last call stored, so such a path outputs a value from
-/// another path. An output is set on a path by `return <value>` or
-/// `emit r = ...`; a continuous `out r = ...` (and any assignment inside a
-/// nested handler, anonymous chip or loop body) counts as set on every path.
-fn check_every_path_returns(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
+/// output is set on it. One `return <value>` is wired unconditionally, and with
+/// several the output keeps the last call's value, so such a path outputs
+/// another path's value. `return <value>` and `emit r = ...` set an output on
+/// a path; a continuous `out r = ...` (and any assignment in a nested handler,
+/// anonymous chip or loop body) counts as set on every path.
+fn check_every_path_returns(ctx: &mut TypeCheckCtx<'_>, c: &ChipDecl) {
     // Written `exec`, or through a `type` alias of it.
     let is_exec = |t: &TypeExpr| match t {
         TypeExpr::Name { name, .. } => {
@@ -1595,7 +1348,7 @@ fn check_every_path_returns(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
     if !block_has_return(&c.body) {
         return;
     }
-    let mut set: crate::collections::HashSet<String> = crate::collections::HashSet::default();
+    let mut set: HashSet<String> = HashSet::default();
     collect_off_path_assignments(&c.body, &values, &mut set);
     let mut bad: Option<SourceRange> = None;
     let open = walk_paths(&c.body, set, &values, &mut bad);
@@ -1631,11 +1384,7 @@ fn block_has_return(block: &Block) -> bool {
 
 /// Output names set independently of any one path: every `out r = ...`, and
 /// every `emit` inside a nested handler, anonymous chip or loop body.
-fn collect_off_path_assignments(
-    block: &Block,
-    values: &[&str],
-    set: &mut crate::collections::HashSet<String>,
-) {
+fn collect_off_path_assignments(block: &Block, values: &[&str], set: &mut HashSet<String>) {
     walk::walk(
         walk::Node::Block(block),
         walk::Ctx::default(),
@@ -1664,14 +1413,11 @@ fn collect_off_path_assignments(
 /// output is set records its range in `bad`.
 fn walk_paths(
     block: &Block,
-    mut set: crate::collections::HashSet<String>,
+    mut set: HashSet<String>,
     values: &[&str],
     bad: &mut Option<SourceRange>,
-) -> Option<crate::collections::HashSet<String>> {
-    fn merge(
-        a: Option<crate::collections::HashSet<String>>,
-        b: Option<crate::collections::HashSet<String>>,
-    ) -> Option<crate::collections::HashSet<String>> {
+) -> Option<HashSet<String>> {
+    fn merge(a: Option<HashSet<String>>, b: Option<HashSet<String>>) -> Option<HashSet<String>> {
         match (a, b) {
             (None, x) | (x, None) => x,
             (Some(a), Some(b)) => Some(a.intersection(&b).cloned().collect()),
@@ -1732,7 +1478,7 @@ fn walk_paths(
                 if let Expr::MatchExpr { arms, .. } = &es.expr
                     && !arms.is_empty()
                 {
-                    let mut out: Option<crate::collections::HashSet<String>> = None;
+                    let mut out: Option<HashSet<String>> = None;
                     let mut first = true;
                     for a in arms {
                         let r = match &a.body {
@@ -1755,7 +1501,7 @@ fn walk_paths(
 /// enum inside a record or tuple, or anywhere in a chip parameter or output. A
 /// top-level (`boundary`) port of a payload-free enum is one wire, its tag, and
 /// an array or map of them one column of tags; `*E` refs each slot.
-fn enum_crossing(ctx: &TypeCheckCtx, ty: &Type, boundary: bool) -> Option<String> {
+fn enum_crossing(ctx: &TypeCheckCtx<'_>, ty: &Type, boundary: bool) -> Option<String> {
     match ty {
         Type::Ref(_) => None,
         Type::Enum { name, .. } => {

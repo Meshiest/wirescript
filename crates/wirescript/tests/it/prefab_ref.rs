@@ -1,5 +1,5 @@
 //! `$./file.brz` prefab references embed the referenced prefab and point the
-//! SpawnPrefab gate's `Prefab` property at the embedded copy.
+//! `SpawnPrefab` gate's `Prefab` property at the embedded copy.
 
 use brdb::IntoReader;
 use std::sync::Arc;
@@ -107,7 +107,7 @@ on start {
 #[test]
 fn nested_prefab_embeds_compiled_inner() {
     let inner = inner_prefab_bytes();
-    let inner_for = inner.clone();
+    let inner_for = inner;
     let opts = EmitOptions {
         nested_compiler: Some(NestedCompiler::new(move |src: &str, _depth: usize| {
             assert!(
@@ -148,7 +148,7 @@ fn nested_prefab_depth_guard_trips() {
     }
     let src = format!("in go: exec\non go {{ SpawnPrefab($```{inner}```) }}\n");
     // `CompileWorldResult` embeds `brdb::World` (no `Debug` impl), so
-    // `expect_err` can't be used here — match instead, as the resolver tests
+    // `expect_err` can't be used here; match instead, as the resolver tests
     // above do.
     let msg = match compile_to_world(common::input(&src, "t.ws"), EmitOptions::default()) {
         Ok(_) => panic!("deeply nested prefab should fail"),

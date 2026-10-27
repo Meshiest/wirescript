@@ -135,7 +135,7 @@ fn resolver_instantiates_generic_alias() {
         "clean instantiation emits no diagnostics: {d:?}"
     );
 
-    // Bare `Pair` (no args) errors — not fully applied.
+    // Bare `Pair` (no args) errors: not fully applied.
     let mut d2 = Vec::new();
     assert_eq!(resolve_type(&name_te("Pair"), &cx, &mut d2), Type::Any);
     assert_eq!(d2.len(), 1);

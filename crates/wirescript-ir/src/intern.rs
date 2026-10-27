@@ -1,11 +1,12 @@
 use lasso::{Spur, ThreadedRodeo};
 use std::sync::LazyLock;
 
-/// Fx-hashed interner: compiler symbols are non-adversarial, and the default
-/// SipHash showed up as measurable wall time in intern/resolve-heavy passes.
+/// Fx-hashed interner: compiler symbols are non-adversarial, so the default `SipHash` is
+/// unnecessary cost in intern/resolve-heavy passes.
 type FxRodeo = ThreadedRodeo<Spur, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
 
-static INTERN: LazyLock<FxRodeo> = LazyLock::new(|| FxRodeo::with_hasher(Default::default()));
+static INTERN: LazyLock<FxRodeo> =
+    LazyLock::new(|| FxRodeo::with_hasher(std::hash::BuildHasherDefault::default()));
 
 /// Interned symbol handle. 4 bytes, Copy, cheap to hash and compare.
 pub type Sym = Spur;
@@ -25,7 +26,7 @@ pub fn resolve(sym: Sym) -> &'static str {
     INTERN.resolve(&sym)
 }
 
-/// Pre-interned constants for the most common port names and gate classes.
+/// Pre-interned constants for the most common port names and node properties.
 /// Each constant is lazily initialized on first access via `intern_static`.
 pub mod sym {
     use super::*;
@@ -60,6 +61,10 @@ pub mod sym {
     def!(ZERO_TICKS_TO_WAIT, "ZeroTicksToWait");
     def!(ZERO_SECONDS_TO_WAIT, "ZeroSecondsToWait");
     def!(INITIAL_VALUE, "InitialValue");
+    def!(DEFAULT_VALUE, "DefaultValue");
+    def!(SEPARATOR, "Separator");
+    def!(PORT_ORDER, "PortOrder");
+    def!(INPUT_SOURCES, "InputSources");
     def!(EXEC_OUT_A, "ExecOutA");
     def!(EXEC_OUT_B, "ExecOutB");
     def!(B_INPUT_A, "bInputA");
@@ -70,11 +75,10 @@ pub mod sym {
     // Pseudo-property (not a game field): the declaration's source name,
     // carried on Var/ArrayVar nodes so emit can attach a text label.
     def!(NAME_LABEL, "_label");
-    // Pseudo-property (not a game field): a `let` binding's source name,
-    // carried on its value node so a cross-chip boundary pin can derive its
-    // label from the binding (`progress`, `init`) instead of a synthetic
-    // `ext1`/`ext2`. Read ONLY by `boundary_pins::derive_label` — emit's
-    // floating-label pass reads NAME_LABEL, so this never renders in-game.
+    // Pseudo-property (not a game field): a `let` binding's source name, carried on its value
+    // node so a cross-chip boundary pin can derive its label from the binding (`progress`,
+    // `init`) instead of a synthetic `ext1`/`ext2`. Read only by `boundary_pins::derive_label`;
+    // emit's floating-label pass reads NAME_LABEL, so this never renders in game.
     def!(BINDING_NAME, "_bindname");
     // Pseudo-property (not a game field): the `@side` port annotation,
     // carried on MicrochipInput/Output nodes so emit can place an outer
@@ -84,8 +88,8 @@ pub mod sym {
     // carried on MicrochipInput/Output nodes so emit hides the outer
     // rerouter. Never written to the brick.
     def!(REROUTE_INVISIBLE, "_reroute_invisible");
-    // Pseudo-property (not a game field): `@closed` — emit this chip's inner
-    // grid collapsed. Absent = open (the default for non-root chips).
+    // Pseudo-property (not a game field): `@closed`, emit this chip's inner grid collapsed.
+    // Absent means open (the default for non-root chips).
     def!(CHIP_CLOSED, "_closed");
     // Pseudo-property (not a game field): the `///` doc comment preceding the
     // chip declaration, rendered under the title on the opened plane's header.
@@ -108,30 +112,6 @@ pub mod sym {
     // Pseudo-property (not a game field): a Convert gate an `as` made, which
     // `lower::convert::prune_unread_conversions` drops when nothing reads it.
     def!(AS_CONVERT, "_as");
-
-    // Gate classes
-    def!(LITERAL, "_Literal");
-    def!(UNSUPPORTED, "_Unsupported");
-    def!(LAYOUT, "_layout");
-    def!(UNION, "BrickComponentType_Exec_Union");
-    def!(BRANCH, "BrickComponentType_Exec_Branch");
-    def!(VAR, "BrickComponentType_Var");
-    def!(VAR_GET, "BrickComponentType_Exec_Var_Get");
-    def!(VAR_SET, "BrickComponentType_Exec_Var_Set");
-    def!(VAR_INCREMENT, "BrickComponentType_Exec_Var_Increment");
-    def!(
-        ARRAY_SET_AT_INDEX,
-        "BrickComponentType_Exec_ArrayVar_SetAtIndex"
-    );
-    def!(ARRAY_PUSH, "BrickComponentType_Exec_ArrayVar_Push");
-    def!(ARRAY_POP, "BrickComponentType_Exec_ArrayVar_Pop");
-    def!(
-        ARRAY_GET_LENGTH,
-        "BrickComponentType_Exec_ArrayVar_GetLength"
-    );
-    def!(LOGICAL_NOT, "BrickComponentType_Expr_LogicalNOT");
-    def!(STRING_LENGTH, "BrickComponentType_Expr_String_Length");
-    def!(MICROCHIP, "Component_Internal_Microchip");
 }
 
 #[cfg(test)]

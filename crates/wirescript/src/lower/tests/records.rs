@@ -58,8 +58,8 @@ fn record_literal_return_destructures_to_fields() {
         !has_unsupported(&r.module),
         "record-literal return must not lower to _Unsupported"
     );
-    // The two outputs (h = f.head, r = f.rest) must be fed by DISTINCT source
-    // ports (Split.Left vs Split.Right) - the bug wired both to one gate.
+    // The two outputs (h = f.head, r = f.rest) are fed by DISTINCT source ports
+    // (Split.Left vs Split.Right), not both by one gate.
     let out_sources: Vec<_> = r
         .module
         .wires
@@ -157,7 +157,7 @@ fn a_write_through_a_record_field_targets_the_backing_storage() {
     report_failures(&failures, rows.len());
 }
 
-/// A record field `|=` inside an `if` in an inline mod is a Var_Set on the
+/// A record field `|=` inside an `if` in an inline mod is a `Var_Set` on the
 /// branch's exec chain, and the program emits.
 #[test]
 fn record_field_assign_inside_if_in_mod() {
@@ -337,9 +337,9 @@ fn const_inlines_into_chip_gate_no_boundary_wire() {
     }
 }
 
-/// Regression: a top-level `in` port referenced inside a chip body must
-/// resolve. Chips close over the whole module-global (ROOT) scope, so inputs
-/// are visible just like vars/consts — not dropped by a per-type whitelist.
+/// A top-level `in` port referenced inside a chip body resolves. Chips close
+/// over the whole module-global (ROOT) scope, so inputs are visible just like
+/// vars/consts, with no per-type whitelist.
 #[test]
 fn top_level_input_visible_inside_chip() {
     let r = compile_ok(
@@ -448,10 +448,9 @@ fn a_read_through_a_record_or_a_let_is_a_var_get_until_a_write() {
     report_failures(&failures, rows.len());
 }
 
-/// Destructuring a builtin multi-output gate must bind each name to that
-/// gate's own output port. No chip owns those outputs, so the chip lookup
-/// finds nothing; the destructure used to bind nothing at all and every use
-/// became an `_Unsupported` placeholder wired to no source.
+/// Destructuring a builtin multi-output gate binds each name to that gate's own
+/// output port. No chip owns those outputs, so the chip lookup finds nothing;
+/// each use is still a real wire, not an `_Unsupported` placeholder.
 #[test]
 fn builtin_multi_output_destructure_binds_gate_ports() {
     let r = compile_ok(
@@ -481,8 +480,8 @@ fn builtin_multi_output_destructure_binds_gate_ports() {
     }
 }
 
-/// Field names are case-sensitive. A name that matches nothing bound silently,
-/// leaving dangling placeholders — it now errors and points at the real field.
+/// Field names are case-sensitive: a name that matches nothing is an error that
+/// points at the real field, not a dangling placeholder.
 #[test]
 fn destructuring_an_unknown_field_errors_with_a_suggestion() {
     let r = compile(
@@ -559,13 +558,13 @@ fn a_mod_returning_a_record_call_forwards_its_fields() {
     report_failures(&failures, rows.len());
 }
 
-// ---- record-typed STORAGE (the aggregate feature) ----
+// Record-typed storage
 
 const PT: &str = "type Point = { x: int, y: int }\n";
 
 /// A record VARIABLE decomposes into one `Pseudo_Var` per field; `p.x` reads /
-/// `p.x = v` writes the right backing gate — no single-gate collapse and no
-/// bogus `SplitVector.X` swizzle (the prior silent miscompile).
+/// `p.x = v` writes the right backing gate, with no single-gate collapse and no
+/// bogus `SplitVector.X` swizzle.
 #[test]
 fn record_var_decomposes_into_per_field_vars() {
     let r = compile_ok(&format!(
@@ -594,8 +593,8 @@ fn nested_record_var_decomposes_per_leaf() {
     assert!(!has_unsupported(&r.module));
 }
 
-/// Whole-record assignment `p = { .. }` writes each field (one Var_Set per
-/// field); it used to silently emit nothing.
+/// Whole-record assignment `p = { .. }` writes each field (one `Var_Set` per
+/// field).
 #[test]
 fn whole_record_literal_assignment_writes_each_field() {
     let r = compile_ok(&format!(
@@ -606,7 +605,7 @@ fn whole_record_literal_assignment_writes_each_field() {
 }
 
 /// Record-to-record assignment `p = q` reads each field of `q` and writes it to
-/// `p` (one Var_Get + one Var_Set per field).
+/// `p` (one `Var_Get` + one `Var_Set` per field).
 #[test]
 fn record_to_record_assignment_copies_each_field() {
     let r = compile_ok(&format!(
@@ -718,10 +717,9 @@ fn nested_record_array_field_path() {
     assert_eq!(gate_count(&r, gc::ARRAY_SET_AT_INDEX), 6);
 }
 
-/// R13: indexing a record-array COLUMN (`pts.x[i]`) reads the field's column as
-/// a real `ArrayVar_Get` and types as the field, not `Any`. Because the type is
-/// right it also works inside an expression (a comparison), which used to fall
-/// to `_Unsupported` after a WS004 (Any) killed operator resolution.
+/// Indexing a record-array COLUMN (`pts.x[i]`) reads the field's column as a real
+/// `ArrayVar_Get` and types as the field, not `Any`, so it also works inside an
+/// expression (a comparison) with no WS004 or `_Unsupported`.
 #[test]
 fn record_array_column_index() {
     let r = compile_ok(
@@ -854,9 +852,8 @@ fn record_array_pop_swap_resize_and_ws050() {
 }
 
 /// A record ARRAY / MAP constructor literal bakes per-field columns into each
-/// backing container's InitialValue (`var pts: Point[] = [{x:1,y:2},{x:3,y:4}]`
-/// bakes x -> [1,3], y -> [2,4]); it used to compile clean but silently start
-/// empty.
+/// backing container's `InitialValue` (`var pts: Point[] = [{x:1,y:2},{x:3,y:4}]`
+/// bakes x -> [1,3], y -> [2,4]) rather than starting empty.
 #[test]
 fn record_container_constructor_bakes_per_field() {
     let iv = crate::intern::intern("InitialValue");
@@ -945,10 +942,10 @@ fn namespaced_record_storage_lowers() {
     assert_eq!(gate_count(&r, gc::MAP_VAR), 2);
 }
 
-/// SoA field access resolves array methods on `pts.field` (the parallel array) -
-/// including `min`/`max`, which used to fall through to the no-receiver builtin
-/// check (WS036). And `pts.field.sort()` sorts the WHOLE record by that field via
-/// sortMultiple (reordering sibling columns), not the one column in isolation.
+/// `SoA` field access resolves array methods on `pts.field` (the parallel
+/// array), `min`/`max` included, with no WS036. And `pts.field.sort()` sorts the
+/// WHOLE record by that field via sortMultiple (reordering sibling columns), not
+/// the one column in isolation.
 #[test]
 fn soa_field_methods_and_sort_by_field() {
     let r = compile(&format!(
@@ -1059,8 +1056,8 @@ fn a_record_output_drives_one_pin_per_leaf() {
 
 /// Whole-array assignment from a record-array literal (`arr = [rec, rec]`) fans
 /// clear + push across the parallel per-field arrays. A record array is also a
-/// `Binding::Record`, so the whole-record-assign path used to claim it and drop
-/// the array literal silently.
+/// `Binding::Record`, so the whole-record-assign path must not claim it and drop
+/// the array literal.
 #[test]
 fn record_array_whole_assign_from_literal_fans_clear_push() {
     let r = compile_ok(
@@ -1108,7 +1105,7 @@ fn if_expr_index_access_distributes_over_branches() {
 
 /// A NESTED record passed as a chip param explodes recursively into per-leaf
 /// pins on both the body and caller sides, so `o.inr.a` reads its own pin
-/// instead of re-splitting the first param pin via SplitColor, and the outer
+/// instead of re-splitting the first param pin via `SplitColor`, and the outer
 /// arg wire is not dropped.
 #[test]
 fn nested_record_chip_param_explodes_recursively() {
@@ -1126,8 +1123,8 @@ fn nested_record_chip_param_explodes_recursively() {
             && count_class(&r.module, gc::SPLIT_VECTOR) == 0,
         "o.inr.a must read its own leaf pin, not SplitColor the first input"
     );
-    // The caller's `n` arg must wire into the chip (before the fix the nested
-    // arg wire was dropped, because binding_to_port on a Record returned None).
+    // The caller's `n` arg must wire into the chip: `binding_to_port` on a Record
+    // returns None, so a nested record arg wire is easy to drop.
     let n_input = find_gate(&r, gc::MICROCHIP_INPUT);
     assert!(
         r.module.wires.iter().any(|w| w.source.node_id == n_input),
@@ -1150,7 +1147,7 @@ fn nested_record_chip_param_explodes_recursively() {
 
 /// A TUPLE parameter on a chip signature explodes into per-element pins on both
 /// sides (like a record), so the `(a, b)` destructure binds the names instead of
-/// leaving the body reading `_Unsupported`. The mod form already worked.
+/// leaving the body reading `_Unsupported`, as the mod form does.
 #[test]
 fn chip_tuple_param_pattern_binds() {
     let r = compile_ok(
@@ -1178,14 +1175,10 @@ fn chip_tuple_param_pattern_binds() {
 #[test]
 fn dot_value_opens_a_record_variable() {
     // `.Value` opens a VARIABLE, whatever it holds. A var needing more than one
-    // storage gate (a record here, an enum elsewhere) binds as a
-    // `Binding::Record`, so it never reaches the single-port `Binding::Var` arm
-    // that answers `.Value` for a scalar.
-    //
-    // Asserts WHICH storage gate the read lands on, not just how many gates
-    // exist: a record var has one `Pseudo_Var` per field (labelled `p.x`,
-    // `p.y`), so resolving `.Value` to the wrong field still emits exactly one
-    // `Var_Get` and would sail past a node count while reading `y` for `x`.
+    // storage gate (a record here, an enum elsewhere) binds as a `Binding::Record`,
+    // not the single-port `Binding::Var` arm that answers `.Value` for a scalar.
+    // The assertion names WHICH field gate the read lands on: a wrong field still
+    // emits exactly one `Var_Get`.
     let read_field_label = |src: &str| -> String {
         let r = compile_ok(src);
         assert!(!has_unsupported(&r.module), "{:?}", r.diagnostics);
@@ -1232,10 +1225,10 @@ fn dot_value_opens_a_record_variable() {
 
 #[test]
 fn dot_value_on_a_record_value_is_not_silently_an_identity() {
-    // The opening is gated on the record being STORAGE. A record VALUE (a `let`,
-    // a chip's multi-output result) has no variable to open, and typecheck
-    // already calls `.Value` an unknown field on it (WS010) -- lowering must not
-    // quietly answer it as an identity and contradict that.
+    // The opening is gated on the record being STORAGE. A record VALUE (a `let`, a
+    // chip's multi-output result) has no variable to open, and typecheck calls
+    // `.Value` an unknown field on it (WS010), so lowering does not answer it as an
+    // identity.
     let r = compile(
         "var got: int
          on RoundStart() {
@@ -1461,9 +1454,8 @@ fn assigning_an_enum_typed_record_field_writes_its_slots() {
 
 // a whole-record copy must carry array/map fields
 
-/// `q = p` copies a container field's contents: one `copyFrom` into `q.xs`
-/// from `p.xs`. It copied the scalar fields and left `q.xs` at its old
-/// contents, a clean-compiling wrong copy.
+/// `q = p` copies a container field's contents: one `copyFrom` into `q.xs` from
+/// `p.xs`, beside the scalar fields.
 #[test]
 fn whole_record_copy_carries_an_array_field() {
     let r = compile_ok(
@@ -1499,9 +1491,9 @@ fn whole_record_copy_carries_an_array_field() {
 
 #[test]
 fn record_typed_chip_signature_output_emits_its_body() {
-    // `chip Mk(x: int) -> (p: P)` gave the record output ONE pin, so the body's
-    // `out p = { … }` had nowhere to land and emitted nothing at all, leaving
-    // the instance an empty shell whose caller-side pins were never wired.
+    // A record output of `chip Mk(x: int) -> (p: P)` needs one pin per field: with
+    // a single pin the body's `out p = { ... }` has nowhere to land and emits
+    // nothing, leaving the instance an empty shell with unwired caller-side pins.
     let r = compile_ok(
         "type P = { a: int, b: int }
          in u: int
@@ -1538,8 +1530,7 @@ fn record_typed_chip_signature_output_emits_its_body() {
 
 #[test]
 fn record_typed_chip_signature_output_writes_a_var() {
-    // The exec form: `q = Mk(u)` used to emit ZERO Var_Set, so `q` was never
-    // written.
+    // The exec form: `q = Mk(u)` writes `q` through its Var_Sets.
     let r = compile_ok(
         "type P = { a: int, b: int }
          in go: exec
@@ -1752,9 +1743,9 @@ fn an_enum_ref_chip_param_writes_every_slot_of_the_caller() {
     );
 }
 
-/// `rec.field.Value` is the explicit read of a ref-typed record field. Only
-/// `x.Value` on a plain identifier was handled, so the field spelling degraded
-/// to an `_Unsupported` placeholder and its consumer got no wire.
+/// `rec.field.Value` is the explicit read of a ref-typed record field, resolved
+/// like `x.Value` on a plain identifier rather than as an `_Unsupported`
+/// placeholder whose consumer gets no wire.
 #[test]
 fn dot_value_on_a_ref_record_field_reads_the_backing_var() {
     let r = compile_ok(
@@ -1779,14 +1770,11 @@ fn dot_value_on_a_ref_record_field_reads_the_backing_var() {
     assert_eq!(driven, 3, "the Select's condition and both arms are driven");
 }
 
-/// The array behind a record field can be any spelling a bare name accepts —
-/// not just a `var`. An `in rom0: int[]` bound into a record (`let m: Mem = {
-/// rom: rom0 }`) and then indexed through the field (`m.rom[i]`) must lower
-/// exactly like the direct `rom0[i]`: the same `ArrayVar_Get`, fed from the
-/// same ref source. Only `Binding::Var` used to resolve through a field chain,
-/// so this — the cartridge/socket idiom, where a record describes a memory map
-/// whose banks arrive on ports — emitted an `_Unsupported` placeholder that
-/// read 0 forever behind nothing louder than a WSP001 warning.
+/// The array behind a record field can be any spelling a bare name accepts, not
+/// just a `var`: an `in rom0: int[]` bound into a record (`let m: Mem = { rom:
+/// rom0 }`) and indexed through the field (`m.rom[i]`) lowers exactly like the
+/// direct `rom0[i]`, the same `ArrayVar_Get` fed from the same ref source, never
+/// an `_Unsupported` placeholder reading 0.
 #[test]
 fn input_array_through_record_field_resolves() {
     let r = compile_ok(
@@ -1809,7 +1797,7 @@ fn input_array_through_record_field_resolves() {
         "indexing an input array through a record field must not placeholder"
     );
     crate::test_support::assert_no_code(&r.diagnostics, "WSP001");
-    // `m.rom[3]` and `rom0[3]` — one real read each.
+    // `m.rom[3]` and `rom0[3]`: one real read each.
     assert_eq!(gate_count(&r, gc::ARRAY_GET), 2);
     assert_eq!(
         gate_count(&r, gc::ARRAY_SET_AT_INDEX),
@@ -1878,9 +1866,9 @@ fn input_map_through_record_field_resolves() {
 }
 
 /// A record field holding an array that arrived on a WIRE rather than from a
-/// named container — here a `let`-bound select over two input banks — is the
-/// third spelling the field chain has to accept. `let r = m.rom; r[i]` already
-/// worked (the ref rides the local's port); `m.rom[i]` must too.
+/// named container (here a `let`-bound select over two input banks) is the
+/// third spelling the field chain accepts: `m.rom[i]` works as
+/// `let r = m.rom; r[i]` does.
 #[test]
 fn wire_borne_array_through_record_field_resolves() {
     let r = compile_ok(
@@ -1919,10 +1907,10 @@ fn gate_ids(r: &LowerResult, class: &str) -> Vec<crate::ir::NodeId> {
         .collect()
 }
 
-/// `rec.xs = [1, 2]` on a record's array field rebuilds that field's ArrayVar
+/// `rec.xs = [1, 2]` on a record's array field rebuilds that field's `ArrayVar`
 /// like the bare `xs = [1, 2]` (Clear + one Push per item), never the scalar
-/// field-write path (an `_Unsupported` literal feeding a Var_Set on a `VarRef`
-/// port the ArrayVar does not have).
+/// field-write path (an `_Unsupported` literal feeding a `Var_Set` on a `VarRef`
+/// port the `ArrayVar` does not have).
 #[test]
 fn record_array_field_literal_assign_clears_and_pushes() {
     let r = compile(
@@ -1948,7 +1936,7 @@ fn record_array_field_literal_assign_clears_and_pushes() {
 }
 
 /// The map spelling: `rec.m = { .. }` is a Clear + one Set per entry on the
-/// field's own MapVar.
+/// field's own `MapVar`.
 #[test]
 fn record_map_field_literal_assign_clears_and_sets() {
     let r = compile(
@@ -2029,7 +2017,7 @@ fn empty_braces_as_a_map_outside_a_map_literal_slot_is_ws026() {
 }
 
 /// A record local in a mod is declared once per call site: the body pre-pass
-/// declared its field vars, and the statement declared a second, unwired set.
+/// and the statement share one set of field vars.
 #[test]
 fn a_record_local_in_a_mod_is_declared_once_per_call() {
     let src = "type P = { x: int, y: int }\nvar n: int = 0\nout onn: int = n\n\
@@ -2060,10 +2048,9 @@ fn a_record_local_in_a_mod_is_declared_once_per_call() {
 
 /// The annotation a WS105 suggests compiles as written, with no diagnostic,
 /// and drives every pin: for a record, a tuple, a nested record, a mod's
-/// record result (named by its alias), a gate's named outputs (`Edge`, whose
-/// suggested type nested the record in its own first field and compiled with
-/// that field's pins undriven) and an output declared apart from its write
-/// (the annotation goes on the declaration).
+/// record result (named by its alias), a gate's named outputs (`Edge`) and an
+/// output declared apart from its write (the annotation goes on the
+/// declaration).
 #[test]
 fn a_ws105_hint_compiles_as_written() {
     let head = "type P = { a: int, b: float }\nin go: exec\nin bb: bool\nvar k: int = 3\nvar fl: float = 1.5\n\
@@ -2127,10 +2114,10 @@ fn a_ws105_hint_compiles_as_written() {
     }
 }
 
-/// A record or tuple written to a module output with no type was one pin that
-/// nothing drove: WS105, in a handler, at the top level, through `emit` and in
-/// an anonymous chip. The annotated twin drives a pin per field, and a value
-/// the port carries as one wire (a gate's output read, an enum tag) or a
+/// A record or tuple written to a module output with no type would be one pin
+/// that nothing drives: WS105, in a handler, at the top level, through `emit`
+/// and in an anonymous chip. The annotated twin drives a pin per field, and a
+/// value the port carries as one wire (a gate's output read, an enum tag) or a
 /// record output of a mod or chip still compiles.
 #[test]
 fn a_record_written_to_an_output_with_no_type_is_ws105() {
@@ -2141,7 +2128,7 @@ fn a_record_written_to_an_output_with_no_type_is_ws105() {
         r.diagnostics
             .iter()
             .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
+            .map(|d| d.code.clone())
             .collect()
     };
     let driven = |r: &LowerResult| {
@@ -2194,8 +2181,8 @@ fn a_record_written_to_an_output_with_no_type_is_ws105() {
 }
 
 /// A record of the program's own where one value goes is `WS003` on every
-/// route, naming the record; the caller of `return q` into an `int` output
-/// stored the exec wire. A multi-output read still gives its first output.
+/// route, naming the record, including `return q` into an `int` output. A
+/// multi-output read still gives its first output.
 #[test]
 fn a_record_where_one_value_goes_is_ws003() {
     let head = "var n: int = 0\nout on1: int = n\nin go: exec\nin a: int\nin bb: bool\n\
@@ -2346,13 +2333,13 @@ fn a_record_where_one_value_goes_is_ws003() {
 /// program's own in the same places is an error.
 #[test]
 fn a_gate_read_gives_its_first_output_in_every_place() {
-    a_gate_read_gives_its_first_output_in_every_place_matrix(false)
+    a_gate_read_gives_its_first_output_in_every_place_matrix(false);
 }
 
 #[test]
 #[ignore = "exhaustive"]
 fn a_gate_read_gives_its_first_output_in_every_place_exhaustive() {
-    a_gate_read_gives_its_first_output_in_every_place_matrix(true)
+    a_gate_read_gives_its_first_output_in_every_place_matrix(true);
 }
 
 /// Every read at every place when `full`; otherwise the pairs the held-read
@@ -2452,7 +2439,7 @@ fn a_gate_read_gives_its_first_output_in_every_place_matrix(full: bool) {
     // A `let` naming the output it holds labels its gate with its name.
     let outcome = |src: &str, fold: bool| super::shape::without_bindnames(outcome(src, &[], fold));
     let held = if full {
-        Default::default()
+        HashSet::default()
     } else {
         held_default_runs()
     };
@@ -2508,7 +2495,7 @@ fn a_gate_read_gives_its_first_output_in_every_place_matrix(full: bool) {
             .diagnostics
             .iter()
             .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-            .map(|d| d.code.to_string())
+            .map(|d| d.code.clone())
             .collect();
         codes.dedup();
         got.push(format!("{what}: {}", codes.join(" ")));
@@ -2589,7 +2576,7 @@ fn outcome_diff(
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output() {
     let mut chunked: Vec<usize> = HELD_CHUNKS.iter().flat_map(|c| c.iter().copied()).collect();
-    chunked.sort();
+    chunked.sort_unstable();
     assert_eq!(
         chunked,
         (0..HELD_FAMILIES.len()).collect::<Vec<_>>(),
@@ -2597,8 +2584,8 @@ fn a_gate_read_held_returned_or_destructured_gives_its_first_output() {
     );
     assert_eq!(held_pairs(false).len(), 11 * 47 + 11 * 13);
     super::shadow_differential::memoized(|| {
-        a_gate_read_held_returned_or_destructured_gives_its_first_output_matrix(false, &[], true)
-    })
+        a_gate_read_held_returned_or_destructured_gives_its_first_output_matrix(false, &[], true);
+    });
 }
 
 /// The place families each `_in_*` test runs, indexes into [`HELD_FAMILIES`].
@@ -2620,53 +2607,53 @@ fn held_chunk(chunk: usize) {
             false,
             HELD_CHUNKS[chunk],
             false,
-        )
-    })
+        );
+    });
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_returns() {
-    held_chunk(0)
+    held_chunk(0);
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_choices() {
-    held_chunk(1)
+    held_chunk(1);
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_direct_places() {
-    held_chunk(2)
+    held_chunk(2);
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_operands() {
-    held_chunk(3)
+    held_chunk(3);
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_record_literals() {
-    held_chunk(4)
+    held_chunk(4);
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_destructures_and_tuples() {
-    held_chunk(5)
+    held_chunk(5);
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_outputs() {
-    held_chunk(6)
+    held_chunk(6);
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_lets_and_stored_fields() {
-    held_chunk(7)
+    held_chunk(7);
 }
 
 #[test]
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_signals_and_events() {
-    held_chunk(8)
+    held_chunk(8);
 }
 
 #[test]
@@ -2674,8 +2661,8 @@ fn a_gate_read_held_returned_or_destructured_gives_its_first_output_in_signals_a
 fn a_gate_read_held_returned_or_destructured_gives_its_first_output_exhaustive() {
     let all: Vec<usize> = (0..HELD_FAMILIES.len()).collect();
     super::shadow_differential::memoized(|| {
-        a_gate_read_held_returned_or_destructured_gives_its_first_output_matrix(true, &all, true)
-    })
+        a_gate_read_held_returned_or_destructured_gives_its_first_output_matrix(true, &all, true);
+    });
 }
 
 /// A read: its call, the output a place for one value reads, its type, and a
@@ -3047,7 +3034,7 @@ fn held_pairs(full: bool) -> crate::collections::HashSet<(usize, usize)> {
         .iter()
         .flat_map(|f| f.iter().map(|n| place(n)))
         .collect();
-    grouped.sort();
+    grouped.sort_unstable();
     assert_eq!(
         grouped,
         (0..places.len()).collect::<Vec<_>>(),
@@ -3293,13 +3280,13 @@ fn a_gate_read_held_returned_or_destructured_gives_its_first_output_matrix(
 /// returns) at every place reading each output, both folds.
 #[test]
 fn a_mod_returning_a_read_whole_fills_its_outputs_as_its_tuple_return_twin() {
-    a_mod_returning_a_read_whole_fills_its_outputs_as_its_tuple_return_twin_matrix(false)
+    a_mod_returning_a_read_whole_fills_its_outputs_as_its_tuple_return_twin_matrix(false);
 }
 
 #[test]
 #[ignore = "exhaustive"]
 fn a_mod_returning_a_read_whole_fills_its_outputs_as_its_tuple_return_twin_exhaustive() {
-    a_mod_returning_a_read_whole_fills_its_outputs_as_its_tuple_return_twin_matrix(true)
+    a_mod_returning_a_read_whole_fills_its_outputs_as_its_tuple_return_twin_matrix(true);
 }
 
 /// Every producer at every place when `full`; otherwise without the
@@ -3495,17 +3482,17 @@ fn a_mod_returning_a_read_whole_fills_its_outputs_as_its_tuple_return_twin_matri
 /// order, otherwise their first outputs. Every argument kind (a `mod`, a
 /// generic, a `chip`, a builtin, a `self` mod, a namespaced `mod`) x every
 /// choice kind x reads with the same, reordered and different outputs saves
-/// what its twin naming each branch's output saves, both folds. The exec of
-/// a branch's call was the value given before.
+/// what its twin naming each branch's output saves, both folds; the exec of a
+/// branch's call is never the value given.
 #[test]
 fn a_choice_between_two_reads_given_as_an_argument_is_their_joined_value() {
-    a_choice_between_two_reads_given_as_an_argument_is_their_joined_value_matrix(false)
+    a_choice_between_two_reads_given_as_an_argument_is_their_joined_value_matrix(false);
 }
 
 #[test]
 #[ignore = "exhaustive"]
 fn a_choice_between_two_reads_given_as_an_argument_is_their_joined_value_exhaustive() {
-    a_choice_between_two_reads_given_as_an_argument_is_their_joined_value_matrix(true)
+    a_choice_between_two_reads_given_as_an_argument_is_their_joined_value_matrix(true);
 }
 
 /// Every reads x choice x argument row when `full`; otherwise each reads and
@@ -3614,7 +3601,7 @@ fn an_exec_wired_into_a_value_is_an_internal_error() {
             line,
             col: 1,
         };
-        crate::diagnostic::SourceRange::new("main.ws", pos.clone(), pos)
+        crate::diagnostic::SourceRange::new("main.ws", pos, pos)
     };
     let build = |into: Type, port: WirePort| {
         let mut b = ModuleBuilder::new("m");
@@ -3779,7 +3766,7 @@ fn an_exec_where_a_bool_goes_compiles_and_where_a_value_goes_is_ws094() {
         rows += 1;
         for fold in [true, false] {
             let codes = match compile_main(&src, &[], fold) {
-                Ok(out) => out.diagnostics.iter().map(|d| d.code.to_string()).collect(),
+                Ok(out) => out.diagnostics.iter().map(|d| d.code.clone()).collect(),
                 Err(codes) => codes,
             };
             if codes.iter().any(|c| c == "WS094") != ws094
@@ -3878,7 +3865,7 @@ fn an_exec_in_a_bool_place_drives_the_bool_pin_in_the_save() {
                                 }
                             }
                             Err(codes) => {
-                                wrong.push(format!("fold {fold}: twin {codes:?}\n{twin}"))
+                                wrong.push(format!("fold {fold}: twin {codes:?}\n{twin}"));
                             }
                         }
                     }
@@ -3899,7 +3886,7 @@ fn an_exec_in_a_bool_place_drives_the_bool_pin_in_the_save() {
         let src = format!("{chip}on go {{ {place} }}");
         for fold in [true, false] {
             let codes = match compile_main(&src, &[], fold) {
-                Ok(out) => out.diagnostics.iter().map(|d| d.code.to_string()).collect(),
+                Ok(out) => out.diagnostics.iter().map(|d| d.code.clone()).collect(),
                 Err(codes) => codes,
             };
             if codes.iter().any(|c| c == "WS094") != ws094 {
@@ -3914,8 +3901,7 @@ fn an_exec_in_a_bool_place_drives_the_bool_pin_in_the_save() {
 /// with a gate read in a field or element, holds it as the read's first
 /// output, as the one annotated with the type does: copied whole, given as an
 /// argument, compared, its field read and written, returned, pushed, nested,
-/// in an array. The field held the whole read before: a whole copy dropped
-/// it, an argument read the exec, and `t = (2.5, 3)` was `WS003`.
+/// in an array; `t = (2.5, 3)` compiles.
 #[test]
 fn an_unannotated_var_holds_a_read_in_a_field_as_its_first_output() {
     let head = "in go: exec\nin bb: bool\nvar n: int = 0\nout on1: int = n\nvar f: float = 0.0\nout of1: float = f\n\
@@ -3990,8 +3976,7 @@ fn an_unannotated_var_holds_a_read_in_a_field_as_its_first_output() {
 /// A gate read returned whole to several outputs fills them by name when any
 /// output is named like one of the read's outputs, and then every output must
 /// be; by position when none is; the counts must agree; and two outputs of one
-/// name are `WS013`. A partial match routed by position before, so an output
-/// named `Value` could carry `IsEmpty`.
+/// name are `WS013`. An output named `Value` never carries `IsEmpty`.
 #[test]
 fn a_read_returned_whole_routes_its_outputs_by_name_or_by_position() {
     let head = "in go: exec\nvar f: float = 0.0\nout of1: float = f\nvar bo: bool = false\nout obo: bool = bo\n\
@@ -4078,7 +4063,7 @@ fn a_read_returned_whole_routes_its_outputs_by_name_or_by_position() {
 
 /// A named output of a call with several outputs read where its value goes
 /// (`go2(a).o`, an enum) saves what the call read whole saves, chosen in an
-/// `if` too; it was a false `WS072`.
+/// `if` too, with no `WS072`.
 #[test]
 fn a_named_enum_output_of_a_call_reads_as_the_call_does() {
     let head = "in go: exec\nin c: bool\nin a: int\nvar n: int = 0\nout on1: int = n\nenum Opt { Some(int), None }\n\
@@ -4114,8 +4099,8 @@ fn a_named_enum_output_of_a_call_reads_as_the_call_does() {
 /// scrutinee, `EnumToInt`'s argument, an element pushed, a branch of an `if`,
 /// `match` or `Select` beside an enum, an enum parameter. Each saves what its
 /// twin naming the output saves; `==` is `WS004` in both, enums having no
-/// `==`. A held one assigned was an internal compiler error (`WS094`), and the
-/// rest were `WS066`, `WS003` or placeholders.
+/// `==`. None is an internal compiler error (`WS094`), `WS066`, `WS003` or a
+/// placeholder.
 #[test]
 fn a_gate_read_with_an_enum_first_output_is_that_enum() {
     let head = "in go: exec\nin a: int\nin bb: bool\nenum Hue { Red, Green, Blue }\nvar hh: Hue = Hue.Red\n\
@@ -4219,16 +4204,16 @@ fn a_gate_read_with_an_enum_first_output_is_that_enum() {
 #[test]
 fn a_choice_between_two_reads_takes_the_first_declared_output_whatever_its_name() {
     super::shadow_differential::memoized(|| {
-        a_choice_between_two_reads_takes_the_first_declared_output_whatever_its_name_matrix(false)
-    })
+        a_choice_between_two_reads_takes_the_first_declared_output_whatever_its_name_matrix(false);
+    });
 }
 
 #[test]
 #[ignore = "exhaustive"]
 fn a_choice_between_two_reads_takes_the_first_declared_output_whatever_its_name_exhaustive() {
     super::shadow_differential::memoized(|| {
-        a_choice_between_two_reads_takes_the_first_declared_output_whatever_its_name_matrix(true)
-    })
+        a_choice_between_two_reads_takes_the_first_declared_output_whatever_its_name_matrix(true);
+    });
 }
 
 /// Every name pair when `full`; otherwise three, in both orders: a choice
@@ -4483,9 +4468,9 @@ fn a_generic_body_record_read_as_one_value_names_the_bound_to_narrow() {
     assert!(msg.contains("`r.x`") && !msg.contains("narrow"), "{msg}");
 }
 
-/// A field read of a call reads that call's outputs, never the outputs of
-/// a call an earlier statement gave as an argument of one value: after
-/// `mtf.set("k", gr())`, `mtf.get("j").Value` read `gr()`'s `Value`.
+/// A field read of a call reads that call's outputs, never the outputs of a
+/// call an earlier statement gave as an argument of one value: after
+/// `mtf.set("k", gr())`, `mtf.get("j").Value` reads the map get's `Value`.
 #[test]
 fn a_field_read_of_a_call_reads_its_own_outputs() {
     let head = "in go: exec\nvar f: float = 0.0\nout of1: float = f\nvar bo: bool = false\nout obo: bool = bo\n\
@@ -4525,9 +4510,8 @@ fn a_field_read_of_a_call_reads_its_own_outputs() {
 
 /// A `var` written with no type and initialized from a record is declared
 /// as the record's type written out, field by field: it saves what the
-/// annotated `var` saves, read by field, assigned whole or returned. It was
-/// one `float` var whose field read was a vector's `X`, and returning or
-/// assigning it whole was `WS094` or `WS071`.
+/// annotated `var` saves, read by field, assigned whole or returned, with no
+/// `WS094` or `WS071`.
 #[test]
 fn an_unannotated_var_of_a_record_is_declared_as_the_record() {
     let head = "in go: exec\nvar n: int = 0\nout on1: int = n\ntype R = { x: int, y: int }\nvar rr: R = { x: 0, y: 0 }\n\

@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::*;
 use crate::intern::{intern, resolve};
 use crate::ir::{Literal, NodeId, NodeKind, Program, Type};
@@ -24,7 +26,7 @@ fn parse_err(src: &str) -> ParseError {
     }
 }
 
-fn node<'p>(p: &'p Program, id: u32) -> &'p crate::ir::Node {
+fn node(p: &Program, id: u32) -> &crate::ir::Node {
     &p.module.nodes[&NodeId(id)]
 }
 
@@ -233,7 +235,7 @@ fn ids_are_implicit_explicit_or_numeric() {
         "module @m {\n  %a = Thing\n  %b = Thing !id 10\n  %c = Thing\n  %20 = Thing\n  %d = Thing\n}\n",
     );
     let mut all: Vec<u32> = p.module.nodes.keys().map(|k| k.0).collect();
-    all.sort();
+    all.sort_unstable();
     assert_eq!(all, [1, 10, 11, 20, 21]);
     let e = parse_err("module @m {\n  %a = Thing !id 5\n  %5 = Thing\n}\n");
     assert!(e.message.contains("already taken"), "{e}");
@@ -241,7 +243,7 @@ fn ids_are_implicit_explicit_or_numeric() {
 
 #[test]
 fn a_chip_body_and_its_pins() {
-    let src = r#"module @chip {
+    let src = r"module @chip {
   %go = in exec
   %n = Var : () -> (Value: int, VarRef: *int)
   %c = chip { closed } !layout_after(%n) {
@@ -250,7 +252,7 @@ fn a_chip_body_and_its_pins() {
     %inc = Exec_Var_Increment(Exec: %p, VarRef: %r)
   }
 }
-"#;
+";
     let p = parse(src);
     let m = &p.module;
     let chip = &m.chips[&NodeId(3)];
@@ -385,7 +387,7 @@ fn a_long_chain_of_untyped_pins_takes_its_source_type() {
     // one more pin.
     let mut src = String::from("module @m {\n");
     for i in (1..=12).rev() {
-        src += &format!("  %p{i} = in(%p{})\n", i - 1);
+        let _ = writeln!(src, "  %p{i} = in(%p{})", i - 1);
     }
     src += "  %p0 = in int\n}\n";
     let p = parse(&src);

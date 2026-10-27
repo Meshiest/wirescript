@@ -112,7 +112,7 @@ pub fn format_with(source: &str, opts: &FormatOptions) -> String {
         f.line(raw.strip_suffix('\r').unwrap_or(raw));
     }
     let mut lines = f.lines;
-    while lines.last().is_some_and(|l| l.is_empty()) {
+    while lines.last().is_some_and(std::string::String::is_empty) {
         lines.pop();
     }
     let mut out = lines.join(eol.as_str());
@@ -216,7 +216,7 @@ impl Formatter<'_> {
             && ["in ", "out ", "var "]
                 .iter()
                 .any(|kw| trimmed.starts_with(kw) && self.prev.starts_with(kw))
-            && self.lines.last().is_some_and(|l| l.is_empty())
+            && self.lines.last().is_some_and(std::string::String::is_empty)
         {
             self.lines.pop();
         }

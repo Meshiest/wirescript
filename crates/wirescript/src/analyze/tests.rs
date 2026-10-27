@@ -89,7 +89,7 @@ fn layout_wire(src: NodeId, dst: NodeId) -> Wire {
 #[test]
 fn layout_wires_are_not_signal_cycles() {
     // A loop made only of `_Layout` placement wires is cosmetic, not signal flow,
-    // and must NOT raise WS005 (regression: chip-inline layout edges did).
+    // and must NOT raise WS005.
     let mut m = Module::new("layout-loop");
     let a = gate("Alpha");
     let b = gate("Beta");

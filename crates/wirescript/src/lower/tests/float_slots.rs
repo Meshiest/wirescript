@@ -54,42 +54,42 @@ enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 13] = [
-        Kind::IntLiteral,
-        Kind::IntConst,
-        Kind::IntVar,
-        Kind::FloatLiteral,
-        Kind::FloatVar,
-        Kind::ConstChain,
-        Kind::LetChain,
-        Kind::Arithmetic,
-        Kind::Negated,
-        Kind::ConstModCall,
-        Kind::ConstIndex,
-        Kind::ConstField,
-        Kind::ConstIf,
+    const ALL: [Self; 13] = [
+        Self::IntLiteral,
+        Self::IntConst,
+        Self::IntVar,
+        Self::FloatLiteral,
+        Self::FloatVar,
+        Self::ConstChain,
+        Self::LetChain,
+        Self::Arithmetic,
+        Self::Negated,
+        Self::ConstModCall,
+        Self::ConstIndex,
+        Self::ConstField,
+        Self::ConstIf,
     ];
 
     fn text(self) -> &'static str {
         match self {
-            Kind::IntLiteral => "13",
-            Kind::IntConst => "THIRTEEN",
-            Kind::IntVar => "iv",
-            Kind::FloatLiteral => "13.0",
-            Kind::FloatVar => "fv",
-            Kind::ConstChain => "C13",
-            Kind::LetChain => "L13",
-            Kind::Arithmetic => "(TWELVE + 1)",
-            Kind::Negated => "-MINUS13",
-            Kind::ConstModCall => "plus1(TWELVE)",
-            Kind::ConstIndex => "TBL[1]",
-            Kind::ConstField => "REC.a",
-            Kind::ConstIf => "(if TWELVE > 0 then C13 else 12)",
+            Self::IntLiteral => "13",
+            Self::IntConst => "THIRTEEN",
+            Self::IntVar => "iv",
+            Self::FloatLiteral => "13.0",
+            Self::FloatVar => "fv",
+            Self::ConstChain => "C13",
+            Self::LetChain => "L13",
+            Self::Arithmetic => "(TWELVE + 1)",
+            Self::Negated => "-MINUS13",
+            Self::ConstModCall => "plus1(TWELVE)",
+            Self::ConstIndex => "TBL[1]",
+            Self::ConstField => "REC.a",
+            Self::ConstIf => "(if TWELVE > 0 then C13 else 12)",
         }
     }
 
     fn constant(self) -> bool {
-        !matches!(self, Kind::IntVar | Kind::FloatVar)
+        !matches!(self, Self::IntVar | Self::FloatVar)
     }
 }
 
@@ -148,7 +148,9 @@ fn read_save_values(
             BrdbValue::Bool(b) if narrow => out.push(Literal::Bool(*b)),
             BrdbValue::Struct(s) => s.properties.values().for_each(|p| go(p, out, narrow)),
             BrdbValue::Array(items) | BrdbValue::FlatArray(items) => {
-                items.iter().for_each(|i| go(i, out, narrow))
+                for i in items {
+                    go(i, out, narrow);
+                }
             }
             BrdbValue::DynamicArray(a) => a.values.iter().for_each(|i| go(i, out, narrow)),
             BrdbValue::DynamicMap(m) => m.entries.iter().for_each(|(k, v)| {
@@ -257,6 +259,11 @@ const FLOAT_ROUTES: &[(&str, &str, &str)] = &[
         "enum E { A, B }\nvar e: E = E.A\n",
         "on go { x = (match e { A => @, B => 2.5 }) / 2 }",
     ),
+    (
+        "top-level annotated let",
+        "let tl: float = @\n",
+        "on go { x = tl / 2 }",
+    ),
 ];
 
 /// Constant-only routes: a `const` table and map, and a constant read through
@@ -292,7 +299,7 @@ fn check_float_slot(what: &str, src: &str, kind: Kind) {
         for (stage, nums) in [("IR", &lits), ("save", &saved)] {
             let ints = nums
                 .iter()
-                .filter(|l| matches!(l, Literal::Int(13) | Literal::Int(6)))
+                .filter(|l| matches!(l, Literal::Int(13 | 6)))
                 .count();
             assert_eq!(
                 ints, 0,
@@ -334,6 +341,7 @@ const FULL_FLOAT_ROUTES: &[&str] = &[
     "map set",
     "enum named payload",
     "if join",
+    "top-level annotated let",
 ];
 
 /// The kinds route `i` takes. `full` takes all of them; otherwise a route
@@ -487,7 +495,6 @@ fn an_annotated_let_or_const_binds_its_annotation() {
         );
         let tc = crate::typecheck::typecheck(
             &crate::parser::parse(&src, "t").ast,
-            "t",
             &crate::typecheck::CeSlotMap::default(),
         );
         let at = src.rfind(name).unwrap();
@@ -515,9 +522,7 @@ fn an_integer_constant_into_a_namespaced_float_parameter_is_a_float() {
             let mut lits = Vec::new();
             literals(&r.module, &mut lits);
             assert!(
-                !lits
-                    .iter()
-                    .any(|l| matches!(l, Literal::Int(13) | Literal::Int(6))),
+                !lits.iter().any(|l| matches!(l, Literal::Int(13 | 6))),
                 "{kind:?} {prefix:?}: {lits:?}"
             );
             assert!(
@@ -535,11 +540,7 @@ fn an_integer_constant_into_a_namespaced_float_parameter_is_a_float() {
     };
     let src = "import * as u from \"lib\"\nin go: exec\nvar x: float = 0.0\nout ox: float = x\non go { x = u.half(13) }";
     let resolved = crate::resolve::resolve(src, "main", &loader);
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "main",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = crate::typecheck::typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let at = src.find("13").unwrap();
     let arg = tc
         .type_of_expr
@@ -675,7 +676,6 @@ fn integer_math_builtins_type_as_the_join_of_their_operands() {
         let src = format!("{head}let r = {call}\nlet t: int = r");
         let tc = crate::typecheck::typecheck(
             &crate::parser::parse(&src, "t").ast,
-            "t",
             &crate::typecheck::CeSlotMap::default(),
         );
         let at = src.find(call).unwrap();
@@ -690,7 +690,6 @@ fn integer_math_builtins_type_as_the_join_of_their_operands() {
         let src = format!("{head}let r = {call}");
         let tc = crate::typecheck::typecheck(
             &crate::parser::parse(&src, "t").ast,
-            "t",
             &crate::typecheck::CeSlotMap::default(),
         );
         let at = src.find(call).unwrap();
@@ -933,7 +932,7 @@ fn an_integer_expression_without_a_certified_result_keeps_its_gate() {
     let head = "in go: exec\nvar x: float = 0.0\nout ox: float = x\nmod half(v: float) -> float { return v / 2 }\n\
                 const BIG = 9223372036854775807\nconst B2 = BIG + 1\nconst M7 = -7\nconst Z = 0\n\
                 const mod plus1(v: int) -> int { return v + 1 }\n";
-    let wrapped = |l: &Literal| matches!(l, Literal::Float(f) if *f == -9223372036854775808.0 || *f == -4611686018427387904.0);
+    let wrapped = |l: &Literal| matches!(l, Literal::Float(f) if *f == -9_223_372_036_854_775_808.0 || *f == -4_611_686_018_427_387_904.0);
     for (body, baked, kept) in [
         (
             "on go { x = half(BIG + 1) }",
@@ -1332,7 +1331,7 @@ fn constant_held_in_its_declared_type_matrix(full: bool) {
                             }
                             let stored = *use_name != "compare";
                             if float {
-                                if has(&|l| matches!(l, Literal::Int(13) | Literal::Int(6))) {
+                                if has(&|l| matches!(l, Literal::Int(13 | 6))) {
                                     failures.push(format!(
                                         "{row} fold {fold}: an integer\n{src}\n{saved:?}"
                                     ));
@@ -1350,9 +1349,7 @@ fn constant_held_in_its_declared_type_matrix(full: bool) {
                             ) {
                                 failures
                                     .push(format!("{row} fold {fold}: a float\n{src}\n{saved:?}"));
-                            } else if stored
-                                && !has(&|l| matches!(l, Literal::Int(13) | Literal::Int(6)))
-                            {
+                            } else if stored && !has(&|l| matches!(l, Literal::Int(13 | 6))) {
                                 failures.push(format!(
                                     "{row} fold {fold}: the integer is missing\n{src}\n{saved:?}"
                                 ));
@@ -1468,10 +1465,9 @@ const STORAGE_INTRODUCTIONS: &[(&str, &str, &str)] = &[
 /// An integer declared `float` is stored as that float wherever storage is
 /// declared and however the `float` is spelled: directly, through an alias, an
 /// alias of an alias, an alias declared after its use or a namespaced alias,
-/// as a record field or tuple element too. The save held the integer for every
-/// alias spelling and for any `buffer`, so dividing it was an integer division.
-/// An `int` declared through an alias stays an integer, and so does an `int`
-/// beside the number.
+/// as a record field or tuple element too, `buffer` included, so dividing it is
+/// a float division. An `int` declared through an alias stays an integer, and so
+/// does an `int` beside the number.
 ///
 /// The default set gives each (spelling, introduction, type) one row per use,
 /// the numbers rotating across the uses; the full product runs under
@@ -1551,8 +1547,7 @@ fn float_declared_through_an_alias_matrix(full: bool) {
                                 }
                             };
                             let has = |want: &dyn Fn(&Literal) -> bool| saved.iter().any(want);
-                            let int_of =
-                                |l: &Literal| matches!(l, Literal::Int(13) | Literal::Int(6));
+                            let int_of = |l: &Literal| matches!(l, Literal::Int(13 | 6));
                             let float_of = |l: &Literal| matches!(l, Literal::Float(f) if *f == 13.0 || *f == 6.5);
                             if float && (has(&int_of) || !has(&float_of)) {
                                 failures.push(format!(
@@ -1603,9 +1598,9 @@ fn float_declared_through_an_alias_matrix(full: bool) {
 /// A `const mod`'s type parameter is the type the call binds it to (from the
 /// arguments, an integer and a float joining to `float`, or written as
 /// `f<float>(5)`), in its parameters, its result and an annotated `let` in its
-/// body, whatever an alias, enum or record named like it declares. A type
-/// parameter named like a `float` alias held an integer argument as a float,
-/// and a call binding `float` kept an integer argument an integer.
+/// body, whatever an alias, enum or record named like it declares: a type
+/// parameter named like a `float` alias does not make an integer argument a
+/// float, and a call binding `float` makes an integer argument a float.
 ///
 /// The default set runs every call under no collision and under the `float`
 /// alias, and each other collision under half the calls (each half binds
@@ -1708,9 +1703,8 @@ fn const_mod_type_parameter_matrix(full: bool) {
 /// annotated `const`, `let` or `var`, an assignment, a `mod` parameter, a
 /// return value, through an alias of the instantiation too) holds its payload
 /// in the instantiated type: `Opt.Some(7)` declared `Opt<float>` holds the
-/// float 7, with no warning, and declared `Opt<int>` the integer. It held the
-/// integer with a `WS016` warning, and the `var`, assignment and parameter
-/// forms were `WS003`.
+/// float 7, with no warning, and declared `Opt<int>` the integer. The `var`,
+/// assignment and parameter forms compile, with no `WS003`.
 ///
 /// The default set gives each (form, constructor, spelling, type) one of
 /// the numbers, rotating; the full product runs under `--ignored`.
@@ -1791,12 +1785,7 @@ fn generic_enum_payload_matrix(full: bool) {
                         let row = format!("{form} / {ctor} / {spelling} / {num} {number}");
                         for fold in [false, true] {
                             let codes = match super::declaring_scope::compiled(&src, &[], fold) {
-                                Ok(c) => c
-                                    .out
-                                    .diagnostics
-                                    .iter()
-                                    .map(|d| d.code.to_string())
-                                    .collect(),
+                                Ok(c) => c.out.diagnostics.iter().map(|d| d.code.clone()).collect(),
                                 Err(codes) => codes,
                             };
                             if codes.iter().any(|c| c == "WS016" || c == "WS003") {
@@ -1809,8 +1798,7 @@ fn generic_enum_payload_matrix(full: bool) {
                                 continue;
                             };
                             let has = |want: &dyn Fn(&Literal) -> bool| saved.iter().any(want);
-                            let int_of =
-                                |l: &Literal| matches!(l, Literal::Int(7) | Literal::Int(3));
+                            let int_of = |l: &Literal| matches!(l, Literal::Int(7 | 3));
                             let float_of = |l: &Literal| matches!(l, Literal::Float(f) if *f == 7.0 || *f == 3.5);
                             if float && (has(&int_of) || !has(&float_of)) {
                                 failures.push(format!(

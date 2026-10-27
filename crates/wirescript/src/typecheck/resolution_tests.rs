@@ -1,6 +1,8 @@
 //! Typecheck records what each method call, index access and loop source
 //! resolved to, for lowering to replay.
 
+use std::fmt::Write as _;
+
 use super::*;
 use crate::parser::parse;
 
@@ -11,7 +13,7 @@ fn tc(src: &str) -> TypeCheckResult {
         "parse diagnostics: {:?}",
         p.diagnostics
     );
-    typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    typecheck(&p.ast, &crate::typecheck::CeSlotMap::default())
 }
 
 /// The key for the source text `needle` (first occurrence), outside any generic.
@@ -146,7 +148,7 @@ fn index_access_assignment_targets_dual_args_and_loops_record_container_kinds() 
 fn an_erroring_call_records_nothing() {
     let src = "var n: int = 0\nin go: exec\non go { n = n.nosuch() }";
     let r = tc(src).resolutions;
-    assert!(r.method_targets.get(&key(src, "n.nosuch()")).is_none());
+    assert!(!r.method_targets.contains_key(&key(src, "n.nosuch()")));
 }
 
 #[test]
@@ -179,11 +181,9 @@ fn a_generic_body_records_one_entry_per_combination() {
     );
 }
 
-/// A NON-generic mod nested inside a generic mod's body (`Stmt::ChipDecl`) is
-/// itself body-checked once per OUTER combination, so its own resolutions must
-/// key by the enclosing substitution, not by its own (empty) one — otherwise
-/// every outer pass would overwrite the same `(range, [])` entry and only the
-/// last-checked outer type would survive.
+/// A non-generic mod nested in a generic mod's body (`Stmt::ChipDecl`) is
+/// checked once per outer combination, so its resolutions key by the enclosing
+/// substitution rather than its own empty one, and every outer type survives.
 #[test]
 fn a_nested_mod_records_under_the_enclosing_generic_substitution() {
     let src = "mod pushAll<T: int | string>(rows: T[][], v: T) {\n\
@@ -240,9 +240,9 @@ fn a_generic_nested_in_a_generic_keys_by_the_concatenated_substitution_stack() {
             Arc::<[Type]>::from(vec![outer, inner]),
         )
     };
-    // `inner`'s own type param `U` is bound to `Int` at THIS call site
-    // (`inner(us, 1)`), so every outer pass records the SAME inner combo
-    // (`Int`) but under a DIFFERENT outer prefix — both must survive.
+    // `inner`'s type parameter `U` binds to `Int` at this call (`inner(us, 1)`),
+    // so every outer pass records the same inner combination under a different
+    // outer prefix, and both survive.
     assert_eq!(
         r.method_targets.get(&k(Type::Int, Type::Int)),
         Some(&MethodTarget::Container {
@@ -277,7 +277,12 @@ fn instance_type(
     subst: &[Type],
 ) -> Option<Type> {
     r.generic_expr_types
-        .get(&(range.0.clone(), range.1, range.2, Arc::from(subst)))
+        .get(&(
+            std::sync::Arc::clone(&range.0),
+            range.1,
+            range.2,
+            Arc::from(subst),
+        ))
         .cloned()
 }
 
@@ -447,7 +452,7 @@ fn too_many_demanded_instantiations_is_an_error() {
         let picks: Vec<&str> = (0..11)
             .map(|i| if pattern >> i & 1 == 1 { "x" } else { "k" })
             .collect();
-        src.push_str(&format!(" k = f({})\n", picks.join(", ")));
+        let _ = writeln!(src, " k = f({})", picks.join(", "));
         calls += 1;
         if calls == instances::MAX_DEMANDED_INSTANTIATIONS + 64 {
             break;
@@ -477,11 +482,12 @@ fn too_many_demanded_instantiations_names_the_largest_demanders() {
     let args: Vec<String> = (0..11).map(|i| format!("a{i}: T{i}")).collect();
     let mut src = String::new();
     for name in ["big", "small"] {
-        src.push_str(&format!(
-            "mod {name}<{}>({}) -> int {{ return 1 }}\n",
+        let _ = writeln!(
+            src,
+            "mod {name}<{}>({}) -> int {{ return 1 }}",
             params.join(", "),
             args.join(", ")
-        ));
+        );
     }
     src.push_str("var k: int = 0\nvar x: float = 0.0\nin go: exec\non go {\n");
     let patterns: Vec<String> = (0u32..2048)
@@ -494,10 +500,10 @@ fn too_many_demanded_instantiations_names_the_largest_demanders() {
         })
         .collect();
     for p in &patterns[..900] {
-        src.push_str(&format!(" k = big({p})\n"));
+        let _ = writeln!(src, " k = big({p})");
     }
     for p in &patterns[..200] {
-        src.push_str(&format!(" k = small({p})\n"));
+        let _ = writeln!(src, " k = small({p})");
     }
     src.push('}');
     let r = tc(&src);

@@ -4,6 +4,10 @@ use super::*;
 
 /// A scope whose values say what each binding is: 0 a non-value, 1 a `let`
 /// (may be a constant), 2 any other value.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "passed as the scope API's `&dyn Fn(&V) -> Bound`"
+)]
 fn bound(v: &u8) -> Bound {
     match v {
         0 => Bound::NotAValue,
@@ -20,7 +24,12 @@ fn module(pairs: &[(&str, i64)], declared: &[&str]) -> ConstScope {
                 .map(|(n, v)| (n.to_string(), Literal::Int(*v)))
                 .collect(),
         ),
-        Arc::new(declared.iter().map(|n| n.to_string()).collect()),
+        Arc::new(
+            declared
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+        ),
         Arc::default(),
     )
 }

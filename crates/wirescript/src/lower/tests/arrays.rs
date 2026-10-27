@@ -4,11 +4,9 @@ use super::*;
 
 #[test]
 fn array_pop_value_and_isempty_use_distinct_ports() {
-    // Regression: `pop()` exposes a record { Value, IsEmpty }. The lowering must
-    // declare BOTH outputs. Before, only `Value` was declared, so `.IsEmpty`
-    // silently fell back to the `Value` port - `.Value` and `.IsEmpty` read the
-    // same wire, and in-game the pop's `Value` output resolved to `bIsEmpty`
-    // (0 for a non-empty pop), so popping always yielded 0.
+    // `pop()` exposes a record { Value, IsEmpty }, and the lowering declares BOTH
+    // outputs. With only `Value` declared, `.IsEmpty` falls back to the `Value`
+    // port and in game the pop's `Value` resolves to `bIsEmpty`, so a pop yields 0.
     let src = "var a: int[]\n\
                in go: exec\n\
                var v: int = 0\n\
@@ -210,10 +208,10 @@ fn every_canonical_array_method_lowers() {
 
 #[test]
 fn handler_local_array_var_rebuilds_without_bogus_var_set() {
-    // `var nums = [1,2,3]` inside a handler: the re-init on scope entry must
-    // use the array rebuild (clear + push) — the generic Var_Set reset wired a
-    // `VarRef` source port that Pseudo_ArrayVar doesn't have (in-game:
-    // "Wire source port VarRef does not exist in source component").
+    // `var nums = [1,2,3]` inside a handler: the re-init on scope entry uses the
+    // array rebuild (clear + push). The generic Var_Set reset would wire a `VarRef`
+    // source port Pseudo_ArrayVar lacks (in game: "Wire source port VarRef does not
+    // exist in source component").
     let src = "in run: exec\n\
                on run {\n\
                  var nums = [1, 2, 3]\n\
@@ -275,10 +273,10 @@ fn array_literal_assignment_desugars_to_clear_push_append() {
 
 #[test]
 fn multi_line_array_literals_parse() {
-    // Newlines are allowed after '[', around commas, and before ']' — with an
-    // optional trailing comma — mirroring the multi-line call-arg rules. Both
-    // the top-level baked initializer and the exec-context rebuild use the
-    // same literal parse.
+    // Newlines are allowed after '[', around commas, and before ']', with an
+    // optional trailing comma, mirroring the multi-line call-arg rules. Both the
+    // top-level baked initializer and the exec-context rebuild use the same
+    // literal parse.
     let src = "var names: string[] = [\n  \"a\",\n  \"b\",\n  \"c\",\n]\n\
         var base: int[] = [1, 2]\nvar foo: int[]\nin t: exec\n\
         on t {\n  foo = [\n    3,\n    ...base,\n    4\n  ]\n}";
@@ -314,9 +312,8 @@ fn top_level_array_with_non_literal_or_spread_errors() {
 
 #[test]
 fn non_literal_array_assign_is_rejected_not_silently_miscompiled() {
-    // `xs = ys` has no whole-array assignment gate, and the generic Var_Set
-    // path wired the ArrayVar's nonexistent `VarRef` port, which only failed
-    // at emit.
+    // `xs = ys` has no whole-array assignment gate; the generic Var_Set path would
+    // wire the ArrayVar's nonexistent `VarRef` port, which fails only at emit.
     let r = compile("var xs: int[]\nvar ys: int[]\nin t: exec\non t {\n  xs = ys\n}\n");
     assert!(
         r.diagnostics.iter().any(|d| d.code == "WS027"
@@ -335,7 +332,7 @@ fn non_literal_array_assign_is_rejected_not_silently_miscompiled() {
     );
 }
 
-// ── sortMultiple's parallel arrays: at most 7, each resolved or loud ──
+// sortMultiple's parallel arrays: at most 7, each resolved or loud
 
 const SORT_DECLS: &str = "var k: int[]\nvar a1: int[]\nvar a2: int[]\nvar a3: int[]\n\
     var a4: int[]\nvar a5: int[]\nvar a6: int[]\nvar a7: int[]\nvar a8: int[]\n\
@@ -407,8 +404,8 @@ fn sort_multiple_never_wires_an_array_argument_into_descending() {
         "an array argument reached bDescending"
     );
 
-    // A record array is carried along as every one of its columns; it used to
-    // fail to resolve and be wired into bDescending, then overwritten by `d`.
+    // A record array is carried along as every one of its columns, none of them
+    // wired into bDescending.
     let r = compile_ok(&format!(
         "type Row = {{ u: string, g: float, f: string }}\nvar rs: Row[]\n{SORT_DECLS}\
          on go {{\n  k.sortMultiple(a1, rs, a2, d)\n}}"

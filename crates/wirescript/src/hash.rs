@@ -1,12 +1,12 @@
-//! Deterministic hashing for `:atom` literals — canonical XXH64 (seed 0).
+//! Deterministic hashing for `:atom` literals: canonical XXH64 (seed 0).
 //! Self-contained (no external crate); an atom's integer value is
 //! `xxh64(name_bytes, 0) as i64`.
 
-const PRIME64_1: u64 = 0x9E3779B185EBCA87;
-const PRIME64_2: u64 = 0xC2B2AE3D27D4EB4F;
-const PRIME64_3: u64 = 0x165667B19E3779F9;
-const PRIME64_4: u64 = 0x85EBCA77C2B2AE63;
-const PRIME64_5: u64 = 0x27D4EB2F165667C5;
+const PRIME64_1: u64 = 0x9E37_79B1_85EB_CA87;
+const PRIME64_2: u64 = 0xC2B2_AE3D_27D4_EB4F;
+const PRIME64_3: u64 = 0x1656_67B1_9E37_79F9;
+const PRIME64_4: u64 = 0x85EB_CA77_C2B2_AE63;
+const PRIME64_5: u64 = 0x27D4_EB2F_1656_67C5;
 
 #[inline]
 fn read_u64(b: &[u8]) -> u64 {
@@ -14,7 +14,7 @@ fn read_u64(b: &[u8]) -> u64 {
 }
 #[inline]
 fn read_u32(b: &[u8]) -> u64 {
-    u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64
+    u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 #[inline]
 fn round(acc: u64, input: u64) -> u64 {
@@ -29,7 +29,7 @@ fn merge_round(mut acc: u64, val: u64) -> u64 {
 }
 
 /// Canonical XXH64.
-pub fn xxh64(data: &[u8], seed: u64) -> u64 {
+pub(crate) fn xxh64(data: &[u8], seed: u64) -> u64 {
     let len = data.len() as u64;
     let mut i = 0usize;
     let mut h64;
@@ -79,7 +79,7 @@ pub fn xxh64(data: &[u8], seed: u64) -> u64 {
         i += 4;
     }
     while i < data.len() {
-        h64 ^= (data[i] as u64).wrapping_mul(PRIME64_5);
+        h64 ^= u64::from(data[i]).wrapping_mul(PRIME64_5);
         h64 = h64.rotate_left(11).wrapping_mul(PRIME64_1);
         i += 1;
     }
@@ -93,7 +93,7 @@ pub fn xxh64(data: &[u8], seed: u64) -> u64 {
 }
 
 /// An atom's wire integer: xxHash64(name, 0) bit-reinterpreted to i64.
-pub fn atom_hash(name: &str) -> i64 {
+pub(crate) fn atom_hash(name: &str) -> i64 {
     xxh64(name.as_bytes(), 0) as i64
 }
 

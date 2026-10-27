@@ -1,38 +1,19 @@
-//! `@flat` — inline every chip body onto one grid.
+//! `@flat`: inline every chip body onto one grid.
 //!
 //! Runs in place of [`crate::emit::partition_anon_chips`], just before
-//! [`super::boundary_pins`]. Working deepest-chip-first, each child module's
-//! nodes, wires and scopes move into the module that instantiates it and the
-//! chip node itself is dropped, until the whole program is a single
-//! [`Module`] with an empty `chips` map.
+//! [`super::boundary_pins`]. Deepest chip first, each child module's nodes,
+//! wires and scopes move into the module that instantiates it and the chip node
+//! is dropped, leaving one [`Module`] with an empty `chips` map. Boundary pins,
+//! layout and emit then see a single grid with no microchip bricks.
 //!
-//! Everything downstream then does the right thing untouched: with no child
-//! modules, `synthesize_boundary_pins` finds no wire whose endpoints live in
-//! different modules and returns without synthesizing a pin; layout lays out
-//! one module; and emit's chip pass has no `NodeKind::Chip` node to build a
-//! child brick grid for. The result has no microchip bricks and no child
-//! grids, and every wire that used to cross a chip wall is an ordinary
-//! same-grid wire.
+//! `partition_anon_chips` is skipped, not undone: running it and merging back
+//! would turn its per-chip literal clones into duplicate constant gates and
+//! leave its `WirePort::Layout` edges behind.
 //!
-//! It replaces `partition_anon_chips` rather than running after it because
-//! that pass exists to MOVE nodes into child modules — the exact thing being
-//! undone here. Running it first and merging back would round-trip its
-//! parent-side literal clones (one clone per anon chip, the original then
-//! deleted) into a pile of duplicate constant gates, and leave its synthetic
-//! `WirePort::Layout` edges to clean up. Skipping it leaves an anonymous
-//! chip's members where they already are — in the module that declares them,
-//! which is what flat means — with only the (bodyless) shell node to drop.
-//!
-//! Declared chip `in`/`out` pins are KEPT. After the merge each is an
-//! ordinary rerouter with one inbound wire and its consumers, sitting on the
-//! same grid as both; keeping them preserves the wiring structure exactly,
-//! where bypassing them would be an optimization with its own fan-in risk.
-//! They are deliberately NOT added to the host module's `inputs`/`outputs`
-//! lists: those drive the outer rerouter bricks for the program's own
-//! top-level `in`/`out`, and a chip pin is not one of those.
-//!
-//! `@label` and `@closed` on a chip describe a microchip brick that no
-//! longer exists, so under `@flat` they simply have nothing to apply to.
+//! Declared chip `in`/`out` pins stay as ordinary same-grid rerouters, keeping
+//! the wiring shape. They are not added to the host's `inputs`/`outputs`, which
+//! drive the program's own top-level rerouter bricks. `@label` and `@closed` on
+//! a chip have nothing to apply to.
 
 use crate::collections::{HashMap, HashSet};
 use crate::diagnostic::Diagnostic;
@@ -44,12 +25,10 @@ use crate::ir::{Literal, Module, NodeId, NodeKind, PortRef, ROOT_SCOPE_ID, Scope
 /// What flattening had to discard, for callers that want to assert it found
 /// nothing surprising.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FlattenStats {
-    /// Wires still addressing a chip instance by a port label after the
-    /// merge — i.e. naming a pin the merged body does not have. Ordinary
-    /// lowering wires straight to the child's pin nodes and never produces
-    /// this, so a non-zero count is a wire shape this pass does not
-    /// understand; the wires are dropped.
+pub(crate) struct FlattenStats {
+    /// Wires dropped because they still address a chip instance after the
+    /// merge (a port label the merged body has no pin for). Ordinary lowering
+    /// never produces these, so non-zero means an unexpected wire shape.
     pub dropped_chip_port_wires: usize,
 }
 
@@ -58,7 +37,10 @@ pub struct FlattenStats {
 /// A loop's plane refuses instead (WS080): flattening it would compile a
 /// different program. Refusal runs once, after every chip has merged up, so
 /// a plane nested under a named chip is reported exactly once.
-pub fn flatten_chips(module: &mut Module, diagnostics: &mut Vec<Diagnostic>) -> FlattenStats {
+pub(crate) fn flatten_chips(
+    module: &mut Module,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> FlattenStats {
     let mut stats = FlattenStats::default();
     flatten_into(module);
     drop_chip_nodes(module, &mut stats, diagnostics);
@@ -86,38 +68,25 @@ fn flatten_into(module: &mut Module) {
 /// Move `child`'s contents into `parent`, which instantiates it at
 /// `chip_id`.
 fn merge_child(parent: &mut Module, chip_id: NodeId, child: Module) {
-    // ── Scopes ──
-    // Child scope ids are NOT unique across modules: every module seeds
-    // `ROOT_SCOPE_ID`, each chip body starts its counter over at
-    // `ROOT_SCOPE_ID + 1`, and a template instance copies its source's scope
-    // table verbatim, so two instances of one chip carry identical ids. Every
-    // merged scope therefore gets a fresh id in the host.
-    //
-    // The child's scope TREE is preserved rather than collapsed onto the
-    // host's root: its root scope (a `ChipBody`) is re-parented onto whatever
-    // scope the chip node itself sat in, so the region tree still shows the
-    // chip's body as a group nested where the chip was. Collapsing would
-    // have been simpler but throws that structure away for nothing — nothing
-    // downstream requires a flat scope table.
+    // Scopes. Scope ids are per module (each restarts at `ROOT_SCOPE_ID`, and
+    // template instances copy their table), so every merged scope gets a fresh
+    // host id. The child's tree is kept, its root re-parented onto the chip
+    // node's scope, so the region tree still nests the body where the chip was.
     let host_scope = parent
         .nodes
         .get(&chip_id)
         .map(|n| n.scope_id)
         .filter(|s| parent.scopes.contains_key(s))
         .unwrap_or(ROOT_SCOPE_ID);
-    let mut next_scope = parent.scopes.keys().copied().max().unwrap_or(ROOT_SCOPE_ID) + 1;
+    let first_scope = parent.scopes.keys().copied().max().unwrap_or(ROOT_SCOPE_ID) + 1;
     let mut old_scopes: Vec<ScopeId> = child.scopes.keys().copied().collect();
     old_scopes.sort_unstable();
-    let mut scope_map: HashMap<ScopeId, ScopeId> = HashMap::default();
-    for old in &old_scopes {
-        scope_map.insert(*old, next_scope);
-        next_scope += 1;
-    }
+    let scope_map: HashMap<ScopeId, ScopeId> =
+        old_scopes.iter().copied().zip(first_scope..).collect();
     for old in &old_scopes {
         let info = &child.scopes[old];
-        // `parent: None` marks the child's own root; it hangs off the scope
-        // the chip node lived in. Any other unmapped parent falls back there
-        // too rather than dangling.
+        // `parent: None` marks the child's root, which hangs off the chip
+        // node's scope; any other unmapped parent falls back there too.
         let new_parent = info
             .parent
             .and_then(|p| scope_map.get(&p).copied())
@@ -132,11 +101,9 @@ fn merge_child(parent: &mut Module, chip_id: NodeId, child: Module) {
         );
     }
 
-    // ── Wires addressing the instance by port label ──
-    // `emit::build_port_index` resolves a `(chip node, port label)` wire end
-    // to the child pin that label names. Once the pin is a sibling node here
-    // that indirection has nothing left to resolve, so do the substitution
-    // now, before the chip node goes away.
+    // Wires addressing the instance by port label. Emit's `build_port_index`
+    // resolves a `(chip node, port label)` end to the child pin it names; the
+    // chip node is about to go away, so substitute the pin here.
     let mut by_label: HashMap<String, (NodeId, bool)> = HashMap::default();
     for (pin_id, pin) in &child.nodes {
         let is_output = match pin.kind {
@@ -176,15 +143,11 @@ fn merge_child(parent: &mut Module, chip_id: NodeId, child: Module) {
         }
     }
 
-    // ── Nodes ──
-    // `NodeId`s are globally fresh (`NodeId::fresh()` off one process-wide
-    // counter, and template instantiation re-stamps every copied node), so a
-    // move needs no renumbering — but assert it rather than trust it, since a
-    // silent clobber here would drop a gate with no diagnostic.
+    // Nodes. `NodeId`s are globally unique, so they move without renumbering;
+    // the assert catches a clobber, which would silently drop a gate.
     for (id, mut node) in child.nodes {
-        // `chip_id` is left as-is: NodeIds are globally unique, so it still
-        // names the right shell after the move. `drop_chip_nodes` clears it
-        // once, on the fully merged module, rather than once per level.
+        // `chip_id` still names the right shell after the move;
+        // `drop_chip_nodes` clears it once on the fully merged module.
         node.scope_id = scope_map.get(&node.scope_id).copied().unwrap_or(host_scope);
         let clobbered = parent.nodes.insert(id, node);
         assert!(
@@ -195,9 +158,8 @@ fn merge_child(parent: &mut Module, chip_id: NodeId, child: Module) {
     parent.wires.extend(child.wires);
 }
 
-/// Remove every `NodeKind::Chip` node — each is an empty shell by the time
-/// this runs — along with the wires that reference one and the `chip_id`
-/// tags that pointed at one.
+/// Remove every `NodeKind::Chip` node (an empty shell by now), the wires that
+/// reference one, and the `chip_id` tags that point at one.
 ///
 /// A loop's plane shell is refused (WS080) instead of dropped: it and its
 /// still chip_id-tagged body are left alone, since merging them would compile

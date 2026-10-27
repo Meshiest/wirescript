@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// Higher number = tighter binding. Mirrors the TS table.
+/// Higher number = tighter binding.
 fn infix_prec(op: &str) -> Option<u8> {
     match op {
         "||" | "^^" => Some(2),
@@ -32,11 +32,10 @@ fn is_prefix_op(op: &str) -> bool {
     matches!(op, "-" | "!" | "~" | "*" | "&")
 }
 
-/// Parse an integer literal's (underscore-stripped) text as an `i64`. Returns
-/// `None` when the value is out of range for a 64-bit int — the caller reports a
-/// diagnostic rather than silently baking `0` (an out-of-range user constant
-/// reading `0` with no error is exactly the class of bug this project fights).
-fn parse_int_literal(cleaned: &str) -> Option<i64> {
+/// Parse an integer literal's (underscore-stripped) text as an `i64`. `None`
+/// when the value is out of range for a 64-bit int, so the caller can report it
+/// instead of baking `0`.
+pub(super) fn parse_int_literal(cleaned: &str) -> Option<i64> {
     if let Some(hex) = cleaned
         .strip_prefix("0x")
         .or_else(|| cleaned.strip_prefix("0X"))
@@ -57,7 +56,7 @@ fn parse_int_literal(cleaned: &str) -> Option<i64> {
     }
 }
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     pub(super) fn parse_expr(&mut self) -> Expr {
         self.parse_binary(0)
     }
@@ -100,7 +99,7 @@ impl<'a> Parser<'a> {
         e
     }
 
-    /// [`parse_call_arg`] wrapped like [`parse_expr_delimited`] - a call's
+    /// [`parse_call_arg`] wrapped like [`parse_expr_delimited`], since a call's
     /// argument list is a bracketed context.
     fn parse_call_arg_delimited(&mut self) -> CallArg {
         let saved_brace = std::mem::replace(&mut self.no_brace_construct, false);
@@ -207,22 +206,17 @@ impl<'a> Parser<'a> {
             let tok = self.peek().clone();
             // `*`/`**` is ambiguous between "continue this expression as a
             // multiplication" and "a new statement starting with a deref"
-            // (`*h = 5`). Only the trailing-operator form above is a real
-            // continuation — a line that STARTS with `*` (getting here only
-            // by skipping a newline to find it) is the latter, so stop the
-            // expression here instead of consuming it.
+            // (`*h = 5`). Only the trailing-operator form above is a
+            // continuation; a line that STARTS with `*` is the latter, so the
+            // expression stops here.
             if skipped_newline && tok.kind == TokenKind::Op && (tok.text == "*" || tok.text == "**")
             {
                 self.pos = saved;
                 break;
             }
-            // A `for` source's range endpoint (`Parser::stop_at_dotdot`, set
-            // only by `parse_range_operand`) never treats a bare `..` as this
-            // loop's operator - it stops here instead, so `0..n-1` groups the
-            // `-1` before `parse_for_source` ever sees the `..`, rather than
-            // this loop swallowing it left-to-right at the same precedence as
-            // `+`/`-`. `..` keeps precedence 10 in `infix_prec` unchanged;
-            // this is a parse-time exclusion local to that one caller.
+            // A `for` source's range endpoint (`Parser::stop_at_dotdot`) stops
+            // at a bare `..`, so `0..n-1` groups the `-1` into the endpoint
+            // instead of reading `(0..n) - 1` at `..`'s shared precedence.
             if self.stop_at_dotdot && tok.kind == TokenKind::Op && tok.text == ".." {
                 self.pos = saved;
                 break;
@@ -492,9 +486,8 @@ impl<'a> Parser<'a> {
             //   let e = SpawnPrefab(...)
             //     .SendCustomEvent("init", p)
             // Skip the intervening newline(s) ONLY when the next real token is
-            // `.` (a leading-dot continuation) — an ordinary line break still
-            // ends the expression. A statement can never legally begin with `.`,
-            // so this only accepts input that was previously a parse error.
+            // `.`; an ordinary line break still ends the expression. A statement
+            // can never begin with `.`, so this makes no valid input ambiguous.
             if self.peek().kind == TokenKind::Newline {
                 let mut i = 1;
                 while self.peek_at(i).kind == TokenKind::Newline {
@@ -511,10 +504,9 @@ impl<'a> Parser<'a> {
                 let peek_kind = self.peek().kind;
                 if peek_kind == TokenKind::Int {
                     let idx_tok = self.advance();
-                    // Same reason as `float_literal_value`: the token text can
-                    // carry `_` separators or a `0x`/`0b`/`0o` prefix, and
-                    // `unwrap_or(0)` turned every one of those into a silent
-                    // pick of slot 0.
+                    // The token text can carry `_` separators or a
+                    // `0x`/`0b`/`0o` prefix, which a plain `parse` would turn
+                    // into a failure (as in `float_literal_value`).
                     let cleaned: String = idx_tok.text.chars().filter(|c| *c != '_').collect();
                     let idx: usize = match cleaned.parse() {
                         Ok(i) => i,
@@ -545,21 +537,11 @@ impl<'a> Parser<'a> {
                 continue;
             }
             // Braced-named enum payload construction: `Enum.Variant { f: v, ... }`.
-            // COMMITS whenever the path so far is a `FieldAccess` (`A.B`), the
-            // next token is `{` on the same logical line, and we are NOT parsing
-            // a header/condition (`no_brace_construct`). `no_brace_construct`
-            // alone disambiguates `if a.b { ... }` (the body block) from
-            // construction; outside a header the trailing `{` after `A.B` has no
-            // other meaning, so we commit rather than leave it. Committing is the
-            // point: if we only took a well-formed record body and let anything
-            // else fall through, the generic top-level `ExprStmt` fallback would
-            // silently re-parse the leftover `{ ... }` as a separate declaration
-            // - a silent split that drops the whole body (`S.Circle { 5.0 }`,
-            // `E.V { let x = 1 }`, `A.B { call() }`). A bare `Ident { ... }` is
-            // still left alone (`matches!(e, FieldAccess)`), and a `{` on the
-            // NEXT line never reaches here (the postfix loop only skips a leading
-            // newline before a `.`), so a following block still starts its own
-            // statement.
+            // Commits whenever the path is a `FieldAccess` (`A.B`), the `{` is on
+            // the same line, and this is not a header (`no_brace_construct`),
+            // even for a malformed body: leaving the `{ ... }` would re-parse it
+            // as a separate declaration and drop the body. A bare `Ident { ... }`
+            // is left alone.
             if t.kind == TokenKind::LBrace
                 && !self.no_brace_construct
                 && matches!(e, Expr::FieldAccess { .. })
@@ -573,11 +555,9 @@ impl<'a> Parser<'a> {
                         _ => unreachable!("parse_record_lit always returns Expr::RecordLit"),
                     }
                 } else {
-                    // A malformed body (`{ 5.0 }`, `{ let x = 1 }`, `{ call() }`):
-                    // still commit - emit a parse diagnostic and consume the
-                    // balanced braces so nothing is left for the decl fallback to
-                    // silently split off. Recovers to a zero-field VariantCtor
-                    // (typecheck then reports the payload-shape error too).
+                    // A malformed body (`{ 5.0 }`, `{ let x = 1 }`): report it,
+                    // consume the balanced braces, and recover to a zero-field
+                    // VariantCtor (typecheck then reports the payload shape too).
                     let brace_start = self.peek().start;
                     let end = self.consume_balanced_braces();
                     self.error(
@@ -629,8 +609,8 @@ impl<'a> Parser<'a> {
             // mod/chip. `<` is otherwise a comparison operator, so only commit
             // when the `<...>` parses as a type-argument list AND is immediately
             // followed by `(` (which a `<`/`>` comparison never is). Otherwise
-            // fully backtrack — position AND any speculative diagnostics — and
-            // let `<` fall through to the comparison parser.
+            // backtrack both position and speculative diagnostics, and let `<`
+            // fall through to the comparison parser.
             if t.kind == TokenKind::Op && t.text == "<" {
                 let save_pos = self.pos;
                 let save_diag = self.diagnostics.len();
@@ -674,8 +654,8 @@ impl<'a> Parser<'a> {
     /// Speculatively parse an explicit type-argument list `< Type (, Type)* >`
     /// at a call site. Returns `None` (leaving diagnostics for the caller to
     /// truncate) when the tokens after `<` don't form a type list. Does NOT
-    /// consume the following `(` — the caller checks for it to disambiguate real
-    /// type arguments from a `<`/`>` comparison.
+    /// consume the following `(`: the caller checks for it to tell type
+    /// arguments from a `<`/`>` comparison.
     fn try_parse_type_args(&mut self) -> Option<Vec<TypeExpr>> {
         self.match_tok(TokenKind::Op, Some("<"))?;
         let mut args: Vec<TypeExpr> = Vec::new();
@@ -728,13 +708,9 @@ impl<'a> Parser<'a> {
     }
 
     /// The value of a float literal's token text, with `_` digit separators
-    /// removed (`f64`'s parser rejects them) and every failure reported.
-    ///
-    /// Baking `0.0` for the unparseable (`1e`) or `inf` for the overflowing
-    /// (`1e999`) in silence is the same class of bug the integer arm reports
-    /// on: an out-of-range user constant that reads as a plausible number is
-    /// unfindable in a language with no runtime errors.
-    /// `text` is the magnitude only, so a leading `-` is applied by the caller.
+    /// removed (`f64`'s parser rejects them). An unparseable (`1e`) or
+    /// overflowing (`1e999`) literal is reported rather than baked as `0.0` or
+    /// `inf`. `text` is the magnitude only; the caller applies a leading `-`.
     fn float_literal_value(&mut self, text: &str, start: Pos, end: Pos) -> f64 {
         let cleaned: String = text.chars().filter(|c| *c != '_').collect();
         match cleaned.parse::<f64>() {
@@ -882,23 +858,21 @@ impl<'a> Parser<'a> {
                             start: expr_origin,
                             end: _,
                         } => {
-                            // Parse the `${...}` body as an EXPRESSION via
-                            // `parse_expr`. A module parse only yields an
-                            // `ExprStmt` for a bare expression statement, so an
-                            // interpolated `if ... then ... else` (a statement
-                            // `if`, or unparseable) produces no expression and
-                            // the slot renders empty. `parse_expr` also surfaces
-                            // parse errors inside the `${...}`.
-                            //
-                            // Lexed AT its position in the file, so every span
-                            // the sub-parse builds is already the real one.
+                            // Parse the `${...}` body as an expression via
+                            // `parse_expr`: a module parse yields an `ExprStmt`
+                            // only for a bare expression statement, so an
+                            // interpolated `if ... then ... else` would produce
+                            // no expression and the slot would render empty.
+                            // `parse_expr` also surfaces parse errors inside the
+                            // `${...}`. Lexed at its position in the file, so
+                            // every span the sub-parse builds is already the
+                            // real one.
                             let lexed = crate::lexer::lex_at(&source, self.file, expr_origin);
                             let mut sub = Parser::new(lexed.tokens, self.file, lexed.diagnostics);
                             let expr = sub.parse_expr();
-                            // Anything left after the expression is text the
-                            // slot silently threw away: `"${n GARBAGE}"`
-                            // compiled with no diagnostic at all, rendering
-                            // just `n`.
+                            // Anything left after the expression would be
+                            // dropped from the slot (`"${n GARBAGE}"` renders
+                            // `n`), so it is reported.
                             let leftover = sub.peek().clone();
                             if leftover.kind != TokenKind::Eof {
                                 sub.error(
@@ -995,7 +969,7 @@ impl<'a> Parser<'a> {
                         elements.push(self.parse_expr_delimited());
                     }
                     let end = self.expect(TokenKind::RParen, None);
-                    // Desugar to a record literal with numeric field names —
+                    // Desugar to a record literal with numeric field names;
                     // tuples are handled via the chip output system.
                     let fields: Vec<crate::ast::RecordLitField> = elements
                         .into_iter()
@@ -1019,13 +993,9 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::LBrace => {
-                // Check the O(1) record test first — a record (`ident:` /
-                // `ident,` / `ident}` / `...spread` / `{}`) and a map
-                // (top-level `=>`, or a literal/computed key with `:`) are
-                // mutually exclusive at this position, so whichever we probe
-                // first can short-circuit the other. Record is cheap and
-                // covers the common block-expr-vs-record case without ever
-                // touching the (potentially large) braced-region map scan.
+                // A record and a map are mutually exclusive here, so the O(1)
+                // record test runs first and skips the map test's braced-region
+                // scan.
                 if self.looks_like_record_lit() {
                     self.parse_record_lit()
                 } else if self.looks_like_map_lit() {
@@ -1040,12 +1010,10 @@ impl<'a> Parser<'a> {
                     t.start,
                     t.end,
                 );
-                // A token that CLOSES or separates an enclosing construct is
-                // left where it is: eating it makes the block, call or list
-                // around this expression run to EOF looking for its
-                // terminator, so `n = 1 +` before a `}` swallowed every
-                // declaration in the rest of the file. Anything else is
-                // consumed, which is what keeps the caller's loop advancing.
+                // A token that closes or separates an enclosing construct is
+                // left in place: eating it makes the enclosing block, call or
+                // list run to EOF looking for its terminator. Anything else is
+                // consumed, which keeps the caller's loop advancing.
                 let closes_enclosing = matches!(
                     t.kind,
                     TokenKind::RBrace
@@ -1067,9 +1035,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A `{ … }` is a map literal when it has a top-level `=>`, or a first key
+    /// A `{ ... }` is a map literal when it has a top-level `=>`, or a first key
     /// that is a string / atom / int literal followed by `:`, or a bracketed
-    /// `[ … ]:` computed key.
+    /// `[ ... ]:` computed key.
     fn looks_like_map_lit(&self) -> bool {
         let get = |idx: usize| -> &Token {
             self.tokens
@@ -1081,39 +1049,19 @@ impl<'a> Parser<'a> {
             i += 1;
         }
         let first = get(i);
-        // First-token precheck — a REJECT-list, not an allow-list. A map key
-        // is `self.parse_expr()` (any expression: `-1`, `f()`, `(1)`, `true`,
-        // `base + 1`, an asset ref, …), so an allow-list of "map-entry
-        // openers" can never be complete and would hard-reject valid maps.
-        // Instead: the call site already ruled out records (record-first
-        // check), so here we only separate a MAP from a BLOCK-EXPR. In
-        // expression position a block-expr can only be *led* by a statement,
-        // and `parse_block_expr` dispatches exactly `let` / `var` / `static`
-        // to `parse_stmt` — every other leading token it parses as an
-        // expression (block-style `if x { … }` is a statement form NOT
-        // reachable here; expression-position `if` is the `if…then…else`
-        // expression, itself a valid map key). Those three keywords cannot
-        // begin a key expression, so a `{` opening with one is unambiguously
-        // a block, never a map -> fast-reject O(1) without the scan. An empty
-        // `{}` is a record (handled at the call site) and not a map either.
-        // EVERYTHING ELSE falls through to the bounded depth-0 `=>` scan
-        // below, which is the sound test: a real map has a top-level `=>` (or
-        // a literal/computed `:` key, checked after), a keyword-less
-        // block-expr does not. This preserves exact map/record/block
-        // classification while keeping the wins (records -> record-first O(1);
-        // `let`/`var`/`static` blocks -> O(1) reject; unbalanced braces ->
-        // bounded scan).
+        // A map key can be any expression, so the precheck only rejects: the
+        // caller has ruled out records, and a `{` led by `let`/`var`/`static`
+        // (the only statements `parse_block_expr` dispatches) is a block,
+        // since none can begin a key. Everything else takes the `=>` scan.
         if first.kind == TokenKind::RBrace {
-            return false; // empty `{}` — not a map (defensive; call site routes it to record)
+            return false; // empty `{}` is a record (the call site routes it there)
         }
         if first.kind == TokenKind::Kw && matches!(first.text.as_str(), "let" | "var" | "static") {
-            return false; // block-expr statement leader — never a map key
+            return false; // a block-expr statement leader, never a map key
         }
-        // Scan to the matching `}` at brace depth 0; a top-level `=>` ⇒ map.
-        // Bounded: an unbalanced expression-position `{` (common mid-edit in
-        // the LSP) must not scan the rest of the file token-by-token every
-        // time this runs — give up (not a map) past a generous token budget
-        // instead of relying on `Eof` as the only terminator.
+        // Scan to the matching `}`; a top-level `=>` means a map. Bounded so an
+        // unbalanced `{` (common mid-edit in the LSP) does not rescan the rest
+        // of the file each time; past the budget it is not a map.
         const MAX_SCAN_TOKENS: usize = 8192;
         let mut depth = 1i32;
         let mut j = i;
@@ -1146,7 +1094,7 @@ impl<'a> Parser<'a> {
                 return true;
             }
         }
-        // Computed-key form: `[ … ] :`.
+        // Computed-key form: `[ ... ] :`.
         if first.kind == TokenKind::LBracket {
             let mut d = 1i32;
             let mut k = i + 1;
@@ -1337,20 +1285,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse `{ stmt*; expr }` — a block expression whose value is its last expression.
+    /// Parse `{ stmt*; expr }`, a block expression whose value is its last expression.
     fn parse_block_expr(&mut self) -> Expr {
         let start = self.expect(TokenKind::LBrace, None).start;
         let mut stmts = Vec::new();
         self.eat_newlines();
 
-        // Position at the top of the previous iteration. Every path back to
-        // the top of this loop has to make progress; recovery paths
-        // deliberately leave a closing token in place (see `parse_primary`'s
-        // error arm) and `eat_stmt_end` eats only `Newline`/`Semi`, so a `,`,
-        // `)` or `]` here consumes nothing and appends one statement and one
-        // diagnostic per iteration until memory runs out. Checked at the top
-        // rather than the bottom because two arms `continue` past it.
-        // `parse_block` and `parse_script` carry the same backstop.
+        // Position at the top of the previous iteration. Recovery can leave a
+        // `,`, `)` or `]` unconsumed, so a loop that made no progress breaks
+        // instead of appending a statement per iteration forever. Checked at
+        // the top because two arms `continue` past the bottom.
         let mut before = usize::MAX;
         loop {
             self.eat_newlines();
@@ -1374,8 +1318,8 @@ impl<'a> Parser<'a> {
                 }
                 continue;
             }
-            // Otherwise parse as an expression — could be the final value
-            // or an assignment statement
+            // Otherwise an expression: the final value or an assignment
+            // statement.
             let expr = self.parse_expr();
             self.eat_newlines();
             if self.match_tok(TokenKind::Op, Some("=")).is_some() {
@@ -1411,7 +1355,7 @@ impl<'a> Parser<'a> {
             self.eat_stmt_end();
         }
 
-        // Empty block or block with no final expression — use 0 as default
+        // A block with no final expression has the value 0.
         let end = self.expect(TokenKind::RBrace, None).end;
         Expr::BlockExpr {
             stmts,

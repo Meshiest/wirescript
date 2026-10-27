@@ -1,20 +1,19 @@
-//! The typechecker: a two-pass walk over the AST (decl registration, then
-//! per-decl checking), with the scope stack and exec/pure context tracking
-//! fused inline.
+//! The typechecker: a two-pass walk over the AST (declaration registration,
+//! then per-declaration checking) with the scope stack and exec/pure context
+//! tracked inline.
 //!
-//! Walks the AST producing a side `typeOfExpr` map (keyed by each
-//! expression's source-range start offset) so we don't need to rebuild
-//! the AST as a typed parallel. `opResolutions` records the catalog
-//! `OpRule` chosen for every BinOp/UnOp; the lower phase consumes it.
+//! It produces side tables rather than a typed AST: `type_of_expr` (keyed by
+//! each expression's file and byte range) and `op_resolutions` (the catalog
+//! `OpRule` chosen for every operator), which lowering consumes.
 //!
-//! Identifier semantics for `var`:
-//! - In exec context: `n` auto-derefs (lowered to `Exec_Var_Get`); type = inner T.
-//! - In a pure sink expecting `ref T`: `n` is the VarRef port; type = ref T.
-//! - In a pure sink expecting `T`: error (WS006); author writes `n.Value`.
-//! - `*n`: explicit deref; requires exec context.
-//! - `n.Value`: delayed-read form; always yields T.
+//! Reading a `var`:
+//! - in exec context, `n` auto-derefs (`Exec_Var_Get`) and types as the inner T;
+//! - in a pure sink expecting `ref T`, `n` is the `VarRef` port;
+//! - in a pure sink expecting `T`, it is an error (WS006): write `n.Value`;
+//! - `*n` is an explicit deref and needs exec context;
+//! - `n.Value` is the delayed read and always yields T.
 
-use crate::collections::HashMap;
+use crate::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::scope::Scope as ScopeStack;
@@ -23,23 +22,25 @@ use crate::ast::*;
 use crate::catalog::calls::find_call;
 use crate::catalog::events::{events, find_event};
 use crate::catalog::operators::{OpRule, resolve_op};
-use crate::diagnostic::{Diagnostic, Severity, SourceRange};
+use crate::diagnostic::{Diagnostic, RangeKey, Severity, SourceRange, StartKey};
 use crate::ir::Type;
 use crate::types::classes::mask_contains;
 use crate::types::coerce::{CoerceRule, coerce, widening_join_all};
 
 pub(crate) mod infer;
 mod sig;
-pub use sig::{CallSignature, Param, ParamKind, check_args};
+pub(crate) use sig::{CallSignature, Param, ParamKind, check_args};
 
 mod ctx;
 pub use ctx::*;
 pub(crate) mod narrow;
-pub use narrow::NarrowedRead;
-pub mod resolution;
-pub use resolution::{ContainerKind, MethodTarget, ResolutionKey, Resolutions, classify_method};
-pub mod enums;
-pub mod patterns;
+pub(crate) use narrow::NarrowedRead;
+pub(crate) mod resolution;
+pub(crate) use resolution::{
+    ContainerKind, MethodTarget, ResolutionKey, Resolutions, classify_method,
+};
+pub(crate) mod enums;
+pub(crate) mod patterns;
 mod resolve;
 pub(crate) use resolve::*;
 mod labels;
@@ -75,11 +76,11 @@ use register::*;
 /// the types the previous one joined.
 const UNTYPED_PORT_ROUNDS: usize = 4;
 
-pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheckResult {
+pub fn typecheck(script: &Script, ce_slots: &CeSlotMap) -> TypeCheckResult {
     let mut port_seeds = Arc::new(PortSeeds::default());
     for round in 1.. {
         let last = round == UNTYPED_PORT_ROUNDS;
-        match typecheck_round(script, file, ce_slots, &port_seeds, last) {
+        match typecheck_round(script, ce_slots, &port_seeds, last) {
             Ok(result) => return result,
             Err(next_ports) => port_seeds = Arc::new(next_ports),
         }
@@ -89,20 +90,17 @@ pub fn typecheck(script: &Script, file: &str, ce_slots: &CeSlotMap) -> TypeCheck
 
 fn typecheck_round(
     script: &Script,
-    file: &str,
     ce_slots: &CeSlotMap,
     port_seeds: &Arc<PortSeeds>,
     last: bool,
 ) -> Result<TypeCheckResult, PortSeeds> {
-    let mut ctx = TypeCheckCtx::new(file, ce_slots);
-    ctx.untyped_port_seeds = port_seeds.clone();
-    ctx.imports = script.imports.clone();
-    // A module-level `@nofold` marks the WHOLE program, exactly as
-    // `lower::lower` seeds `LowerCtx::nofold_depth` from this same flag.
-    // Under `@nofold` lowering still builds a real `Branch` for a constant
-    // `if`, so this stage must keep checking BOTH blocks — see the `Stmt::If`
-    // arm in `stmt.rs`.
-    ctx.nofold_depth = script.no_fold as u32;
+    let mut ctx = TypeCheckCtx::new(ce_slots);
+    ctx.untyped_port_seeds = Arc::clone(port_seeds);
+    ctx.imports = Arc::clone(&script.imports);
+    // A module-level `@nofold` marks the whole program, as `lower::lower` seeds
+    // `LowerCtx::nofold_depth` from it. Lowering then builds a real `Branch` for a
+    // constant `if`, so both blocks are checked (the `Stmt::If` arm in `stmt.rs`).
+    ctx.nofold_depth = u32::from(script.no_fold);
     register_builtin_events(&mut ctx);
     // Seed the `Option<T>`/`Result<T, E>` prelude BEFORE the pre-passes below,
     // same placement as `register_builtin_events` - so a user enum that
@@ -110,7 +108,7 @@ fn typecheck_round(
     // own doc comment for the overwrite-then-flag ordering).
     register_builtin_enums(&mut ctx);
 
-    // Pre-pass: collect every generic type alias (`type Pair<T> = …`) before
+    // Pre-pass: collect every generic type alias (`type Pair<T> = ...`) before
     // any decl registration/resolution runs, so a use resolves regardless of
     // whether its alias is declared earlier or later in the file.
     collect_generic_aliases(&mut ctx, &script.decls);
@@ -141,67 +139,51 @@ fn typecheck_round(
         &ctx.top_names,
     );
     untyped_arrays::type_constant_elements(&mut ctx, &script.decls);
-    // `@label(expr)` on a port/chip/nested-var must fold to a compile-time
-    // constant (the folded text is baked as the label) — a runtime value there
-    // has nowhere to host a wire, so it stays a WS040 error. A TOP-LEVEL `var`
-    // is the exception: it carries a wireable text component, so a runtime label
-    // there is a valid dynamic label (checked separately in
-    // `check_dynamic_var_labels`, after all top-level symbols are declared). A
-    // single dedicated walk, since these decls are checked from several
-    // different call paths below (top-level, nested in chip/anon-chip bodies,
-    // statement-level).
+    // `@label(expr)` on a port, chip or nested var must fold to a constant (the
+    // text is baked): a runtime value has nowhere to host a wire (WS040). A
+    // top-level `var` carries a wireable text component, so a runtime label there
+    // is valid and is checked in `check_dynamic_var_labels`. One dedicated walk,
+    // since these declarations are checked from several paths.
     check_label_exprs(&mut ctx, &script.decls);
     // A plain `emit X` that a same-chain `await X` follows parks the chain forever
     // (the emit fires before the await arms): WS053, suggesting `buffer emit X`.
     check_parked_kicks(&mut ctx, &script.decls);
-    // Module-level output frame: the declared types of every ANNOTATED
-    // top-level `out o: T`, so a body statement targeting it (`emit o = v`)
-    // can be checked against `T` via `current_output_ty`. An unannotated
-    // `out y = x` has no declared type to check against — it's excluded here
-    // (handled by `TopDecl::Out` directly).
-    // Pushed once for both check loops below (including the deferred named
-    // chips, which see it as their enclosing scope's frame — a chip pushes
-    // its own frame on top per combo, so the nearest-wins lookup still finds
-    // the chip's own outputs first).
+    // The module-level output frame, so a statement targeting a top-level `out`
+    // (`emit o = v`) is checked against its type through `current_output_ty`.
+    // Pushed once for both check loops below; a chip pushes its own frame per
+    // combination on top, and the nearest frame wins.
     //
-    // Include EVERY top-level `out` (an unannotated `out y = x` as `Any`), not
-    // just the annotated ones, so this frame's length equals lowering's
-    // `output_count()`. `return <value>` only wires into a lone output when
-    // `output_count() == 1` (`lower/stmt.rs`), so the `Stmt::Return` arm's
-    // single-output check must key on the SAME total count — otherwise a lone
-    // annotated out sitting beside an unannotated one would be checked here
-    // while lowering drops the value. An `Any` frame entry coerces to Same, so
-    // `emit`/`out` to an unannotated output stays unchecked.
+    // It holds every top-level `out` (an unannotated one as `Any`, which coerces
+    // as Same, so writes to it stay unchecked), so its length equals lowering's
+    // `output_count()`: `return <value>` wires into a lone output only when that
+    // count is 1 (`lower/stmt.rs`), and the `Stmt::Return` check keys on the same
+    // count.
     //
-    // `resolve_type_expr` is NOT pure — it emits (e.g. WS002 "unknown type").
-    // Each annotation is resolved (and any error reported) again by the
-    // canonical `TopDecl::Out` check below, so DISCARD any diagnostics this
-    // frame build produces: snapshot the length first, then truncate back to it.
-    let diag_mark = ctx.diagnostics.len();
-    let module_outs: Vec<EventDataField> = script
-        .decls
-        .iter()
-        .filter_map(|d| match d {
-            TopDecl::Out(b) => Some(EventDataField {
-                name: b.name.clone(),
-                ty: match &b.typ {
-                    Some(te) => resolve_type_expr(&mut ctx, te),
-                    None => Type::Any,
-                },
-                is_const: false,
-            }),
-            _ => None,
-        })
-        .collect();
-    ctx.diagnostics.truncate(diag_mark);
+    // `resolve_type_expr` reports errors, and the `TopDecl::Out` check resolves
+    // each annotation again, so this frame build's diagnostics are dropped.
+    let module_outs: Vec<EventDataField> = ctx.discarding_diagnostics(|ctx| {
+        script
+            .decls
+            .iter()
+            .filter_map(|d| match d {
+                TopDecl::Out(b) => Some(EventDataField {
+                    name: b.name.clone(),
+                    ty: match &b.typ {
+                        Some(te) => resolve_type_expr(ctx, te),
+                        None => Type::Any,
+                    },
+                    is_const: false,
+                }),
+                _ => None,
+            })
+            .collect()
+    });
     ctx.out_ctx.push(module_outs);
     let mut saw_handler = false;
-    // Named chip/mod bodies are checked AFTER everything else: top-level
-    // `let` types are only inferred (and thus declared) during this pass, so
-    // an eagerly-checked body could not see lets declared later — which is
-    // exactly where imported mods land relative to the constants their
-    // bodies reference. Signatures were already registered in pass 1, so
-    // nothing else depends on a body being checked early.
+    // Named chip and mod bodies are checked after everything else: top-level
+    // `let` types are inferred during this pass, so a body checked early could not
+    // see lets declared later (where imported mods land relative to the constants
+    // they read). Signatures were registered in pass 1.
     let mut deferred_chips: Vec<(bool, &TopDecl)> = Vec::new();
     for d in &script.decls {
         // Statements after `on` handlers run in the combined exec context
@@ -248,16 +230,15 @@ fn typecheck_round(
     }
     ctx.out_ctx.pop();
 
-    // Runtime `@label(expr)` on a top-level `var`: type-check the expression
-    // now that every top-level symbol is declared (an undefined ref or a bad
-    // type surfaces here). A constant label is skipped — it bakes statically.
+    // A runtime `@label(expr)` on a top-level `var` is type-checked now that every
+    // top-level symbol is declared; a constant label bakes statically and is skipped.
     check_dynamic_var_labels(&mut ctx, script);
     // `@color` / `@material` anywhere: the value's type, and a constant
     // wherever a runtime one has no brick to wire into.
     styles::check_style_exprs(&mut ctx, script);
 
-    // Whole-program pass: `SendCustomEvent("name", …)` data whose wire types
-    // disagree with the `on CustomEvent("name") -> (…)` receiver's declared
+    // Whole-program pass: `SendCustomEvent("name", ...)` data whose wire types
+    // disagree with the `on CustomEvent("name") -> (...)` receiver's declared
     // params.
     // Runs last so every arg has an inferred type in `type_of_expr`.
     // The custom-event pass reads already-inferred arg types while emitting
@@ -313,12 +294,12 @@ fn typecheck_round(
 /// on (see `scope::top`). Two storage declarations of one name are `WS013`
 /// at registration instead. A module imported `import * as` too is warned
 /// about once, by [`warn_namespace_redeclarations`].
-fn warn_top_redeclarations(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
-    let top = ctx.top_names.clone();
+fn warn_top_redeclarations(ctx: &mut TypeCheckCtx<'_>, decls: &[TopDecl]) {
+    let top = Arc::clone(&ctx.top_names);
     let namespaced: crate::collections::HashSet<Arc<str>> = decls
         .iter()
         .filter_map(|d| match d {
-            TopDecl::Namespace(ns) => Some(ns.decls.iter().map(|nd| nd.range().file.clone())),
+            TopDecl::Namespace(ns) => Some(ns.decls.iter().map(|nd| Arc::clone(&nd.range().file))),
             _ => None,
         })
         .flatten()
@@ -329,7 +310,7 @@ fn warn_top_redeclarations(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
         .filter(|(_, before, after)| !(before.storage && after.storage))
         .filter(|(_, _, after)| !namespaced.contains(&after.range.file))
         .collect();
-    found.sort_by_key(|(_, _, after)| (after.range.file.clone(), after.range.start.offset));
+    found.sort_by_key(|(_, _, after)| after.range.start_key());
     for (name, before, after) in found {
         let line = before.range.start.line;
         let message = if after.storage {
@@ -353,7 +334,7 @@ fn warn_top_redeclarations(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
 /// A plain `unknown type` naming an enum a file sees, but which the program
 /// hides behind its own enum of that name, says so (see
 /// `infer::hidden_enum_message`), as the enum's other reads there do.
-fn explain_hidden_enum_types(ctx: &mut TypeCheckCtx) {
+fn explain_hidden_enum_types(ctx: &mut TypeCheckCtx<'_>) {
     let mut found = Vec::new();
     for (i, d) in ctx.diagnostics.iter().enumerate() {
         let Some(name) = d
@@ -378,22 +359,24 @@ fn explain_hidden_enum_types(ctx: &mut TypeCheckCtx) {
 /// at its top level. Its namespace holds one declaration of the name, the
 /// last, which every read in the module and through the namespace names;
 /// once per declaration, however many paths reach the module.
-fn warn_namespace_redeclarations(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+fn warn_namespace_redeclarations(ctx: &mut TypeCheckCtx<'_>, decls: &[TopDecl]) {
     let mut found: Vec<(String, crate::diagnostic::SourceRange, u32)> = Vec::new();
     let mut seen = crate::collections::HashSet::default();
     for d in decls {
         let TopDecl::Namespace(ns) = d else { continue };
-        let mut first: crate::collections::HashMap<(Arc<str>, String), u32> = Default::default();
+        let mut first: crate::collections::HashMap<(Arc<str>, String), u32> = HashMap::default();
         for nd in &ns.decls {
             let r = nd.range();
             for (name, _) in crate::scope::top::declared_names_of(nd) {
-                match first.get(&(r.file.clone(), name.clone())) {
-                    Some(line) if seen.insert((r.file.clone(), r.start.offset, name.clone())) => {
+                match first.get(&(Arc::clone(&r.file), name.clone())) {
+                    Some(line)
+                        if seen.insert((Arc::clone(&r.file), r.start.offset, name.clone())) =>
+                    {
                         found.push((name, r.clone(), *line));
                     }
                     Some(_) => {}
                     None => {
-                        first.insert((r.file.clone(), name), r.start.line);
+                        first.insert((Arc::clone(&r.file), name), r.start.line);
                     }
                 }
             }
@@ -419,25 +402,20 @@ fn warn_namespace_redeclarations(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
     }
 }
 
-/// Two-pass typecheck: pass 1 typechecks with no custom-event slot inference
-/// (same as calling `typecheck` directly), then infers unannotated
-/// custom-event receiver slot types from in-unit senders
-/// (`infer_custom_event_slots`) using pass 1's `type_of_expr`. If any
-/// slot was inferred, a pass 2 re-typechecks the whole script with the
-/// inferred map wired in, so bodies see the inferred types (not `any`) and
-/// WS030 compares against them too. Pass 2's diagnostics include the
-/// inference pass's own (WS042 for uninferable slots).
-///
-/// Returns the map alongside the result so `lower` can pick the right
-/// wire-port variant for each custom-event slot.
-pub fn typecheck_with_inference(script: &Script, file: &str) -> (TypeCheckResult, CeSlotMap) {
+/// Two-pass typecheck. Pass 1 checks without custom-event slot inference (as
+/// `typecheck` does), then unannotated receiver slots are inferred from in-unit
+/// senders (`infer_custom_event_slots`) over pass 1's `type_of_expr`; when any
+/// was inferred, pass 2 checks again with them, so bodies and WS030 see the
+/// inferred types. Pass 2's diagnostics include the inference's (WS042). The
+/// map is returned too, so `lower` picks each slot's wire-port variant.
+pub fn typecheck_with_inference(script: &Script) -> (TypeCheckResult, CeSlotMap) {
     let empty = CeSlotMap::default();
-    let pass1 = typecheck(script, file, &empty);
+    let pass1 = typecheck(script, &empty);
     let (map, infer_diags) = infer_custom_event_slots(script, &pass1.type_of_expr);
     if map.is_empty() {
         return (pass1, map); // no unannotated custom-event slots -> single pass
     }
-    let mut pass2 = typecheck(script, file, &map);
+    let mut pass2 = typecheck(script, &map);
     pass2.diagnostics.extend(infer_diags);
     (pass2, map)
 }

@@ -5,8 +5,8 @@ use crate::test_support::{assert_code, assert_code_count};
 
 #[test]
 fn return_in_mod_does_not_kill_caller_exec() {
-    // Regression: `return` in an inlined mod should jump to the mod's
-    // return union, not kill the containing handler's exec chain.
+    // `return` in an inlined mod jumps to the mod's return union rather than
+    // killing the containing handler's exec chain.
     let r = compile_ok(
         "\
 var x: int = 0
@@ -477,7 +477,7 @@ on player {
     assert_eq!(gate_count(&r, gc::SELECT), 2, "the inner and the outer if");
 }
 
-// ── WS090: a value-returning mod/chip whose body can end without one ──
+// WS090: a value-returning mod/chip whose body can end without one
 
 /// Every body here has a path that reaches the end with no `return <value>`
 /// and assigns no output by name, so the output would carry a value from
@@ -762,7 +762,7 @@ fn returns_inside_match_and_if_let_assign_the_output() {
     }
 }
 
-/// The node wired into the `Value` of the write to `var m` (the Var_Set whose
+/// The node wired into the `Value` of the write to `var m` (the `Var_Set` whose
 /// `VarRef` comes from the var labelled `m`).
 fn m_value_source(r: &LowerResult) -> Option<crate::ir::NodeId> {
     let m = r.module.nodes.values().find(|n| {
@@ -1265,7 +1265,7 @@ fn assert_no_exec_as_value(r: &LowerResult) {
     for w in &r.module.wires {
         let (s, t) = (w.source.port.as_str(), w.target.port.as_str());
         assert!(
-            !(s.starts_with("Exec") && !t.starts_with("Exec")),
+            !s.starts_with("Exec") || t.starts_with("Exec"),
             "exec pin {s} wired into data port {t}"
         );
     }

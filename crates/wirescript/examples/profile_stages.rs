@@ -1,10 +1,10 @@
 //! Per-stage timing for a full compile. Usage:
-//!   cargo run --release -p wirescript --example profile_stages -- <file.ws>
+//!   `cargo run --release -p wirescript --example profile_stages -- <file.ws>`
 use std::time::Instant;
+use wirescript::TemplateCache;
 use wirescript::emit::{EmitOptions, emit_brz};
-use wirescript::lower::{FoldMode, LowerInput, lower};
 use wirescript::resolve::{FsLoader, resolve};
-use wirescript::template_cache::TemplateCache;
+use wirescript::{FoldMode, LowerInput, lower};
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -26,7 +26,7 @@ fn run() {
     eprintln!("resolve (lex+parse+imports): {:>8.2?}", t.elapsed());
 
     let t = Instant::now();
-    let (tc, ce_slots) = wirescript::typecheck::typecheck_with_inference(&resolved.ast, &file);
+    let (tc, ce_slots) = wirescript::typecheck_with_inference(&resolved.ast);
     eprintln!("typecheck:                   {:>8.2?}", t.elapsed());
 
     let template_cache = std::sync::Arc::new(TemplateCache::new());
@@ -38,7 +38,7 @@ fn run() {
         resolutions: &tc.resolutions,
         file: &file,
         module_name: None,
-        template_cache: template_cache.clone(),
+        template_cache,
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
         ce_slots: &ce_slots,
@@ -66,7 +66,7 @@ fn run() {
     );
 
     let t = Instant::now();
-    let cycles = wirescript::analyze::analyze_cycles(&lowered.module);
+    let cycles = wirescript::analyze_cycles(&lowered.module);
     eprintln!("analyze_cycles:              {:>8.2?}", t.elapsed());
     let _ = cycles;
 
@@ -79,14 +79,21 @@ fn run() {
     );
     eprintln!("layout:                      {:>8.2?}", t.elapsed());
 
-    let mut opts = EmitOptions::default();
-    opts.prefab_resolver = Some(wirescript::disk_prefab_resolver(
-        &file,
-        wirescript::lower::FoldMode::Auto,
-    ));
+    let opts = EmitOptions {
+        prefab_resolver: Some(wirescript::disk_prefab_resolver(
+            &file,
+            wirescript::FoldMode::Auto,
+        )),
+        ..Default::default()
+    };
     let t = Instant::now();
-    let world =
-        wirescript::build_world(&lowered.module, &Default::default(), &lr, &opts).expect("emit");
+    let world = wirescript::build_world(
+        &lowered.module,
+        &wirescript::ir::ProgramSettings::default(),
+        &lr,
+        &opts,
+    )
+    .expect("emit");
     eprintln!("build_world:                 {:>8.2?}", t.elapsed());
 
     let t = Instant::now();

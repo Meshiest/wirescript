@@ -4,23 +4,17 @@ use crate::emit::data_struct_for_gate;
 
 #[test]
 fn literal_params_with_schema_fields_are_mapped() {
-    // Guard for the missing-data-mapping bug class (MakeVector,
-    // EdgeDetector, ShowStatusMessage, Sleep, ...): a literal arg to a
-    // builtin call is inlined into the gate's data properties at lowering,
-    // but build_gate_component only writes fields listed in
-    // data_struct_for_gate — an unlisted field silently drops the value.
-    // For every call param that can carry a literal, if the gate's schema
-    // data struct has a matching field, the mapping must list it.
-    //
-    // Not covered: gates whose data struct name isn't derivable from the
-    // class name (checked via their mapping entry when present), and
-    // gates with no schema struct at all (wire-only inputs — literals
-    // there are a separate lowering concern).
+    // A literal arg to a builtin call is inlined into the gate's data
+    // properties, but build_gate_component writes only the fields
+    // data_struct_for_gate lists, so an unlisted field silently drops the
+    // value. Every literal-capable param whose gate's schema struct has a
+    // matching field must therefore be listed. Gates with no schema struct
+    // (wire-only inputs) are not covered.
     use crate::ir::Type;
     let schema = brdb::schemas::bricks_components_schema_max();
     let mut findings: Vec<String> = Vec::new();
-    for (_, spec) in crate::catalog::calls::calls().iter() {
-        for p in spec.params.iter() {
+    for spec in crate::catalog::calls::calls().values() {
+        for p in &spec.params {
             if !matches!(
                 p.ty,
                 Type::String | Type::Int | Type::Float | Type::Bool | Type::Any
@@ -32,10 +26,9 @@ fn literal_params_with_schema_fields_are_mapped() {
             let (struct_name, listed) = match entry {
                 Some((s, f, _)) => (s.to_string(), Some(f)),
                 None => {
-                    // Resolve the gate's data struct via the game-extracted
-                    // pair table — many gates share structs (PrimMath,
-                    // Float_Float, …) whose names aren't derivable from the
-                    // class name. Not in the table -> no data component.
+                    // Many gates share a data struct (PrimMath, Float_Float)
+                    // not derivable from the class name, so look it up in the
+                    // game-extracted pair table; absent means no data component.
                     match brdb::component_db::COMPONENT_TYPE_STRUCT_PAIRS
                         .iter()
                         .find(|(t, _)| *t == spec.gate_class)
@@ -50,9 +43,9 @@ fn literal_params_with_schema_fields_are_mapped() {
                 continue;
             }
             // Allowlist. SetInventoryEntry builds its data in a dedicated
-            // emit branch; the Teleport gates' Destination/Source are
-            // composite TeleportDestination structs, deliberately
-            // unmapped (wire-only — a scalar literal can't fill them).
+            // emit branch. The Teleport gates' Destination/Source are
+            // composite TeleportDestination structs that a scalar literal
+            // cannot fill, so they stay unmapped (wire-only).
             if matches!(
                 spec.gate_class,
                 "BrickComponentType_Exec_Character_SetInventoryEntry"

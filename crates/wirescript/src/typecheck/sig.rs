@@ -1,51 +1,29 @@
-//! Unified call-argument checking.
+//! Call-argument checking.
 //!
-//! `CallSignature`/`Param` describe a callable shape (builtin call, receiver
-//! method, event handler config, …) independent of the source it was built
-//! from, and `check_args` type-checks a call's `CallArg`s against it — arity,
-//! per-param type coercion, and the config-only param dance (enum member
-//! names, composite constant folds, scalar constant-only fields, and
-//! data-driven settings-menu attributes keyed off the gate's inventory
-//! `config` list). It reads from `CallSignature` (rather than a specific
-//! `catalog::calls::CallSpec`) so every call form can route through one
-//! checker. All call forms go through it: builtins and receivers via
-//! `sig_of_callspec`, user mod/chip + self-receiver calls via
-//! `sig_of_fnchip` (both adapters live in `typecheck.rs`).
+//! `CallSignature` and `Param` describe a callable shape (a builtin call, a
+//! receiver method, handler config) apart from where it came from, and
+//! `check_args` checks a call's `CallArg`s against it: arity, per-parameter
+//! coercion, and the config-only parameters (enum member names, composite
+//! constant folds, constant-only scalars, and the data-driven settings-menu
+//! attributes from the gate's inventory `config`). Every call form goes through
+//! it: builtins and receivers via `sig_of_callspec`, user mod, chip and
+//! self-receiver calls via `sig_of_fnchip` (both in `call.rs`).
 
-use crate::ast::{CallArg, Expr};
-use crate::diagnostic::SourceRange;
+use crate::analysis::types::type_str;
+use crate::ast::{CallArg, CallArgs, Expr, RecordLitField};
+use crate::const_scope::Admit;
+use crate::diagnostic::{Severity, SourceRange};
 use crate::ir::Type;
 use crate::types::coerce::{CoerceRule, coerce};
 use crate::types::mono::unwrap_ref;
-pub use crate::types::signature::{CallSignature, Param, ParamKind};
+pub(crate) use crate::types::signature::{CallSignature, Param, ParamKind};
 
 use super::{
-    SymbolKind, TypeCheckCtx, is_enum_constant_arg, validate_composite_config_arg,
-    validate_data_driven_config, validate_enum_config_arg, validate_scalar_config_arg,
+    SymbolKind, TypeCheckCtx, infer, is_enum_constant_arg, type_has_param,
+    validate_composite_config_arg, validate_data_driven_config, validate_enum_config_arg,
+    validate_scalar_config_arg,
 };
 
-/// Type-check `args` against `sig`.
-///
-/// `pos_base` is the index into `sig.params` that the FIRST positional arg
-/// maps to (0 normally). A receiver whose object is pre-inserted into `args`
-/// as its own leading `CallArg` still passes `pos_base = 0` when that object
-/// also occupies `sig.params[0]` — `pos_base` only shifts when a positional
-/// arg maps to a later param than its index in `args` would otherwise
-/// suggest. Arity messages report counts relative to `pos_base` (i.e. against
-/// the params actually available to positional args), so `pos_base = 0`
-/// reproduces the original per-call arg-check wording exactly.
-///
-/// `check_arity` gates the WS011 positional-count check. User mod/chip calls
-/// already run their own arity check (WS022, in `type_user_symbol_call`)
-/// before reaching here, so they pass `false` to avoid double-reporting a
-/// mismatched call under two different codes; every other caller (builtins,
-/// receivers) passes `true`.
-///
-/// `check_named` gates the WS041 unknown-named-arg check independently: user
-/// mod/chip calls DO know their full param list, so they pass `true` (catching
-/// `g(1, bogus = 5)`) even though `check_arity` is `false`. Only true variadics
-/// whose fixed `Param` list can't enumerate their legal names (e.g.
-/// `arr.sortMultiple(other, descending = true)`) pass `false` for both.
 /// One positional argument slot: a real argument expression, or a single element
 /// spliced in from a `...tuple` spread (which carries only its type).
 enum PosSlot<'a> {
@@ -53,20 +31,25 @@ enum PosSlot<'a> {
     Elem(Type, SourceRange),
 }
 
-pub fn check_args(
-    ctx: &mut TypeCheckCtx,
+/// Check `args` against `sig`. Positional arguments fill `sig.params` from the
+/// first; a receiver call passes its object as the leading `CallArg`.
+/// `check_arity` gates the WS011 count check: user mod and chip calls already
+/// report arity as WS022 (`type_user_symbol_call`) and pass `false`.
+/// `check_named` gates WS041 for unknown named arguments separately: user calls
+/// pass `true`; only a variadic whose fixed `Param` list cannot name its legal
+/// arguments (`arr.sortMultiple(other, descending = true)`) passes `false` for both.
+pub(crate) fn check_args(
+    ctx: &mut TypeCheckCtx<'_>,
     sig: &CallSignature,
     args: &[CallArg],
-    pos_base: usize,
     check_arity: bool,
     check_named: bool,
     range: &SourceRange,
 ) {
-    // Positional slots, with a `...tuple` spread expanded to one slot per
-    // element (an ELEMENT slot carries just its type — there is no per-element
-    // expression to run the full argument check on). A spread of a non-tuple, or
-    // of a still-unresolved `any`, is reported/ignored here.
-    let mut slots: Vec<PosSlot> = Vec::new();
+    // Positional slots, with a `...tuple` spread expanded to one slot per element
+    // (an element slot carries only its type, with no expression to check). A
+    // spread of a non-tuple, or of an unresolved `any`, is reported or ignored here.
+    let mut slots: Vec<PosSlot<'_>> = Vec::new();
     for a in args {
         match a {
             CallArg::Positional(e) => slots.push(PosSlot::Arg(e)),
@@ -74,22 +57,13 @@ pub fn check_args(
             // argument (matches how lowering expands it).
             CallArg::Spread(Expr::RecordLit { fields, .. }) => {
                 for f in fields {
-                    if let crate::ast::RecordLitField::Named { value, .. } = f {
+                    if let RecordLitField::Named { value, .. } = f {
                         slots.push(PosSlot::Arg(value));
                     }
                 }
             }
             CallArg::Spread(t) => {
-                let key = {
-                    let r = t.range();
-                    (r.file.clone(), r.start.offset, r.end.offset)
-                };
-                let tt = ctx
-                    .type_of_expr
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_else(|| crate::typecheck::infer::infer(ctx, t));
-                match unwrap_ref(&tt) {
+                match unwrap_ref(&ctx.type_or_infer(t)) {
                     Type::Tuple(elems) => {
                         for el in elems {
                             slots.push(PosSlot::Elem(el, t.range().clone()));
@@ -101,14 +75,11 @@ pub fn check_args(
                             slots.push(PosSlot::Elem(ft, t.range().clone()));
                         }
                     }
-                    // Unresolved — don't cascade a spurious error.
+                    // Unresolved: do not cascade an error.
                     Type::Any => {}
                     other => ctx.emit(
                         "WS003",
-                        format!(
-                            "spread `...` expects a tuple, got {}",
-                            crate::analysis::types::type_str(&other)
-                        ),
+                        format!("spread `...` expects a tuple, got {}", type_str(&other)),
                         t.range().clone(),
                     ),
                 }
@@ -118,10 +89,9 @@ pub fn check_args(
     }
 
     if check_arity {
-        let avail = sig.params.len().saturating_sub(pos_base);
-        // A required param supplied BY NAME (`Sweep(o, d, distance = 100.0)`) is
-        // satisfied, so it must not also be demanded positionally — counting
-        // only positionals reported "requires 3 args, got 2" for a complete call.
+        let avail = sig.params.len();
+        // A required parameter supplied by name (`Sweep(o, d, distance = 100.0)`) is
+        // satisfied and is not demanded positionally too.
         let named: Vec<&str> = args
             .iter()
             .filter_map(|a| match a {
@@ -129,7 +99,8 @@ pub fn check_args(
                 _ => None,
             })
             .collect();
-        let required_count = sig.params[pos_base..]
+        let required_count = sig
+            .params
             .iter()
             .filter(|p| !p.optional && !named.contains(&p.name.as_str()))
             .count();
@@ -160,21 +131,16 @@ pub fn check_args(
         }
     }
 
-    for (i, slot) in slots.iter().enumerate() {
-        let idx = pos_base + i;
-        if idx >= sig.params.len() {
-            break;
-        }
+    for (slot, param) in slots.iter().zip(&sig.params) {
         match slot {
-            PosSlot::Arg(arg_expr) => check_one_arg(ctx, sig, &sig.params[idx], arg_expr),
+            PosSlot::Arg(arg_expr) => check_one_arg(ctx, sig, param, arg_expr),
             PosSlot::Elem(ty, r) => {
                 // A spread element has only a type; coerce it against the wire
                 // param directly (config params can't be spread-filled).
-                let param = &sig.params[idx];
                 if matches!(
                     param.kind,
                     ParamKind::Wire | ParamKind::WireEnum(_) | ParamKind::Const
-                ) && !crate::typecheck::type_has_param(&param.ty)
+                ) && !type_has_param(&param.ty)
                     && coerce(&unwrap_ref(ty), &unwrap_ref(&param.ty)) == CoerceRule::Mismatch
                 {
                     ctx.emit(
@@ -182,8 +148,8 @@ pub fn check_args(
                         format!(
                             "spread element for '{}': expected {}, got {}",
                             param.name,
-                            crate::analysis::types::type_str(&unwrap_ref(&param.ty)),
-                            crate::analysis::types::type_str(&unwrap_ref(ty)),
+                            type_str(&unwrap_ref(&param.ty)),
+                            type_str(&unwrap_ref(ty)),
                         ),
                         r.clone(),
                     );
@@ -192,21 +158,16 @@ pub fn check_args(
         }
     }
 
-    // Named args: config params validate against the schema (enum member,
-    // composite shape, or constant scalar); a named arg bound to a real
-    // wire-input param is type-checked against the param type with the same
-    // coerce the positional path applies. A named arg that matches no
-    // declared param falls back to the gate's data-driven settings-menu
-    // config (a raw struct-field name, e.g. `bOnlyHitPlayerBodyParts = true`).
-    // A named arg that matches NEITHER is unknown: nothing lowers it (both
-    // typecheck and emit silently drop it), so it does nothing — the classic
-    // `p.DisplayText(t, positionX = 0.0)` typo that quietly no-ops. Flag it as
-    // WS041, except for two never-a-param names that are handled elsewhere:
-    //   - `exec`   the universal exec-override for a pure-context call (never a
-    //              declared param; intercepted before param binding).
-    //   - any name on a variadic call that opted out of arity checking
-    //     (`check_arity == false`, e.g. `arr.sortMultiple(other, descending =
-    //     true)`), whose fixed `Param` list can't enumerate its legal names.
+    // Named arguments: a config parameter validates against the schema (an enum
+    // member, a composite shape, a constant scalar); one bound to a wire-input
+    // parameter is coerced as a positional one is. A name matching no declared
+    // parameter falls back to the gate's settings-menu config (a raw struct field,
+    // `bOnlyHitPlayerBodyParts = true`). A name matching neither lowers to nothing
+    // (`p.DisplayText(t, positionX = 0.0)`), so it is WS041, except for:
+    //   - `exec`, the exec override of a pure-context call, handled before binding;
+    //   - any name on a variadic call with `check_arity == false`
+    //     (`arr.sortMultiple(other, descending = true)`), whose fixed list cannot
+    //     name its legal arguments.
     for a in args {
         let CallArg::Named {
             name,
@@ -223,9 +184,8 @@ pub fn check_args(
         {
             validate_data_driven_config(ctx, gate_class, cfg, value);
         } else if check_named && name != "exec" {
-            // Point at a param that differs only by case — named-arg matching is
-            // case-sensitive, so a casing slip otherwise reads as "no such
-            // parameter" for a parameter that plainly exists.
+            // Point at a parameter that differs only by case: matching is case-sensitive,
+            // so a casing slip otherwise reads as "no such parameter".
             let suggestion = sig
                 .params
                 .iter()
@@ -241,7 +201,7 @@ pub fn check_args(
     }
 
     if sig.config_gate == Some(crate::ir::gate_class::SET_BRICK_PROPERTY) {
-        check_brick_property_value(ctx, sig, args, pos_base);
+        check_brick_property_value(ctx, sig, args);
     }
 }
 
@@ -273,7 +233,7 @@ pub(super) fn brick_property_member(property: &Expr) -> Option<i64> {
 
 /// The value a brick property reads and writes: `bool` for Visible and the
 /// collision flags, `color` for Color. `None` for Material and
-/// MaterialOpacity, whose wire type is not known.
+/// `MaterialOpacity`, whose wire type is not known.
 pub(super) fn brick_property_type(member: i64) -> Option<Type> {
     match member {
         0 | 4..=11 => Some(Type::Bool),
@@ -285,33 +245,15 @@ pub(super) fn brick_property_type(member: i64) -> Option<Type> {
 /// `SetBrickProperty`'s value takes the type of the setting it writes (see
 /// [`brick_property_type`]). The setting is a constant, so the mismatch is
 /// caught here rather than written to a brick that silently ignores it.
-fn check_brick_property_value(
-    ctx: &mut TypeCheckCtx,
-    sig: &CallSignature,
-    args: &[CallArg],
-    pos_base: usize,
-) {
+fn check_brick_property_value(ctx: &mut TypeCheckCtx<'_>, sig: &CallSignature, args: &[CallArg]) {
     const ENUM: &str = BRICK_PROPERTY;
-    if args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
+    if args.has_spread() {
         return;
     }
     let arg_for = |name: &str| -> Option<&Expr> {
-        let named = args.iter().find_map(|a| match a {
-            CallArg::Named { name: n, value, .. } if n == name => Some(value),
-            _ => None,
-        });
-        named.or_else(|| {
-            let idx = sig
-                .params
-                .iter()
-                .position(|p| p.name == name)?
-                .checked_sub(pos_base)?;
-            args.iter()
-                .filter_map(|a| match a {
-                    CallArg::Positional(e) => Some(e),
-                    _ => None,
-                })
-                .nth(idx)
+        args.named(name).or_else(|| {
+            let idx = sig.params.iter().position(|p| p.name == name)?;
+            args.positionals().nth(idx)
         })
     };
     let (Some(property), Some(value)) = (arg_for("property"), arg_for("value")) else {
@@ -323,7 +265,7 @@ fn check_brick_property_value(
     let Some(want) = brick_property_type(member) else {
         return;
     };
-    let got = unwrap_ref(&arg_type(ctx, value));
+    let got = unwrap_ref(&ctx.type_or_infer(value));
     if coerce(&got, &want) == CoerceRule::Mismatch {
         let setting = crate::catalog::enum_member_names(ENUM)
             .into_iter()
@@ -333,8 +275,8 @@ fn check_brick_property_value(
             "WS003",
             format!(
                 "brick property {setting} takes a {}, got {}",
-                crate::analysis::types::type_str(&want),
-                crate::analysis::types::type_str(&got),
+                type_str(&want),
+                type_str(&got),
             ),
             value.range().clone(),
         );
@@ -344,7 +286,7 @@ fn check_brick_property_value(
 /// Validate one argument expression against the `Param` it binds to,
 /// dispatching on `ParamKind`. Shared by `check_args`'s positional and
 /// named-arg loops.
-fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg_expr: &Expr) {
+fn check_one_arg(ctx: &mut TypeCheckCtx<'_>, sig: &CallSignature, param: &Param, arg_expr: &Expr) {
     match param.kind {
         ParamKind::ConfigEnum(enum_type) => {
             validate_enum_config_arg(
@@ -367,23 +309,9 @@ fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg
             }
         }
         ParamKind::ConfigComposite(port) => {
-            validate_composite_config_arg(
-                ctx,
-                sig.config_gate.unwrap_or(""),
-                &param.name,
-                port,
-                arg_expr,
-            );
+            validate_composite_config_arg(ctx, &param.name, port, arg_expr);
         }
-        ParamKind::ConfigScalar(port) => {
-            validate_scalar_config_arg(
-                ctx,
-                sig.config_gate.unwrap_or(""),
-                &param.name,
-                port,
-                arg_expr,
-            );
-        }
+        ParamKind::ConfigScalar(_) => validate_scalar_config_arg(ctx, &param.name, arg_expr),
         ParamKind::Wire => check_wire_arg(ctx, arg_expr, param),
         ParamKind::Const => {
             // A const value still has a type, so the ordinary wire check
@@ -391,10 +319,7 @@ fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg
             // `const int` param with the usual WS003, rather than that being
             // silently subsumed by the constant check below).
             check_wire_arg(ctx, arg_expr, param);
-            let lookup = |n: &str| ctx.resolve_mod(n);
-            let mut budget = crate::const_eval::Budget::default();
-            let cx = ctx.const_ctx(Some(&lookup));
-            if let Err(err) = crate::const_eval::eval_expr(arg_expr, &cx, &mut budget)
+            if let Err(err) = ctx.const_eval(arg_expr, Admit::All)
                 && !err.reported_elsewhere()
             {
                 ctx.emit(err.code(), err.message(), err.range.clone());
@@ -403,28 +328,20 @@ fn check_one_arg(ctx: &mut TypeCheckCtx, sig: &CallSignature, param: &Param, arg
     }
 }
 
-/// The ordinary wire-argument check shared by `ParamKind::Wire` and
-/// `ParamKind::Const`: infer `arg_expr`'s type and `coerce` it against
-/// `param.ty` (WS003 on mismatch).
-
-/// A record LITERAL passed where the parameter has reference fields (the shape
-/// `*T` on a record distributes to): every ref field needs storage or a ref
-/// behind it, so its value faces the same test a scalar `*T` argument does: a
-/// var names storage, and a ref value (`&a`, `hs[0]`, a ref-holding var) names
-/// the var it points at. Only literals are checked - a record bound to a name
-/// got its fields from wherever they came from, and re-testing the name says
-/// nothing about them.
-fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: &Expr) {
+/// A record literal passed where the parameter has ref fields (the shape `*T`
+/// on a record distributes to): each ref field's value needs storage or a ref
+/// behind it, the test a scalar `*T` argument faces (a var names storage, a ref
+/// value such as `&a`, `hs[0]` or a ref-holding var names its target). Only
+/// literals are checked; a named record's fields came from elsewhere.
+fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx<'_>, param: &Param, arg_expr: &Expr) {
     let (Type::Record(pfields), Expr::RecordLit { fields, .. }) = (&param.ty, arg_expr) else {
         return;
     };
     for f in fields {
         let (name, value, frange) = match f {
-            crate::ast::RecordLitField::Named { name, value, range } => {
-                (name.as_str(), Some(value), range)
-            }
-            crate::ast::RecordLitField::Shorthand { name, range } => (name.as_str(), None, range),
-            crate::ast::RecordLitField::Spread { .. } => continue,
+            RecordLitField::Named { name, value, range } => (name.as_str(), Some(value), range),
+            RecordLitField::Shorthand { name, range } => (name.as_str(), None, range),
+            RecordLitField::Spread { .. } => continue,
         };
         if !pfields
             .iter()
@@ -440,7 +357,7 @@ fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: 
         };
         let ref_value = match value {
             Some(Expr::RefOf { .. }) => true,
-            Some(v) => matches!(arg_type(ctx, v), Type::Ref(_)),
+            Some(v) => matches!(ctx.type_or_infer(v), Type::Ref(_)),
             None => false,
         };
         let writable = ref_value
@@ -472,35 +389,22 @@ fn check_record_lit_ref_fields(ctx: &mut TypeCheckCtx, param: &Param, arg_expr: 
 /// field (`justify = DisplayTextJustification.Center`, or a variable of that
 /// enum). Reads the type the Call-arm preamble recorded, like
 /// [`check_wire_arg`].
-fn wire_arg_is_game_enum(ctx: &mut TypeCheckCtx, enum_type: &str, arg_expr: &Expr) -> bool {
-    let ty = arg_type(ctx, arg_expr);
+fn wire_arg_is_game_enum(ctx: &mut TypeCheckCtx<'_>, enum_type: &str, arg_expr: &Expr) -> bool {
+    let ty = ctx.type_or_infer(arg_expr);
     matches!(
         unwrap_ref(&ty),
         Type::Enum { name, .. } if crate::catalog::game_enum_schema_type(&name) == Some(enum_type)
     )
 }
 
-/// The argument's inferred type, read back from this pass's `type_of_expr`
-/// when the call preamble already recorded it.
-fn arg_type(ctx: &mut TypeCheckCtx, arg_expr: &Expr) -> Type {
-    let r = arg_expr.range();
-    let key = (r.file.clone(), r.start.offset, r.end.offset);
-    match ctx.type_of_expr.get(&key).cloned() {
-        Some(t) => t,
-        None => crate::typecheck::infer::infer(ctx, arg_expr),
-    }
-}
-
-/// Whether a field chain passed to a `*T` parameter names storage the
-/// parameter can alias: a field of a record `var` (each field is its own gate),
-/// a namespaced var, a ref field of a record parameter (a place bound to the
-/// caller's storage), or a field of a record `let` that bundles vars, directly
-/// or through a namespace (`projection_is_place`). A chain that arrived on a
-/// wire (a literal's `n: 1`, a map read, a call's result, an element
-/// `pts[i].x`) is a value with nothing to write back to; one that is a ref
-/// VALUE never reaches here (the ref-value check binds it first).
-pub(super) fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
-    let (root, segs) = crate::typecheck::infer::flatten_access(arg_expr);
+/// Whether a field chain passed to a `*T` parameter names storage it can alias:
+/// a field of a record `var` (each field is a gate), a namespaced var, a ref
+/// field of a record parameter, or a field of a record `let` bundling vars
+/// (`projection_is_place`). A chain that arrived on a wire (a literal's `n: 1`,
+/// a map read, a call result, `pts[i].x`) has nothing to write back to; a ref
+/// value is bound by the ref-value check before this.
+pub(super) fn field_names_storage(ctx: &TypeCheckCtx<'_>, arg_expr: &Expr) -> bool {
+    let (root, segs) = infer::flatten_access(arg_expr);
     let Expr::Ident { name, range } = root else {
         return false;
     };
@@ -509,15 +413,13 @@ pub(super) fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
     };
     match sym.kind {
         SymbolKind::Var | SymbolKind::Array | SymbolKind::Map => true,
-        SymbolKind::LetBinding => crate::typecheck::infer::projection_is_place(ctx, arg_expr),
+        SymbolKind::LetBinding => infer::projection_is_place(ctx, arg_expr),
         SymbolKind::Namespace => segs.first().is_some_and(|member| {
             ctx.ns_members(name, &range.file)
                 .and_then(|m| m.get(member.as_str()))
                 .is_some_and(|info| match info.kind {
                     SymbolKind::Var | SymbolKind::Array | SymbolKind::Map => true,
-                    SymbolKind::LetBinding => {
-                        crate::typecheck::infer::projection_is_place(ctx, arg_expr)
-                    }
+                    SymbolKind::LetBinding => infer::projection_is_place(ctx, arg_expr),
                     _ => false,
                 })
         }),
@@ -545,34 +447,31 @@ pub(super) fn field_names_storage(ctx: &TypeCheckCtx, arg_expr: &Expr) -> bool {
     }
 }
 
-fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
-    // A param whose type still carries a `Type::Param` is an
-    // uninferable generic — left to the caller's own WS033
-    // inference diagnostics, not this concrete coercion check (see
-    // `crate::typecheck::type_has_param`). Builtin/receiver params
-    // never contain `Type::Param`, so this is a no-op for them.
-    if crate::typecheck::type_has_param(&param.ty) {
+/// The ordinary wire-argument check shared by `ParamKind::Wire` and
+/// `ParamKind::Const`: infer `arg_expr`'s type and `coerce` it against
+/// `param.ty` (WS003 on mismatch).
+fn check_wire_arg(ctx: &mut TypeCheckCtx<'_>, arg_expr: &Expr, param: &Param) {
+    // A parameter type still carrying a `Type::Param` is an uninferable generic,
+    // left to the caller's WS033 (see `crate::typecheck::type_has_param`).
+    // Builtin and receiver parameters never contain one.
+    if type_has_param(&param.ty) {
         return;
     }
-    // A `*T` / `ref T` parameter captures a whole variable by reference, so its
-    // argument must denote one. A literal, expression, call, `arr[i]` element,
-    // or scalar `let` has no ref pin, and the inline binder silently drops such
-    // a call, so reject it here. `&x` is validated separately (WS008 in infer),
-    // and a record-field chain must name storage (`field_names_storage`).
-    // `arr[i]` is excluded even though it is otherwise ref-able: a scalar
-    // ref cannot capture one array element (the game has only a whole-array ref
-    // pin).
+    // A `*T` or `ref T` parameter captures a whole variable by reference, so its
+    // argument must denote one. A literal, expression, call, `arr[i]` element or
+    // scalar `let` has no ref pin, and the inline binder would drop the call, so it
+    // is rejected; `&x` is checked separately (WS008), and a record field chain
+    // must name storage (`field_names_storage`). An array element is excluded: the
+    // game has only a whole-array ref pin.
     check_record_lit_ref_fields(ctx, param, arg_expr);
-    // A ref VALUE (a `*T` held in a var or container, event data, `&x` in a
-    // value position) is never read through implicitly: it binds a `*T`
-    // parameter of exactly its type, and fits no other parameter but `any`
-    // (`Type::Any`/`Type::Opaque` - a true pass-through: custom-event data
-    // ports, `Opaque(...)`/`Change(...)` rerouters, and `BroadcastChatMessage`-
-    // style message ports all wire a ref straight through, same as `"${h}"`
-    // interpolation already does).
-    // `&x` into a `*T` parameter is the static alias form, checked below.
+    // A ref value (a `*T` held in a var or container, event data, `&x` as a
+    // value) is never read through implicitly: it binds a `*T` parameter of its
+    // exact type and otherwise only an `any` (`Type::Any`/`Type::Opaque`, a
+    // pass-through: custom-event data ports, `Opaque(...)`/`Change(...)`
+    // rerouters, message ports, as `"${h}"` interpolation is). `&x` into a `*T`
+    // parameter is the static alias form, checked below.
     if !matches!(arg_expr, Expr::NullLit { .. }) {
-        let raw = arg_type(ctx, arg_expr);
+        let raw = ctx.type_or_infer(arg_expr);
         // A `*Record` parameter distributes its ref-ness onto each field
         // (`distribute_ref`), so it never shows up as a top-level `Type::Ref`
         // the way a scalar/container `*T` does - `&r` aliasing one is still
@@ -638,7 +537,7 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
     // `null` adopts the param's type (resolve + record + coerce via `check`),
     // rather than the `any` a bare inference would give it.
     if matches!(arg_expr, Expr::NullLit { .. }) {
-        crate::typecheck::infer::check(ctx, arg_expr, &param.ty);
+        infer::check(ctx, arg_expr, &param.ty);
         return;
     }
     // `{}` for a map parameter is an empty map, which the callee gets as a
@@ -650,16 +549,12 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
         ctx.record_expr_type(range, &map);
         return;
     }
-    // The Call-arm preamble already inferred every wire arg into
-    // ctx.type_of_expr (via infer::infer) in THIS pass, immediately before
-    // check_args runs — read that back instead of re-inferring, so an arg
-    // with its own error (e.g. an undefined ident) reports it once, not
-    // twice. Fall back to inferring for the rare arg the preamble didn't
-    // visit (e.g. a builtin receiver's object, prepended after the preamble).
-    // Safe w.r.t. "don't memoize type_of_expr across re-visits": the preamble
-    // re-runs and overwrites every pass, so within this pass the entry is
-    // this-pass-fresh; we only skip the redundant SECOND inference.
-    let raw = arg_type(ctx, arg_expr);
+    // The call preamble already inferred every wire argument into
+    // `ctx.type_of_expr` in this pass, so it is read back rather than inferred
+    // again, and an argument's own error is reported once. An argument the
+    // preamble did not visit (a builtin receiver's object) is inferred here. The
+    // preamble re-runs every pass, so the entry is this pass's.
+    let raw = ctx.type_or_infer(arg_expr);
     let arg_ty = unwrap_ref(&raw);
     // Unwrap a leading `Ref` off the param type too: a `*T` param
     // resolves to `Ref(T)`, but (like `arg_ty` above) the argument
@@ -693,22 +588,18 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
                 "argument '{}': `*{}` aliases the caller's storage, so it needs a \
                  `{}` variable; `{}` storage cannot be written through it",
                 param.name,
-                crate::analysis::types::type_str(want),
-                crate::analysis::types::type_str(want),
-                crate::analysis::types::type_str(&have),
+                type_str(want),
+                type_str(want),
+                type_str(&have),
             ),
             arg_expr.range().clone(),
         );
         return;
     }
-    if crate::typecheck::infer::record_into_one_value(ctx, arg_expr, &arg_ty, &param_ty) {
+    if infer::record_into_one_value(ctx, arg_expr, &arg_ty, &param_ty) {
         if matches!(arg_ty, Type::Record(_)) {
             let r = arg_expr.range();
-            ctx.resolutions.rejected_record_args.insert((
-                r.file.clone(),
-                r.start.offset,
-                r.end.offset,
-            ));
+            ctx.resolutions.rejected_record_args.insert(r.key());
         }
         return;
     }
@@ -722,12 +613,9 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
         && pa != aa
     {
         let before = ctx.diagnostics.len();
-        crate::typecheck::infer::check(ctx, arg_expr, &param_ty);
+        infer::check(ctx, arg_expr, &param_ty);
         let (old, new) = ctx.diagnostics.split_at(before);
-        if !new
-            .iter()
-            .any(|d| d.severity == crate::diagnostic::Severity::Error)
-        {
+        if !new.iter().any(|d| d.severity == Severity::Error) {
             let repeats: Vec<bool> = new
                 .iter()
                 .map(|d| {
@@ -744,11 +632,11 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
         }
         ctx.diagnostics.truncate(before);
     }
-    crate::typecheck::infer::literal_in_slot(ctx, arg_expr, &arg_ty, &param_ty);
+    infer::literal_in_slot(ctx, arg_expr, &arg_ty, &param_ty);
     if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch
-        && crate::typecheck::infer::literal_fits(ctx, arg_expr, &param_ty)
+        && infer::literal_fits(ctx, arg_expr, &param_ty)
     {
-        crate::typecheck::infer::coerce_value_or_emit(ctx, arg_expr, &arg_ty, &param_ty);
+        infer::coerce_value_or_emit(ctx, arg_expr, &arg_ty, &param_ty);
         return;
     }
     if coerce(&arg_ty, &param_ty) == CoerceRule::Mismatch && !ctx.is_error_typed(arg_expr) {
@@ -757,8 +645,8 @@ fn check_wire_arg(ctx: &mut TypeCheckCtx, arg_expr: &Expr, param: &Param) {
             format!(
                 "argument '{}': expected {}, got {}",
                 param.name,
-                crate::analysis::types::type_str(&param_ty),
-                crate::analysis::types::type_str(&arg_ty),
+                type_str(&param_ty),
+                type_str(&arg_ty),
             ),
             arg_expr.range().clone(),
         );
@@ -775,7 +663,7 @@ fn is_concrete_storage_type(t: &Type) -> bool {
 /// The DECLARED inner type of the storage an argument names, for an argument
 /// that is a variable (bare, or written `&x` / `ref x`). `None` for anything
 /// that is a value on a wire, which coerces normally.
-fn storage_inner_type(ctx: &TypeCheckCtx, e: &Expr) -> Option<Type> {
+fn storage_inner_type(ctx: &TypeCheckCtx<'_>, e: &Expr) -> Option<Type> {
     let target = match e {
         Expr::RefOf { operand, .. } => operand.as_ref(),
         other => other,

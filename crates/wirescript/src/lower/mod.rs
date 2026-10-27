@@ -2,7 +2,7 @@
 //!
 //! Strategy: walk each top-level declaration. Vars and I/O become IR
 //! nodes with deterministic names. Handlers become one event node feeding
-//! an exec chain; statements thread a `current_exec` PortRef through each
+//! an exec chain; statements thread a `current_exec` `PortRef` through each
 //! step. Expressions produce gate nodes whose value output is threaded
 //! into their consumer.
 
@@ -13,31 +13,29 @@ use crate::ast::{ChipDecl, *};
 use crate::catalog::calls::find_call;
 use crate::catalog::events::find_event;
 use crate::catalog::operators::OpRule;
-use crate::diagnostic::{Diagnostic, SourceRange};
-use crate::intern::{intern, intern_static, sym};
+use crate::diagnostic::{Diagnostic, RangeKey, SourceRange, StartKey};
+use crate::intern::{Sym, intern, intern_static, resolve, sym};
 use crate::ir::build::{AddNodeOpts, ModuleBuilder, port_ref};
 use crate::ir::gate_class as gc;
 use crate::ir::{
-    GateIO, Literal, Module, NodeId, NodeKind, PortRef, PortSpec, ROOT_SCOPE_ID, ScopeId,
-    ScopeInfo, ScopeKind, Type, port_registry::WirePort,
+    GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, PortSpec, ROOT_SCOPE_ID, ScopeId,
+    ScopeInfo, ScopeKind, Type, Wire, port_registry::WirePort,
 };
 use crate::template_cache::TemplateCache;
+use crate::typecheck::enums::{DISC, DISC_FIELD, DISCRIMINANT_FIELD, slot_name};
 use crate::typecheck::{CeSlotMap, TypeCheckResult};
 
 mod context;
 use context::*;
 
+mod bake;
+use bake::*;
 mod predeclare;
+use crate::const_eval::{
+    ConstEnv, default_literal_for_var_type, eval_const_binop, expr_to_literal, expr_to_literal_in,
+    fold_ammo_override, fold_mesh_colors, holds_refs, ref_shaped,
+};
 use predeclare::*;
-pub use predeclare::{
-    ConstEnv, build_const_declared_names, build_const_env, build_const_env_in,
-    build_const_uncertified, expr_to_literal,
-};
-pub(crate) use predeclare::{
-    DupConsts, build_const_env_at, certified_binop, default_literal_for_var_type, dup_key,
-    eval_const_binop, eval_const_unop, expr_to_literal_in, fold_ammo_override, fold_constructor,
-    fold_mesh_colors, holds_refs, ref_shaped,
-};
 
 mod decl;
 use decl::*;
@@ -80,60 +78,48 @@ pub(crate) use style::{MATERIAL_ENUM, material_arg, style_constant};
 pub(crate) mod for_loop;
 pub(crate) mod function;
 
-// Maranget decision-tree builder for `match` lowering. Self-contained; the
-// match-expr / match-stmt lowering (later tasks) walks the `Decision` it emits.
+// Maranget decision-tree builder for `match` lowering; the match lowering
+// walks the `Decision` it emits.
 pub(crate) mod matchtree;
 
-// Certified constant-fold pass. Exposed as `#[doc(hidden)] pub` rather than
-// `pub(crate)` so the `--fold-diff` differential fuzz harness
-// (examples/fuzz_programs.rs — an `examples/` binary, which compiles as an
-// external crate and cannot see `pub(crate)` items) can reach
-// `fold::eval::{eval, Value, format_text}` to predict certified-fold
-// outcomes (incl. `${...}`-interpolation) without reimplementing the
-// evaluator itself. This is the ONLY surface widened: `fold::table` and the
-// propagation/apply internals stay `pub(crate)`.
+// Certified constant-fold pass. `fold::eval` is re-exported from the crate
+// root as `fold_eval` (`#[doc(hidden)]`) for the `--fold-diff` fuzz harness in
+// `examples/fuzz_programs.rs`; everything else in `fold` stays crate-private.
 #[doc(hidden)]
-pub mod fold;
+pub(crate) mod fold;
 
-// ---------- result ----------
+// Result
 
 pub struct LowerResult {
     pub module: Module,
     pub diagnostics: Vec<Diagnostic>,
-    /// Source ranges of `if`/`else` blocks a const-evaluable condition
-    /// dropped during lowering — see `LowerCtx::dropped_ranges`. Consumed
-    /// only by tests that assert this side agrees with
-    /// `typecheck::TypeCheckResult::dropped_ranges` on exactly which ranges
-    /// are skipped.
+    /// Source ranges of `if`/`else` blocks a const-evaluable condition dropped
+    /// (see `LowerCtx::dropped_ranges`). Tests check it agrees with
+    /// `typecheck::TypeCheckResult::dropped_ranges`.
     pub dropped_ranges: Vec<SourceRange>,
 }
 
 pub struct LowerInput<'a> {
     pub ast: &'a Script,
-    pub type_of_expr: &'a HashMap<(Arc<str>, usize, usize), Type>,
-    pub op_resolutions: &'a HashMap<(Arc<str>, usize, usize), OpRule>,
+    pub type_of_expr: &'a HashMap<RangeKey, Type>,
+    pub op_resolutions: &'a HashMap<RangeKey, OpRule>,
     pub resolutions: &'a crate::typecheck::Resolutions,
     pub file: &'a str,
     pub module_name: Option<&'a str>,
     pub template_cache: Arc<TemplateCache>,
     pub doc_comments: &'a crate::parser::DocComments,
-    /// Whether the certified constant-fold pass runs — see [`FoldMode`]. A
-    /// module-level `@nofold` (`input.ast.no_fold`) always disables it on
-    /// top of this, regardless of mode.
+    /// Whether the certified constant-fold pass runs (see [`FoldMode`]). A
+    /// module-level `@nofold` (`input.ast.no_fold`) also disables it.
     pub fold_mode: FoldMode,
-    /// Inferred custom-event data-slot types (`CeSlotMap`), keyed
-    /// by the receiver handler's `ce_slot_key`. Consulted by `lower_handler`
-    /// so an unannotated `on CustomEvent(...)` param's `DataOut` port takes
-    /// the inferred type instead of defaulting to `Type::Float`.
+    /// Inferred custom-event data-slot types, keyed by the receiver handler's
+    /// `ce_slot_key`. An unannotated `on CustomEvent(...)` param's `DataOut`
+    /// port takes the inferred type rather than `Type::Float`.
     pub ce_slots: &'a CeSlotMap,
 }
 
-/// Whether the certified constant-fold pass runs. `Auto` (production
-/// default): fold unless the entry file opts out with a module-level
-/// `@nofold`. Folding is on by default, so `Auto` and `ForceOn` are
-/// behaviourally identical; the legacy module-level `@fold` / CLI `--fold`
-/// opt-in is still accepted but redundant. `ForceOff` (CLI `--no-fold`) is
-/// the only way to disable folding across a whole compile.
+/// Whether the certified constant-fold pass runs. `Auto` (the default) and
+/// `ForceOn` (CLI `--fold`) fold unless the entry file has a module-level
+/// `@nofold`; `ForceOff` (CLI `--no-fold`) disables folding for the whole compile.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum FoldMode {
     #[default]
@@ -145,9 +131,9 @@ pub enum FoldMode {
 /// How many times a handler's body is lowered. `on a | b { ... }` lowers it
 /// once per trigger part (see `lower_handler`'s `Trigger::Union` arm), and a
 /// part may itself be a union.
-fn trigger_multiplicity(t: &crate::ast::Trigger) -> usize {
+fn trigger_multiplicity(t: &Trigger) -> usize {
     match t {
-        crate::ast::Trigger::Union { parts, .. } => {
+        Trigger::Union { parts, .. } => {
             parts.iter().map(trigger_multiplicity).sum::<usize>().max(1)
         }
         _ => 1,
@@ -173,14 +159,12 @@ pub(super) fn count_emits_in_handler(
     }
 }
 
-/// Accumulate the `emit <output> = …` and handler `out <output> = …` sites in
-/// `block` into `counts`: per output, how many sites write a value and whether
-/// any of them runs on only some paths (a branch, a `match` arm, a loop body,
-/// or after a statement that can end the block early). Anonymous chips share
-/// their parent's outputs, nested handlers count once per trigger, and a named
-/// chip owns its own. An output written from more than one site, or from one
-/// conditional site, needs a backing store: the single-site fast path wires the
-/// value straight to the rerouter, unconditionally, leaving the taken exec dead.
+/// Accumulate the `emit <output> = ...` and handler `out <output> = ...` sites
+/// in `block` into `counts`: per output, how many sites write a value and
+/// whether any runs on only some paths. Anonymous chips share their parent's
+/// outputs, nested handlers count once per trigger, a named chip owns its own.
+/// An output with several sites, or one conditional site, needs a backing store,
+/// since the single-site path wires the value to the rerouter unconditionally.
 pub(super) fn count_emits_in_block(
     block: &Block,
     in_branch: bool,
@@ -235,10 +219,14 @@ pub(in crate::lower) fn collect_value_emit_names(block: &Block, names: &mut Hash
 
 /// A declaration scope of the program: its own top level (`None`), or an
 /// `import * as` namespace, keyed by the namespace declaration's location.
-pub(in crate::lower) type DeclScope = Option<(Arc<str>, usize)>;
+pub(in crate::lower) type DeclScope = Option<StartKey>;
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "yields a scope key, where `None` is the top level"
+)]
 pub(in crate::lower) fn namespace_scope(ns: &NamespaceDecl) -> DeclScope {
-    Some((ns.range.file.clone(), ns.range.start.offset))
+    Some(ns.range.start_key())
 }
 
 /// Per declaration scope, per output name: how many sites write a value and
@@ -307,7 +295,7 @@ struct Program<'a> {
     bodies: Vec<Body<'a>>,
     body_by_name: HashMap<(usize, &'a str), usize>,
     namespace_by_name: HashMap<(usize, &'a str), usize>,
-    imports: &'a crate::ast::ImportScope,
+    imports: &'a ImportScope,
 }
 
 impl<'a> Program<'a> {
@@ -336,18 +324,6 @@ impl<'a> Program<'a> {
                     inline: c.inline,
                     self_receiver: c.is_self_receiver(),
                     outputs: c.outputs.iter().map(|o| o.name.as_str()).collect(),
-                },
-                TopDecl::Fn(f) => Body {
-                    name: f.name.as_str(),
-                    range: &f.range,
-                    node: walk::Node::Expr(&f.body),
-                    scope: si,
-                    inline: true,
-                    self_receiver: f
-                        .params
-                        .first()
-                        .is_some_and(|p| p.name == "self" && p.pattern.is_none()),
-                    outputs: Vec::new(),
                 },
                 TopDecl::Namespace(ns) => {
                     let inner = self.add_scope(namespace_scope(ns), &ns.decls);
@@ -415,10 +391,9 @@ impl<'a> Program<'a> {
 
     /// Per body, how many times it is instantiated and whether any instance
     /// runs on only some paths: its call sites outside every body, plus each
-    /// call inside another body once per instantiation of that body. A call
-    /// under a branch, `match` arm, `if` expression or loop, after a possible
-    /// early `return`, or inside a body that is itself instantiated so, is
-    /// conditional.
+    /// call inside another body once per instantiation of that body. A call is
+    /// conditional under a branch, arm, `if` expression or loop, after a
+    /// possible early `return`, or inside a conditionally instantiated body.
     fn body_instances(&self) -> Vec<(usize, bool)> {
         let n = self.bodies.len();
         // Calls outside every body, by callee: (count, conditional).
@@ -429,7 +404,7 @@ impl<'a> Program<'a> {
             for d in scope.decls {
                 let (node, caller) = match d {
                     TopDecl::Namespace(_) => continue,
-                    TopDecl::Chip(ChipDecl { name, .. }) | TopDecl::Fn(FnDecl { name, .. }) => {
+                    TopDecl::Chip(ChipDecl { name, .. }) => {
                         let b = self.body_by_name[&(si, name.as_str())];
                         (self.bodies[b].node, Some(b))
                     }
@@ -515,17 +490,15 @@ fn call_sites<'a>(
         _ => reps,
     };
     walk::children(node, &mut |child, flow| {
-        call_sites(child, cx.enter(flow), reps, &mut *on)
+        call_sites(child, cx.enter(flow), reps, &mut *on);
     });
 }
 
-/// Give output `name` a backing PseudoVar (idempotent). An output value-driven
-/// from more than one `emit` site — or one conditional site, or a default plus
-/// any emit — can't take a wire per site (two wires into the output rerouter is
-/// a load-time fan-in): each site does a `Var_Set` into this var, and the var
-/// feeds the output once (`lower/mod.rs`'s finalize step). `lookup_output` must
-/// already resolve `name` (its rerouter pre-declared) or this is a no-op.
-pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str) {
+/// Give output `name` a backing `PseudoVar` (idempotent). Two wires into an
+/// output rerouter are a fan-in that fails at load, so each `emit` site sets
+/// this var and the var feeds the output once. A no-op unless `lookup_output`
+/// (or `output_tag`) resolves `name`.
+pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx<'_>, name: &str) {
     if ctx.output_backing_vars.contains_key(name) {
         return;
     }
@@ -536,7 +509,7 @@ pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str
     else {
         return;
     };
-    let inner = out.ty.clone();
+    let inner = out.ty;
     let var_id = make_scalar_var_gate(
         ctx,
         &inner,
@@ -550,6 +523,10 @@ pub(in crate::lower) fn create_output_backing_var(ctx: &mut LowerCtx, name: &str
     );
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers build the input for this one call"
+)]
 pub fn lower(input: LowerInput<'_>) -> LowerResult {
     // Root module name is on the top-level chip's emitted text label.
     // Explicit `module_name` wins; otherwise use the entry file's stem.
@@ -557,13 +534,8 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         .file_stem()
         .and_then(|s| s.to_str());
     let builder = ModuleBuilder::new(input.module_name.or(file_stem).unwrap_or("main"));
-    // Built once, up front, and reused for both `ctx.enum_defs` and
-    // `build_const_env` below, the same registry a `const` enum-value
-    // initializer's own const evaluation reads its discriminant from
-    // (`const_eval::ConstCtx::enum_defs`), so lowering can never disagree
-    // with itself about a tag. Wrapped in `Arc` here so every later
-    // `.clone()` of `ctx.enum_defs` (per const-evaluation, per scope, per
-    // mod/chip inlining) is a refcount bump rather than a deep copy.
+    // One registry shared by `ctx.enum_defs` and the const scope, so lowering
+    // and const evaluation agree on every tag. In an `Arc` so clones are cheap.
     let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&input.ast.decls));
 
     let generic_type_aliases = collect_generic_type_aliases(&input.ast.decls);
@@ -571,41 +543,17 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     let mut ctx = LowerCtx {
         file: input.file.to_string(),
         type_aliases: expand_alias_bodies(
-            {
-                let mut m = HashMap::default();
-                for d in &input.ast.decls {
-                    match d {
-                        crate::ast::TopDecl::TypeAlias(ta) => {
-                            m.insert(ta.name.clone(), ta.typ.clone());
-                        }
-                        // `import * as Ns` arrives as a Namespace decl holding the
-                        // imported module's declarations. Its aliases are keyed
-                        // `Ns.Name`, the spelling the parser produces for a
-                        // qualified type and the keying
-                        // `collect_generic_type_aliases` uses for the generic half
-                        // of this map.
-                        crate::ast::TopDecl::Namespace(ns) => {
-                            for nd in &ns.decls {
-                                if let crate::ast::TopDecl::TypeAlias(ta) = nd {
-                                    m.insert(format!("{}.{}", ns.name, ta.name), ta.typ.clone());
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                m
-            },
+            &type_aliases_of(&input.ast.decls)
+                .map(|(key, ta)| (key, ta.typ.clone()))
+                .collect(),
             &generic_type_aliases,
         ),
-        // The enum registry is built by the SHARED `enums::build_registry`
-        // (which numbers via `enums::variant_defs`) so lowering reads the exact
-        // discriminant typecheck assigned - one source of truth for the tag,
-        // never a re-derivation.
-        enum_defs: enum_defs.clone(),
-        template_cache: input.template_cache.clone(),
+        // Built by the shared `enums::build_registry`, so lowering reads the
+        // discriminant typecheck assigned.
+        enum_defs: Arc::clone(&enum_defs),
+        template_cache: Arc::clone(&input.template_cache),
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
-        imports: input.ast.imports.clone(),
+        imports: Arc::clone(&input.ast.imports),
         known_let_names: Arc::new(collect_let_names(input.ast)),
         consts: crate::const_scope::ConstScope::for_program(
             &input.ast.decls,
@@ -616,7 +564,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         top_names,
         is_root_module: true,
         // Module-level `@nofold` (top of file + blank line) marks everything.
-        nofold_depth: input.ast.no_fold as u32,
+        nofold_depth: u32::from(input.ast.no_fold),
         ..LowerCtx::empty(
             builder,
             input.type_of_expr,
@@ -641,18 +589,14 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         pre_declare_decl(&mut ctx, d);
         ctx.keep_top_dup_bindings(d);
     }
-    // Pass 1a: a top-level `on` handler may DECLARE a boundary output
-    // (`on Clock { @top out flash: bool = Toggle() }`). Run after the loop
-    // above, not inside it, so a handler-declared name binds to an explicit
-    // top-level `out` of the same name wherever that declaration sits in the
-    // file rather than minting a second port for it.
+    // Pass 1a: a top-level `on` handler may declare a boundary output
+    // (`on Clock { @top out flash: bool = Toggle() }`). Runs after pass 1 so the
+    // name binds to a same-named top-level `out` anywhere in the file.
     for d in &input.ast.decls {
         match d {
             TopDecl::Handler(h) => pre_declare_handler_outputs(&mut ctx, &h.body, true),
-            // `let foo = on Trigger { ... }` (a captured event) carries its
-            // handler body here and is lowered handler-style by
-            // `lower_event_decl`, so its `out` bindings are top-level
-            // handler bindings too.
+            // A captured event (`let foo = on Trigger { ... }`) is lowered
+            // handler-style, so its `out` bindings are handler bindings too.
             TopDecl::Event(e) => {
                 if let Some(body) = e.captured_body() {
                     pre_declare_handler_outputs(&mut ctx, body, true);
@@ -661,22 +605,12 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             _ => {}
         }
     }
-    // Snapshot the names the importer itself owns (everything pass 1 just
-    // registered) so a pass-2 `import * as` namespace member can't clobber one
-    // of them — see `LowerCtx::importer_names`.
+    // Snapshot the names the importer owns (everything pass 1 registered) so a
+    // pass-2 namespace member cannot clobber one (see `LowerCtx::importer_names`).
     ctx.importer_names = ctx.scope.iter().map(|(k, _)| k.to_string()).collect();
-    // Pass 1b: an output value-driven from more than one `emit` site
-    // can't take a wire per site (two wires into the output rerouter is a
-    // load-time fan-in) — give it a backing PseudoVar. `lower_emit` does a
-    // Var_Set into it at each site; the var feeds the output once at the end
-    // (finalized just before `flush_pending_emits`). A SINGLE emit inside a
-    // conditional also needs the backing var (so the write is gated by the
-    // branch exec); only a single UNCONDITIONAL emit keeps the direct
-    // value->output wire.
-    // Outputs with a default initializer (`out r = 0`). The default is a
-    // persistent driver on the output rerouter, so ANY `emit r = …` adds a
-    // second — a fan-in. Such an output also needs the backing var: the default
-    // seeds the var (see `lower_out_binding`) and each emit does a Var_Set.
+    // Pass 1b: give a backing PseudoVar to every output written from several
+    // sites, one conditional site, or a default (`out r = 0`) plus any emit, since
+    // two drivers on its rerouter fan in. Only one unconditional emit wires directly.
     let defaulted_outputs: HashSet<String> = input
         .ast
         .decls
@@ -724,7 +658,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             .and_then(|(t, range)| ctx.record_or_tuple_fields(&t).map(|f| (f, range)));
         match record {
             Some((fields, range)) => {
-                let backing = crate::lower::predeclare::build_record_fields(
+                let backing = build_record_fields(
                     &mut ctx,
                     VarStorage::Var,
                     &fields,
@@ -740,24 +674,17 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     }
     // Pass 2: lower bodies.
     for d in &input.ast.decls {
-        // Flush handler end execs before non-handler declarations so that
-        // code after `on` blocks chains from the combined handler exits.
-        // Anon chips whose body is a single handler count as handlers for
-        // this purpose — they're just visually grouped handlers.
+        // Flush handler end execs before a non-handler declaration so code after
+        // `on` blocks chains from the combined exits. An anon chip whose body is
+        // a single handler counts as a handler.
         if !ctx.handler_end_execs.is_empty() && !is_handler_like(d) {
             flush_handler_end_execs(&mut ctx);
         }
-        // The flush above sets `current_exec` for imperative top-level statements
-        // (assign / if / expr) that genuinely continue from a handler. A pure,
-        // reactive declaration (let / out / var / buffer) must NOT inherit it —
-        // its reads are pure signal flow, not steps on the handler's spine — so
-        // lower it with a cleared exec, then restore for any following statement.
+        // A pure declaration (let / out / var / buffer) must not inherit the
+        // flushed `current_exec`, so it lowers with the exec cleared.
         ctx.top_view(crate::scope::top::ReadAt::code(d.range()));
         if is_pure_top_decl(d) {
-            let saved_exec = ctx.current_exec;
-            ctx.current_exec = None;
-            lower_decl(&mut ctx, d);
-            ctx.current_exec = saved_exec;
+            ctx.pure(|ctx| lower_decl(ctx, d));
         } else {
             lower_decl(&mut ctx, d);
         }
@@ -780,8 +707,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         input.ast.module_material.as_ref(),
     );
 
-    // Feed each multi-emit output's backing PseudoVar value into its
-    // output rerouter — one wire, placed after every handler's Var_Set exists.
+    // Feed each backing PseudoVar into its output rerouter with one wire.
     let backings: Vec<(String, VarRecord)> = ctx
         .output_backing_vars
         .iter()
@@ -799,7 +725,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             );
         }
     }
-    let mut records: Vec<(String, HashMap<crate::intern::Sym, Binding>)> = ctx
+    let mut records: Vec<(String, Fields)> = ctx
         .output_record_backing
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -816,139 +742,132 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     flush_pending_emits(&mut ctx);
 
     let mut module = ctx.builder.module;
-    let whole_file = SourceRange::new(input.file, Default::default(), Default::default());
+    let whole_file = SourceRange::new(
+        input.file,
+        crate::diagnostic::Pos::default(),
+        crate::diagnostic::Pos::default(),
+    );
     prune_dead_exec_unions(&mut module);
     convert::prune_unread_conversions(&mut module);
-    // Before literal-inlining/materialization: a real computation still has its
-    // operand WIRES here, so only genuinely wireless orphans (e.g. a top-level
-    // constant duplicated by a namespace + named import of the same module) are
-    // pruned — not a user's connected-but-unused `let y = x * 2`.
+    // Before literal inlining a computation still has its operand wires, so
+    // only wireless orphans are pruned here, not an unused `let y = x * 2`.
     prune_dead_pure_gates(&mut module, false);
     prune_unread_gate_read_choices(&mut module);
-    // Certified constant folding — table-gated. `FoldMode::Auto` (the
-    // production default) folds unless the entry file opts out with a
-    // module-level `@nofold`; `ForceOff` (CLI `--no-fold`) disables it
-    // outright. `ForceOn` (CLI `--fold`) is equivalent to `Auto`, and the
-    // legacy `@fold` opt-in (`input.ast.fold`) does not gate anything. A
-    // module-level `@nofold` always wins over any mode short of `ForceOff`.
+    // Certified, table-gated constant folding (see `FoldMode`). The module-level
+    // `@fold` (`input.ast.fold`) gates nothing.
     let run_fold = match input.fold_mode {
         FoldMode::ForceOff => false,
         FoldMode::ForceOn | FoldMode::Auto => !input.ast.no_fold,
     };
-    // Inline a bare source literal into a gate's scalar data field when its type
-    // matches (a constant `on Clock(interval = 0.25)`, a `Sweep` distance, the
-    // `0` in `x | 0`, …) BEFORE folding: at this point only source literals
-    // exist, never fold-produced ones, so the pass does the same thing whether or
-    // not folding runs — keeping fold a structural no-op. A folded constant
-    // EXPRESSION is untouched here and still materializes a carrier below
-    // (matching the unfolded compute gate), so the fold invariant holds.
-    inline_bare_scalar_literals(&mut module);
-    check_wires_resolve(
-        &module,
-        "inline_bare_scalar_literals",
-        false,
+    // Inline a bare source literal into a matching scalar data field
+    // (`on Clock(interval = 0.25)`, the `0` in `x | 0`) before folding, when only
+    // source literals exist, so the result is the same with folding on or off.
+    let diags = &mut ctx.diagnostics;
+    run_checked(
+        &mut module,
+        diags,
         &whole_file,
-        &mut ctx.diagnostics,
+        "inline_bare_scalar_literals",
+        |m, _| {
+            inline_bare_scalar_literals(m);
+        },
     );
     if run_fold {
-        fold::fold_certified_constants(&mut module);
-        localize_foreign_literals(&mut module);
-        check_wires_resolve(
-            &module,
-            "fold_certified_constants",
-            false,
+        run_checked(
+            &mut module,
+            diags,
             &whole_file,
-            &mut ctx.diagnostics,
+            "fold_certified_constants",
+            |m, _| {
+                fold::fold_certified_constants(m);
+                localize_foreign_literals(m);
+            },
         );
     }
-    materialize_unfoldable_constants(&mut module);
-    check_wires_resolve(
-        &module,
+    run_checked(
+        &mut module,
+        diags,
+        &whole_file,
         "materialize_unfoldable_constants",
-        false,
-        &whole_file,
-        &mut ctx.diagnostics,
+        |m, _| {
+            materialize_unfoldable_constants(m);
+        },
     );
-    inline_orphan_literals(&mut module);
-    check_wires_resolve(
-        &module,
+    run_checked(
+        &mut module,
+        diags,
+        &whole_file,
         "inline_orphan_literals",
-        false,
-        &whole_file,
-        &mut ctx.diagnostics,
+        |m, _| {
+            inline_orphan_literals(m);
+        },
     );
-    // Folding an operand into its consumer can leave a bare `_Literal` wired to
-    // nothing; sweep those literal orphans too (always safe — a literal has no
-    // inputs, so it can never be a user computation whose operands were inlined).
-    prune_dead_pure_gates(&mut module, true);
-    check_wires_resolve(
-        &module,
-        "prune_dead_pure_gates",
-        false,
+    // Folding can leave a bare `_Literal` wired to nothing; sweep those too
+    // (a literal has no inputs, so it is never a user computation).
+    run_checked(
+        &mut module,
+        diags,
         &whole_file,
-        &mut ctx.diagnostics,
+        "prune_dead_pure_gates",
+        |m, _| {
+            prune_dead_pure_gates(m, true);
+        },
     );
     // Merge the constant gates that survived inlining (a `"PREFIX: " ..` concat
     // wrapper repeated per use, a multi-consumer literal) so an identical
     // constant is emitted once and fans out, per chip.
-    dedup_constant_gates(&mut module);
-    check_wires_resolve(
-        &module,
+    run_checked(
+        &mut module,
+        diags,
+        &whole_file,
         "dedup_constant_gates",
-        false,
-        &whole_file,
-        &mut ctx.diagnostics,
+        |m, _| {
+            dedup_constant_gates(m);
+        },
     );
-    // Common-subexpression elimination: the same generalized merge, extended to
-    // pure `Expr_*` gates WITH wired inputs — a repeated `x + 1`, a duplicated
-    // inline-`mod` body — collapse to one gate that fans out. Runs after all the
-    // literal-inlining/fold passes so properties are final, and before
-    // partition so keepers stay in their consumers' chip.
-    cse_pure_gates(&mut module);
-    check_wires_resolve(
-        &module,
-        "cse_pure_gates",
-        false,
-        &whole_file,
-        &mut ctx.diagnostics,
-    );
-    // `@flat` inlines every chip body onto one grid. It stands in for the
-    // anon-chip partition rather than following it — that pass moves nodes
-    // INTO child modules, which is what flattening undoes (see
-    // `flatten`'s module docs). Afterwards there is a single module, so
-    // `synthesize_boundary_pins` finds no cross-module wire and adds no pins.
+    // Common-subexpression elimination: identical pure `Expr_*` gates with wired
+    // inputs collapse to one. Runs after the literal and fold passes (properties
+    // are final) and before partition (keepers stay in their consumers' chip).
+    run_checked(&mut module, diags, &whole_file, "cse_pure_gates", |m, _| {
+        cse_pure_gates(m);
+    });
+    // `@flat` inlines every chip body onto one grid, replacing the anon-chip
+    // partition (which moves nodes into child modules). The single module left
+    // gives `synthesize_boundary_pins` no cross-module wire.
     if input.ast.flat {
-        flatten::flatten_chips(&mut module, &mut ctx.diagnostics);
-        check_wires_resolve(
-            &module,
-            "flatten_chips",
-            false,
+        run_checked(
+            &mut module,
+            diags,
             &whole_file,
-            &mut ctx.diagnostics,
+            "flatten_chips",
+            |m, diags| {
+                flatten::flatten_chips(m, diags);
+            },
         );
     } else {
-        crate::emit::partition_anon_chips(&mut module);
-        check_wires_resolve(
-            &module,
-            "partition_anon_chips",
-            false,
+        run_checked(
+            &mut module,
+            diags,
             &whole_file,
-            &mut ctx.diagnostics,
+            "partition_anon_chips",
+            |m, _| {
+                crate::emit::partition_anon_chips(m);
+            },
         );
     }
-    function::capture_through_handles(&mut module, &mut ctx.diagnostics);
+    function::capture_through_handles(&mut module, diags);
     boundary_pins::synthesize_boundary_pins(&mut module);
     check_wires_resolve(
         &module,
         "synthesize_boundary_pins",
         true,
         &whole_file,
-        &mut ctx.diagnostics,
+        diags,
     );
     // Last: the wire set is final, and the brick size follows the ports in use.
     gate_variants::select_gate_variants(&mut module);
-    check_no_exec_into_value(&module, &whole_file, &mut ctx.diagnostics);
-    crate::emit::check_native_settings(&module, &mut ctx.diagnostics, &|note, field| {
+    check_no_exec_into_value(&module, &whole_file, diags);
+    crate::emit::check_native_settings(&module, diags, &|note, field| {
         let spec = crate::catalog::calls::find_call(note)?;
         spec.params
             .iter()
@@ -962,28 +881,29 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     }
 }
 
-/// Internal consistency check run after every post-lowering pass: every wire
-/// names two nodes that still exist somewhere in the module tree. A pass that
-/// deletes a node must delete the node's wires in every module, not only its
-/// own. A violation is a compiler bug, reported as `WS094` naming the pass
-/// just run, so the compile fails where the wire was stranded instead of at
-/// emit, or, for a literal, instead of shipping a gate that reads 0.
+/// Run one post-lowering `pass` over `module`, then check that every wire it
+/// left still resolves ([`check_wires_resolve`]), naming the pass on failure.
+fn run_checked(
+    module: &mut Module,
+    diagnostics: &mut Vec<Diagnostic>,
+    fallback: &SourceRange,
+    name: &str,
+    pass: impl FnOnce(&mut Module, &mut Vec<Diagnostic>),
+) {
+    pass(module, diagnostics);
+    check_wires_resolve(module, name, false, fallback, diagnostics);
+}
+
+/// Consistency check after a post-lowering pass: every wire names two nodes
+/// that exist somewhere in the module tree. A violation is a compiler bug,
+/// reported once as `WS094` naming the pass just run.
 ///
-/// The final, `pinned` check runs in every build and catches anything the
-/// earlier ones would; the per-pass ones run in debug builds, where they name
-/// the pass that left the wire.
+/// Per-pass checks run in debug builds; the final `pinned` check runs always and
+/// also requires each data-wire endpoint to be in the wire's module or a boundary
+/// pin of its chips (a foreign `_Literal` would reach the save as nothing).
 ///
-/// `pinned` checks the shape `synthesize_boundary_pins` leaves: each endpoint
-/// of a data wire is in the wire's own module or is a boundary pin of one of
-/// that module's chips. That includes a wire from another module's `_Literal`:
-/// emit inlines a literal only into its own module's consumers and a boundary
-/// pin never carries one, so such a wire reaches the save as nothing. `Layout`
-/// edges carry no value and are only checked for existence.
-///
-/// `NodeId(0)` is the never-allocated id a void call result stands for
-/// (`lower/call/wiring.rs`): a wire to it is expected only in a program that
-/// already has an error, and emit rejects it. The check stops at the first
-/// violation, and does nothing once one has been reported.
+/// A wire to `NodeId(0)` (a void call result, `lower/call/wiring.rs`) is
+/// accepted only once an error has been reported.
 fn check_wires_resolve(
     root: &Module,
     after: &str,
@@ -997,14 +917,6 @@ fn check_wires_resolve(
     let zero_expected = diagnostics
         .iter()
         .any(|d| d.severity == crate::diagnostic::Severity::Error);
-    fn index<'m>(m: &'m Module, owner: &mut HashMap<NodeId, &'m Module>) {
-        for id in m.nodes.keys() {
-            owner.insert(*id, m);
-        }
-        for c in m.chips.values() {
-            index(c, owner);
-        }
-    }
     type Owners<'m> = std::cell::OnceCell<HashMap<NodeId, &'m Module>>;
     // Almost every wire has both endpoints in its own module, so the tree-wide
     // owner index is built only when some endpoint is not, and the message
@@ -1020,7 +932,7 @@ fn check_wires_resolve(
             owners
                 .get_or_init(|| {
                     let mut owner = HashMap::default();
-                    index(root, &mut owner);
+                    root.walk(&mut |_, m| owner.extend(m.nodes.keys().map(|id| (*id, m))));
                     owner
                 })
                 .get(id)
@@ -1040,7 +952,7 @@ fn check_wires_resolve(
                     "wire {src}.{} -> {dst}.{} in module '{}'",
                     w.source.port.as_str(),
                     w.target.port.as_str(),
-                    crate::intern::resolve(m.name)
+                    resolve(m.name)
                 )
             };
             let carries_value =
@@ -1105,29 +1017,21 @@ fn check_wires_resolve(
 /// reads the exec as true for the tick it fires, as `expressions.md`
 /// documents. The data pin of a custom-event send takes it too: type checking
 /// reports the untyped data (`WS045`).
-pub(crate) fn exec_may_drive(dst: &crate::ir::Node, port: WirePort, ty: &Type) -> bool {
+pub(crate) fn exec_may_drive(dst: &Node, port: WirePort, ty: &Type) -> bool {
     matches!(ty, Type::Exec | Type::Bool)
-        || dst
-            .gate_class
-            .starts_with("BrickComponentType_Expr_Logical")
+        || dst.gate_class.starts_with(gc::EXPR_LOGICAL_PREFIX)
         || (matches!(ty, Type::Any | Type::Opaque)
             && [gc::SEND_CUSTOM_EVENT, gc::SEND_CUSTOM_EVENT_GLOBAL].contains(&dst.gate_class)
             && port.as_str().starts_with("DataIn"))
 }
 
-/// The wiring invariant every lowered program must hold: no exec (an
-/// `ExecOut`, the rerouter of an `exec` input or pin, any port typed `exec`)
-/// drives an input that takes a value other than a `bool` (see
-/// [`exec_may_drive`]). An exec pin carries no value, so such a wire reads 0
-/// in game while the source says otherwise. A rerouter pin of no type (`out r:
-/// any`) passes an exec on, and the invariant follows it to the input it ends
-/// at. Each violation is `WS094` naming both ends and the source line of the
-/// gate that reads it: a compiler bug where the exec is wired directly, and a
-/// program reading an exec as a value where it passes an untyped pin. Runs
-/// once, after the last post-lowering pass, over every wire of the module
-/// tree. A debug build (every test) also panics on a direct one, in
-/// [`crate::diagnostic::drop_internal_errors_beside_errors`], when the program
-/// reports no other error.
+/// The wiring invariant: no exec drives an input that takes a value other than
+/// a `bool` ([`exec_may_drive`]), since an exec carries no value and the gate
+/// reads 0 in game. Followed through untyped rerouter pins (`out r: any`).
+///
+/// Each violation is `WS094`: a compiler bug for a direct wire, a user error
+/// through an untyped pin. A debug build also panics on a direct one when no
+/// other error exists ([`crate::diagnostic::drop_internal_errors_beside_errors`]).
 pub(crate) fn check_no_exec_into_value(
     root: &Module,
     fallback: &SourceRange,
@@ -1139,15 +1043,10 @@ pub(crate) fn check_no_exec_into_value(
     {
         return;
     }
-    fn index<'m>(
-        m: &'m Module,
-        nodes: &mut HashMap<NodeId, &'m crate::ir::Node>,
-        wires: &mut Vec<crate::ir::Wire>,
-    ) {
+    fn index<'m>(m: &'m Module, nodes: &mut HashMap<NodeId, &'m Node>, wires: &mut Vec<Wire>) {
         nodes.extend(m.nodes.iter().map(|(id, n)| (*id, n)));
-        let laid_out = |w: &&crate::ir::Wire| {
-            w.source.port == WirePort::Layout || w.target.port == WirePort::Layout
-        };
+        let laid_out =
+            |w: &&Wire| w.source.port == WirePort::Layout || w.target.port == WirePort::Layout;
         wires.extend(m.wires.iter().filter(|w| !laid_out(w)).copied());
         for c in m.chips.values() {
             index(c, nodes, wires);
@@ -1156,7 +1055,7 @@ pub(crate) fn check_no_exec_into_value(
     let mut nodes = HashMap::default();
     let mut wires = Vec::new();
     index(root, &mut nodes, &mut wires);
-    let ends = |w: &crate::ir::Wire| {
+    let ends = |w: &Wire| {
         let (src, dst) = (nodes.get(&w.source.node_id)?, nodes.get(&w.target.node_id)?);
         let from = src.ports.find_output(w.source.port.sym()).map(|p| &p.ty);
         Some((
@@ -1169,11 +1068,11 @@ pub(crate) fn check_no_exec_into_value(
     // The rerouters an exec reaches through a pin of no type: their output
     // carries it on.
     let mut carriers: HashSet<NodeId> = HashSet::default();
-    let carries = |carriers: &HashSet<NodeId>, w: &crate::ir::Wire, from: Option<&Type>| {
+    let carries = |carriers: &HashSet<NodeId>, w: &Wire, from: Option<&Type>| {
         from == Some(&Type::Exec)
             || (w.source.port == WirePort::RerOutput && carriers.contains(&w.source.node_id))
     };
-    let untyped_pin = |w: &crate::ir::Wire, into: &Type| {
+    let untyped_pin = |w: &Wire, into: &Type| {
         w.target.port == WirePort::RerInput && matches!(into, Type::Any | Type::Opaque)
     };
     loop {
@@ -1192,7 +1091,7 @@ pub(crate) fn check_no_exec_into_value(
     }
     // An array write takes its value untyped; a `bool` array's is a `bool`
     // place, as a `bool` map's value is.
-    let feeds: HashMap<(NodeId, WirePort), crate::ir::PortRef> = wires
+    let feeds: HashMap<(NodeId, WirePort), PortRef> = wires
         .iter()
         .map(|w| ((w.target.node_id, w.target.port), w.source))
         .collect();
@@ -1203,7 +1102,7 @@ pub(crate) fn check_no_exec_into_value(
         gc::ARRAY_FILL,
         gc::ARRAY_RESIZE,
     ];
-    let stored_bool = |w: &crate::ir::Wire, dst: &crate::ir::Node| {
+    let stored_bool = |w: &Wire, dst: &Node| {
         if w.target.port != WirePort::Value || !array_writes.contains(&dst.gate_class) {
             return false;
         }
@@ -1286,7 +1185,7 @@ pub(crate) fn check_no_exec_into_value(
     }
     let at = |d: &Diagnostic| {
         (
-            d.range.file.clone(),
+            Arc::clone(&d.range.file),
             d.range.start.line,
             d.range.start.col,
             d.message.clone(),
@@ -1296,7 +1195,7 @@ pub(crate) fn check_no_exec_into_value(
     diagnostics.extend(found);
 }
 
-/// Every name a top-level `let` of the (import-merged) program binds.
+/// Every name a top-level `let` of the program (imports included) binds.
 fn collect_let_names(ast: &Script) -> HashSet<String> {
     ast.decls
         .iter()
@@ -1308,10 +1207,9 @@ fn collect_let_names(ast: &Script) -> HashSet<String> {
         .collect()
 }
 
-/// Collect every chip/mod name declared anywhere in the (import-merged) program
-/// — top-level and nested. Lets lowering tell a use-before-declaration call
-/// (a real chip/mod, just registered later -> WS021) from a call to a name that
-/// is not a function at all (e.g. an unimplemented builtin -> placeholder).
+/// Every chip/mod name declared anywhere in the program (imports included, top
+/// level and nested), so a use-before-declaration call (WS021) is told apart
+/// from a call to a name that is no function at all (a placeholder).
 fn collect_fn_names(ast: &Script) -> HashSet<String> {
     fn walk_block(block: &Block, names: &mut HashSet<String>) {
         for s in &block.stmts {
@@ -1359,12 +1257,11 @@ const MAX_ALIAS_CHAIN: u32 = 32;
 /// lowering expands one, as the record written out does. A namespaced alias
 /// (`Ns.IP`) reads the names in its body in its own module first.
 fn expand_alias_bodies(
-    aliases: HashMap<String, crate::ast::TypeExpr>,
+    aliases: &HashMap<String, TypeExpr>,
     generic: &HashMap<String, crate::types::resolve::GenericAlias>,
-) -> HashMap<String, crate::ast::TypeExpr> {
-    use crate::ast::TypeExpr;
+) -> HashMap<String, TypeExpr> {
     let mut out = aliases.clone();
-    for (key, body) in out.iter_mut() {
+    for (key, body) in &mut out {
         if generic.contains_key(key) {
             continue;
         }
@@ -1395,75 +1292,58 @@ fn expand_alias_bodies(
     out
 }
 
-/// Collect every generic type alias (`type Pair<T> = { … }`, top-level and
+/// Collect every generic type alias (`type Pair<T> = { ... }`, top-level and
 /// namespaced) into the `name -> (params, body)` map lowering instantiates from.
 /// Mirrors typecheck's `collect_generic_aliases` pre-pass so both layers agree
 /// on which aliases are generic (non-empty `type_params`).
 fn collect_generic_type_aliases(
     decls: &[TopDecl],
 ) -> HashMap<String, crate::types::resolve::GenericAlias> {
-    let mut m = HashMap::default();
-    for d in decls {
-        match d {
-            TopDecl::TypeAlias(ta) if !ta.type_params.is_empty() => {
-                m.insert(
-                    ta.name.clone(),
-                    crate::types::resolve::GenericAlias {
-                        params: ta.type_params.iter().map(|tp| tp.name.clone()).collect(),
-                        body: ta.typ.clone(),
-                    },
-                );
-            }
-            TopDecl::Namespace(ns) => {
-                for nd in &ns.decls {
-                    if let TopDecl::TypeAlias(ta) = nd
-                        && !ta.type_params.is_empty()
-                    {
-                        m.insert(
-                            format!("{}.{}", ns.name, ta.name),
-                            crate::types::resolve::GenericAlias {
-                                params: ta.type_params.iter().map(|tp| tp.name.clone()).collect(),
-                                body: ta.typ.clone(),
-                            },
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    m
+    type_aliases_of(decls)
+        .filter(|(_, ta)| !ta.type_params.is_empty())
+        .map(|(key, ta)| {
+            let generic = crate::types::resolve::GenericAlias {
+                params: ta.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                body: ta.typ.clone(),
+            };
+            (key, generic)
+        })
+        .collect()
 }
 
-/// Constant `Vec/Rotation/Color` calls lower to `_Literal` nodes so consumers
-/// inline them as component data. That only works for sinks that store the
-/// value as a wire-variant data field; for every other consumer — entity
-/// gates whose struct-typed inputs must be wired, `Split*` inputs, chip IO,
-/// unmapped gates — this pass materializes the real `Make*` gate (component
-/// values baked into its data struct) and re-points those wires at it, so a
-/// folded constant is never silently dropped. Recurses into chip sub-modules.
-/// Inline a bare source literal wired into a gate's scalar data field, when the
-/// literal's type matches the field's native storage type
-/// (`port_accepts_inline_scalar`), by writing it into the gate's data and
-/// dropping the wire — so a constant settings value or a matching operand (the
-/// `0` in `x | 0`) needs no carrier gate. Runs BEFORE the fold pass, so it only
-/// ever sees source literals — never fold-produced ones — which makes it behave
-/// identically with or without folding (the fold pass stays a structural no-op);
-/// a folded constant EXPRESSION still materializes a carrier in
-/// `materialize_unfoldable_constants` (matching the unfolded compute gate).
-/// Type-mismatched constants and data-only ports are left to that pass too.
-/// Recurses into chip sub-modules.
+/// Every `type` alias of the program with its lookup key: the bare name at the
+/// top level, `Ns.Name` (the parser's spelling of a qualified type) inside an
+/// `import * as Ns` namespace.
+fn type_aliases_of(decls: &[TopDecl]) -> impl Iterator<Item = (String, &TypeAliasDecl)> {
+    decls.iter().flat_map(|d| {
+        let aliases: Vec<(String, &TypeAliasDecl)> = match d {
+            TopDecl::TypeAlias(ta) => vec![(ta.name.clone(), ta)],
+            TopDecl::Namespace(ns) => ns
+                .decls
+                .iter()
+                .filter_map(|nd| match nd {
+                    TopDecl::TypeAlias(ta) => Some((format!("{}.{}", ns.name, ta.name), ta)),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        aliases
+    })
+}
+
+/// Inline a bare source literal wired into a gate's scalar data field of the
+/// same native type (`port_accepts_inline_scalar`): write it into the gate's
+/// data and drop the wire. Runs before folding, so it sees only source literals
+/// and behaves the same with folding on or off. Recurses into chip sub-modules.
 fn inline_bare_scalar_literals(root: &mut Module) {
     let external = ExternalWires::of(root);
-    inline_bare_scalar_literals_in(root, &external);
+    root.walk_mut(&mut |_, m| inline_bare_scalar_literals_in(m, &external));
 }
 
-/// Nodes wired by a wire stored outside their own module. A wire between two
-/// modules is stored in either endpoint's module, so a node's own module can
-/// hold only some of its wires: a top-level constant read by a named chip has
-/// its root consumers in the root's list and the chip's reads in the chip's.
-/// A per-module pass that judges a node by its own module's wires alone must
-/// leave these nodes in place.
+/// Nodes with a wire stored outside their own module (a cross-module wire lives
+/// in either endpoint's module). A per-module pass judging a node by its own
+/// module's wires alone must leave these nodes in place.
 struct ExternalWires {
     /// Sources of a wire stored in another module.
     sources: HashSet<NodeId>,
@@ -1473,7 +1353,11 @@ struct ExternalWires {
 
 impl ExternalWires {
     fn of(root: &Module) -> Self {
-        fn walk(module: &Module, out: &mut ExternalWires) {
+        let mut out = Self {
+            sources: HashSet::default(),
+            targets: HashSet::default(),
+        };
+        root.walk(&mut |_, module| {
             for w in &module.wires {
                 if !module.nodes.contains_key(&w.source.node_id) {
                     out.sources.insert(w.source.node_id);
@@ -1482,38 +1366,25 @@ impl ExternalWires {
                     out.targets.insert(w.target.node_id);
                 }
             }
-            for child in module.chips.values() {
-                walk(child, out);
-            }
-        }
-        let mut out = ExternalWires {
-            sources: HashSet::default(),
-            targets: HashSet::default(),
-        };
-        walk(root, &mut out);
+        });
         out
     }
 
-    fn touches(&self, id: &NodeId) -> bool {
-        self.sources.contains(id) || self.targets.contains(id)
+    fn touches(&self, id: NodeId) -> bool {
+        self.sources.contains(&id) || self.targets.contains(&id)
     }
 }
 
-/// Give every module its own copy of each `_Literal` it reads from another
-/// module, and move the reading wire into that module. Emit inlines a literal
-/// only into consumers in its own module and a boundary pin never carries one,
-/// so a wire from another module's literal reaches the save as nothing: the
-/// consumer reads its port default. Lowering never wires one
-/// (`LowerCtx::local_literals`), but folding does: a top-level constant
-/// expression (`let K = 3 + 4`) read by a named chip becomes a literal in
-/// place, in the root. One copy per consuming module and anonymous chip; the
-/// original keeps only its own module's reads, and is pruned once it has none.
+/// Give every module (and anonymous chip) its own copy of each `_Literal` it
+/// reads from another module, moving the reading wire with it. Emit inlines a
+/// literal only within its module, so a foreign one reaches the save as nothing;
+/// folding a top-level constant read by a named chip produces such wires.
 fn localize_foreign_literals(root: &mut Module) {
     fn extract(
         m: &mut Module,
         owner: &HashMap<NodeId, usize>,
-        literals: &HashMap<NodeId, crate::ir::Node>,
-        moved: &mut Vec<(usize, crate::ir::Wire)>,
+        literals: &HashMap<NodeId, Node>,
+        moved: &mut Vec<(usize, Wire)>,
     ) {
         let before = m.wires.len();
         m.wires.retain(|w| {
@@ -1535,7 +1406,7 @@ fn localize_foreign_literals(root: &mut Module) {
     }
     let mut paths: Vec<Vec<NodeId>> = Vec::new();
     let mut owner: HashMap<NodeId, usize> = HashMap::default();
-    let mut literals: HashMap<NodeId, crate::ir::Node> = HashMap::default();
+    let mut literals: HashMap<NodeId, Node> = HashMap::default();
     root.walk(&mut |path, m| {
         let here = paths.len();
         paths.push(path.to_vec());
@@ -1549,7 +1420,7 @@ fn localize_foreign_literals(root: &mut Module) {
     if literals.is_empty() {
         return;
     }
-    let mut moved: Vec<(usize, crate::ir::Wire)> = Vec::new();
+    let mut moved: Vec<(usize, Wire)> = Vec::new();
     extract(root, &owner, &literals, &mut moved);
     moved.sort_by_key(|(_, w)| (w.target.node_id, w.source.node_id));
 
@@ -1574,25 +1445,19 @@ fn localize_foreign_literals(root: &mut Module) {
 
 fn inline_bare_scalar_literals_in(module: &mut Module, external: &ExternalWires) {
     let value_sym = *sym::VALUE;
-    // A string literal has no `_Literal` form: `lower_literal` gives it a
-    // `String_Concatenate` carrying the text in `InputA` with the other fields
-    // empty. Recognizing that shape here lets a literal operand bake into a
-    // `str` field the same way an int or bool one does. Only a carrier with no
-    // wired inputs qualifies, which is what separates it from a real 2-input
-    // concatenation.
-    let wired_targets: crate::collections::HashSet<crate::ir::NodeId> =
-        module.wires.iter().map(|w| w.target.node_id).collect();
-    let is_empty_str = |n: &crate::ir::Node, k| match n.properties.get(&k) {
+    // A string literal lowers to a `String_Concatenate` with the text in
+    // `InputA` and the other fields empty; that shape with no wired inputs bakes
+    // into a `str` field like an int literal does.
+    let wired_targets: HashSet<NodeId> = module.wires.iter().map(|w| w.target.node_id).collect();
+    let is_empty_str = |n: &Node, k| match n.properties.get(&k) {
         None => true,
         Some(Literal::String(s)) => s.is_empty(),
         _ => false,
     };
-    // Interned once rather than per wire: `intern` is a global map lookup, and
-    // this loop runs over every wire in the module.
-    let separator_sym = intern("Separator");
+    let separator_sym = *sym::SEPARATOR;
     let input_a_sym = *sym::INPUT_A;
     let input_b_sym = *sym::INPUT_B;
-    let mut inlines: Vec<(usize, crate::ir::NodeId, WirePort, Literal)> = Vec::new();
+    let mut inlines: Vec<(usize, NodeId, WirePort, Literal)> = Vec::new();
     for (i, w) in module.wires.iter().enumerate() {
         let Some(src) = module.nodes.get(&w.source.node_id) else {
             continue;
@@ -1632,12 +1497,9 @@ fn inline_bare_scalar_literals_in(module: &mut Module, external: &ExternalWires)
         inlines.push((i, w.target.node_id, w.target.port, lit));
     }
     let mut drop_wires: Vec<usize> = Vec::with_capacity(inlines.len());
-    let mut inlined_sources: crate::collections::HashSet<crate::ir::NodeId> =
-        crate::collections::HashSet::default();
+    let mut inlined_sources: HashSet<NodeId> = HashSet::default();
     for (i, target_id, port, lit) in inlines {
         if let Some(target) = module.nodes.get_mut(&target_id) {
-            // `port.sym()` is the per-variant cached symbol; interning
-            // `port.as_str()` here was a global-map lookup per inlined literal.
             std::sync::Arc::make_mut(&mut target.properties).insert(port.sym(), lit);
             if let Some(w) = module.wires.get(i) {
                 inlined_sources.insert(w.source.node_id);
@@ -1645,43 +1507,235 @@ fn inline_bare_scalar_literals_in(module: &mut Module, external: &ExternalWires)
             drop_wires.push(i);
         }
     }
-    // Drop the carried wires in one pass. `retain` visits each wire once (O(W));
-    // removing them individually with `Vec::remove` shifted the tail per drop
-    // (O(D*W)) and dominated literal-dense programs.
-    let drop: crate::collections::HashSet<usize> = drop_wires.into_iter().collect();
+    // Drop the carried wires in one O(W) `retain` pass.
+    let drop: HashSet<usize> = drop_wires.into_iter().collect();
     let mut wire_idx = 0usize;
     module.wires.retain(|_| {
         let keep = !drop.contains(&wire_idx);
         wire_idx += 1;
         keep
     });
-    // A carrier whose every consumer took the value inline is now unreachable.
-    // Drop it here rather than leaving it for a later prune: the fold pass also
-    // removes these, so leaving them would make the module differ by fold mode.
-    // Index the surviving sources once (O(W)) rather than rescanning the whole
-    // wire list per candidate (O(S*W)); on a literal-dense program that scan was
-    // the most expensive thing lowering did.
+    // Drop a carrier every consumer took inline here: the fold pass removes
+    // these too, so leaving them would make the module differ by fold mode.
     if !inlined_sources.is_empty() {
-        let live_sources: crate::collections::HashSet<crate::ir::NodeId> =
-            module.wires.iter().map(|w| w.source.node_id).collect();
+        let live_sources: HashSet<NodeId> = module.wires.iter().map(|w| w.source.node_id).collect();
         inlined_sources.retain(|id| !live_sources.contains(id) && !external.sources.contains(id));
     }
     if !inlined_sources.is_empty() {
         module.nodes.retain(|id, _| !inlined_sources.contains(id));
     }
-    for child in module.chips.values_mut() {
-        inline_bare_scalar_literals_in(child, external);
+}
+
+/// A gate that carries a constant `_Literal` to a consumer that cannot take it
+/// inline: the gate class, its output port, and the value as data on its
+/// unwired inputs, in the order they are inserted.
+struct Carrier {
+    class: &'static str,
+    out_sym: Sym,
+    out_port: WirePort,
+    ty: Type,
+    data: Vec<(Sym, Literal)>,
+}
+
+impl Carrier {
+    /// Whether `lit` is carried by a `Make*` gate (vector, rotator, color),
+    /// which needs no check of what its consumer accepts beyond the inline test.
+    fn is_composite(lit: &Literal) -> bool {
+        matches!(
+            lit,
+            Literal::Vector { .. } | Literal::Rotator { .. } | Literal::LinearColor { .. }
+        )
+    }
+
+    /// Whether any gate can carry `lit`.
+    fn exists_for(lit: &Literal) -> bool {
+        Self::is_composite(lit)
+            || matches!(
+                lit,
+                Literal::Int(_)
+                    | Literal::Float(_)
+                    | Literal::Bool(_)
+                    | Literal::String(_)
+                    | Literal::Quat { .. }
+            )
+    }
+
+    /// The carrier for `lit`; `None` when no gate carries its kind. A scalar
+    /// gets a pure gate whose unwired inputs hold the value (a Variable gate
+    /// will not do; its Value output stays null until an exec write), and a
+    /// `Quat`, which has no arithmetic identity gate, a `MakeQuaternion`.
+    fn of(lit: &Literal) -> Option<Self> {
+        let make = |class, ty, fields: Vec<(WirePort, f64)>| Self {
+            class,
+            out_sym: *sym::OUTPUT,
+            out_port: WirePort::Output,
+            ty,
+            data: fields
+                .into_iter()
+                .map(|(port, v)| (port.sym(), Literal::Float(v)))
+                .collect(),
+        };
+        Some(match lit {
+            Literal::Vector { x, y, z } => make(
+                gc::MAKE_VECTOR,
+                Type::Vector,
+                vec![(WirePort::X, *x), (WirePort::Y, *y), (WirePort::Z, *z)],
+            ),
+            Literal::Rotator { pitch, yaw, roll } => make(
+                gc::MAKE_ROTATION,
+                Type::Rotator,
+                vec![
+                    (WirePort::Pitch, *pitch),
+                    (WirePort::Yaw, *yaw),
+                    (WirePort::Roll, *roll),
+                ],
+            ),
+            Literal::LinearColor { r, g, b, a } => make(
+                gc::MAKE_COLOR,
+                Type::Color,
+                vec![
+                    (WirePort::R, *r),
+                    (WirePort::G, *g),
+                    (WirePort::B, *b),
+                    (WirePort::A, *a),
+                ],
+            ),
+            Literal::Quat { x, y, z, w } => make(
+                gc::MAKE_QUATERNION,
+                Type::Quat,
+                vec![
+                    (WirePort::X, *x),
+                    (WirePort::Y, *y),
+                    (WirePort::Z, *z),
+                    (WirePort::W, *w),
+                ],
+            ),
+            Literal::Int(n) => Self {
+                class: gc::MATH_ADD,
+                out_sym: *sym::OUTPUT,
+                out_port: WirePort::Output,
+                ty: Type::Int,
+                data: vec![
+                    (*sym::INPUT_A, Literal::Int(*n)),
+                    (*sym::INPUT_B, Literal::Int(0)),
+                ],
+            },
+            Literal::Float(f) => Self {
+                class: gc::MATH_ADD,
+                out_sym: *sym::OUTPUT,
+                out_port: WirePort::Output,
+                ty: Type::Float,
+                data: vec![
+                    (*sym::INPUT_A, Literal::Float(*f)),
+                    (*sym::INPUT_B, Literal::Float(0.0)),
+                ],
+            },
+            Literal::Bool(b) => Self {
+                class: gc::LOGICAL_OR,
+                out_sym: *sym::B_OUTPUT,
+                out_port: WirePort::BOutput,
+                ty: Type::Bool,
+                data: vec![
+                    (*sym::B_INPUT_A, Literal::Bool(*b)),
+                    (*sym::B_INPUT_B, Literal::Bool(false)),
+                ],
+            },
+            Literal::String(text) => Self {
+                class: gc::STRING_CONCATENATE,
+                out_sym: *sym::OUTPUT,
+                out_port: WirePort::Output,
+                ty: Type::String,
+                data: vec![
+                    (*sym::INPUT_A, Literal::String(text.clone())),
+                    (*sym::INPUT_B, Literal::String(String::new())),
+                    (*sym::SEPARATOR, Literal::String(String::new())),
+                ],
+            },
+            _ => return None,
+        })
+    }
+
+    /// The gate node `id`, placed like `src`; `_nofold` is copied when `no_fold`.
+    fn node(self, id: NodeId, src: &Node, no_fold: bool, note: &'static str) -> Node {
+        let mut properties: HashMap<Sym, Literal> = HashMap::default();
+        for (k, v) in self.data {
+            properties.insert(k, v);
+        }
+        if no_fold {
+            properties.insert(*sym::NO_FOLD, Literal::Bool(true));
+        }
+        let ports = GateIO {
+            inputs: vec![],
+            outputs: vec![PortSpec::new(self.out_sym, self.ty)],
+        };
+        Node::new(
+            id,
+            NodeKind::Gate,
+            self.class,
+            ports,
+            properties,
+            Some(src),
+            Some(note),
+        )
     }
 }
 
+/// What a scalar or `Quat` constant wired into one port needs.
+enum ScalarFeed {
+    /// The port already holds it, or there is nothing to deliver to.
+    Keep,
+    /// A data field with no input port: write the value into the target.
+    WriteData,
+    /// A carrier gate feeds the port.
+    Carry,
+}
+
+/// Decide how the constant `lit`, wired by `w`, reaches its target. The target
+/// may sit in a chip child (a named chip's `MicrochipInput` fed by a parent
+/// constant); emit delivers no literal across modules, so such a pin would read
+/// 0 and gets a parent-side carrier too.
+fn scalar_feed(module: &Module, w: &Wire, lit: &Literal) -> ScalarFeed {
+    let (target, cross_module) = match module.find_deep(w.target.node_id) {
+        Some(t) => (t, !module.nodes.contains_key(&w.target.node_id)),
+        // A dangling wire has nothing to deliver to.
+        None => return ScalarFeed::Keep,
+    };
+    // Inline data works only within a module, so a cross-module target needs
+    // the carrier even when its port could hold the value.
+    let target_ok = !cross_module
+        && crate::emit::port_accepts_inline_variant(target.gate_class, w.target.port, lit);
+    let target_placeholder =
+        target.gate_class == gc::LITERAL || target.gate_class == gc::UNSUPPORTED;
+    if target_ok || target_placeholder {
+        return ScalarFeed::Keep;
+    }
+    let takes_wire = crate::catalog::is_wire_input(target.gate_class, w.target.port.as_str());
+    // A cross-module data-only port can neither take a wire nor be written from
+    // this module's pass, so the wire is left alone.
+    if cross_module && !takes_wire {
+        return ScalarFeed::Keep;
+    }
+    // A data field with no input port (DisplayText.FontSize) takes no wire
+    // (emit fails the brdb port lookup), so the value is written into the
+    // target's data and the wire dropped.
+    if takes_wire {
+        ScalarFeed::Carry
+    } else {
+        ScalarFeed::WriteData
+    }
+}
+
+/// Give a constant `_Literal` a real carrier gate wherever its consumer cannot
+/// take it as inline data: a `Make*` gate for a vector, rotator, color or quat
+/// (entity gates, `Split*` inputs, chip IO), and an identity gate for a scalar,
+/// so a constant is never silently dropped. Recurses into chip sub-modules.
 fn materialize_unfoldable_constants(module: &mut Module) {
-    use crate::ir::{Node, NodeId, NodeKind, PortRef, PortSpec};
     let value_sym = *sym::VALUE;
     let mut make_nodes: Vec<Node> = Vec::new();
     let mut make_for: HashMap<NodeId, NodeId> = HashMap::default();
     let mut rewires: Vec<(usize, NodeId, WirePort)> = Vec::new();
     // (wire index, target node, target port, value) for constants bound to a
-    // port that carries data but takes no wire — written as data, wire dropped.
+    // port that carries data but takes no wire: written as data, wire dropped.
     let mut inlines: Vec<(usize, NodeId, WirePort, Literal)> = Vec::new();
 
     for (i, w) in module.wires.iter().enumerate() {
@@ -1691,242 +1745,43 @@ fn materialize_unfoldable_constants(module: &mut Module) {
         if src.gate_class != gc::LITERAL {
             continue;
         }
-        let recipe = match src.properties.get(&value_sym) {
-            Some(Literal::Vector { x, y, z }) => Some((
-                gc::MAKE_VECTOR,
-                Type::Vector,
-                vec![
-                    (WirePort::X, Literal::Float(*x)),
-                    (WirePort::Y, Literal::Float(*y)),
-                    (WirePort::Z, Literal::Float(*z)),
-                ],
-            )),
-            Some(Literal::Rotator { pitch, yaw, roll }) => Some((
-                gc::MAKE_ROTATION,
-                Type::Rotator,
-                vec![
-                    (WirePort::Pitch, Literal::Float(*pitch)),
-                    (WirePort::Yaw, Literal::Float(*yaw)),
-                    (WirePort::Roll, Literal::Float(*roll)),
-                ],
-            )),
-            Some(Literal::LinearColor { r, g, b, a }) => Some((
-                gc::MAKE_COLOR,
-                Type::Color,
-                vec![
-                    (WirePort::R, Literal::Float(*r)),
-                    (WirePort::G, Literal::Float(*g)),
-                    (WirePort::B, Literal::Float(*b)),
-                    (WirePort::A, Literal::Float(*a)),
-                ],
-            )),
-            _ => None,
-        };
-        let Some((gate_class, out_ty, fields)) = recipe else {
-            // Scalar literal (int/float/bool/string) — or `Quat`, the one
-            // composite variant the `recipe` match above has no arm for
-            // (Vector/Rotator/LinearColor all short-circuit into `recipe`
-            // and never reach this branch at all) — whose target port
-            // cannot hold an inlined data default (e.g. Opaque's rerouter
-            // RER_Input — no matching data field, so emit's inline is
-            // silently dropped and the gate reads 0/empty in-game):
-            // materialize a real pure gate whose UNWIRED inputs carry the
-            // value as data defaults (the same in-game-proven mechanism as
-            // `n + 1` inlining). A Variable gate is NOT usable here: its
-            // Value output stays null until an exec write — InitialValue
-            // data alone does not drive the port.
-            let scalar = matches!(
-                src.properties.get(&value_sym),
-                Some(
-                    Literal::Int(_)
-                        | Literal::Float(_)
-                        | Literal::Bool(_)
-                        | Literal::String(_)
-                        | Literal::Quat { .. }
-                )
-            );
-            if !scalar {
-                continue;
-            }
-            // The target lives either in this module or inside an
-            // already-built chip child (a named chip instance's
-            // `MicrochipInput` pin fed by a parent-side constant — a folded
-            // `P(2 + 2)` argument, or the fold-independent `let k = 4` /
-            // `P(k)` alias). Nothing delivers a literal across modules at
-            // emit: each module's literal-inline scan walks only its OWN
-            // wires, and `partition_anon_chips`' literal-clone arm only
-            // covers nodes being moved into ANON chips — so a parent-literal
-            // -> child-pin wire survives to emit, where its literal source
-            // makes it skipped, and the pin silently reads 0. Materialize
-            // the carrier for cross-module targets too: a real parent-side
-            // gate wired cross-grid into the pin, the same shape the
-            // unfolded program emits for a computed argument.
-            let (target, cross_module) = match module.find_deep(w.target.node_id) {
-                Some(t) => (t, !module.nodes.contains_key(&w.target.node_id)),
-                // Dangling wire — nothing anywhere to deliver to.
-                None => continue,
-            };
-            // Inlining into the target's data only works same-module (see
-            // above), so a cross-module target needs the carrier even when
-            // its port could hold an inline value.
-            let target_ok = !cross_module
-                && src.properties.get(&value_sym).is_some_and(|lit| {
-                    crate::emit::port_accepts_inline_variant(target.gate_class, w.target.port, lit)
-                });
-            let target_placeholder =
-                target.gate_class == gc::LITERAL || target.gate_class == gc::UNSUPPORTED;
-            if target_ok || target_placeholder {
-                continue;
-            }
-            // A cross-module data-only port can neither take a wire nor be
-            // written from this module's pass — leave the wire alone (the
-            // child's own recursive pass owns its same-module literals).
-            if cross_module
-                && !crate::catalog::is_wire_input(target.gate_class, w.target.port.as_str())
-            {
-                continue;
-            }
-            let lit = src.properties.get(&value_sym).unwrap().clone();
-            // A settable-but-unwireable port (a data field with no input port,
-            // e.g. DisplayText.FontSize) cannot take a wire at all: emitting one
-            // fails the brdb port lookup. Materializing a gate here would just
-            // produce a different unwireable wire, so write the value into the
-            // target's data and drop the wire instead.
-            if !crate::catalog::is_wire_input(target.gate_class, w.target.port.as_str()) {
-                inlines.push((i, w.target.node_id, w.target.port, lit));
-                continue;
-            }
-            let no_fold = src.properties.contains_key(&*sym::NO_FOLD);
-            let (const_class, props, out_port_sym, out_port, ty): (
-                &'static str,
-                Vec<(crate::intern::Sym, Literal)>,
-                crate::intern::Sym,
-                WirePort,
-                Type,
-            ) = match &lit {
-                Literal::Int(n) => (
-                    "BrickComponentType_Expr_MathAdd",
-                    vec![
-                        (*sym::INPUT_A, Literal::Int(*n)),
-                        (*sym::INPUT_B, Literal::Int(0)),
-                    ],
-                    *sym::OUTPUT,
-                    WirePort::Output,
-                    Type::Int,
-                ),
-                Literal::Float(f) => (
-                    "BrickComponentType_Expr_MathAdd",
-                    vec![
-                        (*sym::INPUT_A, Literal::Float(*f)),
-                        (*sym::INPUT_B, Literal::Float(0.0)),
-                    ],
-                    *sym::OUTPUT,
-                    WirePort::Output,
-                    Type::Float,
-                ),
-                Literal::Bool(b) => (
-                    "BrickComponentType_Expr_LogicalOR",
-                    vec![
-                        (*sym::B_INPUT_A, Literal::Bool(*b)),
-                        (*sym::B_INPUT_B, Literal::Bool(false)),
-                    ],
-                    *sym::B_OUTPUT,
-                    WirePort::BOutput,
-                    Type::Bool,
-                ),
-                Literal::String(str_v) => (
-                    gc::STRING_CONCATENATE,
-                    vec![
-                        (*sym::INPUT_A, Literal::String(str_v.clone())),
-                        (*sym::INPUT_B, Literal::String(String::new())),
-                        (intern_static("Separator"), Literal::String(String::new())),
-                    ],
-                    *sym::OUTPUT,
-                    WirePort::Output,
-                    Type::String,
-                ),
-                // `Quat` has no compositeMath identity to piggyback on (the
-                // certified `compositeMath` chapter's `MathAdd`/`VecScale`
-                // identities are Vector-only — `fold/eval.rs::composite_math`
-                // never matches a `Value::Quat`), so this reuses the SAME
-                // proven mechanism the `recipe` match above already uses for
-                // Vector/Rotator/Color: a real `MakeQuaternion` gate whose
-                // X/Y/Z/W inputs are baked, UNWIRED data defaults (no wires
-                // at all) — the general "unwired input reads its own data
-                // default" law every carrier in this function relies on.
-                Literal::Quat { x, y, z, w } => (
-                    gc::MAKE_QUATERNION,
-                    vec![
-                        (intern_static("X"), Literal::Float(*x)),
-                        (intern_static("Y"), Literal::Float(*y)),
-                        (intern_static("Z"), Literal::Float(*z)),
-                        (intern_static("W"), Literal::Float(*w)),
-                    ],
-                    *sym::OUTPUT,
-                    WirePort::Output,
-                    Type::Quat,
-                ),
-                _ => unreachable!("scalar match above"),
-            };
-            let const_id = *make_for.entry(w.source.node_id).or_insert_with(|| {
-                let id = NodeId::fresh();
-                let mut properties: HashMap<crate::intern::Sym, Literal> = HashMap::default();
-                for (k, v) in props {
-                    properties.insert(k, v);
-                }
-                if no_fold {
-                    properties.insert(*sym::NO_FOLD, Literal::Bool(true));
-                }
-                let ports = GateIO {
-                    inputs: vec![],
-                    outputs: vec![PortSpec::new(out_port_sym, ty.clone())],
-                };
-                let note = Some("materialized constant (dataless target)");
-                make_nodes.push(Node::new(
-                    id,
-                    NodeKind::Gate,
-                    const_class,
-                    ports,
-                    properties,
-                    Some(src),
-                    note,
-                ));
-                id
-            });
-            rewires.push((i, const_id, out_port));
+        let Some(lit) = src
+            .properties
+            .get(&value_sym)
+            .filter(|l| Carrier::exists_for(l))
+        else {
             continue;
         };
-        let target_ok = match (
-            src.properties.get(&value_sym),
-            module.nodes.get(&w.target.node_id),
-        ) {
-            (Some(lit), Some(t)) => {
+        let (note, no_fold) = if Carrier::is_composite(lit) {
+            let target_ok = module.nodes.get(&w.target.node_id).is_some_and(|t| {
                 crate::emit::port_accepts_inline_variant(t.gate_class, w.target.port, lit)
+            });
+            if target_ok {
+                continue;
             }
-            _ => false,
+            ("materialized constant", false)
+        } else {
+            match scalar_feed(module, w, lit) {
+                ScalarFeed::Keep => continue,
+                ScalarFeed::WriteData => {
+                    inlines.push((i, w.target.node_id, w.target.port, lit.clone()));
+                    continue;
+                }
+                ScalarFeed::Carry => {}
+            }
+            (
+                "materialized constant (dataless target)",
+                src.properties.contains_key(&*sym::NO_FOLD),
+            )
         };
-        if target_ok {
-            continue;
-        }
+        let carrier = Carrier::of(lit).expect("a literal with a carrier");
+        let out_port = carrier.out_port;
         let make_id = *make_for.entry(w.source.node_id).or_insert_with(|| {
             let id = NodeId::fresh();
-            let properties: HashMap<crate::intern::Sym, Literal> = fields
-                .iter()
-                .map(|(port, lit)| (port.sym(), lit.clone()))
-                .collect();
-            let ports = GateIO::source(out_ty.clone());
-            make_nodes.push(Node::new(
-                id,
-                NodeKind::Gate,
-                gate_class,
-                ports,
-                properties,
-                Some(src),
-                Some("materialized constant"),
-            ));
+            make_nodes.push(carrier.node(id, src, no_fold, note));
             id
         });
-        rewires.push((i, make_id, WirePort::Output));
+        rewires.push((i, make_id, out_port));
     }
 
     for n in make_nodes {
@@ -1947,10 +1802,7 @@ fn materialize_unfoldable_constants(module: &mut Module) {
         }
         drop_wires.push(i);
     }
-    // Drop the carried wires in one pass. `retain` visits each wire once (O(W));
-    // removing them individually with `Vec::remove` shifted the tail per drop
-    // (O(D*W)) and dominated literal-dense programs.
-    let drop: crate::collections::HashSet<usize> = drop_wires.into_iter().collect();
+    let drop: HashSet<usize> = drop_wires.into_iter().collect();
     let mut wire_idx = 0usize;
     module.wires.retain(|_| {
         let keep = !drop.contains(&wire_idx);
@@ -1962,30 +1814,27 @@ fn materialize_unfoldable_constants(module: &mut Module) {
     }
 }
 
-/// Fold standalone `_Literal` bricks whose value is only used once into a
-/// property on the consumer gate, then delete the literal. Avoids having
-/// rows of constant-value bricks cluttering the chip for things like
-/// `n + 1`, `n > 10`, etc. Recurses into chip sub-modules.
+/// Fold a standalone `_Literal` whose value is used once (`n + 1`, `n > 10`)
+/// into a property on the consumer gate and delete the literal. Recurses into
+/// chip sub-modules.
 fn inline_orphan_literals(root: &mut Module) {
     let external = ExternalWires::of(root);
-    inline_orphan_literals_in(root, &external);
+    root.walk_mut(&mut |_, m| inline_orphan_literals_in(m, &external));
 }
 
 fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
     let value_sym = *sym::VALUE;
-    // Per-source (count, first target): the single-consumer check only ever
-    // needs the one target wire, so no per-node target Vecs. Buffers are
-    // reused across fixpoint iterations.
+    // Per-source (count, first target): the single-consumer check needs only
+    // the one target. Buffers are reused across fixpoint iterations.
     let mut outgoing: HashMap<NodeId, (usize, PortRef)> =
-        HashMap::with_capacity_and_hasher(module.nodes.len(), Default::default());
+        HashMap::with_capacity_and_hasher(module.nodes.len(), rustc_hash::FxBuildHasher);
     let mut incoming_count: HashMap<NodeId, usize> =
-        HashMap::with_capacity_and_hasher(module.nodes.len(), Default::default());
+        HashMap::with_capacity_and_hasher(module.nodes.len(), rustc_hash::FxBuildHasher);
     let mut lit_ids: Vec<NodeId> = Vec::new();
     let mut concat_ids: Vec<NodeId> = Vec::new();
     let mut removed: HashSet<NodeId> = HashSet::default();
-    // Built once, then maintained incrementally: a fold only ever removes the
-    // folded node and its single outgoing wire, so surviving nodes' entries
-    // never change except the target's incoming count.
+    // Built once, then maintained incrementally: a fold removes only the folded
+    // node and its one outgoing wire, so only the target's incoming count changes.
     for w in &module.wires {
         let e = outgoing.entry(w.source.node_id).or_insert((0, w.target));
         e.0 += 1;
@@ -1999,7 +1848,7 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
             module
                 .nodes
                 .iter()
-                .filter(|(id, n)| n.gate_class == gc::LITERAL && !external.touches(id))
+                .filter(|(id, n)| n.gate_class == gc::LITERAL && !external.touches(**id))
                 .map(|(id, _)| *id),
         );
         let mut changed = false;
@@ -2014,21 +1863,14 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
                 continue;
             }
             let (target_id, target_port) = (target.node_id, target.port);
-            // Cross-module wire (e.g. a chip's `MicrochipInput` fed by a
-            // parent-side literal): `module.nodes` only holds THIS module's
-            // own nodes, so a same-module presence check is required here —
-            // mirrors the guard in `materialize_unfoldable_constants` (~line
-            // 294). Without it, `module.nodes.get_mut(&target_id)` below
-            // silently no-ops (target lives in a different module) while the
-            // literal AND its cross-module wire still get deleted, leaving
-            // the boundary port to read its zero/empty default at runtime
-            // with no diagnostic. Leave the literal + wire alone instead.
+            // A cross-module target (a chip's `MicrochipInput` fed by a parent
+            // literal) cannot take the property from here; deleting the literal
+            // would leave the pin reading its default, so leave it wired.
             if !module.nodes.contains_key(&target_id) {
                 continue;
             }
-            // Rerouter (`Opaque`) has no data struct — folding the literal
-            // into a node property would silently drop it at emit time
-            // instead of blocking the fold as intended. Keep it wired.
+            // A rerouter has no data struct, so emit would silently drop a
+            // property; keep it wired.
             if module
                 .nodes
                 .get(&target_id)
@@ -2036,15 +1878,13 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
             {
                 continue;
             }
-            let value = match module
+            let Some(value) = module
                 .nodes
                 .get(&lit_id)
                 .and_then(|n| n.properties.get(&value_sym).cloned())
-            {
-                Some(v) => v,
-                None => continue,
+            else {
+                continue;
             };
-            // Convert PortIndex -> Sym for use as a property key
             let target_port_sym = target_port.sym();
             if let Some(target) = module.nodes.get_mut(&target_id) {
                 std::sync::Arc::make_mut(&mut target.properties)
@@ -2060,12 +1900,9 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
             changed = true;
         }
 
-        // Fold pure constant-string `String_Concatenate` wrappers into
-        // consumers that accept an inline string variant. Unlike
-        // `_Literal`, this is gated on `port_accepts_inline_variant` — a string
-        // can't fill a wire-only port, so those keep the real concat gate.
-        // A native `str` field is handled pre-fold by
-        // `inline_bare_scalar_literals`, which keeps that case fold-invariant.
+        // Fold constant-string `String_Concatenate` wrappers into consumers
+        // that accept an inline string variant (`port_accepts_inline_variant`);
+        // a wire-only port keeps the concat gate.
         concat_ids.clear();
         concat_ids.extend(
             module
@@ -2074,7 +1911,7 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
                 .filter(|(id, n)| {
                     n.gate_class == gc::STRING_CONCATENATE
                         && !removed.contains(id)
-                        && !external.touches(id)
+                        && !external.touches(**id)
                 })
                 .map(|(id, _)| *id),
         );
@@ -2086,8 +1923,8 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
                 continue;
             };
             let (target_id, target_port) = (target.node_id, target.port);
-            // Only a single constant string (INPUT_A set, INPUT_B + Separator
-            // empty) — real 2-input concats have wired inputs (incoming != 0).
+            // Only a single constant string: INPUT_A set, INPUT_B and Separator
+            // empty.
             let text = {
                 let Some(node) = module.nodes.get(&cid) else {
                     continue;
@@ -2101,7 +1938,7 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
                     Some(Literal::String(s)) => s.is_empty(),
                     _ => false,
                 };
-                if !is_empty(*sym::INPUT_B) || !is_empty(intern("Separator")) {
+                if !is_empty(*sym::INPUT_B) || !is_empty(*sym::SEPARATOR) {
                     continue;
                 }
                 text
@@ -2132,49 +1969,34 @@ fn inline_orphan_literals_in(module: &mut Module, external: &ExternalWires) {
             break;
         }
     }
-    // Removed nodes had no incoming wires, so only source-side wires can
-    // reference them — one sweep at the end covers every iteration's folds.
+    // Removed nodes had no incoming wires, so one sweep of source-side wires
+    // covers every iteration's folds.
     if !removed.is_empty() {
         module
             .wires
             .retain(|w| !removed.contains(&w.source.node_id));
     }
-    for child_module in module.chips.values_mut() {
-        inline_orphan_literals_in(child_module, external);
-    }
 }
 
-/// Merge structurally-identical constant gates within each chip so a repeated
-/// constant is emitted once and fans out to its consumers, instead of once per
-/// use (e.g. a `"PREFIX: " .. name` chip that repeats `"PREFIX: "` — a constant
-/// `String_Concatenate` wrapper — on every line, or a multi-consumer `_Literal`
-/// that inlining left behind).
-///
-/// A "constant" here is a pure gate (`_Literal` or `Expr_*`) with NO incoming
-/// data wire: its output is then fully determined by its config properties, so
-/// any two with the same gate class + properties are interchangeable. `Random`
-/// is exec-classed (never `Expr_*`), and the stateful edge/change detectors
-/// always have a wired input, so neither is ever a candidate.
-///
-/// Dedup is per-module: a constant lives in the chip that uses it, so merging
-/// within each module avoids rewiring across microchip boundaries. Node ids are
-/// globally unique, so redirecting a dropped dup's consumers is a tree-wide wire
-/// rewrite. Recurses into chip sub-modules.
+/// Merge identical constant gates within each chip so a repeated constant is
+/// emitted once and fans out. A constant is a pure gate (`_Literal` or `Expr_*`)
+/// with no incoming data wire, so class and properties determine its output.
+/// Per module, so no wire is rewired across a microchip boundary.
 fn dedup_constant_gates(root: &mut Module) {
     // Canonical key for a constant gate: class + its properties (sorted, so the
     // key is order-independent). `Debug` on `Literal` is deterministic per value.
-    fn const_key(n: &crate::ir::Node) -> String {
+    fn const_key(n: &Node) -> String {
         let mut kv: Vec<(&str, String)> = n
             .properties
             .iter()
-            .map(|(k, v)| (crate::intern::resolve(*k), format!("{v:?}")))
+            .map(|(k, v)| (resolve(*k), format!("{v:?}")))
             .collect();
         kv.sort_unstable();
         format!("{}\u{1}{kv:?}", n.gate_class)
     }
 
-    // dup node id -> keeper node id (same class ⇒ same output ports, so each
-    // consumer keeps its own `source.port` and only the node id changes).
+    // dup node id -> keeper node id. Same class means same output ports, so
+    // each consumer keeps its `source.port` and only the node id changes.
     let mut redirect: HashMap<NodeId, NodeId> = HashMap::default();
 
     fn collect(
@@ -2188,19 +2010,12 @@ fn dedup_constant_gates(root: &mut Module) {
             .filter(|w| w.target.port != WirePort::Layout)
             .map(|w| w.target.node_id)
             .collect();
-        // Key by (owning anon-chip, const_key): this pass runs BEFORE
-        // `partition_anon_chips` splits each `chip_id`-tagged group into its own
-        // emit module, so merging across `chip_id` tags would redirect a
-        // consumer's wire to a keeper that lands in a DIFFERENT chip. Partition
-        // keeps such a cross-chip data wire in the parent without cloning the
-        // literal into the child (only parent->chip literals are cloned), so
-        // emit can't inline it and the operand silently reads its port default
-        // (0). Deduping within a chip_id group keeps every keeper in the same
-        // future module as its consumers.
+        // Key by (owning anon-chip, const_key): this runs before
+        // `partition_anon_chips`, and a keeper in a different chip than its
+        // consumer would leave the operand reading its port default (0).
         let mut groups: HashMap<(Option<NodeId>, String), Vec<NodeId>> = HashMap::default();
         for (id, n) in &module.nodes {
-            let is_pure =
-                n.gate_class == gc::LITERAL || n.gate_class.starts_with("BrickComponentType_Expr_");
+            let is_pure = n.gate_class == gc::LITERAL || gc::is_pure_expr(n.gate_class);
             let fed = has_incoming.contains(id) || external.targets.contains(id);
             if n.kind == NodeKind::Gate && is_pure && !fed {
                 groups
@@ -2220,28 +2035,20 @@ fn dedup_constant_gates(root: &mut Module) {
                 module.nodes.remove(dup);
             }
         }
-        for child in module.chips.values_mut() {
-            collect(child, external, redirect);
-        }
     }
 
     let external = ExternalWires::of(root);
-    collect(root, &external, &mut redirect);
+    root.walk_mut(&mut |_, m| collect(m, &external, &mut redirect));
     if redirect.is_empty() {
         return;
     }
-    apply_gate_redirect(root, &redirect);
+    root.walk_mut(&mut |_, m| apply_gate_redirect(m, &redirect));
 }
 
-/// Rewrite the module tree after a set of gates has been merged: every wire
-/// sourced from a dropped dup now sources from its keeper, wires targeting a
-/// dropped dup (its own now-dead incoming feeds, or a Layout edge) are removed,
-/// collapsed source->target duplicates are deduped, and `scope_captures`
-/// referencing a dup become its keeper. Node ids are globally unique, so one
-/// `redirect` map applies across the whole tree. Shared by
-/// `dedup_constant_gates` (zero-incoming constants) and `cse_pure_gates`
-/// (expression gates with wired inputs) — for the latter a dropped dup's
-/// incoming feeds are genuinely dead (its keeper carries the identical feeds).
+/// Rewrite one module after merging gates: wires from a dropped dup source
+/// from its keeper, wires into a dup are removed (the keeper has identical feeds),
+/// duplicate wires collapse, and captures and style refs follow the keeper.
+/// Node ids are globally unique, so one `redirect` map serves the whole tree.
 fn apply_gate_redirect(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) {
     module.wires.retain_mut(|w| {
         if let Some(&keeper) = redirect.get(&w.source.node_id) {
@@ -2253,8 +2060,8 @@ fn apply_gate_redirect(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) 
     let mut seen: HashSet<(PortRef, PortRef)> = HashSet::default();
     module.wires.retain(|w| seen.insert((w.source, w.target)));
     // A runtime `@label` / `@color` / `@material` source is a port reference,
-    // not a wire, so it follows its dup to the keeper here or emit finds it
-    // pointing at a node that no longer exists.
+    // not a wire, so it must follow its dup to the keeper or emit finds a
+    // deleted node.
     let follow = |p: &mut PortRef| {
         if let Some(&keeper) = redirect.get(&p.node_id) {
             p.node_id = keeper;
@@ -2285,62 +2092,39 @@ fn apply_gate_redirect(module: &mut Module, redirect: &HashMap<NodeId, NodeId>) 
             .filter(|id| seen_caps.insert(*id))
             .collect();
     }
-    for child in module.chips.values_mut() {
-        apply_gate_redirect(child, redirect);
-    }
 }
 
-/// Common-subexpression elimination for pure expression gates: within each chip,
-/// merge `Expr_*` gates that compute the same value — same gate class, same
-/// config properties, and the same set of incoming `(input port ← source
-/// node/port)` wires — so a repeated pure subexpression (`x + 1` used in three
-/// outputs) or a duplicated inline-`mod` body is emitted once and fans out to
-/// its consumers instead of once per use.
+/// Common-subexpression elimination: within each chip, merge `Expr_*` gates
+/// with the same class, properties, output types and incoming wires, so a
+/// repeated pure subexpression is emitted once and fans out.
 ///
-/// Runs as a single dependency-ordered pass: a pure gate's key is a function of
-/// its inputs' CANONICAL sources, so visiting inputs before consumers (a
-/// topological order over the eligible-gate subgraph) lets one pass find every
-/// merge the old whole-tree-rescan fixpoint found, in O(nodes + wires) instead of
-/// O(nodes x expression-depth). Keyed on `chip_id` (like `dedup_constant_gates`)
-/// so a keeper never lands in a different partition module than a consumer.
-///
-/// Excludes anything whose output isn't a pure function of its current inputs:
-/// non-`Expr_*` classes (the rerouter, exec/IO gates), the stateful
-/// change/edge detectors (output depends on eval history), and `_nofold` gates
-/// (a deliberate optimization barrier). Merging only ever redirects wire
-/// SOURCES onto a shared keeper — it never creates fan-in — so it's always
-/// legal for a pure gate.
+/// One pass in topological order, since a gate's key uses its inputs' canonical
+/// sources. Keyed on `chip_id`, like `dedup_constant_gates`. Excludes the
+/// stateful change/edge detectors and `_nofold` gates. Merging only redirects
+/// wire sources, so it never creates fan-in.
 fn cse_pure_gates(root: &mut Module) {
-    fn eligible(n: &crate::ir::Node) -> bool {
+    fn eligible(n: &Node) -> bool {
         n.kind == NodeKind::Gate
-            && n.gate_class.starts_with("BrickComponentType_Expr_")
+            && gc::is_pure_expr(n.gate_class)
             && !n.gate_class.contains("ChangeDetector")
             && !n.gate_class.contains("EdgeDetector")
             && !n.properties.contains_key(&*sym::NO_FOLD)
     }
 
-    // A pure gate's behaviour is fully determined by (class, properties, the set
-    // of wires feeding its input ports, and the types of its outputs). The output
-    // types matter where they are the setting: a Convert gate's target type is
-    // its `Output` port's type, so `x as int` and `x as string` share class,
-    // properties and input and must still stay two gates. Build a stable,
-    // order-independent key: structured rather than formatted, so only property
-    // VALUES (which may hold f64s with no Eq/Hash) and the output types go
-    // through a canonicalizing Debug render.
+    // Output types are part of the key because a Convert gate's target type is
+    // its `Output` port's type (`x as int` vs `x as string`). Property values
+    // (f64s have no Eq/Hash) and output types go through a Debug render.
     type CseKey = (
         &'static str,
         Vec<(&'static str, String)>,
         Vec<(WirePort, NodeId, WirePort)>,
         Vec<String>,
     );
-    fn cse_key(
-        n: &crate::ir::Node,
-        incoming: Option<&Vec<(WirePort, NodeId, WirePort)>>,
-    ) -> CseKey {
+    fn cse_key(n: &Node, incoming: Option<&Vec<(WirePort, NodeId, WirePort)>>) -> CseKey {
         let mut props: Vec<(&'static str, String)> = n
             .properties
             .iter()
-            .map(|(k, v)| (crate::intern::resolve(*k), format!("{v:?}")))
+            .map(|(k, v)| (resolve(*k), format!("{v:?}")))
             .collect();
         props.sort_unstable();
         let mut ins: Vec<(WirePort, NodeId, WirePort)> = incoming.cloned().unwrap_or_default();
@@ -2349,7 +2133,7 @@ fn cse_pure_gates(root: &mut Module) {
             .ports
             .outputs
             .iter()
-            .map(|p| format!("{}:{:?}", crate::intern::resolve(p.name), p.ty))
+            .map(|p| format!("{}:{:?}", resolve(p.name), p.ty))
             .collect();
         (n.gate_class, props, ins, outs)
     }
@@ -2359,7 +2143,7 @@ fn cse_pure_gates(root: &mut Module) {
         external: &ExternalWires,
         redirect: &mut HashMap<NodeId, NodeId>,
     ) {
-        // Per-node incoming data wires (skip Layout edges — they're not inputs).
+        // Per-node incoming data wires; Layout edges are not inputs.
         let mut incoming: HashMap<NodeId, Vec<(WirePort, NodeId, WirePort)>> = HashMap::default();
         for w in &module.wires {
             if w.target.port == WirePort::Layout {
@@ -2402,11 +2186,9 @@ fn cse_pure_gates(root: &mut Module) {
             .collect();
         queue.sort_unstable(); // deterministic keeper selection
 
-        // One pass in dependency order. A node's key is built from its incoming
-        // sources canonicalized through the merges already committed; topo order
-        // guarantees those are final, so a single visit suffices. Gates trapped
-        // in a combinational cycle (later rejected by `analyze`) never reach
-        // in-degree zero and are simply left unmerged.
+        // A node's key uses its sources canonicalized through committed merges,
+        // final in topo order. Gates in a combinational cycle never reach
+        // in-degree zero and stay unmerged.
         let mut seen: HashMap<(Option<NodeId>, CseKey), NodeId> = HashMap::default();
         let mut qi = 0;
         while qi < queue.len() {
@@ -2455,88 +2237,37 @@ fn cse_pure_gates(root: &mut Module) {
     let external = ExternalWires::of(root);
     cse_module(root, &external, &mut redirect);
     if !redirect.is_empty() {
-        apply_gate_redirect(root, &redirect);
+        root.walk_mut(&mut |_, m| apply_gate_redirect(m, &redirect));
     }
 }
 
-/// Remove pure, side-effect-free expression gates that are fully disconnected —
-/// no data wire touches them on either side.
+/// Remove pure gates no data wire touches on either side (a `let` duplicated by
+/// a namespace plus a named import of one module). Only fully wireless gates go:
+/// an unused `let y = x * 2` still has input wires and is kept.
 ///
-/// Such orphans arise when a module is imported via BOTH a namespace
-/// (`import * as x`) and a named import: the named path materializes a top-level
-/// `let` wired to its consumers, while the namespace path materializes the SAME
-/// `let` again (every importable decl is carried in the namespace), and that copy
-/// is referenced by nothing — so a constant ships as a gate wired to nothing.
-/// `inline_orphan_literals` only folds literals with exactly one consumer, so a
-/// zero-connection orphan slips through. Dropping these changes no behavior.
-///
-/// The criterion is deliberately "no data wires at all", NOT "output feeds
-/// nothing": a user's connected-but-unused computation (`let y = x * 2` with `y`
-/// unused) still has input wires, and this project's cleanups prune only
-/// compiler-generated cruft, never user computations. A duplicated top-level
-/// constant has neither inputs (it's a literal) nor outputs, so it is caught
-/// while `let y = x * 2` is left intact.
-///
-/// Connectivity is computed across the WHOLE module tree at once: a gate in one
-/// module can be wired to a node in another via a cross-scope wire, so the
-/// per-module recursion the neighbouring cleanups use would wrongly drop a gate
-/// wired only to a sibling/child module.
-///
-/// `literals_only` restricts pruning to `_Literal` gates — used for the pass run
-/// AFTER literal-inlining, where an `Expr_*` gate can be wireless simply because
-/// its operands were folded into properties (a real, if unused, computation),
-/// whereas a wireless literal is always a dead constant.
+/// Connectivity spans the whole module tree, as wires cross modules.
+/// `literals_only` limits pruning to `_Literal` gates, for the run after literal
+/// inlining, when an `Expr_*` gate can be wireless with its operands inlined.
 fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
     let is_pure = |gate_class: &str| -> bool {
-        gate_class == gc::LITERAL
-            || (!literals_only && gate_class.starts_with("BrickComponentType_Expr_"))
+        gate_class == gc::LITERAL || (!literals_only && gc::is_pure_expr(gate_class))
     };
-    // Node ids touched by a real (non-Layout) data wire, as source OR target.
-    fn collect_connected(module: &Module, connected: &mut HashSet<NodeId>) {
-        for w in &module.wires {
-            if w.source.port != WirePort::Layout {
-                connected.insert(w.source.node_id);
-            }
-            if w.target.port != WirePort::Layout {
-                connected.insert(w.target.node_id);
-            }
-        }
-        for child in module.chips.values() {
-            collect_connected(child, connected);
-        }
-    }
-    fn collect_orphans(
-        module: &Module,
-        connected: &HashSet<NodeId>,
-        is_pure: &impl Fn(&str) -> bool,
-        dead: &mut HashSet<NodeId>,
-    ) {
-        for (id, n) in &module.nodes {
-            if n.kind == NodeKind::Gate && is_pure(n.gate_class) && !connected.contains(id) {
-                dead.insert(*id);
-            }
-        }
-        for child in module.chips.values() {
-            collect_orphans(child, connected, is_pure, dead);
-        }
-    }
-    fn remove_dead(module: &mut Module, dead: &HashSet<NodeId>) {
-        module.nodes.retain(|id, _| !dead.contains(id));
-        // Only Layout wires can touch a dead node (it has no data wires); drop them too.
-        module
-            .wires
-            .retain(|w| !dead.contains(&w.source.node_id) && !dead.contains(&w.target.node_id));
-        module.scope_captures.retain(|id| !dead.contains(id));
-        for child in module.chips.values_mut() {
-            remove_dead(child, dead);
-        }
-    }
+    // Node ids touched by a non-Layout wire, as source or target.
     let mut connected = HashSet::default();
-    collect_connected(module, &mut connected);
-    let mut dead = HashSet::default();
-    collect_orphans(module, &connected, &is_pure, &mut dead);
+    for w in module.wires_deep() {
+        if w.source.port != WirePort::Layout {
+            connected.insert(w.source.node_id);
+        }
+        if w.target.port != WirePort::Layout {
+            connected.insert(w.target.node_id);
+        }
+    }
+    let dead = module.node_ids_where(|n| {
+        n.kind == NodeKind::Gate && is_pure(n.gate_class) && !connected.contains(&n.id)
+    });
+    // Only Layout wires can touch a dead node (it has no data wires); they go too.
     if !dead.is_empty() {
-        remove_dead(module, &dead);
+        module.remove_nodes_tree(&dead);
     }
 }
 
@@ -2545,44 +2276,15 @@ fn prune_dead_pure_gates(module: &mut Module, literals_only: bool) {
 /// reads `Value`, never `IsEmpty`). Connectivity spans the whole module tree,
 /// as in [`prune_dead_pure_gates`].
 fn prune_unread_gate_read_choices(module: &mut Module) {
-    fn read(module: &Module, out: &mut HashSet<NodeId>) {
-        out.extend(
-            module
-                .wires
-                .iter()
-                .filter(|w| w.source.port != WirePort::Layout)
-                .map(|w| w.source.node_id),
-        );
-        for child in module.chips.values() {
-            read(child, out);
-        }
-    }
-    fn unread(module: &Module, read: &HashSet<NodeId>, out: &mut HashSet<NodeId>) {
-        for (id, n) in &module.nodes {
-            if n.note == Some(stmt::GATE_READ_CHOICE) && !read.contains(id) {
-                out.insert(*id);
-            }
-        }
-        for child in module.chips.values() {
-            unread(child, read, out);
-        }
-    }
-    fn remove(module: &mut Module, dead: &HashSet<NodeId>) {
-        module.nodes.retain(|id, _| !dead.contains(id));
-        module
-            .wires
-            .retain(|w| !dead.contains(&w.source.node_id) && !dead.contains(&w.target.node_id));
-        module.scope_captures.retain(|id| !dead.contains(id));
-        for child in module.chips.values_mut() {
-            remove(child, dead);
-        }
-    }
-    let mut was_read = HashSet::default();
-    read(module, &mut was_read);
-    let mut dead = HashSet::default();
-    unread(module, &was_read, &mut dead);
+    let was_read: HashSet<NodeId> = module
+        .wires_deep()
+        .filter(|w| w.source.port != WirePort::Layout)
+        .map(|w| w.source.node_id)
+        .collect();
+    let dead = module
+        .node_ids_where(|n| n.note == Some(stmt::GATE_READ_CHOICE) && !was_read.contains(&n.id));
     if !dead.is_empty() {
-        remove(module, &dead);
+        module.remove_nodes_tree(&dead);
     }
 }
 
@@ -2591,37 +2293,27 @@ fn prune_unread_gate_read_choices(module: &mut Module) {
 ///
 /// - **No outgoing wires** (sink): remove the union and its incoming wires.
 /// - **No incoming wires** (dead source, e.g. an if-join whose branches both
-///   terminated via `return`/final `emit`): remove it and its outgoing wires —
-///   whatever it fed keeps its other sources only.
+///   `return`): remove it and its outgoing wires.
 /// - **Exactly one incoming wire** (pass-through): splice it out, rewiring its
-///   consumers straight to the single source.
+///   consumers to the single source.
 ///
-/// Degrees are counted from ONE module's wire list, but a wire may legitimately
-/// name a node in another module of the tree before `boundary_pins` routes it
-/// through pins — a top-level `let sig: exec` consumed inside a `chip` is the
-/// common case. Such a union looks like a dead sink here (its only consumer is
-/// invisible), and both removing and splicing it would leave that other
-/// module's wire naming a node this deletes, which emit rejects as
-/// `EmitError::DroppedWire`. So a union referenced from outside its own module
-/// is left alone; at worst a degenerate Union gate survives, which is what the
-/// unfolded lowering would have emitted anyway.
+/// Degrees come from one module's wire list, so a union with a wire in another
+/// module (a top-level `let sig: exec` read inside a `chip`) is left alone;
+/// deleting it would strand that wire (`EmitError::DroppedWire`).
 pub(super) fn prune_dead_exec_unions(module: &mut Module) {
     let external = ExternalWires::of(module);
-    prune_dead_exec_unions_in(module, &external);
+    module.walk_mut(&mut |_, m| prune_dead_exec_unions_in(m, &external));
 }
 
 fn prune_dead_exec_unions_in(module: &mut Module, external: &ExternalWires) {
     /// Chase a source through spliced unions to the node actually carrying
     /// its wires now. Returns `None` for a pure splice cycle (unions feeding
-    /// only each other — dead code whose wires all drop).
-    fn resolve_src(
-        spliced: &HashMap<NodeId, crate::ir::PortRef>,
-        start: &crate::ir::PortRef,
-    ) -> Option<crate::ir::PortRef> {
-        let mut cur = start.clone();
+    /// only each other, whose wires all drop).
+    fn resolve_src(spliced: &HashMap<NodeId, PortRef>, start: PortRef) -> Option<PortRef> {
+        let mut cur = start;
         let mut hops = 0usize;
         while let Some(next) = spliced.get(&cur.node_id) {
-            cur = next.clone();
+            cur = *next;
             hops += 1;
             if hops > spliced.len() {
                 return None;
@@ -2630,33 +2322,26 @@ fn prune_dead_exec_unions_in(module: &mut Module, external: &ExternalWires) {
         Some(cur)
     }
 
-    // Degrees + adjacency computed once and maintained incrementally via a
-    // worklist, avoiding an O(unions × wires) rebuild over every wire on
-    // union-heavy modules.
+    // Degrees and adjacency are computed once and maintained through a worklist.
     let queue: Vec<NodeId> = module
         .nodes
         .iter()
         .filter(|(_, n)| n.gate_class == gc::UNION)
         .map(|(id, _)| *id)
-        // Referenced from another module — its real degree is not visible in
-        // this wire list, so neither removal nor splicing is sound here.
-        .filter(|id| !external.touches(id))
+        // Referenced from another module: its real degree is not visible here.
+        .filter(|id| !external.touches(*id))
         .collect();
     if queue.is_empty() {
-        for child_module in module.chips.values_mut() {
-            prune_dead_exec_unions_in(child_module, external);
-        }
         return;
     }
     let is_union: HashSet<NodeId> = queue.iter().copied().collect();
     let mut queue = queue;
 
-    // Counts and adjacency are only ever READ for union nodes (the queue is
-    // union-only and every requeue is guarded by `is_union`), so only track
-    // union entries — decrements on other nodes fall through `get_mut`.
+    // Counts and adjacency are only read for unions, so only union entries are
+    // tracked; decrements on other nodes fall through `get_mut`.
     let mut in_count: HashMap<NodeId, usize> = HashMap::default();
     let mut out_count: HashMap<NodeId, usize> = HashMap::default();
-    let mut in_edges: HashMap<NodeId, Vec<crate::ir::PortRef>> = HashMap::default();
+    let mut in_edges: HashMap<NodeId, Vec<PortRef>> = HashMap::default();
     let mut out_edges: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
     for w in &module.wires {
         if is_union.contains(&w.source.node_id) {
@@ -2668,15 +2353,12 @@ fn prune_dead_exec_unions_in(module: &mut Module, external: &ExternalWires) {
         }
         if is_union.contains(&w.target.node_id) {
             *in_count.entry(w.target.node_id).or_default() += 1;
-            in_edges
-                .entry(w.target.node_id)
-                .or_default()
-                .push(w.source.clone());
+            in_edges.entry(w.target.node_id).or_default().push(w.source);
         }
     }
 
     let mut removed: HashSet<NodeId> = HashSet::default();
-    let mut spliced: HashMap<NodeId, crate::ir::PortRef> = HashMap::default();
+    let mut spliced: HashMap<NodeId, PortRef> = HashMap::default();
 
     while let Some(id) = queue.pop() {
         if removed.contains(&id) || spliced.contains_key(&id) {
@@ -2689,7 +2371,7 @@ fn prune_dead_exec_unions_in(module: &mut Module, external: &ExternalWires) {
             // so decrement each live neighbor and requeue affected unions.
             removed.insert(id);
             for s in in_edges.get(&id).into_iter().flatten() {
-                let Some(src) = resolve_src(&spliced, s) else {
+                let Some(src) = resolve_src(&spliced, *s) else {
                     continue;
                 };
                 if removed.contains(&src.node_id) {
@@ -2721,13 +2403,13 @@ fn prune_dead_exec_unions_in(module: &mut Module, external: &ExternalWires) {
                 .get(&id)
                 .into_iter()
                 .flatten()
-                .filter_map(|s| resolve_src(&spliced, s))
+                .filter_map(|s| resolve_src(&spliced, *s))
                 .find(|s| !removed.contains(&s.node_id))
                 .expect("counted one incoming wire");
-            spliced.insert(id, raw.clone());
+            spliced.insert(id, raw);
             let transferred = out_edges.remove(&id).unwrap_or_default();
-            // Only LIVE transferred edges count toward the carrier's degree —
-            // edges to removed/spliced targets were already discounted.
+            // Only live transferred edges count toward the carrier's degree;
+            // edges to removed or spliced targets were already discounted.
             let live = transferred
                 .iter()
                 .filter(|t| !removed.contains(t) && !spliced.contains_key(t))
@@ -2761,7 +2443,7 @@ fn prune_dead_exec_unions_in(module: &mut Module, external: &ExternalWires) {
                 return false;
             }
             if spliced.contains_key(&w.source.node_id) {
-                let Some(src) = resolve_src(&spliced, &w.source) else {
+                let Some(src) = resolve_src(&spliced, w.source) else {
                     return false;
                 };
                 if removed.contains(&src.node_id) {
@@ -2772,25 +2454,17 @@ fn prune_dead_exec_unions_in(module: &mut Module, external: &ExternalWires) {
             true
         });
     }
-
-    for child_module in module.chips.values_mut() {
-        prune_dead_exec_unions_in(child_module, external);
-    }
 }
 
-/// Compile a standalone chip declaration into an isolated [`Module`] suitable
-/// for wrapping in a [`CompiledTemplate`].  This replicates the child-context
-/// creation logic from `lower_chip_call_instance` without any parent-side
-/// wiring.
-pub fn compile_chip_template(
+/// Compile a standalone chip declaration into an isolated [`Module`] for a
+/// [`CompiledTemplate`]: the child context `lower_chip_call_instance` builds,
+/// without any parent-side wiring.
+pub(crate) fn compile_chip_template(
     chip_decl: &ChipDecl,
     tc: &TypeCheckResult,
     file: &str,
     cache: &Arc<TemplateCache>,
 ) -> Module {
-    use crate::ast::*;
-    use crate::ir::build::ModuleBuilder;
-
     let template_name = &chip_decl.name;
 
     let mut builder = ModuleBuilder::new(template_name);
@@ -2805,30 +2479,24 @@ pub fn compile_chip_template(
         },
     );
 
-    // Resource-estimation templates don't need real doc text (DOC_TEXT is
-    // display-only) — an empty map keeps the LowerCtx lifetime local. Same
-    // for `ce_slots`: this builds an isolated per-chip template purely for
-    // gate-count estimation, not the final emitted graph, so an unresolved
-    // custom-event slot here just estimates as `float`.
+    // A gate-count estimate needs no doc text and no custom-event slots (an
+    // unresolved slot estimates as `float`), so both maps are empty.
     let empty_docs = crate::parser::DocComments::default();
     let empty_ce_slots = CeSlotMap::default();
 
     let mut ctx = LowerCtx {
         file: file.to_string(),
-        template_cache: cache.clone(),
+        template_cache: Arc::clone(cache),
         chip_call_stack: if chip_decl.name.is_empty() {
             Vec::new()
         } else {
             vec![(chip_decl.range.clone(), true)]
         },
         template_build: true,
-        imports: tc.imports.clone(),
-        // Standalone template path (resource estimation / cache) resolves
-        // record aliases from inline literals only, and has no whole-program
-        // `decls` slice to re-run `typecheck::enums::build_registry` against,
-        // so an enum-typed var here falls back to a bare scalar (see
-        // `declare_enum_container`'s unknown-enum fallback). Both maps stay at
-        // `empty`'s defaults, which is that graceful degradation.
+        imports: Arc::clone(&tc.imports),
+        // No whole-program decls here, so aliases and the enum registry stay
+        // empty and an enum-typed var falls back to a bare scalar
+        // (`declare_enum_container`).
         ..LowerCtx::empty(
             builder,
             &tc.type_of_expr,
@@ -2872,7 +2540,7 @@ pub fn compile_chip_template(
                         ty: ft.clone(),
                     })
                 };
-                record_fields.insert(crate::intern::intern(&field.name), binding);
+                record_fields.insert(intern(&field.name), binding);
             }
             ctx.scope.insert(&inp.name, Binding::Record(record_fields));
         } else if ctx.ref_or_array(Some(chip_decl), &inp.typ) {
@@ -2911,7 +2579,7 @@ pub fn compile_chip_template(
         let t = ctx.resolve_local_type(&out.typ);
         let node_id = ctx.add_output(&out.name, t.clone(), chip_decl.range.clone());
         ctx.scope.insert(
-            &crate::lower::context::output_scope_key(&out.name),
+            &output_scope_key(&out.name),
             Binding::Output(NodeRecord { node_id, ty: t }),
         );
     }
@@ -2920,11 +2588,8 @@ pub fn compile_chip_template(
         chip_decl.outputs.iter().map(|n| n.name.as_ref()).collect();
     for stmt in &chip_decl.body.stmts {
         match stmt {
-            // Same source-ordered nested-declaration overlay as the other
-            // pre-declare loops (see `pre_declare_chip_name`). This template
-            // path starts with an EMPTY `pass1_chips` (no inherited outer
-            // declarations to shadow), so here it only adds resolution rather
-            // than correcting any.
+            // The source-ordered nested-declaration overlay of the other
+            // pre-declare loops (see `pre_declare_chip_name`).
             Stmt::ChipDecl(c) => pre_declare_chip_name(&mut ctx, c),
             Stmt::In(i) => pre_declare_input(&mut ctx, i),
             Stmt::Var(v) => ctx.with_nofold(v.no_fold, |c| pre_declare_var(c, v)),

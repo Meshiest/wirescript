@@ -4,8 +4,7 @@
 use super::*;
 
 /// An or-triggered handler (`on a | b { ... }`) runs its body when EITHER part
-/// fires. The `Trigger::Union` case used to hit `lower_handler`'s `_ => return`
-/// and drop the whole body silently.
+/// fires: `lower_handler` lowers the `Trigger::Union` body once per part.
 #[test]
 fn union_trigger_lowers_body_per_part() {
     let r = compile_ok("var v: int = 0\nin t: exec\nin u: exec\non t | u { v = v + 1 }");
@@ -36,7 +35,7 @@ fn union_trigger_lowers_body_per_part() {
 /// `.exec` names the exec output of a data-carrying event. `GlobalCustomEvent`
 /// carries data slots, so `GlobalCustomEvent(c)` types as a record with its exec
 /// output FIRST; `.exec` selects that output explicitly so the event composes
-/// into a `Union(...)` trigger. Without it, `.exec` was WS010 "no field `exec`".
+/// into a `Union(...)` trigger.
 #[test]
 fn data_carrying_event_exec_composes_into_union() {
     let r = compile_ok(
@@ -82,7 +81,7 @@ fn union_exec_receiver_desugars_to_union_call() {
 }
 
 /// `a.Union(b).Union(c)` chains left-associatively: two Union gates, one per
-/// `.Union` in the chain — the same shape as nested `Union(Union(a, b), c)`.
+/// `.Union` in the chain, the same shape as nested `Union(Union(a, b), c)`.
 #[test]
 fn union_exec_receiver_chains_left_associatively() {
     let r = compile_ok(
@@ -96,10 +95,8 @@ fn union_exec_receiver_chains_left_associatively() {
     );
 }
 
-/// A captured handler with a NON-event trigger (`let e = on go { … }` where
-/// `go` is an exec input) lowers its body and captures its exit as `e`. The body
-/// used to be dropped entirely — `lower_event_decl` returned unless the trigger
-/// was a built-in Event.
+/// A captured handler with a NON-event trigger (`let e = on go { ... }` where
+/// `go` is an exec input) lowers its body and captures its exit as `e`.
 #[test]
 fn captured_handler_on_exec_input_lowers_body() {
     let r = compile_ok(
@@ -141,8 +138,8 @@ fn controller_left_exposes_user_id() {
 
 /// `on ZoneEntered(zone = zoneA) -> { character: character }` wires the
 /// `zoneA` value into the event gate's `Zone` input port. Event gates are
-/// otherwise pure sources, so an input wire into the gate — sourced from the
-/// `in` port — proves the bind.
+/// otherwise pure sources, so an input wire into the gate (sourced from the
+/// `in` port) proves the bind.
 #[test]
 fn zone_event_input_binding() {
     let r = compile_ok(
@@ -282,10 +279,9 @@ fn chat_command_config_sets_gate_data() {
 
 #[test]
 fn on_input_splitter_field_trigger_selects_named_port() {
-    // `on split.PressedE` where `split = pl.InputReader()` must trigger from the
-    // splitter's `bPressedE` output — not its default `InputForward` port.
-    // Regression: the local-trigger branch ignored the trigger field, so every
-    // `on split.*` handler wired to whichever port the local pointed at.
+    // `on split.PressedE` where `split = pl.InputReader()` triggers from the
+    // splitter's `bPressedE` output, not its default `InputForward` port: the
+    // local-trigger path must honour the trigger field.
     let src = "in pl: character\n\
                let split = pl.InputReader()\n\
                on split.PressedE { pl.ShowStatusMessage(\"e\") }";

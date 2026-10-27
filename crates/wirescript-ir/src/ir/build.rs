@@ -113,8 +113,8 @@ impl ModuleBuilder {
     }
 }
 
-/// Most nodes carry no properties — share one immutable empty map instead of
-/// allocating an `Arc<HashMap>` per node. (`Arc::make_mut` copies on write.)
+/// Most nodes carry no properties: share one immutable empty map instead of allocating an
+/// `Arc<HashMap>` per node. (`Arc::make_mut` copies on write.)
 fn shared_properties(props: HashMap<Sym, Literal>) -> Arc<HashMap<Sym, Literal>> {
     static EMPTY: std::sync::LazyLock<Arc<HashMap<Sym, Literal>>> =
         std::sync::LazyLock::new(|| Arc::new(HashMap::default()));
@@ -134,10 +134,10 @@ fn shared_gate_io(io: GateIO) -> Arc<GateIO> {
         std::sync::LazyLock::new(|| Mutex::new(crate::collections::HashSet::default()));
     let mut cache = CACHE.lock().unwrap();
     if let Some(existing) = cache.get(&io) {
-        return existing.clone();
+        return Arc::clone(existing);
     }
     let arc = Arc::new(io);
-    cache.insert(arc.clone());
+    cache.insert(Arc::clone(&arc));
     arc
 }
 

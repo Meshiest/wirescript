@@ -90,10 +90,9 @@ fn nofold_marks_the_gates_its_declaration_lowers() {
     crate::test_support::report_failures(&failures, rows.len());
 }
 
-/// `ModuleBuilder::add_input`/`add_output` bypass `LowerCtx::add_gate`/
-/// `add_event`, so a `@nofold` chip's own MicrochipInput/MicrochipOutput
-/// boundary nodes once missed `_nofold` while every body gate had it. An
-/// ordinary chip's boundary nodes never pick it up from nowhere.
+/// A `@nofold` chip's own MicrochipInput/MicrochipOutput boundary nodes carry
+/// `_nofold` even though `ModuleBuilder::add_input`/`add_output` bypass
+/// `LowerCtx::add_gate`/`add_event`; an ordinary chip's boundary nodes do not.
 #[test]
 fn a_chips_boundary_ports_are_marked_exactly_when_the_chip_is() {
     let rows: &[(&str, bool)] = &[
@@ -173,7 +172,13 @@ fn nofold_prop_never_reaches_brick_data() {
     let r = compile_ok("@nofold let a = 1 + 2\nout y = a");
     let lr = crate::layout::layout(&r.module);
     let opts = crate::EmitOptions::default();
-    crate::build_world(&r.module, &Default::default(), &lr, &opts).expect("emit must skip _nofold");
+    crate::build_world(
+        &r.module,
+        &crate::ir::ProgramSettings::default(),
+        &lr,
+        &opts,
+    )
+    .expect("emit must skip _nofold");
 }
 
 /// `@nofold` that parses but has no effect WARNS, never silently drops; an

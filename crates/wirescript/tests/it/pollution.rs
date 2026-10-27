@@ -1,4 +1,4 @@
-//! Pollution tests — verify cross-module isolation after lowering.
+//! Pollution tests: verify cross-module isolation after lowering.
 //!
 //! Bug classes targeted:
 //! - Cloned chip modules sharing internal node IDs (wire target collisions).
@@ -9,9 +9,9 @@
 use std::collections::{HashMap, HashSet};
 
 use wirescript::{
+    FoldMode,
     ir::{Module, NodeId},
     layout::layout,
-    lower::FoldMode,
     resolve::FsLoader,
 };
 
@@ -25,7 +25,7 @@ fn collect_ids_by_chip(module: &Module, path: &str) -> Vec<(String, NodeId)> {
         .map(|&id| (path.to_string(), id))
         .collect();
     for (&chip_id, child_module) in &module.chips {
-        let child_path = format!("{}/{}", path, chip_id);
+        let child_path = format!("{path}/{chip_id}");
         result.extend(collect_ids_by_chip(child_module, &child_path));
     }
     result
@@ -34,7 +34,7 @@ fn collect_ids_by_chip(module: &Module, path: &str) -> Vec<(String, NodeId)> {
 /// Lowering produced no hard error. A pollution test that starts from a broken
 /// program proves nothing about isolation, so every one of them checks this
 /// before looking at the module graph.
-fn assert_no_errors(lr: &wirescript::lower::LowerResult) {
+fn assert_no_errors(lr: &wirescript::LowerResult) {
     assert!(
         lr.diagnostics
             .iter()
@@ -45,7 +45,7 @@ fn assert_no_errors(lr: &wirescript::lower::LowerResult) {
 }
 
 /// The front end over a source string (no file imports).
-fn lower_source(src: &str) -> wirescript::lower::LowerResult {
+fn lower_source(src: &str) -> wirescript::LowerResult {
     // Node-ID isolation tests use constant chip args as minimal fixtures;
     // force folding off so the fold pass can't elide the chip instances.
     wirescript::front_end(src, "test.ws", None, FoldMode::ForceOff, &FsLoader).lowered
@@ -68,18 +68,18 @@ fn chip_module_count(module: &Module) -> usize {
 const ISOLATION_CASES: &[(&str, &str, Option<usize>)] = &[
     (
         "sibling chip calls each get their own node ids",
-        r#"
+        r"
 chip ALU(a: int, b: int) -> (r: int) { out r = a + b }
 let r1 = ALU(1, 2)
 let r2 = ALU(3, 4)
 let r3 = ALU(5, 6)
 out total = r1.r + r2.r + r3.r
-"#,
+",
         Some(3),
     ),
     (
         "chips inside inlined mods are not reused verbatim across call sites (template cache)",
-        r#"
+        r"
 chip Double(x: int) -> (r: int) { out r = x + x }
 mod do_double(v: *int) {
     let d = Double(v)
@@ -94,12 +94,12 @@ on tick {
     do_double(b)
     do_double(c)
 }
-"#,
+",
         Some(3),
     ),
     (
         "a chip reached through a returning mod, called three times",
-        r#"
+        r"
 chip ALU(a: int, b: int) -> (r: int) { out r = a + b }
 mod compute(x: int, y: int) -> (r: int) {
     let sum = ALU(x, y)
@@ -109,12 +109,12 @@ let r1 = compute(1, 2)
 let r2 = compute(3, 4)
 let r3 = compute(5, 6)
 out total = r1 + r2 + r3
-"#,
+",
         None,
     ),
     (
         "a chip inside an inlined mod, one instance per call in the root module",
-        r#"
+        r"
 chip Inc(x: int) -> (r: int) { out r = x + 1 }
 mod inc_var(v: *int) {
     let d = Inc(v)
@@ -131,7 +131,7 @@ on tick {
     inc_var(c)
     inc_var(d)
 }
-"#,
+",
         Some(4),
     ),
 ];
@@ -168,7 +168,7 @@ fn no_node_id_appears_in_two_modules() {
 /// same (x, y, z) placement.
 #[test]
 fn no_placement_overlap_within_chip() {
-    let src = r#"
+    let src = r"
 chip Big(a: int, b: int, c: int) -> (r: int) {
     let ab = a + b
     let bc = b + c
@@ -177,7 +177,7 @@ chip Big(a: int, b: int, c: int) -> (r: int) {
 }
 let r = Big(1, 2, 3)
 out result = r.r
-"#;
+";
     let lr = lower_source(src);
     assert_no_errors(&lr);
 
@@ -220,13 +220,13 @@ out result = r.r
 /// key (whose body is a child module), i.e. no dangling wire endpoints.
 #[test]
 fn all_wire_endpoints_resolve_to_existing_nodes() {
-    let src = r#"
+    let src = r"
 chip ALU(a: int, b: int) -> (r: int) { out r = a + b }
 let r1 = ALU(1, 2)
 let r2 = ALU(3, 4)
 let r3 = ALU(5, 6)
 out total = r1.r + r2.r + r3.r
-"#;
+";
     let lr = lower_source(src);
     assert_no_errors(&lr);
 
@@ -249,18 +249,16 @@ out total = r1.r + r2.r + r3.r
 
             assert!(
                 src_ok,
-                "in module '{}': wire source '{}' does not resolve to any node or chip",
-                path, src_id
+                "in module '{path}': wire source '{src_id}' does not resolve to any node or chip"
             );
             assert!(
                 tgt_ok,
-                "in module '{}': wire target '{}' does not resolve to any node or chip",
-                path, tgt_id
+                "in module '{path}': wire target '{tgt_id}' does not resolve to any node or chip"
             );
         }
 
         for (&chip_id, child_module) in &module.chips {
-            let child_path = format!("{}/{}", path, chip_id);
+            let child_path = format!("{path}/{chip_id}");
             check_wires(child_module, &child_path);
         }
     }

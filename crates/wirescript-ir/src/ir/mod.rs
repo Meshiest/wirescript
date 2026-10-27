@@ -3,11 +3,8 @@
 //! A [`Module`] is a graph: nodes (gate instances) + wires (port-to-port
 //! connections). Nested chips are child Modules addressed by the parent's
 //! chip-node id. Everything is flat + explicit so the IR is trivially
-//! serialisable and round-trips through test goldens.
-//!
-//! reference implementation. Types module is fused in here (see `Type`
-//! enum) since Phase 1 doesn't need unification or tvars — those arrive
-//! in the typecheck phase.
+//! serialisable and round-trips through test goldens. The [`Type`] enum
+//! lives here too.
 
 pub mod build;
 pub mod builder;
@@ -26,25 +23,20 @@ pub use program::{
 };
 pub use validate::{PortSide, ValidationError};
 
-use crate::collections::HashMap;
+use crate::collections::{HashMap, HashSet};
 
 use crate::intern::{Sym, sym};
 use crate::ir::port_registry::WirePort;
 
-/// Cheap numeric node identity — every node gets a globally unique u32.
+/// Numeric node identity, unique within one compile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u32);
 
 thread_local! {
-    /// Node ids are minted from a PER-THREAD counter, reset at the start of
-    /// each compile (see [`NodeId::reset_for_compile`]).
-    ///
-    /// A process-global counter made output depend on how many compiles had
-    /// already run: the same source compiled twice in one process produced
-    /// different ids, and through them different brick order and a different
-    /// byte length, so no test could compare two compilations. A compile runs
-    /// its whole pipeline on one dedicated thread, so per-thread is per-compile
-    /// without a lock, and two concurrent compiles still cannot collide.
+    /// Node ids come from a PER-THREAD counter, reset at the start of each
+    /// compile (see [`NodeId::compile_scope`]). Ids decide brick order, so the
+    /// same source must get the same ids; a compile runs on one thread, so
+    /// per-thread is per-compile without a lock.
     static NODE_COUNTER: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
 }
 
@@ -63,13 +55,12 @@ impl NodeId {
         NODE_COUNTER.with(|c| Self(c.get()))
     }
 
-    /// Number this compile's nodes from 1, restoring the caller's numbering
-    /// when the returned guard drops.
+    /// Number this compile's nodes from 1, restoring the caller's numbering when the returned
+    /// guard drops.
     ///
-    /// Taken once at the head of a compile. A nested prefab compile takes one
-    /// too: on native it runs on its own thread and the save/restore is a
-    /// no-op, but on wasm32 it runs inline, where restoring is what stops it
-    /// renumbering the outer compile's remaining nodes onto ids already used.
+    /// Taken at the head of a compile, and by a nested prefab compile too: on native that runs
+    /// on its own thread so save/restore is a no-op, but on wasm32 it runs inline, where
+    /// restoring stops it renumbering the outer compile's remaining nodes onto ids already used.
     pub fn compile_scope() -> NodeIdScope {
         NodeIdScope(NODE_COUNTER.with(|c| c.replace(1)))
     }
@@ -122,7 +113,7 @@ pub enum ScopeKind {
     /// sees branches as a unit. Exactly one of `IfCond`/`IfThen`/`IfElse`
     /// children may lack a paired sibling, but they are always wrapped.
     IfGroup,
-    /// `if (cond)` — the expression's lowered nodes live here.
+    /// `if (cond)`: the condition's lowered nodes live here.
     IfCond,
     /// `then { ... }` block.
     IfThen,
@@ -151,9 +142,8 @@ impl ScopeInfo {
     }
 }
 
-/// Primitive types tracked on ports + wires for compatibility checks.
-/// A subset of the TS `Type` ADT — enough for Phase 1 emit + layout.
-/// Extended with `Ref` / `Array` / etc. in Phase 3 (typecheck).
+/// A wirescript type: the type of every expression in typecheck, and the type
+/// tracked on ports and wires for compatibility checks.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
     Bool,
@@ -174,7 +164,7 @@ pub enum Type {
     /// Opaque reference to a Zone brick's `AttachedZone` (the `ZoneRef` output,
     /// consumed by the `Zone` input on zone events / `fillFromZone*`). Like a
     /// var ref, it is a *reference*, not a value: it can only be wired or
-    /// rerouted — never stored in a variable, selected, or operated on.
+    /// rerouted, never stored in a variable, selected, or operated on.
     Zone,
     /// Opaque reference to a Teleport Destination (the `TeleportDestination`
     /// gate's `ThisDestination` output, consumed by `Teleport`/`RelativeTeleport`
@@ -182,40 +172,35 @@ pub enum Type {
     /// Teleporting to a raw position uses `SetLocation`, not a teleport point.
     Teleport,
     /// A compile-time-constant reference to a prefab (`$./file.brz` or a
-    /// nested `prefab { ... }` block). Resolved entirely during compilation —
-    /// it is never a runtime wire value and never stored in a variable;
-    /// reference-only, exactly like [`Type::Zone`]/[`Type::Teleport`].
+    /// nested `prefab { ... }` block), resolved entirely during compilation.
+    /// Never a runtime wire value; reference-only, like [`Type::Zone`].
     PrefabRef,
     Exec,
     Any,
-    /// The result of the `Opaque(...)` builtin — an intentionally-untyped
-    /// probe value used to defeat constant folding in test circuits.
-    /// Behaves exactly like `Any` everywhere (assignability, coercion,
-    /// unification, display) *except* operator resolution
-    /// (`catalog::operators::type_kind_matches`), which wildcards on
-    /// `Opaque` specifically. `Any` itself is the generic error-fallback /
-    /// unknown type produced by ~150 other sites (void array methods,
-    /// unresolved calls, dynamic-access fallbacks) and must NOT satisfy
-    /// operator overloads — only a real `Opaque(...)` probe should.
+    /// The result of the `Opaque(...)` builtin: an untyped probe value that
+    /// defeats constant folding in test circuits. Behaves like `Any` except in
+    /// operator resolution (`catalog::operators::type_kind_matches`), where
+    /// only `Opaque` is a wildcard: `Any` is the error-fallback type and must
+    /// NOT satisfy operator overloads.
     Opaque,
     Never,
-    Ref(Box<Type>),
-    Array(Box<Type>),
-    Union(Vec<Type>),
-    Tuple(Vec<Type>),
-    /// Record / struct; Phase 1 keeps this untyped inner (map of name->Type).
-    Record(Vec<(String, Type)>),
+    Ref(Box<Self>),
+    Array(Box<Self>),
+    Union(Vec<Self>),
+    Tuple(Vec<Self>),
+    /// Record / struct: named fields in declaration order.
+    Record(Vec<(String, Self)>),
     /// The outputs of one gate or call read as a value: a builtin or
     /// container method with several outputs (`fs.max()`, `Edge(b)`), an
     /// event called as an expression, or a call of a `mod` with several
     /// outputs. Named like a record's fields, the first being the output a
     /// place for one value reads. Made only by [`Type::call_result`]; lowering
     /// reads it from typecheck's type of each expression, per instantiation.
-    Outputs(Vec<(String, Type)>),
-    /// `Map<K, V>` — a keyed variable collection (parallels `Array`). The key
+    Outputs(Vec<(String, Self)>),
+    /// `Map<K, V>`: a keyed variable collection (parallels `Array`). The key
     /// and value types are tracked for the source language; at the wire level a
     /// map is an opaque `MapVarRef`, so both sides are `any`-compatible.
-    Map(Box<Type>, Box<Type>),
+    Map(Box<Self>, Box<Self>),
     /// An unsubstituted generic type parameter (e.g. `T`). Substituted to a
     /// concrete type by monomorphization; must never reach emit.
     Param(String),
@@ -226,7 +211,7 @@ pub enum Type {
     /// different enum, even a structurally identical one.
     Enum {
         name: String,
-        args: Vec<Type>,
+        args: Vec<Self>,
     },
     /// A reference to one component on a brick, of the component type it
     /// names (`Component_PointLight`): what Get/Add Component give. Its
@@ -252,24 +237,24 @@ impl Type {
     /// Whether this type already carries a reference: a `ref T`, or an array/map
     /// (which wire an `ArrayVarRef`/`MapVarRef` port). Taking `&` of such a value
     /// is a no-op, and wrapping one in another `Ref` (`*T[]`) is redundant and
-    /// drops writes. Distinct from the `is_reference_type` helper, which is the
-    /// reference-ONLY set (`ref`/zone/teleport/prefab — not storable/selectable).
+    /// drops writes. Distinct from typecheck's `is_reference_type`, the
+    /// reference-ONLY set (`ref`, zone, teleport, prefab: not storable or selectable).
     pub fn is_reference_backed(&self) -> bool {
-        matches!(self, Type::Ref(_) | Type::Array(_) | Type::Map(_, _))
+        matches!(self, Self::Ref(_) | Self::Array(_) | Self::Map(_, _))
     }
 
     /// The kind of reference this value is, or `None` for an ordinary value.
     /// `*int[]` (a var holding an array ref) is an array ref.
     pub fn ref_kind(&self) -> Option<RefKind> {
         match self {
-            Type::Ref(inner) => match inner.as_ref() {
-                Type::Array(_) => Some(RefKind::Array),
-                Type::Map(_, _) => Some(RefKind::Map),
+            Self::Ref(inner) => match inner.as_ref() {
+                Self::Array(_) => Some(RefKind::Array),
+                Self::Map(_, _) => Some(RefKind::Map),
                 _ => Some(RefKind::Var),
             },
-            Type::Array(_) => Some(RefKind::Array),
-            Type::Map(_, _) => Some(RefKind::Map),
-            Type::Brick => Some(RefKind::Brick),
+            Self::Array(_) => Some(RefKind::Array),
+            Self::Map(_, _) => Some(RefKind::Map),
+            Self::Brick => Some(RefKind::Brick),
             _ => None,
         }
     }
@@ -280,18 +265,18 @@ impl Type {
     pub fn is_ref_target(&self) -> bool {
         matches!(
             self,
-            Type::Bool
-                | Type::Int
-                | Type::Float
-                | Type::String
-                | Type::Vector
-                | Type::Rotator
-                | Type::Quat
-                | Type::Color
-                | Type::Entity
-                | Type::Character
-                | Type::Controller
-                | Type::Brick
+            Self::Bool
+                | Self::Int
+                | Self::Float
+                | Self::String
+                | Self::Vector
+                | Self::Rotator
+                | Self::Quat
+                | Self::Color
+                | Self::Entity
+                | Self::Character
+                | Self::Controller
+                | Self::Brick
         )
     }
 
@@ -299,17 +284,18 @@ impl Type {
     /// handled by reference, so a var holding an array ref reads as the array
     /// type itself and is used directly (`cur.push(v)`). Every other type is
     /// returned unchanged.
-    pub fn container_ref_as_value(self) -> Type {
+    #[must_use]
+    pub fn container_ref_as_value(self) -> Self {
         match self {
-            Type::Ref(inner) if matches!(*inner, Type::Array(_) | Type::Map(_, _)) => *inner,
+            Self::Ref(inner) if matches!(*inner, Self::Array(_) | Self::Map(_, _)) => *inner,
             other => other,
         }
     }
 
     /// The named fields of a record, or the outputs of a gate read.
-    pub fn fields(&self) -> Option<&Vec<(String, Type)>> {
+    pub fn fields(&self) -> Option<&Vec<(String, Self)>> {
         match self {
-            Type::Record(fields) | Type::Outputs(fields) => Some(fields),
+            Self::Record(fields) | Self::Outputs(fields) => Some(fields),
             _ => None,
         }
     }
@@ -319,43 +305,44 @@ impl Type {
     /// method's results): the type of a lone output, or for several the
     /// outputs of one gate read. A `mod` returning one record gives that
     /// record. Every call result typed from a callee's outputs is made here.
-    pub fn call_result(outputs: Vec<(String, Type)>) -> Type {
+    pub fn call_result(outputs: Vec<(String, Self)>) -> Self {
         match outputs.len() {
-            0 => Type::Never,
-            1 => outputs.into_iter().next().map_or(Type::Never, |(_, t)| t),
-            _ => Type::outputs(outputs),
+            0 => Self::Never,
+            1 => outputs.into_iter().next().map_or(Self::Never, |(_, t)| t),
+            _ => Self::outputs(outputs),
         }
     }
 
     /// `fields` as the outputs of a gate read, unless they are a tuple's
     /// positions or a single value.
-    pub fn outputs(fields: Vec<(String, Type)>) -> Type {
+    pub fn outputs(fields: Vec<(String, Self)>) -> Self {
         if fields
             .iter()
             .enumerate()
             .all(|(i, (k, _))| *k == i.to_string())
         {
-            Type::Record(fields)
+            Self::Record(fields)
         } else {
-            Type::Outputs(fields)
+            Self::Outputs(fields)
         }
     }
 
     /// This type with every gate read in it held as the record of its
     /// outputs.
-    pub fn as_record(&self) -> Type {
+    #[must_use]
+    pub fn as_record(&self) -> Self {
         let fields =
-            |fs: &[(String, Type)]| fs.iter().map(|(k, t)| (k.clone(), t.as_record())).collect();
+            |fs: &[(String, Self)]| fs.iter().map(|(k, t)| (k.clone(), t.as_record())).collect();
         match self {
-            Type::Outputs(fs) | Type::Record(fs) => Type::Record(fields(fs)),
-            Type::Ref(t) => Type::Ref(Box::new(t.as_record())),
-            Type::Array(t) => Type::Array(Box::new(t.as_record())),
-            Type::Map(k, v) => Type::Map(Box::new(k.as_record()), Box::new(v.as_record())),
-            Type::Union(ts) => Type::Union(ts.iter().map(Type::as_record).collect()),
-            Type::Tuple(ts) => Type::Tuple(ts.iter().map(Type::as_record).collect()),
-            Type::Enum { name, args } => Type::Enum {
+            Self::Outputs(fs) | Self::Record(fs) => Self::Record(fields(fs)),
+            Self::Ref(t) => Self::Ref(Box::new(t.as_record())),
+            Self::Array(t) => Self::Array(Box::new(t.as_record())),
+            Self::Map(k, v) => Self::Map(Box::new(k.as_record()), Box::new(v.as_record())),
+            Self::Union(ts) => Self::Union(ts.iter().map(Self::as_record).collect()),
+            Self::Tuple(ts) => Self::Tuple(ts.iter().map(Self::as_record).collect()),
+            Self::Enum { name, args } => Self::Enum {
                 name: name.clone(),
-                args: args.iter().map(Type::as_record).collect(),
+                args: args.iter().map(Self::as_record).collect(),
             },
             other => other.clone(),
         }
@@ -364,16 +351,17 @@ impl Type {
     /// What a `var` written with no type holds of a value of this type: a
     /// gate read is its first output, in a record's fields, a tuple's
     /// positions and an array's elements too, as the annotated `var` holds it.
-    pub fn held_by_var(&self) -> Type {
+    #[must_use]
+    pub fn held_by_var(&self) -> Self {
         match self {
-            Type::Outputs(fs) if !fs.is_empty() => unwrap_ref(&fs[0].1).held_by_var(),
-            Type::Record(fs) => Type::Record(
+            Self::Outputs(fs) if !fs.is_empty() => unwrap_ref(&fs[0].1).held_by_var(),
+            Self::Record(fs) => Self::Record(
                 fs.iter()
                     .map(|(k, t)| (k.clone(), t.held_by_var()))
                     .collect(),
             ),
-            Type::Tuple(ts) => Type::Tuple(ts.iter().map(Type::held_by_var).collect()),
-            Type::Array(t) => Type::Array(Box::new(t.held_by_var())),
+            Self::Tuple(ts) => Self::Tuple(ts.iter().map(Self::held_by_var).collect()),
+            Self::Array(t) => Self::Array(Box::new(t.held_by_var())),
             other => other.clone(),
         }
     }
@@ -381,12 +369,12 @@ impl Type {
     /// Whether a gate read is held anywhere in this type.
     pub fn holds_outputs(&self) -> bool {
         match self {
-            Type::Outputs(_) => true,
-            Type::Record(fs) => fs.iter().any(|(_, t)| t.holds_outputs()),
-            Type::Ref(t) | Type::Array(t) => t.holds_outputs(),
-            Type::Map(k, v) => k.holds_outputs() || v.holds_outputs(),
-            Type::Union(ts) | Type::Tuple(ts) | Type::Enum { args: ts, .. } => {
-                ts.iter().any(Type::holds_outputs)
+            Self::Outputs(_) => true,
+            Self::Record(fs) => fs.iter().any(|(_, t)| t.holds_outputs()),
+            Self::Ref(t) | Self::Array(t) => t.holds_outputs(),
+            Self::Map(k, v) => k.holds_outputs() || v.holds_outputs(),
+            Self::Union(ts) | Self::Tuple(ts) | Self::Enum { args: ts, .. } => {
+                ts.iter().any(Self::holds_outputs)
             }
             _ => false,
         }
@@ -395,7 +383,7 @@ impl Type {
 
 /// Strip a single leading `Ref` layer. A `*T` param resolves to
 /// `Ref(Param(T))`, but a var passed to it infers to its already-auto-derefed
-/// inner type, so the two are asymmetric — unwrap both before collecting.
+/// inner type, so the two are asymmetric; unwrap both before collecting.
 pub fn unwrap_ref(t: &Type) -> Type {
     match t {
         Type::Ref(inner) => inner.as_ref().clone(),
@@ -417,60 +405,58 @@ pub fn written_float(f: f64) -> String {
 }
 
 /// The source-language spelling of a type. Compound variants render by
-/// recursion (`*int`, `int[]`, `Map<string, int>`, …), which is exactly why
-/// this is `Display` and not `AsRef<str>`: those strings are built on the fly,
-/// so there is no `&str` inside the value to borrow. `analysis::type_str` is a
-/// thin `to_string()` alias over this.
+/// recursion (`*int`, `int[]`, `Map<string, int>`), so this is `Display`
+/// rather than `AsRef<str>`: there is no `&str` inside the value to borrow.
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Type::Component(class) if class.is_empty() => f.write_str("Component"),
-            Type::Component(class) => {
+            Self::Component(class) if class.is_empty() => f.write_str("Component"),
+            Self::Component(class) => {
                 write!(f, "Component<{}>", crate::catalog::component_name(class))
             }
-            Type::Bool => f.write_str("bool"),
-            Type::Int => f.write_str("int"),
-            Type::Float => f.write_str("float"),
-            Type::String => f.write_str("string"),
-            Type::Vector => f.write_str("vector"),
-            Type::Rotator => f.write_str("rotator"),
-            Type::Quat => f.write_str("quat"),
-            Type::Color => f.write_str("color"),
-            Type::Entity => f.write_str("entity"),
-            Type::Character => f.write_str("character"),
-            Type::Controller => f.write_str("controller"),
-            Type::Brick => f.write_str("brick"),
-            Type::Zone => f.write_str("zone"),
-            Type::Teleport => f.write_str("teleport"),
-            Type::PrefabRef => f.write_str("prefab"),
-            Type::Exec => f.write_str("exec"),
+            Self::Bool => f.write_str("bool"),
+            Self::Int => f.write_str("int"),
+            Self::Float => f.write_str("float"),
+            Self::String => f.write_str("string"),
+            Self::Vector => f.write_str("vector"),
+            Self::Rotator => f.write_str("rotator"),
+            Self::Quat => f.write_str("quat"),
+            Self::Color => f.write_str("color"),
+            Self::Entity => f.write_str("entity"),
+            Self::Character => f.write_str("character"),
+            Self::Controller => f.write_str("controller"),
+            Self::Brick => f.write_str("brick"),
+            Self::Zone => f.write_str("zone"),
+            Self::Teleport => f.write_str("teleport"),
+            Self::PrefabRef => f.write_str("prefab"),
+            Self::Exec => f.write_str("exec"),
             // `Opaque` behaves like `any` everywhere except operator resolution,
             // and that distinction isn't user-facing.
-            Type::Any | Type::Opaque => f.write_str("any"),
-            Type::Never => f.write_str("never"),
-            Type::Ref(inner) => write!(f, "*{inner}"),
+            Self::Any | Self::Opaque => f.write_str("any"),
+            Self::Never => f.write_str("never"),
+            Self::Ref(inner) => write!(f, "*{inner}"),
             // `(*int)[]` is an array of refs; `*int[]` is a ref to an array.
-            Type::Array(inner) if matches!(inner.as_ref(), Type::Ref(_)) => {
+            Self::Array(inner) if matches!(inner.as_ref(), Self::Ref(_)) => {
                 write!(f, "({inner})[]")
             }
-            Type::Array(inner) => write!(f, "{inner}[]"),
-            Type::Map(k, v) => write!(f, "Map<{k}, {v}>"),
-            Type::Param(n) => f.write_str(n),
-            Type::Enum { name, args } => {
+            Self::Array(inner) => write!(f, "{inner}[]"),
+            Self::Map(k, v) => write!(f, "Map<{k}, {v}>"),
+            Self::Param(n) => f.write_str(n),
+            Self::Enum { name, args } => {
                 write!(f, "{name}")?;
                 if !args.is_empty() {
                     write!(
                         f,
                         "<{}>",
                         args.iter()
-                            .map(|a| a.to_string())
+                            .map(std::string::ToString::to_string)
                             .collect::<Vec<_>>()
                             .join(", ")
                     )?;
                 }
                 Ok(())
             }
-            Type::Union(opts) => {
+            Self::Union(opts) => {
                 for (i, o) in opts.iter().enumerate() {
                     if i > 0 {
                         f.write_str(" | ")?;
@@ -479,7 +465,7 @@ impl std::fmt::Display for Type {
                 }
                 Ok(())
             }
-            Type::Tuple(fields) => {
+            Self::Tuple(fields) => {
                 f.write_str("(")?;
                 for (i, ft) in fields.iter().enumerate() {
                     if i > 0 {
@@ -489,10 +475,10 @@ impl std::fmt::Display for Type {
                 }
                 f.write_str(")")
             }
-            Type::Outputs(_) => write!(f, "{}", self.as_record()),
-            // A record whose keys are 0, 1, 2, … is a tuple's field map — render
-            // it as a tuple, matching how it was written.
-            Type::Record(fields) => {
+            Self::Outputs(_) => write!(f, "{}", self.as_record()),
+            // A record whose keys are 0, 1, 2 and so on is a tuple's field map;
+            // render it as a tuple, matching how it was written.
+            Self::Record(fields) => {
                 let is_tuple = !fields.is_empty()
                     && fields
                         .iter()
@@ -522,10 +508,8 @@ impl std::fmt::Display for Type {
     }
 }
 
-/// A literal used to initialise non-wired component properties.
-///
-/// Mirrors the TS `Literal` discriminated union 1:1. Phase 1 lowers these
-/// straight to brdb values in the emitter.
+/// A literal used to initialise non-wired component properties. The emitter
+/// lowers these straight to brdb values.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Literal {
     Bool(bool),
@@ -554,28 +538,26 @@ pub enum Literal {
         b: u8,
         a: u8,
     },
-    /// Linear RGBA color (0–1 components) — the wire `LinearColor` variant
-    /// member, produced by folding a constant `Color(r, g, b, a?)` call.
+    /// Linear RGBA color (components from 0 to 1): the wire `LinearColor`
+    /// variant member, produced by folding a constant `Color(r, g, b, a?)` call.
     LinearColor {
         r: f64,
         g: f64,
         b: f64,
         a: f64,
     },
-    /// Null object reference — used for entity/controller/character var defaults.
+    /// Null object reference: the entity/controller/character var default.
     Object,
-    /// A list of literals — used to carry an array's constant initial contents
-    /// (`var foo: int[] = [1, 2, 3]`) to the emitter.
-    Array(Vec<Literal>),
+    /// A list of literals: an array's constant initial contents
+    /// (`var foo: int[] = [1, 2, 3]`) for the emitter.
+    Array(Vec<Self>),
     /// A map's constant initial entries (`map m = { :a => 1 }`) for the emitter.
-    Map(Vec<(Literal, Literal)>),
+    Map(Vec<(Self, Self)>),
     /// A compile-time-only record built by a `const` record literal (`{ rooms:
-    /// 2, timer: 60 }`) or returned from a `const mod`. Unlike `Array`/`Map`,
-    /// this has **no wire representation** — a record exists only to be
-    /// consumed by field access during const evaluation, never emitted. It
-    /// must never reach the emitter; see the `unreachable!` in
-    /// `emit::variants` for why.
-    Record(Vec<(String, Literal)>),
+    /// 2, timer: 60 }`) or returned from a `const mod`. It has **no wire
+    /// representation**: it is consumed by field access during const
+    /// evaluation and must never reach the emitter (`emit::variants` rejects it).
+    Record(Vec<(String, Self)>),
     /// External asset reference `$AssetType/AssetName`. The emitter registers it
     /// in the world's external-asset table and writes the resulting index.
     Asset {
@@ -584,14 +566,14 @@ pub enum Literal {
     },
     /// Prefab file reference `$./file.brz` / `$/abs/file.brz`. The emitter
     /// resolves `path` to `.brz` bytes, embeds them via `World::add_prefab`,
-    /// and writes the resulting `Prefabs/Uploads/…` path into the gate's
+    /// and writes the resulting `Prefabs/Uploads/...` path into the gate's
     /// `Prefab` path string.
     PrefabRef {
         path: String,
     },
     /// Inline nested-prefab source (the `$``` ... ``` ` form). The emitter
-    /// will compile `source` and embed it the same way `PrefabRef` embeds a
-    /// `.brz` file (at emit); for now it just carries the raw source.
+    /// compiles `source` with the configured nested compiler and embeds it the
+    /// way `PrefabRef` embeds a `.brz` file.
     NestedPrefab {
         source: String,
     },
@@ -757,6 +739,11 @@ impl GateIO {
     pub fn find_output(&self, name: Sym) -> Option<&PortSpec> {
         self.outputs.iter().find(|p| p.name == name)
     }
+
+    /// The port named `name`, looking at the inputs first.
+    pub fn find_port(&self, name: Sym) -> Option<&PortSpec> {
+        self.find_input(name).or_else(|| self.find_output(name))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -777,7 +764,7 @@ impl NodeKind {
     pub fn has_brick(self) -> bool {
         matches!(
             self,
-            NodeKind::Gate | NodeKind::Event | NodeKind::Input | NodeKind::Output | NodeKind::Chip
+            Self::Gate | Self::Event | Self::Input | Self::Output | Self::Chip
         )
     }
 }
@@ -804,9 +791,9 @@ pub struct Node {
     pub source_range: SourceRange,
     /// For nodes living inside a chip body: the chip node's id.
     ///
-    /// TODO(follow-up PR): this is redundant with `ScopeKind::ChipBody`
-    /// walking `scope_id -> scopes[id] -> parent` in `Module.scopes`.
-    /// Remove once no downstream code reads it.
+    /// TODO: redundant with `ScopeKind::ChipBody` found by walking
+    /// `scope_id -> scopes[id] -> parent` in `Module.scopes`; remove once no
+    /// downstream code reads it.
     pub chip_id: Option<NodeId>,
     /// Layout-row hint. Nodes sharing a `chain_id` render in the same row
     /// (one exec chain = one row). `None` means "global" (row 0).
@@ -834,7 +821,7 @@ impl Node {
         gate_class: &'static str,
         ports: impl Into<Arc<GateIO>>,
         properties: impl Into<Arc<HashMap<Sym, Literal>>>,
-        near: Option<&Node>,
+        near: Option<&Self>,
         note: Option<&'static str>,
     ) -> Self {
         Self {
@@ -853,10 +840,8 @@ impl Node {
 
     /// True if this node is a stateful buffer/Var that legitimately
     /// participates in a cycle. Layout uses this to pick a deterministic
-    /// feedback edge when breaking SCCs.
-    ///
-    /// New buffer-capable gate classes go here — this is the single
-    /// source of truth consulted by layout.
+    /// feedback edge when breaking SCCs. New buffer-capable gate classes
+    /// belong here: layout consults only this.
     pub fn is_buffer(&self) -> bool {
         self.gate_class == gate_class::VARIABLE || self.gate_class == gate_class::BUFFER
     }
@@ -889,8 +874,8 @@ impl StyleValue {
     /// The port a wired value reads, `None` for a baked one.
     pub fn wired(&self) -> Option<&PortRef> {
         match self {
-            StyleValue::Wired(p) => Some(p),
-            StyleValue::Baked(_) => None,
+            Self::Wired(p) => Some(p),
+            Self::Baked(_) => None,
         }
     }
 }
@@ -947,46 +932,45 @@ impl RootStyle {
     }
 }
 
-/// A compiled wirescript module — the input to the emitter.
+/// A compiled wirescript module: the input to the emitter.
 #[derive(Debug, Clone)]
 pub struct Module {
     pub name: Sym,
     pub nodes: HashMap<NodeId, Node>,
     pub wires: Vec<Wire>,
     /// Chip sub-modules keyed by the chip node's id in this Module.
-    pub chips: HashMap<NodeId, Module>,
-    /// MicrochipInput node ids in declaration order.
+    pub chips: HashMap<NodeId, Self>,
+    /// `MicrochipInput` node ids in declaration order.
     pub inputs: Vec<NodeId>,
-    /// MicrochipOutput node ids in declaration order.
+    /// `MicrochipOutput` node ids in declaration order.
     pub outputs: Vec<NodeId>,
     /// Scope table for layout. `ROOT_SCOPE_ID` is always present and is
     /// this module's root (`ModuleRoot` by default; chip-body modules
     /// overwrite it with `ChipBody { name }` at construction time).
     pub scopes: HashMap<ScopeId, ScopeInfo>,
     /// Base template name for grid deduplication. When set, identical chip
-    /// instances (same template_key) can reuse the first instance's
+    /// instances (same `template_key`) can reuse the first instance's
     /// serialized grid data instead of emitting duplicate grids.
     pub template_key: Option<Sym>,
-    /// External node_ids referenced by this module's wires but NOT in its
+    /// External `node_ids` referenced by this module's wires but NOT in its
     /// `nodes` map. Discovered by bottom-up diff after lowering. Used by
     /// template instantiation to remap external refs per instance.
     pub scope_captures: Vec<NodeId>,
     /// Dynamic labels: a host node (a `Pseudo_Var`) whose floating name label
     /// is driven at runtime by a wire instead of a baked string. Maps the host
     /// node to the (already string-coerced) value port that feeds its label
-    /// component's `Text` input. The wire itself is added at emit time, once the
-    /// host brick's id is known — see `emit.rs` Pass 3.5. Not an IR wire (the
-    /// label `Component_TextDisplay` is not an IR node), so it does not affect
-    /// layout or pruning.
+    /// component's `Text` input. Emit adds the wire once the host brick's id is
+    /// known (emit Pass 3.5). Not an IR wire (the label `Component_TextDisplay`
+    /// is not an IR node), so it does not affect layout or pruning.
     pub dynamic_labels: HashMap<NodeId, PortRef>,
-    /// A module-level `@label(<constant>)` folded to static text — overrides the
-    /// root microchip's default label (the module name) at emit. Root module
-    /// only; `None` for chips.
+    /// A module-level `@label(<constant>)` folded to static text, overriding
+    /// the root microchip's default label (the module name) at emit. Root
+    /// module only; `None` for chips.
     pub root_label_override: Option<String>,
-    /// A module-level `@label(<runtime expr>)` lowered to a value port — wired
-    /// into the ROOT microchip shell's label `Text` at emit (analogous to
-    /// `dynamic_labels`, but the host is the root shell brick rather than an IR
-    /// node). Root module only; `None` for chips.
+    /// A module-level `@label(<runtime expr>)` lowered to a value port, wired
+    /// into the ROOT microchip shell's label `Text` at emit (like
+    /// `dynamic_labels`, with the root shell brick as host). Root module only;
+    /// `None` for chips.
     pub root_dynamic_label: Option<PortRef>,
     /// Runtime `@color(expr)`: a host node (a `Pseudo_Var`) whose brick color
     /// is driven by a wire. Maps the host to the color-typed value port that
@@ -1088,12 +1072,12 @@ impl Module {
 
     /// The chip module `path` leads to: a chain of chip node ids from this
     /// module down. Panics when a step names no chip module.
-    pub fn at(&self, path: &[NodeId]) -> &Module {
+    pub fn at(&self, path: &[NodeId]) -> &Self {
         path.iter().fold(self, |m, c| &m.chips[c])
     }
 
     /// [`Module::at`], mutably.
-    pub fn at_mut(&mut self, path: &[NodeId]) -> &mut Module {
+    pub fn at_mut(&mut self, path: &[NodeId]) -> &mut Self {
         path.iter().fold(self, |m, c| {
             m.chips.get_mut(c).expect("a chip module on the path")
         })
@@ -1109,7 +1093,7 @@ impl Module {
 
     /// Call `f` on this module and every chip module below it, each with its
     /// path from here: a parent before its chips, the chips in id order.
-    pub fn walk<'a>(&'a self, f: &mut impl FnMut(&[NodeId], &'a Module)) {
+    pub fn walk<'a>(&'a self, f: &mut impl FnMut(&[NodeId], &'a Self)) {
         fn go<'a>(
             m: &'a Module,
             path: &mut Vec<NodeId>,
@@ -1127,8 +1111,27 @@ impl Module {
         go(self, &mut Vec::new(), f);
     }
 
+    /// [`Module::walk`] with a mutable module. A parent is visited before its
+    /// chips, so `f` may add or remove chip modules; the chips visited are the
+    /// ones present after `f` returns.
+    pub fn walk_mut(&mut self, f: &mut impl FnMut(&[NodeId], &mut Self)) {
+        fn go(m: &mut Module, path: &mut Vec<NodeId>, f: &mut impl FnMut(&[NodeId], &mut Module)) {
+            f(path, m);
+            let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
+            kids.sort_unstable();
+            for k in kids {
+                path.push(k);
+                if let Some(c) = m.chips.get_mut(&k) {
+                    go(c, path, f);
+                }
+                path.pop();
+            }
+        }
+        go(self, &mut Vec::new(), f);
+    }
+
     /// This module and every chip module below it, in [`walk`](Self::walk) order.
-    pub fn modules_deep(&self) -> Vec<&Module> {
+    pub fn modules_deep(&self) -> Vec<&Self> {
         let mut out = Vec::new();
         self.walk(&mut |_, m| out.push(m));
         out
@@ -1145,6 +1148,25 @@ impl Module {
     /// Every wire of this module and the chip modules below it.
     pub fn wires_deep(&self) -> impl Iterator<Item = &Wire> + '_ {
         self.modules_deep().into_iter().flat_map(|m| m.wires.iter())
+    }
+
+    /// The ids of every node in this module tree for which `pred` holds.
+    pub fn node_ids_where(&self, mut pred: impl FnMut(&Node) -> bool) -> HashSet<NodeId> {
+        self.nodes_deep()
+            .filter(|n| pred(n))
+            .map(|n| n.id)
+            .collect()
+    }
+
+    /// Delete the nodes in `dead` from this module tree, with every wire that
+    /// touches one and every scope capture that names one.
+    pub fn remove_nodes_tree(&mut self, dead: &HashSet<NodeId>) {
+        self.walk_mut(&mut |_, m| {
+            m.nodes.retain(|id, _| !dead.contains(id));
+            m.wires
+                .retain(|w| !dead.contains(&w.source.node_id) && !dead.contains(&w.target.node_id));
+            m.scope_captures.retain(|id| !dead.contains(id));
+        });
     }
 
     /// Every node in ascending id order, the order layout and emit visit them

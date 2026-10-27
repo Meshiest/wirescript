@@ -1,6 +1,11 @@
 //! `@color` / `@material`: a Brick Property Changer on the styled brick.
 
-use super::*;
+use brdb::{AsBrdbValue, BString, WirePort as BrdbWirePort, assets::LiteralComponent};
+
+use crate::intern::sym;
+use crate::ir::{Literal, Module, Node, NodeId, PortRef, gate_class as gc};
+
+use super::wires::brick_port;
 
 /// The component a `@color` / `@material` adds to the brick it styles.
 pub(super) const PROPERTY_CHANGER: &str = "Component_BrickPropertyChanger";
@@ -21,7 +26,7 @@ const MATERIALS: [BString; 6] = [
 /// wired into either. `None` when the node is not styled at all.
 pub(super) fn node_style<'a>(
     module: &'a Module,
-    id: &NodeId,
+    id: NodeId,
     node: &'a Node,
 ) -> Option<(Option<Literal>, Option<Literal>, bool)> {
     let inlined = |src: Option<&PortRef>| -> Option<&'a Literal> {
@@ -30,8 +35,8 @@ pub(super) fn node_style<'a>(
             .then(|| n.properties.get(&*sym::VALUE))
             .flatten()
     };
-    let wired_color = module.dynamic_colors.get(id);
-    let wired_material = module.dynamic_materials.get(id);
+    let wired_color = module.dynamic_colors.get(&id);
+    let wired_material = module.dynamic_materials.get(&id);
     let color = node
         .properties
         .get(&*sym::BRICK_COLOR)
@@ -122,9 +127,5 @@ pub(super) fn property_changer(brick: &brdb::Brick) -> LiteralComponent {
 
 /// The `port` input (`Color` or `Material`) of the changer on `brick_id`.
 pub(super) fn property_changer_port(brick_id: usize, port: &'static str) -> BrdbWirePort {
-    BrdbWirePort {
-        brick_id,
-        component_type: BString::Static(PROPERTY_CHANGER),
-        port_name: BString::Static(port),
-    }
+    brick_port(brick_id, PROPERTY_CHANGER, port)
 }

@@ -1,22 +1,17 @@
 //! Wall layout: every chip grid (root + nested) becomes an upright plane. The
 //! root sits above the deployment chip brick, and each nesting level occupies
-//! a COLUMN to the right of the one holding its chip brick — depth grows
+//! a COLUMN to the right of the one holding its chip brick, so depth grows
 //! sideways, not upward.
 //!
-//! Under the in-game-pinned `emit::WALL_ROT` (MEASURED mapping): grid-local
-//! +X -> world up (dataflow runs bottom->top), grid-local ±Y -> world horizontal
-//! (along world Y), and the board front faces the chip's @bottom-rerouter
-//! side. A pane's vertical half-span is therefore `extent.x` and its
-//! horizontal half-span `extent.y`. That mapping is measured, not derived —
-//! do not re-derive it.
+//! Under `emit::WALL_ROT` (measured in game, do not re-derive): grid-local +X
+//! is world up, grid-local ±Y is world horizontal (along world Y), and the
+//! board front faces the chip's @bottom-rerouter side. A pane's vertical
+//! half-span is therefore `extent.x` and its horizontal half-span `extent.y`.
 //!
-//! Growing sideways is what frees the vertical axis: a plane anchors its
-//! HEIGHT on its own chip brick, mapping the brick's position in the parent
-//! plane through the same mapping (local +X -> world +Z). A chip's interior
-//! therefore opens level with the brick that opens it, however deep it is,
-//! instead of a whole board-height above. The column step is what keeps a
-//! child clear of its parent, and planes inside one column that would collide
-//! pack apart vertically.
+//! A plane anchors its HEIGHT on its own chip brick (local +X maps to world
+//! +Z), so a chip's interior opens level with the brick that opens it. The
+//! column step keeps a child clear of its parent; planes in one column that
+//! would collide pack apart vertically.
 
 use crate::collections::HashMap;
 
@@ -31,13 +26,13 @@ pub const WALL_GUTTER_X: i32 = 10;
 /// Vertical gap between adjacent planes packed within one depth column (cm).
 pub const WALL_GUTTER_Z: f32 = 20.0;
 /// Gap between the chip brick's top face and the root plane's bottom edge
-/// (cm). Pinned during in-game verification.
+/// (cm), verified in game.
 pub const WALL_ROOT_CLEARANCE: f32 = 10.0;
 /// `B_1x1_Microchip` half-height (halfSize z = 2).
 const CHIP_BRICK_HALF_HEIGHT: f32 = 2.0;
 
 /// One plane's assigned transform. `location` is the grid entity's location:
-/// centre-anchored on X/Y, bottom-edge anchored on Z
+/// center-anchored on X/Y, bottom-edge anchored on Z
 /// (`location.z - extent.x` = the row baseline; vertical half-span is
 /// `extent.x` under the measured `WALL_ROT` mapping).
 #[derive(Clone, Copy, Debug)]
@@ -53,17 +48,11 @@ pub struct WallLayout {
 }
 
 /// A module's plane half-extent from its layout bounds: half-span per axis
-/// plus a 5-unit margin, minimum 5 (matches the historical emit formula).
+/// plus a 5-unit margin, minimum 5.
 ///
-/// Unlike x/y, the z axis is not centered around `PlaneCenter` (always
-/// `(0, 0, 0)`, see `emit::build_world`) — every gate sits at `Z_PLANE` or
-/// higher (paginated code layouts stack pages at `Z_PLANE + p *
-/// PAGE_Z_STEP`; the grid-mode fallback stacks layers too), never below it.
-/// Covering that range from a fixed center needs the half-extent to reach
-/// the farthest z used, not half the bounds' span — so z uses the larger
-/// bound directly rather than `(max - min) / 2`, floored at `Z_PLANE` so a
-/// single-page layout (`bounds_min.z == bounds_max.z == Z_PLANE`) and an
-/// empty one (all-zero bounds) both keep the historical value.
+/// The z half-extent is the larger z bound itself, floored at `Z_PLANE`, not
+/// half the span: `PlaneCenter` is always `(0, 0, 0)` and every gate sits at
+/// `Z_PLANE` or above (pages and cube layers stack upward).
 pub fn plane_extent(lr: &LayoutResult) -> IntVector {
     let half_x = (lr.bounds_max.x - lr.bounds_min.x) / 2;
     let half_y = (lr.bounds_max.y - lr.bounds_min.y) / 2;
@@ -79,17 +68,16 @@ pub fn plane_extent(lr: &LayoutResult) -> IntVector {
 struct RowPlane<'a> {
     id: NodeId,
     extent: IntVector,
-    /// World Z the plane's centre wants: the chip brick's own world Z, i.e.
-    /// the parent plane's centre plus the brick's local X (local +X -> world
-    /// up under the measured `WALL_ROT` mapping).
+    /// World Z the plane's center wants: the chip brick's own world Z, i.e.
+    /// the parent plane's center plus the brick's local X (local +X is world
+    /// up under `WALL_ROT`).
     anchor: f32,
-    /// Half-span along the axis being packed — the VERTICAL one, so
-    /// `extent.x`. Carried rather than read off `extent` inside the packer so
-    /// the packer itself is axis-agnostic and there is only one of it.
+    /// Half-span along the packed (vertical) axis, `extent.x`. Carried so the
+    /// packer stays axis-agnostic.
     half: f32,
-    /// Reading order of the chip brick inside the parent plane — top row
-    /// first (local +X is up), then left to right, then source order. Breaks
-    /// ties between planes that want the same world Z.
+    /// Reading order of the chip brick inside the parent plane: top row first
+    /// (local +X is up), then left to right, then source order. Breaks ties
+    /// between planes that want the same world Z.
     reading: (std::cmp::Reverse<i32>, i32, usize, u32),
     module: &'a Module,
     lr: &'a LayoutResult,
@@ -97,27 +85,21 @@ struct RowPlane<'a> {
 
 /// Assign every chip grid a wall slot. COLUMNS by nesting depth (root = column
 /// 0 on the left), each column stepping right past the widest plane in the one
-/// before it, so a plane always sits clear of — and to the right of — the
+/// before it, so a plane always sits clear of, and to the right of, the
 /// plane holding its chip brick.
 ///
-/// Within a column each plane wants to be centred on its own chip brick's
-/// world Z, which is what puts a chip's interior level with the brick that
-/// opens it. Planes that would overlap merge into a block packed with
-/// `WALL_GUTTER_Z` gaps and re-centred on its members' anchors, which spreads
-/// them apart without reordering. Every plane shares the chip brick's X.
-/// Closed chips get slots too — opening one in-game reveals it in place.
+/// Within a column each plane is centered on its chip brick's world Z;
+/// overlapping planes are packed apart by [`pack_row`]. Every plane shares the
+/// chip brick's X. Closed chips get slots too, so opening one reveals it in place.
 pub fn assign_wall_slots(
     module: &Module,
     lr: &LayoutResult,
     chip_pos: (i32, i32, i32),
 ) -> WallLayout {
     let (cx, cy, cz) = chip_pos;
-    // `plane_extent` derives z from the layout bounds and floors it at
-    // `Z_PLANE`, so it already yields the root plane's historical z for
-    // single-page layouts while covering a paginated root's full z span.
     let root_extent = plane_extent(lr);
 
-    // The root sits directly above the chip brick, unchanged.
+    // The root sits directly above the chip brick.
     let mut root = WallSlot {
         location: Vector3f {
             x: cx as f32,
@@ -135,14 +117,14 @@ pub fn assign_wall_slots(
     // world Z its plane was given, which is what its own children anchor on.
     let mut frontier: Vec<(f32, &Module, &LayoutResult)> = vec![(root.location.z, module, lr)];
     loop {
-        let mut row: Vec<RowPlane> = Vec::new();
+        let mut row: Vec<RowPlane<'_>> = Vec::new();
         for (parent_z, m, mlr) in &frontier {
             for (chip_id, child_module) in &m.chips {
                 let Some(clr) = mlr.chip_layouts.get(chip_id) else {
                     continue;
                 };
                 // Where the chip brick sits in the parent plane. A chip
-                // without a placement falls back to the parent's centre.
+                // without a placement falls back to the parent's center.
                 let brick = mlr
                     .placements
                     .get(chip_id)
@@ -201,14 +183,10 @@ pub fn assign_wall_slots(
             .collect();
     }
 
-    // Lift the whole assembly so no plane's bottom edge sits below the
-    // deployment brick's top (the paste anchor / ground). A nested plane
-    // anchors on its chip brick's world Z, so a brick low in its parent can
-    // push a tall child plane underground (measured: a child plane bottom at
-    // z = -8 while the brick sits at z = 0). Shifting every plane up by the
-    // deficit keeps their relative anchoring intact (the bricks a child
-    // anchors on live in these same planes and shift with them) while raising
-    // the boards clear of the ground. The deployment brick stays at `chip_pos`.
+    // Lift every plane so none sits below the deployment brick's top (the
+    // ground): a brick low in its parent can push a tall child plane
+    // underground. A uniform lift keeps relative anchoring; the deployment
+    // brick stays at `chip_pos`.
     let floor = cz as f32 + CHIP_BRICK_HALF_HEIGHT;
     let min_bottom = std::iter::once(&root)
         .chain(chips.values())
@@ -226,29 +204,21 @@ pub fn assign_wall_slots(
 }
 
 /// Spread one depth column's planes along the packing axis, returning each
-/// plane's centre in the order given. `planes` must already be in the intended
-/// ascending order along that axis; that order is preserved exactly.
+/// plane's center in the order given. `planes` must already be in ascending
+/// order along that axis; the order is preserved. Reads only `anchor` and
+/// `half`, so it is axis-agnostic.
 ///
-/// Axis-agnostic: it reads each plane's `anchor` and its `half` span and
-/// never touches `extent`, so the same packer serves whichever axis the caller
-/// is spreading along. Today that is the vertical one — planes stack up a
-/// column — and `half` is `extent.x`.
-///
-/// Every plane wants its `anchor`. Planes whose spans would collide form a
-/// block: inside a block they sit shoulder to shoulder with `WALL_GUTTER_Z`
-/// between them, and the block as a whole is centred so that its members are
-/// off their anchors by as little as possible (the block's low edge is the
-/// mean of the low edges its members would each need). Absorbing a plane can
-/// push a block into the one before it, so blocks merge until the column is
-/// collision-free.
-fn pack_row(planes: &[RowPlane]) -> Vec<f32> {
+/// Planes whose spans would collide form a block, packed with `WALL_GUTTER_Z`
+/// gaps, whose low edge is the mean of the low edges its members want. Blocks
+/// merge until the column is collision-free.
+fn pack_row(planes: &[RowPlane<'_>]) -> Vec<f32> {
     let gutter = WALL_GUTTER_Z;
     /// A run of planes packed against each other.
     struct Block {
         /// Index of the block's first plane in `planes`.
         start: usize,
         len: usize,
-        /// Sum over members of (wanted low edge − offset in the block); the
+        /// Sum over members of (wanted low edge minus offset in the block); the
         /// block's own low edge is this divided by `len`.
         want_sum: f32,
         /// Total span from the first member's low edge to the last's high.
@@ -304,12 +274,8 @@ mod tests {
     use super::*;
 
     /// `pack_row` in isolation: planes that all want the same spot end up
-    /// exactly `WALL_GUTTER_Z` apart and centred on that spot, and planes that
+    /// exactly `WALL_GUTTER_Z` apart and centered on that spot, and planes that
     /// already clear each other keep their anchors untouched.
-    ///
-    /// The packer reads `half`, never `extent`, so these numbers describe it
-    /// on whichever axis it is asked to spread. It is used on the VERTICAL one
-    /// — planes stacking up a depth column — so the gap is `WALL_GUTTER_Z`.
     #[test]
     fn pack_row_packs_tight_and_leaves_clear_planes_alone() {
         let m = crate::ir::Module::new("t");

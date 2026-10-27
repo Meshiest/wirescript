@@ -9,32 +9,30 @@
 //! `Type::Param` with its solved binding.
 //!
 //! Typecheck uses these at the call site to type the result; lowering
-//! re-runs the same inference at the inline site to monomorphize the
-//! body — so `pick<int>` emits int gates and `pick<vector>` emits vector gates
-//! instead of leaking a `Type::Param` to emit. Keeping them here (rather than
-//! private to `typecheck.rs`) lets both consumers share one implementation.
+//! re-runs the same inference at the inline site to monomorphize the body, so
+//! `pick<int>` emits int gates and `pick<vector>` emits vector gates instead
+//! of leaking a `Type::Param` to emit.
 
 use crate::ast::TypeExpr;
 use crate::ir::Type;
 use crate::types::infer::{Constraint, Subst, solve};
 
-pub use crate::ir::unwrap_ref;
+pub(crate) use crate::ir::unwrap_ref;
 
 /// Walk `p` (a param's declared type, possibly containing `Type::Param`s) and
 /// `a` (the caller's inferred argument type) in lockstep, pushing an
 /// `Eq(name, a')` constraint for every `Type::Param(name)` found in `p`
 /// (`a'` being the corresponding sub-type of `a` at that position). A
 /// structural mismatch (e.g. `p` is `T[]` but `a` isn't an array) contributes
-/// nothing — that mismatch is a type error the ordinary arg-type checking
-/// already surfaces elsewhere, not this pass's job. A concrete (non-`Param`,
-/// non-compound) `p` also contributes nothing: there's nothing to infer from
-/// it.
-pub fn collect(p: &Type, a: &Type, out: &mut Vec<Constraint>) {
+/// nothing; ordinary arg-type checking reports it elsewhere. A concrete
+/// (non-`Param`, non-compound) `p` also contributes nothing, since there is
+/// nothing to infer from it.
+pub(crate) fn collect(p: &Type, a: &Type, out: &mut Vec<Constraint>) {
     match p {
         // A gate read filling a `T` slot is one value: its first output.
         Type::Param(n) => match a {
             Type::Outputs(fields) if !fields.is_empty() => {
-                out.push(Constraint::Eq(n.clone(), fields[0].1.clone()))
+                out.push(Constraint::Eq(n.clone(), fields[0].1.clone()));
             }
             _ => out.push(Constraint::Eq(n.clone(), a.clone())),
         },
@@ -90,10 +88,10 @@ pub fn collect(p: &Type, a: &Type, out: &mut Vec<Constraint>) {
 }
 
 /// Replace every `Type::Param(n)` in `t` with `s[n]`, recursing through
-/// compound types; a param missing from `s` (shouldn't happen once `solve`
-/// has succeeded — every param it was asked to solve is in the result) is
+/// compound types; a param missing from `s` (not expected once `solve`
+/// has succeeded, since every param it was asked to solve is in the result) is
 /// left as-is rather than panicking. Non-param types pass through unchanged.
-pub fn substitute(t: &Type, s: &Subst) -> Type {
+pub(crate) fn substitute(t: &Type, s: &Subst) -> Type {
     match t {
         Type::Param(n) => s.get(n).cloned().unwrap_or_else(|| t.clone()),
         Type::Array(inner) => Type::Array(Box::new(substitute(inner, s))),
@@ -119,16 +117,19 @@ pub fn substitute(t: &Type, s: &Subst) -> Type {
     }
 }
 
-/// Resolve a type-param bound (`T: Bound`) to its mask — the set of concrete
+/// Resolve a type-param bound (`T: Bound`) to its mask: the set of concrete
 /// types the param may be instantiated to. `None` (unbounded `T`) is the full
 /// `Variant` mask. A bare class name (`Numeric`, `Scalar`, `Variant`) uses the
 /// matching built-in class mask; otherwise the bound is the type `resolve`
 /// gives it (the caller's alias-aware resolver, reading each alias where the
 /// bound's file declares it), a `Union` becoming its options list and a single
 /// concrete type a one-element mask. Anything unresolvable falls back to the
-/// unbounded `Variant` mask: v1 bound-checking only needs to recognize class
-/// names and unions, not diagnose a malformed bound (covered elsewhere).
-pub fn mask_for_param(bound: Option<&TypeExpr>, resolve: &dyn Fn(&TypeExpr) -> Type) -> Vec<Type> {
+/// unbounded `Variant` mask: bound-checking only needs to recognize class
+/// names and unions, and a malformed bound is diagnosed elsewhere.
+pub(crate) fn mask_for_param(
+    bound: Option<&TypeExpr>,
+    resolve: &dyn Fn(&TypeExpr) -> Type,
+) -> Vec<Type> {
     let Some(te) = bound else {
         return crate::types::classes::variant_mask();
     };
@@ -161,15 +162,15 @@ pub fn mask_for_param(bound: Option<&TypeExpr>, resolve: &dyn Fn(&TypeExpr) -> T
 }
 
 /// Collect an equality constraint from every (declared param type, inferred
-/// arg type) pair in lockstep — the shared first half of generic-call
-/// inference (arg-driven type-param solving), used by both the typecheck-side
-/// call-site inference and the lowering-side monomorphizer (see module docs).
+/// arg type) pair in lockstep: the shared first half of generic-call
+/// inference, used by both the typecheck-side call-site inference and the
+/// lowering-side monomorphizer (see module docs).
 /// Ref-aligns each pair before collecting: a `*T` param resolves to
 /// `Ref(Param(T))`, but a var passed to it infers to its already-auto-derefed
-/// inner type (`Int`, not `Ref(Int)`), so the Ref layers are asymmetric —
-/// [`unwrap_ref`] strips a leading Ref off BOTH so `*T` vs `int` collects as
+/// inner type (`Int`, not `Ref(Int)`), so the Ref layers are asymmetric.
+/// [`unwrap_ref`] strips a leading Ref off both so `*T` vs `int` collects as
 /// `Param(T)` vs `int` -> `Eq(T, int)`, exactly like a value `T`.
-pub fn call_constraints(param_types: &[Type], arg_types: &[Type]) -> Vec<Constraint> {
+pub(crate) fn call_constraints(param_types: &[Type], arg_types: &[Type]) -> Vec<Constraint> {
     let mut constraints = Vec::new();
     for (p, a) in param_types.iter().zip(arg_types.iter()) {
         collect(&unwrap_ref(p), &unwrap_ref(a), &mut constraints);
@@ -183,12 +184,12 @@ pub fn call_constraints(param_types: &[Type], arg_types: &[Type]) -> Vec<Constra
 /// typecheck-side inference: [`call_constraints`] collects the equality
 /// constraints (ref-aligning each param/arg pair), then [`solve`].
 ///
-/// On solver failure — which for a program that already type-checked can only
-/// mean an exotic/uninferable shape the caller has already been warned about
-/// (WS033) — fall back to a best-effort direct build from the collected
+/// On solver failure (for a program that already type-checked, only an
+/// exotic or uninferable shape the caller has already been warned about,
+/// WS033) this falls back to a best-effort direct build from the collected
 /// constraints, so a valid, fully-applied generic call never leaves a
 /// `Type::Param` unresolved at emit.
-pub fn infer_call_subst(
+pub(crate) fn infer_call_subst(
     param_types: &[Type],
     arg_types: &[Type],
     params: &[(String, Vec<Type>)],

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn xxh64_canonical_empty_vector() {
     // Reference XXH64 test vector (seed 0).
-    assert_eq!(xxh64(b"", 0), 0xEF46DB3751D8E999);
+    assert_eq!(xxh64(b"", 0), 0xEF46_DB37_51D8_E999);
 }
 
 #[test]
@@ -14,15 +14,11 @@ fn atom_hash_reinterprets_bits_as_i64() {
 
 #[test]
 fn xxh64_stripe_path_regression_lock() {
-    // Golden value: locks the current XXH64 output for a >32-byte input so a
-    // future edit to the algorithm can't silently change baked atom hashes
-    // (atom hashes are persisted as MapVar keys in saved worlds). This is a
-    // regression lock, not an independently-sourced canonical vector: the
-    // expected value below was computed once from THIS implementation
-    // (`cargo test -p wirescript --lib hash::tests::xxh64_stripe_path_regression_lock`
-    // after a deliberate algorithm change would be the only legitimate
-    // reason to update it).
+    // Golden value for a >32-byte input (the stripe path). It locks the
+    // implementation's own output, not an independent canonical vector, so a
+    // change to the algorithm cannot silently change baked atom hashes (atom
+    // hashes are persisted as MapVar keys in saved worlds).
     let input = b"the quick brown fox jumps over the lazy dog!!"; // 45 bytes, hits the stripe loop
     assert_eq!(input.len(), 45);
-    assert_eq!(xxh64(input, 0), 0xC40B3EEE2C011AF9);
+    assert_eq!(xxh64(input, 0), 0xC40B_3EEE_2C01_1AF9);
 }

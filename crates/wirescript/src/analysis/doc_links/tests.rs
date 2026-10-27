@@ -26,7 +26,7 @@ fn builtins_link_to_their_docs() {
         .copied()
         .filter(|n| doc_url(Doc::Builtin(n)).is_none())
         .collect();
-    missing.sort();
+    missing.sort_unstable();
     assert!(
         missing.len() * 20 <= calls().len(),
         "{} of {} builtins have no docs link: {}",

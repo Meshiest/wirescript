@@ -6,8 +6,8 @@
 //!
 //! [`normalize_range`] is the one place every range spelling (`a..b`,
 //! `.step(k)`, `.rev()`, `count(..)`) collapses onto the shell's `Count`,
-//! `FirstIndex` and `Step`. It is separate from lowering because its
-//! semantics are independently reviewable and independently wrong-able.
+//! `FirstIndex` and `Step`, kept apart from lowering so its arithmetic can be
+//! tested on its own.
 
 use super::*;
 use crate::ast::{Expr, RangeExtent, RangeSource};
@@ -23,10 +23,9 @@ pub(crate) const SLICED_NESTED: &str = "`@sliced` only works on the outermost lo
 
 /// One node of a synthesized shell-pin expression tree.
 ///
-/// The point of the split is [`PinExpr::User`]: a sub-expression the author
-/// actually wrote, which typecheck walked. Everything else this module
-/// fabricates, and fabricated arithmetic cannot go through `lower_expr`. See
-/// [`normalize_range`].
+/// Only [`PinExpr::User`] is author-written and typechecked; every other
+/// variant is synthesized and cannot go through `lower_expr` (see
+/// [`normalize_range`]).
 #[derive(Clone, Debug)]
 pub(crate) enum PinExpr {
     /// A user-written expression, carried through unchanged. Safe on the
@@ -36,25 +35,21 @@ pub(crate) enum PinExpr {
     /// A synthesized integer constant: the default step of `1`, the default
     /// `from` of `0`, or the `0` in the max-clamp.
     Int(i64),
-    /// A synthesized float constant. Currently only the `1.0` that forces
-    /// float division ahead of `ceil`.
+    /// A synthesized float constant: the `1.0` that forces float division
+    /// ahead of `ceil`.
     Float(f64),
     /// Synthesized arithmetic, lowered as a direct Math gate picked from the
     /// operand types rather than from `op_resolutions`.
     Bin {
         op: &'static str,
-        lhs: Box<PinExpr>,
-        rhs: Box<PinExpr>,
+        lhs: Box<Self>,
+        rhs: Box<Self>,
     },
     /// A synthesized builtin call (`ceil`, `max`), resolved by callee name
     /// like any other builtin.
-    Call {
-        name: &'static str,
-        args: Vec<PinExpr>,
-    },
+    Call { name: &'static str, args: Vec<Self> },
     /// The loop's own `Count`, already lowered. `.rev()` builds `FirstIndex`
-    /// out of `Count`, and a second copy of that tree would emit the whole
-    /// subtract, widen, divide, ceil and max chain twice.
+    /// from it, and a copy of the `Count` tree would emit its gates twice.
     CountPin,
 }
 
@@ -67,30 +62,15 @@ pub(crate) struct RangePins {
 
 /// Normalise any range spelling onto the shell's `(Count, FirstIndex, Step)`.
 ///
-/// `a..b` excludes `b`, and `.step(k)` follows Rust's `step_by`: the stride
-/// changes how many iterations there are, so `Count` is a ceil-divide rather
-/// than a plain difference. `.rev()` starts at the last index the forward
-/// range would have produced and walks back with a negated stride, leaving
-/// `Count` unchanged. The `count(n, from = .., step = ..)` spelling drives the
-/// pins directly, with no bound to exclude or divide.
+/// `a..b` excludes `b`; `.step(k)` follows Rust's `step_by`, so `Count` is
+/// `max(0, ceil((end - start) / step))` and a backwards or empty range runs zero
+/// times. `.rev()` starts at the last forward index with a negated stride and the
+/// same `Count`. `count(n, from = .., step = ..)` drives the pins directly.
 ///
-/// The ceil-divide is wrapped in `max(0, ..)`, so a backwards or empty range
-/// (`10..0`, `5..5`) is zero iterations rather than a negative `Count`, which
-/// is undefined as far as this compiler knows.
-///
-/// # Why this returns [`PinExpr`], not a bare `Expr`
-///
-/// `lower::ops::lower_binop` refuses any `Expr::BinOp` whose source range has
-/// no entry in `LowerCtx::op_resolutions`, substituting an `_Unsupported`
-/// placeholder. Only typecheck's own AST walk populates that map, so a
-/// `BinOp` synthesized here would never have an entry, and typecheck cannot
-/// be made to add one: every node built from a single `RangeSource` shares
-/// that source's one range, so `end - start` and `(end - start) * 1.0` would
-/// collide on one key.
-///
-/// Flattening this back to bare `Expr`s therefore compiles, passes every test
-/// with a constant range (typecheck pre-folds those), and silently produces a
-/// save that loads and does nothing the moment a bound is a variable.
+/// Returns [`PinExpr`] rather than `Expr` because `lower_binop` needs an
+/// `op_resolutions` entry per source range, and synthesized nodes share the
+/// `RangeSource`'s one range; as bare `Expr`s a runtime bound would lower to
+/// `_Unsupported` placeholders.
 pub(crate) fn normalize_range(r: &RangeSource) -> RangePins {
     let step = r.step.clone().map(PinExpr::User).unwrap_or(PinExpr::Int(1));
 
@@ -164,7 +144,7 @@ fn call(name: &'static str, args: Vec<PinExpr>) -> PinExpr {
 /// `NodeKind::Chip` node plus `chip_id`-tagged descendants that
 /// `emit::partition::partition_anon_chips` moves into a child `Module`. Only
 /// the `gate_class` and the entry gate inside make it a loop.
-pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
+pub(super) fn lower_for(ctx: &mut LowerCtx<'_>, s: &ForStmt) {
     // The shell fires on an `Exec` pin, so a `for` with no chain to hang off
     // emits nothing. Typecheck reported WS074 for it.
     let Some(entry_exec) = ctx.current_exec else {
@@ -187,72 +167,9 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     // that `ctx.current_exec` has already advanced past any `Var_Get` a
     // runtime bound needed by the time the shell's `Exec` is wired below.
     let drivers: Vec<(WirePort, PortRef)> = match &s.source {
-        ForSource::Range(r) => {
-            let pins = normalize_range(r);
-            // Each bound the author wrote runs once, in source order; the
-            // pins below are built from those values. Count is lowered first
-            // and its value handed to the other two, because `.rev()` builds
-            // `FirstIndex` out of it.
-            let mut scope = PinScope::default();
-            let mut written: Vec<&Expr> = match &r.extent {
-                RangeExtent::Bounds { start, end } => vec![start, end],
-                RangeExtent::Count { count, from } => std::iter::once(count).chain(from).collect(),
-            };
-            written.extend(&r.step);
-            written.sort_by_key(|e| e.range().start.offset);
-            for e in written {
-                let stride = r.step.as_ref().is_some_and(|st| std::ptr::eq(st, e));
-                lower_user(ctx, e, !stride, &mut scope);
-            }
-            let count = lower_pin_val(ctx, &pins.count, &s.range, &mut scope);
-            let count_port = pin_port(ctx, count.clone(), &Type::Int, &s.range);
-            scope.count = Some(count);
-            vec![
-                (WirePort::Count, count_port),
-                (
-                    WirePort::FirstIndex,
-                    lower_pin(ctx, &pins.first_index, &Type::Int, &s.range, &mut scope),
-                ),
-                (
-                    WirePort::Step,
-                    lower_pin(ctx, &pins.step, &Type::Int, &s.range, &mut scope),
-                ),
-            ]
-        }
+        ForSource::Range(r) => range_drivers(ctx, r, &s.range),
         ForSource::Collection { expr, .. } => {
-            // The shell takes a REFERENCE: resolved like any other container receiver.
-            let source = ctx
-                .container_kind(expr)
-                .and_then(|k| container_ref(ctx, expr, &k));
-            let port = match source {
-                Some(ContainerSource::Ref(p)) => Some(p),
-                Some(ContainerSource::Columns(cols)) => {
-                    let driver = match kind {
-                        LoopKind::ForEachArray => {
-                            leaf_columns(Columns::Array, &cols).into_iter().next()
-                        }
-                        _ => leaf_columns(Columns::Map, &cols).into_iter().next(),
-                    };
-                    columns = Some(cols);
-                    driver.map(|v| {
-                        elem = match (kind, &v.inner_type) {
-                            (LoopKind::ForEachArray, t) => vec![t.clone()],
-                            _ => {
-                                let (k, val) = crate::lower::access::map_kv(&v);
-                                vec![k, val]
-                            }
-                        };
-                        let port = match kind {
-                            LoopKind::ForEachArray => WirePort::ArrayVarRef,
-                            _ => WirePort::MapVarRef,
-                        };
-                        v.node_id.port(port)
-                    })
-                }
-                None => None,
-            };
-            let port = port.unwrap_or_else(|| lower_expr(ctx, expr));
-            vec![(collection_driver_port(kind), port)]
+            collection_drivers(ctx, expr, kind, &mut elem, &mut columns)
         }
     };
 
@@ -263,15 +180,11 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
         ctx.warn_code("WS119", SLICED_NESTED, &s.range);
     }
     if s.sliced {
-        shell_props.insert(crate::intern::intern(RUN_ACROSS_TICKS), Literal::Bool(true));
+        shell_props.insert(intern(RUN_ACROSS_TICKS), Literal::Bool(true));
     }
     let consts = ctx.const_lookup();
-    if let Some(label) = crate::lower::predeclare::resolve_label_text(
-        s.label.as_deref(),
-        s.label_expr.as_ref(),
-        &consts,
-    ) {
-        shell_props.insert(*crate::intern::sym::NAME_LABEL, Literal::String(label));
+    if let Some(label) = resolve_label_text(s.label.as_deref(), s.label_expr.as_ref(), &consts) {
+        shell_props.insert(*sym::NAME_LABEL, Literal::String(label));
     }
     let shell = ctx.add_gate(AddNodeOpts {
         gate_class: spec.shell_class,
@@ -376,22 +289,110 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
         bind_loop_result(ctx, name, shell);
     }
 
-    // Post-loop cache state. `restore` drops the reads the body created (an
-    // in-plane `Var_Get` never fires on the continuation) and puts the
-    // pre-loop reads back; the invalidation then drops the pre-loop read of
-    // any var the body touched.
-    //
-    // "Touched" comes from the wires the body added, because every read and
-    // write of a var draws a wire out of its storage gate, including through
-    // a nested plane or an inlined mod. A syntactic walk of assignment
-    // targets would have to enumerate the write forms and would miss the
-    // indirect ones. The cache diff `lower_if` uses cannot serve here: a
-    // write to a var with no cached read leaves the cache `None` either way,
-    // so it reports "unchanged" for the `t += 1` case this must catch.
+    repair_caches_after_loop(ctx, &pre_loop_caches, wires_before, dyn_writes_before);
+
+    // The loop's continuation is the shell's `Completed`, on the outer grid.
+    ctx.current_exec = Some(shell.port(WirePort::Completed));
+}
+
+/// The shell's `Count`, `FirstIndex` and `Step` drivers for a range source,
+/// lowered on the outer grid.
+fn range_drivers(
+    ctx: &mut LowerCtx<'_>,
+    r: &RangeSource,
+    range: &SourceRange,
+) -> Vec<(WirePort, PortRef)> {
+    let pins = normalize_range(r);
+    // Each bound the author wrote runs once, in source order; the
+    // pins below are built from those values. Count is lowered first
+    // and its value handed to the other two, because `.rev()` builds
+    // `FirstIndex` out of it.
+    let mut scope = PinScope::default();
+    let mut written: Vec<&Expr> = match &r.extent {
+        RangeExtent::Bounds { start, end } => vec![start, end],
+        RangeExtent::Count { count, from } => std::iter::once(count).chain(from).collect(),
+    };
+    written.extend(&r.step);
+    written.sort_by_key(|e| e.range().start.offset);
+    for e in written {
+        let stride = r.step.as_ref().is_some_and(|st| std::ptr::eq(st, e));
+        lower_user(ctx, e, !stride, &mut scope);
+    }
+    let count = lower_pin_val(ctx, &pins.count, range, &mut scope);
+    let count_port = pin_port(ctx, count.clone(), &Type::Int, range);
+    scope.count = Some(count);
+    vec![
+        (WirePort::Count, count_port),
+        (
+            WirePort::FirstIndex,
+            lower_pin(ctx, &pins.first_index, &Type::Int, range, &mut scope),
+        ),
+        (
+            WirePort::Step,
+            lower_pin(ctx, &pins.step, &Type::Int, range, &mut scope),
+        ),
+    ]
+}
+
+/// The shell's one ref-taking driver for a collection source. A columnar
+/// collection drives off its first leaf column: `columns` takes the column
+/// record and `elem` the driver's element types.
+fn collection_drivers(
+    ctx: &mut LowerCtx<'_>,
+    expr: &Expr,
+    kind: LoopKind,
+    elem: &mut Vec<Type>,
+    columns: &mut Option<Fields>,
+) -> Vec<(WirePort, PortRef)> {
+    // The shell takes a REFERENCE: resolved like any other container receiver.
+    let source = ctx
+        .container_kind(expr)
+        .and_then(|k| container_ref(ctx, expr, &k));
+    let port = match source {
+        Some(ContainerSource::Ref(p)) => Some(p),
+        Some(ContainerSource::Columns(cols)) => {
+            let driver = match kind {
+                LoopKind::ForEachArray => leaf_columns(Columns::Array, &cols).into_iter().next(),
+                _ => leaf_columns(Columns::Map, &cols).into_iter().next(),
+            };
+            *columns = Some(cols);
+            driver.map(|v| {
+                *elem = match (kind, &v.inner_type) {
+                    (LoopKind::ForEachArray, t) => vec![t.clone()],
+                    _ => {
+                        let (k, val) = map_kv(&v);
+                        vec![k, val]
+                    }
+                };
+                let port = match kind {
+                    LoopKind::ForEachArray => WirePort::ArrayVarRef,
+                    _ => WirePort::MapVarRef,
+                };
+                v.node_id.port(port)
+            })
+        }
+        None => None,
+    };
+    let port = port.unwrap_or_else(|| lower_expr(ctx, expr));
+    vec![(collection_driver_port(kind), port)]
+}
+
+/// Post-loop cache state. `restore` drops the reads the body created (an
+/// in-plane `Var_Get` never fires on the continuation) and puts the
+/// pre-loop reads back; the invalidation then drops the pre-loop read of
+/// any var the body touched.
+///
+/// "Touched" means the body added a wire out of the var's storage gate,
+/// which every read and write does, through nested planes and inlined mods
+/// too. `lower_if`'s cache diff misses a write to a var with no cached read.
+fn repair_caches_after_loop(
+    ctx: &mut LowerCtx<'_>,
+    pre_loop_caches: &VarCacheSnapshot,
+    wires_before: usize,
+    dyn_writes_before: u32,
+) {
     let mut touched: HashSet<NodeId> = HashSet::default();
-    // `get(..)` rather than a slice index: lowering only appends wires, but a
-    // shrink here would panic the compiler, and scanning nothing is no worse
-    // than the pre-loop caches already are.
+    // `get(..)` so a shrunk wire list scans nothing instead of panicking.
     for w in ctx
         .builder
         .module
@@ -403,9 +404,9 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
             touched.insert(w.source.node_id);
         }
     }
-    restore_var_caches(ctx, &pre_loop_caches);
+    restore_var_caches(ctx, pre_loop_caches);
     for id in &touched {
-        invalidate_var_cache(ctx, id);
+        invalidate_var_cache(ctx, *id);
     }
     // A write through a runtime ref draws no wire out of the storage it hits,
     // so the wire scan above cannot see it: any such write in the body drops
@@ -413,15 +414,12 @@ pub(super) fn lower_for(ctx: &mut LowerCtx, s: &ForStmt) {
     if ctx.dyn_ref_writes != dyn_writes_before {
         reset_var_get_caches(ctx);
     }
-
-    // The loop's continuation is the shell's `Completed`, on the outer grid.
-    ctx.current_exec = Some(shell.port(WirePort::Completed));
 }
 
 /// Which loop kind a source is, plus the element types its slots take: empty
 /// for a range, `[element]` for an array, `[key, value]` for a map. `None`
 /// when the source is neither (WS075) or is record-typed (WS082).
-fn loop_kind(ctx: &LowerCtx, src: &ForSource) -> Option<(LoopKind, Vec<Type>)> {
+fn loop_kind(ctx: &LowerCtx<'_>, src: &ForSource) -> Option<(LoopKind, Vec<Type>)> {
     match src {
         ForSource::Range(_) => Some((LoopKind::CountFor, Vec::new())),
         ForSource::Collection { expr, .. } => match ctx.container_kind(expr)? {
@@ -503,7 +501,7 @@ fn entry_io(spec: &'static PlaneSpec, slot_tys: &[Type]) -> GateIO {
 /// WS076 for an unknown field or a `...rest`, so an unresolved name binds
 /// nothing here.
 fn bind_range_slot_ports(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     fields: &[RecordDestructField],
     spec: &'static PlaneSpec,
     entry: NodeId,
@@ -525,7 +523,7 @@ fn bind_range_slot_ports(
 
 /// Bind one slot pattern to the entry gate's port for that slot. `_` binds
 /// nothing, leaving the port unwired.
-fn bind_slot(ctx: &mut LowerCtx, pat: &ForPat, port: PortRef) {
+fn bind_slot(ctx: &mut LowerCtx<'_>, pat: &ForPat, port: PortRef) {
     match pat {
         ForPat::Ignore(_) => {}
         ForPat::Name(name, _) => {
@@ -541,12 +539,12 @@ fn bind_slot(ctx: &mut LowerCtx, pat: &ForPat, port: PortRef) {
 /// Bind `let run = for` to a record over the shell's status outputs, on the outer
 /// grid. One port per field, so `run.aborted` resolves straight to the
 /// shell's `bAborted` pin with no storage in between.
-fn bind_loop_result(ctx: &mut LowerCtx, name: &str, shell: NodeId) {
-    let fields: HashMap<crate::intern::Sym, Binding> = crate::ir::plane::result_fields()
+fn bind_loop_result(ctx: &mut LowerCtx<'_>, name: &str, shell: NodeId) {
+    let fields: Fields = crate::ir::plane::result_fields()
         .into_iter()
         .map(|(field, port, _)| {
             (
-                crate::intern::intern(field),
+                intern(field),
                 Binding::Local(LocalRecord {
                     port: shell.port(WirePort::from_name(port)),
                 }),
@@ -571,7 +569,7 @@ enum PinVal {
 /// constant range folds to an integral `Literal::Float` that an int pin would
 /// otherwise coerce at the wire.
 fn lower_pin(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     e: &PinExpr,
     want: &Type,
     range: &SourceRange,
@@ -581,20 +579,18 @@ fn lower_pin(
     pin_port(ctx, v, want, range)
 }
 
-/// What the driver pins of one loop share while they are lowered: the loop's
-/// own `Count`, once it is, and each expression the author wrote, lowered once
-/// however many pins its value feeds. A range's start feeds both `Count` and
-/// `FirstIndex`, and its stride `Count` and `Step`, so lowering it per use
-/// ran a call in it once per pin.
+/// What one loop's driver pins share while lowered: the lowered `Count`, and
+/// each author-written expression, lowered once however many pins it feeds (a
+/// start feeds `Count` and `FirstIndex`), so a call in it runs once.
 #[derive(Default)]
 struct PinScope {
     count: Option<PinVal>,
-    written: HashMap<(std::sync::Arc<str>, usize, usize), PinVal>,
+    written: HashMap<RangeKey, PinVal>,
 }
 
 /// The port a lowered pin value wires from, emitting a literal gate of the
 /// pin's own type when the value is still constant.
-fn pin_port(ctx: &mut LowerCtx, v: PinVal, want: &Type, range: &SourceRange) -> PortRef {
+fn pin_port(ctx: &mut LowerCtx<'_>, v: PinVal, want: &Type, range: &SourceRange) -> PortRef {
     match v {
         PinVal::Const(lit) => const_pin_port(ctx, lit, want, range),
         PinVal::Port(p) => p,
@@ -603,7 +599,12 @@ fn pin_port(ctx: &mut LowerCtx, v: PinVal, want: &Type, range: &SourceRange) -> 
 
 /// A constant pin, as a literal gate of the pin's own type. `ceil` never
 /// yields a fraction, so narrowing an integral `Float` to `Int` is lossless.
-fn const_pin_port(ctx: &mut LowerCtx, lit: Literal, want: &Type, range: &SourceRange) -> PortRef {
+fn const_pin_port(
+    ctx: &mut LowerCtx<'_>,
+    lit: Literal,
+    want: &Type,
+    range: &SourceRange,
+) -> PortRef {
     let (ty, lit) = match (want, lit) {
         (Type::Int, Literal::Float(f)) if f.is_finite() && f.fract() == 0.0 => {
             (Type::Int, Literal::Int(f as i64))
@@ -623,7 +624,7 @@ fn const_pin_port(ctx: &mut LowerCtx, lit: Literal, want: &Type, range: &SourceR
 /// makes the `* 1.0` select the `(Float, Int)` divide rather than the
 /// truncating `(Int, Int)` one.
 fn lower_pin_val(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     e: &PinExpr,
     range: &SourceRange,
     scope: &mut PinScope,
@@ -680,9 +681,14 @@ fn lower_pin_val(
 /// A bound or stride the author wrote, lowered the first time a pin asks for
 /// it and shared by every later one. A bound is an `int` place (`int_place`);
 /// a stride keeps a float value.
-fn lower_user(ctx: &mut LowerCtx, expr: &Expr, int_place: bool, scope: &mut PinScope) -> PinVal {
+fn lower_user(
+    ctx: &mut LowerCtx<'_>,
+    expr: &Expr,
+    int_place: bool,
+    scope: &mut PinScope,
+) -> PinVal {
     let r = expr.range();
-    let key = (r.file.clone(), r.start.offset, r.end.offset);
+    let key = r.key();
     if let Some(v) = scope.written.get(&key) {
         return v.clone();
     }
@@ -695,7 +701,7 @@ fn lower_user(ctx: &mut LowerCtx, expr: &Expr, int_place: bool, scope: &mut PinS
 }
 
 /// Give a `PinVal` a port, emitting a literal gate when it is still constant.
-fn materialize(ctx: &mut LowerCtx, v: PinVal, range: &SourceRange) -> PortRef {
+fn materialize(ctx: &mut LowerCtx<'_>, v: PinVal, range: &SourceRange) -> PortRef {
     match v {
         PinVal::Port(p) => p,
         PinVal::Const(lit) => {
@@ -713,11 +719,8 @@ fn materialize(ctx: &mut LowerCtx, v: PinVal, range: &SourceRange) -> PortRef {
 /// The value of a user-written bound or stride when it is a compile-time
 /// constant, read through the ordinary lowering constant environment. In an
 /// `int` place (a bound) a float constant is the integer it truncates to.
-fn const_user_expr(ctx: &LowerCtx, e: &Expr, int_place: bool) -> Option<Literal> {
-    let lookup = |n: &str| ctx.resolve_mod(n);
-    let cx = ctx.const_ctx(Some(&lookup));
-    let mut budget = crate::const_eval::Budget::default();
-    let lit = crate::const_eval::eval_expr(e, &cx, &mut budget).ok()?;
+fn const_user_expr(ctx: &LowerCtx<'_>, e: &Expr, int_place: bool) -> Option<Literal> {
+    let lit = ctx.const_eval(e, ConstScope::Plain).ok()?;
     if !int_place {
         return Some(lit);
     }
@@ -734,7 +737,7 @@ fn const_user_expr(ctx: &LowerCtx, e: &Expr, int_place: bool) -> Option<Literal>
 /// were never in the source text, so `op_resolutions` has no entry for them
 /// and `lower_binop` would substitute an `_Unsupported` placeholder.
 fn build_binop(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     op: &str,
     lhs: PortRef,
     rhs: PortRef,
@@ -755,33 +758,21 @@ fn build_binop(
         );
         return lhs;
     };
-    let in_a = rule.ports.inputs[0];
-    let in_b = rule.ports.inputs[1];
-    let out = rule.ports.output;
-    let node = ctx.add_gate(AddNodeOpts {
-        gate_class: rule.gate_class,
-        source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec::new(in_a.sym(), rule.operands[0].clone()),
-                PortSpec::new(in_b.sym(), rule.operands[1].clone()),
-            ],
-            outputs: vec![PortSpec::new(out.sym(), rule.result.clone())],
-        },
-        ..Default::default()
-    });
-    ctx.connect(lhs, node.port(in_a));
-    ctx.connect(rhs, node.port(in_b));
-    node.port(out)
+    rule_gate(
+        ctx,
+        rule,
+        &[Some(lhs), Some(rhs)],
+        rule.operands,
+        None,
+        range,
+    )
 }
 
 /// Constant-fold a synthesized builtin call through the certified per-gate
 /// law, or `None` when any argument is a runtime value.
 ///
-/// Arguments are widened to their declared parameter type first. Every
-/// `ceil`/`max` parameter is `float`, and the fold table has no entry for an
-/// int-typed wire into those gate classes because the compiler never wires
-/// one: an int argument to a float port widens at the wire.
+/// Arguments are widened to their declared parameter type first, as the wire
+/// would; the fold table has no entry for an int input to `ceil`/`max`.
 fn fold_builtin(spec: &crate::catalog::calls::CallSpec, vals: &[PinVal]) -> Option<Literal> {
     use super::fold::eval::Value;
     let mut inputs: Vec<Option<Value>> = Vec::with_capacity(vals.len());
@@ -807,7 +798,7 @@ fn float_param(t: &Type) -> Type {
 /// Build the gate for a synthesized builtin call, wiring each argument into
 /// its declared parameter port.
 fn build_builtin(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     spec: &crate::catalog::calls::CallSpec,
     args: &[PortRef],
     range: &SourceRange,
@@ -866,15 +857,17 @@ mod tests {
 
     /// Evaluate a user-written leaf, which in these hand-built fixtures is
     /// always a literal. `BinOp` is handled so a fixture may compose one.
-    fn eval_user_expr(e: &Expr) -> crate::ir::Literal {
+    fn eval_user_expr(e: &Expr) -> Literal {
         use crate::ir::Literal;
         match e {
             Expr::IntLit { value, .. } => Literal::Int(*value),
             Expr::FloatLit { value, .. } => Literal::Float(*value),
             Expr::BinOp {
                 op, left, right, ..
-            } => crate::lower::eval_const_binop(op, eval_user_expr(left), eval_user_expr(right))
-                .unwrap_or_else(|| panic!("operator `{op}` refused to fold its operands")),
+            } => {
+                crate::const_eval::eval_const_binop(op, eval_user_expr(left), eval_user_expr(right))
+                    .unwrap_or_else(|| panic!("operator `{op}` refused to fold its operands"))
+            }
             other => panic!("unexpected expr shape in a hand-built RangeSource fixture: {other:?}"),
         }
     }
@@ -882,19 +875,11 @@ mod tests {
     /// Evaluate one of the three pin expressions `normalize_range` produced,
     /// down to the numeric value it represents.
     ///
-    /// Deliberately not `const_eval::eval_expr`: that evaluator reaches a
-    /// catalog builtin only through `eval_method_call`, gated on
-    /// `spec.receiver.is_some()`, and `ceil`/`max` have no receiver form, so
-    /// a plain-name call falls through to `NotAConstMod`. This walks
-    /// `PinExpr` directly and evaluates `Bin`/`Call` through
-    /// `lower::fold::eval::eval`, the certified per-gate law `const_eval`'s
-    /// own paths are built on.
-    ///
-    /// Returns a `Literal` rather than an `i64`: `ceil`/`max` are
-    /// `Type::Float` builtins, so a `Bounds` range's `Count` is a
-    /// `Literal::Float` here even though the shell's pin is `int`. `pin`
-    /// below accepts either.
-    fn eval_pin(e: &PinExpr, count: Option<&crate::ir::Literal>) -> crate::ir::Literal {
+    /// `Bin`/`Call` evaluate through `lower::fold::eval::eval`, since
+    /// `const_eval::eval_expr` reaches builtins only as methods and `ceil`/`max`
+    /// have no receiver form. A `Bounds` `Count` comes back as a
+    /// `Literal::Float` because `ceil`/`max` are float builtins.
+    fn eval_pin(e: &PinExpr, count: Option<&Literal>) -> Literal {
         use crate::ir::{Literal, Type};
         use crate::lower::fold::eval::Value;
         match e {
@@ -905,7 +890,7 @@ mod tests {
                 .cloned()
                 .unwrap_or_else(|| panic!("`CountPin` evaluated with no Count to hand")),
             PinExpr::Bin { op, lhs, rhs } => {
-                crate::lower::eval_const_binop(op, eval_pin(lhs, count), eval_pin(rhs, count))
+                crate::const_eval::eval_const_binop(op, eval_pin(lhs, count), eval_pin(rhs, count))
                     .unwrap_or_else(|| panic!("operator `{op}` refused to fold its operands"))
             }
             PinExpr::Call { name, args } => {
@@ -915,12 +900,8 @@ mod tests {
                     .iter()
                     .zip(&spec.params)
                     .map(|(a, param)| {
-                        // Bind like an ordinary call argument: an int value
-                        // wired into a `Type::Float` param widens before it
-                        // reaches the gate. The fold table has no entry for
-                        // an int-typed input to this gate class, so a raw
-                        // `Value::Int` gets a `None` refusal instead of the
-                        // certified law.
+                        // Widen an int into a `Type::Float` param as the wire
+                        // would; the fold table refuses an int input here.
                         let lit = match (eval_pin(a, count), float_param(&param.ty)) {
                             (Literal::Int(n), Type::Float) => Literal::Float(n as f64),
                             (lit, _) => lit,
@@ -941,8 +922,8 @@ mod tests {
         // stands in for the one `.rev()`'s FirstIndex reaches for.
         let count = eval_pin(&pins.count, None);
         match eval_pin(which(&pins), Some(&count)) {
-            crate::ir::Literal::Int(n) => n,
-            crate::ir::Literal::Float(f) => f as i64,
+            Literal::Int(n) => n,
+            Literal::Float(f) => f as i64,
             other => panic!("expected a number, got {other:?}"),
         }
     }

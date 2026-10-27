@@ -16,7 +16,7 @@ use crate::collections::HashMap;
 /// is one exec chain: an `emit` inside an `if` and an `await` outside it are
 /// on different chains and deliberately not flagged. An `import * as` module's
 /// own declarations are its file's to report.
-pub(super) fn check_parked_kicks(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+pub(super) fn check_parked_kicks(ctx: &mut TypeCheckCtx<'_>, decls: &[TopDecl]) {
     use crate::ast::walk::{self, Node};
     for d in decls.iter().filter(|d| !matches!(d, TopDecl::Namespace(_))) {
         walk::walk(Node::Decl(d), walk::Ctx::default(), &mut |node, _| {
@@ -30,7 +30,7 @@ pub(super) fn check_parked_kicks(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
     }
 }
 
-fn scan_chain(ctx: &mut TypeCheckCtx, stmts: &[Stmt]) {
+fn scan_chain(ctx: &mut TypeCheckCtx<'_>, stmts: &[Stmt]) {
     // Signal name -> range of the earliest still-live unbuffered `emit`.
     let mut pending: HashMap<String, SourceRange> = HashMap::default();
     for s in stmts {

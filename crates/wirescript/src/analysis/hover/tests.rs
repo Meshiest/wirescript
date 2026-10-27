@@ -16,7 +16,7 @@ fn hover_with_loader(
     col: usize,
 ) -> Option<String> {
     let resolved = resolve(source, file, loader);
-    let tc = typecheck(&resolved.ast, file, &crate::typecheck::CeSlotMap::default());
+    let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(file));
     let estimates = crate::analysis::resource_estimate::collect_estimates(&resolved.ast, &tc, file);
     hover_at(
@@ -36,10 +36,9 @@ fn hover_with_loader(
     )
 }
 
-/// Hovering a record field written as an assignment target through an array
-/// index (`tk[i].phase = v`) resolves the field's type. The assignment-target
-/// inference used to type the field access `any` without inferring `tk[i]`,
-/// so the type map had no entry for the object and the field hover failed.
+/// Hovering a record field written as an assignment target through an index
+/// (`tk[i].phase = v`) resolves the field's type: the target inference infers
+/// `tk[i]`, so the type map has an entry for the object.
 #[test]
 fn hover_field_on_array_index_assignment_target() {
     let src = "type Slot = { phase: int, wantStart: bool }\nvar tk: Slot[]\nin go: exec\non go { tk[0].phase = 5 }\n";
@@ -52,11 +51,7 @@ fn hover_field_on_array_index_assignment_target() {
 fn fill_record_generates_missing_fields_recursively() {
     let src = "type Card = { foo: string, bar: { baz: int }, baq: { fred: string } }\nlet c: Card = {\n\n}";
     let resolved = resolve(src, "test", &FsLoader);
-    let tc = typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
     // Cursor on the empty line (0-based line 2) inside the `{ }`.
     let fill = fill_record_at(src, &symbols, 2, 0).expect("fill available inside record literal");
@@ -81,11 +76,7 @@ fn fill_record_generates_missing_fields_recursively() {
 fn fill_record_skips_already_present_fields() {
     let src = "type Card = { foo: string, bar: int }\nlet c: Card = {\n  foo: \"x\",\n\n}";
     let resolved = resolve(src, "test", &FsLoader);
-    let tc = typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
     let fill = fill_record_at(src, &symbols, 3, 0).expect("fill for a partial literal");
     assert!(
@@ -256,7 +247,7 @@ fn builtin_hover_shows_its_defaults_table() {
 #[test]
 fn named_param_hover_shows_its_default() {
     check_hovers(&[
-        // Hovering a named arg (`fontSize = …`) shows that param's default.
+        // Hovering a named arg (`fontSize = ...`) shows that param's default.
         hov(
             "a named arg shows its default",
             "in c: controller\nin go: exec\non go {\n  DisplayText(c, \"hi\", fontSize = 20)\n}",
@@ -451,10 +442,9 @@ fn send_custom_event_call_hover_shows_channel_typings() {
 
 #[test]
 fn namespace_member_hovers_with_signature() {
-    // Hovering the member in `card.drawCard` (a namespace-qualified call)
-    // must show its signature, not nothing. The member is stored under the
-    // qualified `card.drawCard` symbol name, which the bare-word lookup in
-    // hover_user_symbol misses — go-to-definition worked but hover didn't.
+    // Hovering the member in `card.drawCard` (a namespace-qualified call) shows
+    // its signature: the member is stored under the qualified `card.drawCard`
+    // name, which the bare-word lookup in `hover_user_symbol` does not form.
     use crate::resolve::MemLoader;
     let loader = MemLoader {
         files: [(
@@ -857,9 +847,8 @@ fn asset_reference_hover() {
 }
 #[test]
 fn array_read_out_of_bounds_field_is_bool() {
-    // `arr[i]` is typed as the bare element, so once it is bound to a `let`
-    // the bounds flag has no record to resolve against and used to fall
-    // through to Any - which is universal, so nothing downstream complained.
+    // `arr[i]` is typed as the bare element, so once bound to a `let` the bounds
+    // flag still resolves against the indexed read's record, not `any`.
     let src = "var names: string[]
 in go: exec
 on go {
@@ -944,6 +933,29 @@ fn enum_member_value_hovers_with_enum_type() {
 }
 
 #[test]
+fn var_reads_hover_with_their_exec_or_pure_context() {
+    for decl in ["var", "static var"] {
+        let src = format!(
+            "{decl} n: int = 0
+in go: exec
+let m = n + 1
+on go {{
+  n = n + 1
+}}"
+        );
+        let pure_line = src.lines().nth(2).unwrap();
+        let h = hover_for(&src, 2, pure_line.find('n').unwrap()).expect("hover on a pure read");
+        assert!(
+            h.contains("(pure)"),
+            "{decl}: a top-level read is pure: {h}"
+        );
+        let exec_line = src.lines().nth(4).unwrap();
+        let h = hover_for(&src, 4, exec_line.rfind('n').unwrap()).expect("hover on an exec read");
+        assert!(h.contains("(exec)"), "{decl}: a handler read is exec: {h}");
+    }
+}
+
+#[test]
 fn event_name_hovers_with_config_params() {
     // Hovering an event that carries config (`Clock`) lists its config args.
     let src = "static var n: int = 0\non Clock(interval = 2.0, enabled = true) {\n  n = n + 1\n}";
@@ -992,10 +1004,9 @@ fn data_driven_enum_config_field_hovers_with_enum() {
 
 #[test]
 fn invalid_field_on_record_hovers_the_record_type() {
-    // Hovering an erroring `.z` on a record-typed value surfaces the record
-    // type in a fenced (VS-Code-coloured) block listing its valid fields —
-    // the editor-native way to get a coloured type, since the diagnostic
-    // message that reports the same error is plain text.
+    // Hovering an erroring `.z` on a record value shows the record type in a
+    // fenced block (VS Code colors it) listing the valid fields; the diagnostic
+    // for the same error is plain text.
     let src = "type Point = { x: int, y: int }\nlet p: Point = { x: 1, y: 2 }\nlet v = p.z";
     let h = hover_for(src, 2, 10).expect("hover on invalid field"); // `z` in `p.z`
     assert!(
@@ -1008,12 +1019,9 @@ fn invalid_field_on_record_hovers_the_record_type() {
     );
 }
 
-/// The dropped-code warning covers a REGION, so it must answer everywhere
-/// in that region — not only on identifiers. It originally sat behind
-/// `hover_at`'s `word_at(...)?` early return, which returns `None` for any
-/// non-identifier position, so the warning silently vanished on exactly the
-/// characters someone skimming a block is most likely to point at: the
-/// braces, the spaces, and the `=`. Those three are the regression guard.
+/// The dropped-code warning covers a region, so it answers everywhere in it,
+/// not only on identifiers (`hover_at` runs it before `word_at`). The braces,
+/// the spaces and the `=` are the positions checked.
 #[test]
 fn a_dropped_block_reports_at_braces_whitespace_and_operators_not_just_identifiers() {
     let src = "const MODE = 1\nvar x: int = 0\nin go: exec\non go {\n  if MODE == 1 { x = 1 } else { x = 2 }\n}\n";
@@ -1058,13 +1066,9 @@ fn the_dropped_warning_does_not_leak_onto_the_taken_block() {
     }
 }
 
-/// Mirror of the two tests above, for the opposite branch direction: a
-/// const-FALSE condition drops the THEN block and keeps the `else`. The
-/// two directions are recorded by separate arms of `Stmt::If`'s
-/// const-elision (one pushes `else_block.range`, the other
-/// `then_block.range`), so a bug in the arm that is never exercised —
-/// pushing the wrong range, or not pushing at all — would be invisible to
-/// a suite that only ever tests a true condition.
+/// The two tests above for the other branch direction: a constant-false
+/// condition drops the `then` block and keeps the `else`. Each direction is
+/// recorded by its own arm of `Stmt::If`'s elision, so each needs a test.
 #[test]
 fn a_const_false_condition_marks_the_then_block_and_leaves_the_else_alone() {
     // MODE is 1, so `MODE == 2` is const-FALSE: `then` goes, `else` stays.
@@ -1135,7 +1139,7 @@ fn hov(
         needle,
         nth,
         offset,
-        has: has.iter().map(|s| s.to_string()).collect(),
+        has: has.iter().map(std::string::ToString::to_string).collect(),
         has_lower: &[],
         lacks: &[],
     }
@@ -1513,10 +1517,9 @@ fn let_for_hovers_as_the_outcome_record() {
     );
 }
 
-/// A `const` computed through a builtin that an import may replace with a
-/// user `const mod` shows no value: hover has the file before its imports
-/// are merged, so it would show the builtin's answer, not the program's. With
-/// no such import, the value shows.
+/// A `const` computed through a builtin an import may replace with a user
+/// `const mod` shows no value: hover sees the file before its imports merge, so
+/// it would show the builtin's answer. Without such an import, the value shows.
 #[test]
 fn a_const_through_a_builtin_an_import_may_replace_shows_no_value() {
     use crate::resolve::MemLoader;

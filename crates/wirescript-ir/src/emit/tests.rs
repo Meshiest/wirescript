@@ -1,4 +1,19 @@
 use super::*;
+use brdb::schema::WireValue;
+use brdb::{BString, BrickType, WireConnection};
+
+use super::labels::{chip_is_closed, microchip_io_label};
+use super::module::resolve_var_label;
+use super::variants::{
+    array_element_type, array_from_literals, literal_to_wire_value,
+    literal_to_wire_value_or_default, map_from_literals, map_from_type, reshape_literal_for_struct,
+    rotator_to_quat, var_type_to_wire_value,
+};
+use crate::collections::HashMap;
+use crate::intern::sym;
+use crate::ir::build::{AddNodeOpts, ModuleBuilder, port_ref};
+use crate::ir::port_registry::WirePort;
+use crate::ir::{GateIO, Literal, Node, NodeId, PortSpec, Type, Wire, gate_class as gc};
 
 const DISPLAY_TEXT: &str = "BCSComponentVertex_Exec_PlayerState_DisplayText";
 
@@ -35,7 +50,6 @@ fn var_label_walk_follows_rerouter_hops() {
 
 #[test]
 fn var_values_cover_all_wire_value_alternatives() {
-    use crate::ir::Type;
     // A var can hold any WireValue alternative, defaulted by its type.
     assert!(matches!(
         var_type_to_wire_value(Some(&Type::Bool)),
@@ -94,7 +108,6 @@ fn var_values_cover_all_wire_value_alternatives() {
 
 #[test]
 fn array_element_type_selects_the_dynamic_array_type() {
-    use crate::ir::Type;
     let r = |t: Type| Type::Ref(Box::new(Type::Array(Box::new(t))));
     // element type is unwrapped through `ref array<T>`
     assert!(matches!(array_element_type(&r(Type::Int)), Some(Type::Int)));
@@ -120,7 +133,6 @@ fn array_element_type_selects_the_dynamic_array_type() {
 /// schema's `types` table lists it), each literal keeping its own kind.
 #[test]
 fn any_containers_store_wire_values() {
-    use crate::ir::Type;
     let arr = array_from_literals(
         Some(&Type::Opaque),
         &[
@@ -146,7 +158,6 @@ fn any_containers_store_wire_values() {
 
 #[test]
 fn only_a_set_of_an_any_var_changes_type() {
-    use crate::ir::{GateIO, PortSpec, Type};
     let set = |ty: Type| GateIO {
         inputs: vec![PortSpec::new(crate::intern::intern("Value"), ty)],
         outputs: vec![],
@@ -167,7 +178,7 @@ fn only_a_set_of_an_any_var_changes_type() {
 
 /// Gates whose hand-written data-struct entry carries the fields their
 /// inlined literals land in. Each row: the gate, the struct and fields it
-/// must map to, and the bug the entry fixes.
+/// must map to, and what is lost without the entry.
 #[test]
 fn gate_data_structs_carry_their_literal_fields() {
     let rows: &[(&str, &str, &str, &[&str])] = &[
@@ -189,9 +200,9 @@ fn gate_data_structs_carry_their_literal_fields() {
             "BCSComponentVertex_Expr_NearlyEqual",
             &["InputA", "InputB", "Tolerance"],
         ),
-        // The entry existed but with an empty field list, so the inlined
-        // message of `ShowStatusMessage(ctrl, "hi")` was dropped at emit:
-        // the gate pasted with an empty internal Message and no wire.
+        // With an empty field list the inlined message of
+        // `ShowStatusMessage(ctrl, "hi")` is dropped at emit: the gate pastes
+        // with an empty internal Message and no wire.
         (
             "ShowStatusMessage keeps its message",
             crate::ir::gate_class::PLAYERSTATE_SHOW_STATUS,
@@ -221,7 +232,7 @@ fn an_empty_module_emits_a_brz() {
     let module = crate::ir::Module::new("empty");
     let bytes = emit_brz(
         &module,
-        &Default::default(),
+        &ProgramSettings::default(),
         &crate::layout::LayoutResult::default(),
         &EmitOptions::default(),
     )
@@ -240,10 +251,7 @@ fn every_gate_data_field_serializes_a_literal() {
     // Exhaustive write audit: one node per derived gate class, with a
     // schema-typed literal in EVERY representable field, emitted through
     // the real brz writer. Catches any field whose inlined literal can't
-    // be boxed/serialized (the `min/max` and Vector->0i64 bug class) for
-    // every component in the game, present and future.
-    use crate::ir::Literal;
-    use crate::ir::build::{AddNodeOpts, ModuleBuilder};
+    // be boxed or serialized, for every component in the game.
 
     let schema = brdb::schemas::bricks_components_schema_max();
     let mut builder = ModuleBuilder::new("audit");
@@ -308,7 +316,7 @@ fn every_gate_data_field_serializes_a_literal() {
                         asset_name: "Weapon_Pickaxe".into(),
                     }),
                     // arrays, composite structs, dynamic containers: not
-                    // literal-representable — writer fills defaults.
+                    // literal-representable; the writer fills defaults.
                     _ => None,
                 }
             };
@@ -332,7 +340,12 @@ fn every_gate_data_field_serializes_a_literal() {
 
     let module = builder.module;
     let lr = crate::layout::layout(&module);
-    let brz = emit_brz(&module, &Default::default(), &lr, &EmitOptions::default());
+    let brz = emit_brz(
+        &module,
+        &ProgramSettings::default(),
+        &lr,
+        &EmitOptions::default(),
+    );
     assert!(
         brz.is_ok(),
         "every gate's data fields should serialize inlined literals: {:?}",
@@ -574,7 +587,6 @@ fn non_empty_map_bakes_key_and_value_types() {
     // The non-empty MapVar byte layout is otherwise only exercisable in-game
     // (a .ws test can't run one), so pin the key/value types and the baked
     // entry data for the three key flavors that reach emit.
-    use crate::ir::{Literal, Type};
 
     // Int-keyed `Map<int, int>`: `i64` keys and values. The type-derived
     // map starts empty (a fresh MapVar's at-rest state).
@@ -585,7 +597,7 @@ fn non_empty_map_bakes_key_and_value_types() {
         "type-derived map carries no entries"
     );
     let int_map = map_from_literals(
-        int_empty,
+        &int_empty,
         &[
             (Literal::Int(1), Literal::Int(10)),
             (Literal::Int(2), Literal::Int(20)),
@@ -605,7 +617,7 @@ fn non_empty_map_bakes_key_and_value_types() {
     let str_empty = map_from_type(&Type::Map(Box::new(Type::String), Box::new(Type::Float)));
     assert_eq!((str_empty.key_type, str_empty.value_type), ("Str", "f64"));
     let str_map = map_from_literals(
-        str_empty,
+        &str_empty,
         &[(Literal::String("hp".into()), Literal::Float(2.5))],
     );
     assert_eq!(
@@ -623,7 +635,7 @@ fn non_empty_map_bakes_key_and_value_types() {
     );
     let atom_hash = 0x1234_5678_9abc_def0_i64;
     let atom_map = map_from_literals(
-        atom_empty,
+        &atom_empty,
         &[(Literal::Int(atom_hash), Literal::Bool(true))],
     );
     assert_eq!(
@@ -632,14 +644,10 @@ fn non_empty_map_bakes_key_and_value_types() {
     );
 }
 
-/// `@layout("cube")` (via `EmitOptions::no_gate_labels`) must drop the
-/// per-gate name label, which is unreadable inside a packed block and costs
-/// one text component per labelled gate. The gate brick itself must survive
-/// untouched: this is a payload cut, not a lowering change.
+/// `@layout("cube")` (via `ProgramSettings::no_gate_labels`) must drop the
+/// per-gate name label and leave the gate brick itself untouched.
 #[test]
 fn no_gate_labels_drops_the_var_name_label_but_keeps_the_gate() {
-    use crate::ir::build::{AddNodeOpts, ModuleBuilder};
-
     fn text_components(world: &brdb::World) -> usize {
         let in_grids = world.grids.iter().flat_map(|(_, bricks)| bricks.iter());
         world
@@ -693,14 +701,41 @@ fn no_gate_labels_drops_the_var_name_label_but_keeps_the_gate() {
 }
 
 #[test]
+fn a_handle_target_that_is_no_node_id_fails_as_a_ref_bake() {
+    let mut builder = ModuleBuilder::new("handles");
+    let target = builder.add_gate(AddNodeOpts {
+        gate_class: "BrickComponentType_Var",
+        ..Default::default()
+    });
+    let mut properties = HashMap::default();
+    // The low 32 bits name `target`, so a truncating cast would bake a ref to it.
+    let wrapped = (1i64 << 32) + i64::from(target.0);
+    properties.insert(*sym::HANDLE_TARGET, Literal::Int(wrapped));
+    builder.add_gate(AddNodeOpts {
+        gate_class: "BrickComponentType_Var",
+        properties,
+        ..Default::default()
+    });
+    let lr = crate::layout::layout(&builder.module);
+    let Err(err) = build_world(
+        &builder.module,
+        &ProgramSettings::default(),
+        &lr,
+        &EmitOptions::default(),
+    ) else {
+        panic!("a target past u32 is no node");
+    };
+    assert!(
+        matches!(&err, EmitError::RefBake(m) if m.contains("is not a node id")),
+        "{err}"
+    );
+}
+
+#[test]
 fn build_world_rejects_an_unresolvable_wire() {
-    // A module wire whose endpoint never got a brick must fail emit, not
-    // be silently dropped — that would launder a lowering miscompile into
-    // a format-valid `.brz` with a silently-missing wire.
-    // Synthetic on purpose: it guards the emit backstop itself, so it stays
-    // valid even after the lowering bugs that produce such wires are fixed.
-    use crate::ir::Wire;
-    use crate::ir::build::{AddNodeOpts, ModuleBuilder, port_ref};
+    // A module wire whose endpoint never got a brick must fail emit rather
+    // than produce a valid `.brz` with a missing wire. Synthetic: it guards
+    // the emit backstop itself, independent of what lowering produces.
 
     let mut builder = ModuleBuilder::new("drop_guard");
     // One real gate so the build proceeds normally up to the wire pass.
@@ -709,9 +744,8 @@ fn build_world_rejects_an_unresolvable_wire() {
         ..Default::default()
     });
 
-    // Lay out the clean module, THEN dangle a wire onto a node that was
-    // never placed — so layout/wall assignment only ever see the real node,
-    // and the phantom surfaces solely in emit's pass-3 resolution.
+    // Lay out the clean module, THEN dangle a wire onto a node that was never
+    // placed, so the phantom surfaces only in emit's pass-3 resolution.
     let lr = crate::layout::layout(&builder.module);
     let phantom = crate::ir::NodeId::fresh();
     builder.module.wires.push(Wire {
@@ -722,7 +756,7 @@ fn build_world_rejects_an_unresolvable_wire() {
     // `World` isn't `Debug`, so match the Result rather than `expect_err`.
     match build_world(
         &builder.module,
-        &Default::default(),
+        &ProgramSettings::default(),
         &lr,
         &EmitOptions::default(),
     ) {
@@ -737,8 +771,6 @@ fn a_rotation_constant_converts_to_the_quaternion_a_quat_field_stores() {
     // A rotation reaching a quaternion sink is converted by the engine on
     // the wire; baked into a `Quat` data field it has to be converted here
     // instead, by UE's own `FRotator::Quaternion()`.
-    use super::variants::{reshape_literal_for_struct, rotator_to_quat};
-    use crate::ir::Literal;
 
     let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
 
@@ -748,8 +780,8 @@ fn a_rotation_constant_converts_to_the_quaternion_a_quat_field_stores() {
     // A +45 degree yaw must give the EXACT quaternion the game was probed
     // with for `RotateVector` (see `lower/fold/eval.rs::rotate_vector`,
     // whose certified case rotates Vec(1,0,0) by Quat(0, 0, 0.3826, 0.9238)
-    // to X=0.707 Y=0.707) - the one point where this conversion is pinned
-    // to measured game behaviour rather than to the formula alone.
+    // to X=0.707 Y=0.707). This pins the conversion to measured game
+    // behavior rather than to the formula alone.
     let (x, y, z, w) = rotator_to_quat(0.0, 45.0, 0.0);
     assert!(close(x, 0.0) && close(y, 0.0), "a yaw turns about Z alone");
     assert!(close(z, 0.382_683_432_365_089_8), "z was {z}");
@@ -801,14 +833,9 @@ fn a_rotation_constant_converts_to_the_quaternion_a_quat_field_stores() {
 }
 
 /// Two distinct sources into one BRICK input port is a fan-in, whichever
-/// pass drew them.
-///
-/// The check used to sit in `emit_module`'s own wire loop, keyed on IR
-/// node and local to one module: the bus lanes, the `@side` rerouters and
-/// the `@label` wires all draw into brick ports without an IR wire, so
-/// none of them were covered, and a chip's ports were checked separately
-/// from its parent's. The game rejects the whole save at load, so this is
-/// the last place it can be caught.
+/// pass drew them: bus lanes, `@side` rerouters and `@label` wires have no IR
+/// wire, so the check is keyed on the brick port. The game rejects the whole
+/// save at load.
 #[test]
 fn fan_in_is_caught_wherever_the_wire_is_drawn() {
     let port = |brick: usize, name: &'static str| brdb::WirePort {
@@ -834,8 +861,7 @@ fn fan_in_is_caught_wherever_the_wire_is_drawn() {
     );
 
     // A different port on the same brick is untouched. Spelled on a gate
-    // with two real inputs: a rerouter has only `RER_Input`, so the old
-    // `RER_Other` fixture named a port the catalog does not have.
+    // with two real inputs, since a rerouter has only `RER_Input`.
     let math = |brick: usize, name: &'static str| brdb::WirePort {
         brick_id: brick,
         component_type: BString::Static("BrickComponentType_Expr_MathAdd"),
@@ -855,7 +881,6 @@ fn fan_in_is_caught_wherever_the_wire_is_drawn() {
 
 #[test]
 fn refs_default_to_the_games_null_refs() {
-    use crate::ir::Type;
     let null_brick = brdb::schema::SavedBrickRef {
         brick_index_in_chunk: u32::MAX,
         ..Default::default()
@@ -883,7 +908,6 @@ fn refs_default_to_the_games_null_refs() {
 
 #[test]
 fn ref_elements_select_the_handle_storage_types() {
-    use crate::ir::Type;
     let elem = |t: Type| array_from_literals(Some(&t), &[]).element_type;
     assert_eq!(elem(Type::Ref(Box::new(Type::Color))), "component_handle");
     assert_eq!(elem(Type::Array(Box::new(Type::Int))), "component_handle");
@@ -930,9 +954,6 @@ fn a_literal_bakes_as_its_own_variant() {
 /// form yet; the variant pass, layout and emit are the real ones.
 #[test]
 fn procedural_gates_are_sized_to_the_ports_they_use() {
-    use crate::ir::Wire;
-    use crate::ir::build::{AddNodeOpts, ModuleBuilder, port_ref};
-
     let mut b = ModuleBuilder::new("variants");
     let mut gate = |class: &'static str| {
         b.add_gate(AddNodeOpts {
@@ -959,8 +980,13 @@ fn procedural_gates_are_sized_to_the_ports_they_use() {
 
     crate::ir::gate_variants::select_gate_variants(&mut b.module);
     let lr = crate::layout::layout(&b.module);
-    let world = build_world(&b.module, &Default::default(), &lr, &EmitOptions::default())
-        .unwrap_or_else(|e| panic!("emit failed: {e:?}"));
+    let world = build_world(
+        &b.module,
+        &ProgramSettings::default(),
+        &lr,
+        &EmitOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("emit failed: {e:?}"));
 
     let placed = |class: &str| -> Vec<BrickType> {
         std::iter::once(&world.bricks)

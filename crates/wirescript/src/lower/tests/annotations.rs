@@ -29,8 +29,8 @@ enum Find {
     Port(&'static str),
 }
 
-/// `@label(...)` sets the display NAME_LABEL, folding a constant expression
-/// the way FormatText renders it; a `chip let` without one is labelled with
+/// `@label(...)` sets the display `NAME_LABEL`, folding a constant expression
+/// the way `FormatText` renders it; a `chip let` without one is labelled with
 /// its binding names.
 #[test]
 fn label_annotations_set_the_display_name() {
@@ -107,7 +107,7 @@ fn label_annotations_set_the_display_name() {
                 }
                 Some(chips[0])
             }
-            Find::Output => m.outputs.iter().filter_map(|id| m.nodes.get(id)).next(),
+            Find::Output => m.outputs.iter().find_map(|id| m.nodes.get(id)),
             Find::Port(name) => m.nodes_deep().find(|n| {
                 matches!(n.properties.get(&*sym::PORT_LABEL), Some(Literal::String(s)) if s == name)
             }),
@@ -190,13 +190,10 @@ fn default_chip_has_no_closed_or_open_prop() {
 
 #[test]
 fn stmt_level_annotated_nested_chip_gets_doc() {
-    // Regression: a statement-level chip decl that ALSO carries an
-    // annotation (`@label(...)`) used to lose its doc comment, because
-    // `parse_block` keyed the pending doc by the `@` token's offset rather
-    // than the chip decl's own range start (which is what lowering looks
-    // doc comments up by). The nested chip lives inside an `on run { ... }`
-    // handler block (rather than directly in Outer's top-level body) so the
-    // statement is lowered via `lower_block`'s ordinary block-statement path.
+    // A statement-level chip decl that also carries an annotation (`@label(...)`)
+    // keeps its doc comment: the pending doc is keyed by the chip decl's own range
+    // start, not the `@` token. The chip sits in an `on run { ... }` block so it is
+    // lowered through `lower_block`'s ordinary block-statement path.
     let m = lower_src(
         "chip Outer(x: int) -> (r: int) {\n\
          in run: exec\n\

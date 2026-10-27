@@ -1,25 +1,27 @@
 //! Post-lowering graph checks: cycle barriers and dangling exec triggers.
 //!
-//! Every cycle in the wire graph must pass through a tick-crossing
-//! barrier (BufferTicks/BufferSeconds/QueueTicks/QueueSeconds/EdgeDetector).
-//! We run Tarjan's SCC and for every non-trivial
-//! component verify a barrier is present.
+//! Every cycle in the wire graph must pass through a tick-crossing barrier
+//! (BufferTicks/BufferSeconds/QueueTicks/QueueSeconds); Tarjan's SCC finds each
+//! non-trivial component and the check verifies a barrier is in it.
 //!
 //! Separately, an exec gate whose `Exec` trigger input has no incoming wire
 //! never runs, so it is a dropped statement (WS058). This runs on the folded
 //! graph, so const-evaluated bodies are already gone and cannot false-positive.
 
+use std::fmt::Write as _;
+
 use crate::collections::{HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, Severity, SourceRange};
+use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{Module, Node, NodeId, NodeKind};
 
 const BARRIER_CLASSES: &[&str] = &[
-    "BrickComponentType_BufferTicks",
-    "BrickComponentType_BufferSeconds",
-    "BrickComponentType_QueueTicks",
-    "BrickComponentType_QueueSeconds",
+    gc::BUFFER_TICKS,
+    gc::BUFFER_SECONDS,
+    gc::QUEUE_TICKS,
+    gc::QUEUE_SECONDS,
 ];
 
 #[derive(Debug, Default)]
@@ -45,7 +47,7 @@ fn analyze_module(m: &Module, out: &mut CycleResult) {
     check_dangling_exec(m, &mut out.diagnostics);
     let adj = build_adjacency(m);
     for scc in tarjan(&adj) {
-        if scc.len() == 1 && !has_self_loop(&adj, &scc[0]) {
+        if scc.len() == 1 && !has_self_loop(&adj, scc[0]) {
             continue;
         }
         let has_barrier = scc.iter().any(|id| {
@@ -63,11 +65,11 @@ fn analyze_module(m: &Module, out: &mut CycleResult) {
 
 /// Warn (WS058) for any exec gate whose `Exec` trigger input has no incoming
 /// wire. Such a gate never fires, so its statement was lowered but left off
-/// every exec chain - a mod/chip body reached from a pure position drops this
-/// way. Only `Gate` nodes are checked: events are triggered by the game, input
+/// every exec chain (a mod/chip body reached from a pure position drops this
+/// way). Only `Gate` nodes are checked: events are triggered by the game, input
 /// rerouters are external entry points, and chips/outputs are containers.
 /// Cross-module exec always routes through a rerouter, so a gate's `Exec` wire
-/// is always in the gate's own module - a per-module scan suffices.
+/// is always in the gate's own module and a per-module scan suffices.
 fn check_dangling_exec(m: &Module, out: &mut Vec<Diagnostic>) {
     let mut wired: HashSet<(NodeId, WirePort)> = HashSet::default();
     for w in &m.wires {
@@ -104,10 +106,10 @@ fn build_adjacency(m: &Module) -> HashMap<NodeId, Vec<NodeId>> {
         adj.insert(*id, Vec::new());
     }
     for w in &m.wires {
-        // `_Layout` wires are cosmetic row/inline placement hints, not signal flow —
-        // emit.rs skips them when writing real connections (see its Pass 3), so they
-        // must not count toward wire-graph cycles either. Left in, a chip container's
-        // layout edges to the nodes it holds form loops that raise false WS005 errors.
+        // `_Layout` wires are cosmetic row/inline placement hints, not signal flow;
+        // emit skips them when writing real connections, so they must not count
+        // toward wire-graph cycles either. A chip container's layout edges to the
+        // nodes it holds would otherwise form loops that raise false WS005 errors.
         if w.source.port == WirePort::Layout || w.target.port == WirePort::Layout {
             continue;
         }
@@ -118,10 +120,8 @@ fn build_adjacency(m: &Module) -> HashMap<NodeId, Vec<NodeId>> {
     adj
 }
 
-fn has_self_loop(adj: &HashMap<NodeId, Vec<NodeId>>, id: &NodeId) -> bool {
-    adj.get(id)
-        .map(|v| v.iter().any(|t| t == id))
-        .unwrap_or(false)
+fn has_self_loop(adj: &HashMap<NodeId, Vec<NodeId>>, id: NodeId) -> bool {
+    adj.get(&id).map(|v| v.contains(&id)).unwrap_or(false)
 }
 
 fn emit_cycle_diagnostic(
@@ -130,15 +130,18 @@ fn emit_cycle_diagnostic(
     scc: &[NodeId],
 ) -> Diagnostic {
     let anchor = earliest_source_node(m, scc);
-    let range = anchor
-        .map(|n| n.source_range.clone())
-        .unwrap_or_else(|| SourceRange::new("<ir>", Default::default(), Default::default()));
+    let range = anchor.map(|n| n.source_range.clone()).unwrap_or_else(|| {
+        SourceRange::new(
+            "<ir>",
+            crate::diagnostic::Pos::default(),
+            crate::diagnostic::Pos::default(),
+        )
+    });
 
     // Trace a representative loop through the component so the message shows the
-    // actual back-edge path — each gate's class + source location + debug note, and
-    // the wire PORTS on every hop (so exec edges and data edges, and exactly which
-    // pin closes the loop, are visible). This is what turns an un-actionable WS005
-    // into a fixable one.
+    // actual back-edge path: each gate's class, source location and debug note,
+    // and the wire ports on every hop, so exec edges, data edges and the pin
+    // that closes the loop are visible.
     let loop_path = find_cycle_path(adj, scc);
     let mut trace = String::new();
     for (i, id) in loop_path.iter().enumerate() {
@@ -150,26 +153,30 @@ fn emit_cycle_diagnostic(
         match m.nodes.get(id) {
             Some(n) => {
                 let note = n.note.map(|s| format!(" \"{s}\"")).unwrap_or_default();
-                trace.push_str(&format!(
+                let _ = write!(
+                    trace,
                     "\n    {arrow}{}{note} @ {}:{}:{}",
                     short_class(n.gate_class),
                     n.source_range.file,
                     n.source_range.start.line,
                     n.source_range.start.col,
-                ));
+                );
             }
-            None => trace.push_str(&format!("\n    {arrow}<unknown node {}>", id.0)),
+            None => {
+                let _ = write!(trace, "\n    {arrow}<unknown node {}>", id.0);
+            }
         }
     }
     // Close the loop back to the first node so the cycle reads unambiguously.
-    if let (Some(&last), Some(&first)) = (loop_path.last(), loop_path.first()) {
-        if let Some(fnode) = m.nodes.get(&first) {
-            trace.push_str(&format!(
-                "\n    {}(back to {})",
-                edge_label(m, last, first),
-                short_class(fnode.gate_class),
-            ));
-        }
+    if let (Some(&last), Some(&first)) = (loop_path.last(), loop_path.first())
+        && let Some(fnode) = m.nodes.get(&first)
+    {
+        let _ = write!(
+            trace,
+            "\n    {}(back to {})",
+            edge_label(m, last, first),
+            short_class(fnode.gate_class),
+        );
     }
     let extra = scc.len().saturating_sub(loop_path.len());
     let more = if extra > 0 {
@@ -182,7 +189,7 @@ fn emit_cycle_diagnostic(
         severity: Severity::Error,
         code: "WS005".to_string(),
         message: format!(
-            "cycle in the wire graph has no barrier (a Buffer, Queue or EdgeDetector must break it); \
+            "cycle in the wire graph has no barrier (a Buffer or Queue must break it); \
              {} gate(s) in the loop:{trace}{more}",
             loop_path.len(),
         ),
@@ -255,7 +262,7 @@ fn earliest_source_node<'a>(m: &'a Module, ids: &[NodeId]) -> Option<&'a Node> {
         match earliest {
             None => earliest = Some(n),
             Some(e) if n.source_range.start.offset < e.source_range.start.offset => {
-                earliest = Some(n)
+                earliest = Some(n);
             }
             _ => {}
         }
@@ -263,7 +270,7 @@ fn earliest_source_node<'a>(m: &'a Module, ids: &[NodeId]) -> Option<&'a Node> {
     earliest
 }
 
-// ---------- Tarjan's SCC ----------
+// Tarjan's SCC
 
 fn tarjan(adj: &HashMap<NodeId, Vec<NodeId>>) -> Vec<Vec<NodeId>> {
     let mut state = TarjanState {
@@ -279,7 +286,7 @@ fn tarjan(adj: &HashMap<NodeId, Vec<NodeId>>) -> Vec<Vec<NodeId>> {
     keys.sort_by_key(|id| id.0);
     for v in keys {
         if !state.idx.contains_key(v) {
-            strongconnect(adj, v, &mut state);
+            strongconnect(adj, *v, &mut state);
         }
     }
     state.result
@@ -295,11 +302,11 @@ struct TarjanState {
 }
 
 /// Iterative Tarjan DFS. The textbook recursive form nests one call frame per
-/// node along a path, so recursion depth scales with program size — a long
-/// exec chain (thousands of gates in sequence) overflowed default thread
-/// stacks and aborted the host process. The DFS frame lives on the heap
+/// node along a path, so recursion depth scales with program size and a long
+/// exec chain (thousands of gates in sequence) overflows default thread
+/// stacks. The DFS frame lives on the heap instead: `(node, next-neighbor index)`.
 /// instead: `(node, next-neighbor index)`.
-fn strongconnect(adj: &HashMap<NodeId, Vec<NodeId>>, root: &NodeId, s: &mut TarjanState) {
+fn strongconnect(adj: &HashMap<NodeId, Vec<NodeId>>, root: NodeId, s: &mut TarjanState) {
     let visit = |w: NodeId, s: &mut TarjanState| {
         s.idx.insert(w, s.counter);
         s.low.insert(w, s.counter);
@@ -308,10 +315,10 @@ fn strongconnect(adj: &HashMap<NodeId, Vec<NodeId>>, root: &NodeId, s: &mut Tarj
         s.on_stack.insert(w);
     };
 
-    visit(*root, s);
-    let mut frames: Vec<(NodeId, usize)> = vec![(*root, 0)];
+    visit(root, s);
+    let mut frames: Vec<(NodeId, usize)> = vec![(root, 0)];
     while let Some(&(v, i)) = frames.last() {
-        let neighbors = adj.get(&v).map(|n| n.as_slice()).unwrap_or(&[]);
+        let neighbors = adj.get(&v).map(std::vec::Vec::as_slice).unwrap_or(&[]);
         if let Some(&w) = neighbors.get(i) {
             frames.last_mut().expect("frame just read").1 += 1;
             if !s.idx.contains_key(&w) {

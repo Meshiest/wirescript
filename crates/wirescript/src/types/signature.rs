@@ -18,7 +18,7 @@ pub enum ParamKind {
     /// lookups).
     ConfigEnum(&'static str),
     /// A wire-input param whose gate data field is also a schema enum
-    /// (DisplayText's `justify`/`easing`). A constant enum form validates like
+    /// (`DisplayText`'s `justify`/`easing`). A constant enum form validates like
     /// [`ParamKind::ConfigEnum`] and bakes into the field; any other value is
     /// checked like [`ParamKind::Wire`]. The payload is the enum type name.
     WireEnum(&'static str),
@@ -27,10 +27,9 @@ pub enum ParamKind {
     /// expected shape. The `&'static str` is the gate PORT name the composite
     /// shape is keyed on (`"MeshColors"` / `"WeaponAmmoOverride"`).
     ConfigComposite(&'static str),
-    /// A plain scalar/asset constant-only config param — must fold to a
-    /// literal. The `&'static str` is the gate PORT name (carried for
-    /// symmetry / future per-port rules; the constant check itself needs only
-    /// the value).
+    /// A plain scalar/asset constant-only config param; must fold to a
+    /// literal. The `&'static str` is the gate port name (carried for
+    /// symmetry; the constant check itself needs only the value).
     ConfigScalar(&'static str),
     /// A user `const` parameter (`name: const string`, or any parameter of a
     /// `const mod`). The argument must evaluate at compile time; it is ALSO
@@ -42,9 +41,9 @@ pub enum ParamKind {
 /// One parameter of a `CallSignature`.
 #[derive(Clone, Debug)]
 pub struct Param {
-    /// SURFACE parameter name — always the source-level name. Used both for
-    /// named-arg matching (`meshColors = …`) and in diagnostics
-    /// (`argument '{name}': …`). Gate PORT names for config schema lookups
+    /// Surface parameter name, always the source-level name. Used both for
+    /// named-arg matching (`meshColors = ...`) and in diagnostics
+    /// (`argument '{name}': ...`). Gate port names for config schema lookups
     /// live on the `ParamKind` variant payload, never here.
     pub name: String,
     pub ty: Type,
@@ -53,11 +52,11 @@ pub struct Param {
     pub kind: ParamKind,
 }
 
-/// A callable shape: name, params (positional-order), and — for
-/// builtins/receivers backed by a gate — the gate class data-driven config
-/// (`config` array from the inventory) validates against. The call's RESULT
+/// A callable shape: name, params (positional-order), and, for
+/// builtins/receivers backed by a gate, the gate class that data-driven config
+/// (`config` array from the inventory) validates against. The call's result
 /// type is derived separately by each caller (e.g. `output_record_type`,
-/// `array_return_type`, `map_return_type`) — not carried on this struct.
+/// `array_return_type`, `map_return_type`), not carried on this struct.
 pub struct CallSignature {
     pub name: String,
     pub params: Vec<Param>,

@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- sRGB / hex color ----------------------------------
+    // sRGB / hex color
     m.insert(
         "ColorSRGB",
         vec_expr(
@@ -56,9 +56,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             Type::String,
         ),
     );
-    // `Blend` is the math blend gate — an alias for `lerp`, taking any of the
-    // math variants. `ColorBlend` below is a DIFFERENT gate (it carries a
-    // colour-space selection), so both stay reachable.
+    // `Blend` is the math blend gate, an alias for `lerp` over any math variant.
+    // `ColorBlend` below is a different gate that carries a color-space setting.
     m.insert(
         "Blend",
         expr_recv(
@@ -96,7 +95,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Color ----------------------------------------------------------
+    // Color
     m.insert(
         "Color",
         vec_expr(

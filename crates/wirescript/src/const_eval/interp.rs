@@ -1,44 +1,35 @@
-//! Compile-time interpreter for a `const mod`'s BODY.
+//! Compile-time interpreter for a `const mod`'s body: a tree walker over
+//! `Block`/`Stmt` that hands every expression to [`eval_expr`].
 //!
-//! `expr.rs` evaluates a single expression; a `const mod` has statements, so
-//! calling one at compile time needs a small tree-walking interpreter over
-//! `Block`/`Stmt`, delegating every expression it meets back to
-//! [`eval_expr`].
-//!
-//! Termination is structural, not a matter of care: Wirescript has no loop
-//! construct, and WS020 (`lower/call.rs`) rejects a chip/mod re-entering its
-//! own declaration, so const evaluation can never recurse into itself. This
-//! interpreter therefore only ever walks straight-line code plus branching —
-//! but a [`Budget`] still bounds total work, so a long chain of DISTINCT
-//! `const mod`s calling one another fails with `ConstReason::BudgetExceeded`
-//! (WS048) rather than a stack overflow.
+//! It runs `let`/`const`, `return`, `if`, `out` and call statements; any other
+//! statement (a `for` loop included) is unsupported, so a body is straight-line
+//! code plus branches. A [`Budget`] bounds total work, so a deep or recursive
+//! chain of `const mod` calls fails with `ConstReason::BudgetExceeded` (WS048)
+//! instead of overflowing the stack.
 
-use crate::ast::{Block, CallArg, ChipDecl, Expr, ExprStmt, NamedOutput, Param, Stmt};
+use crate::ast::{Block, CallArg, ChipDecl, Expr, ExprStmt, NamedOutput, Param, Stmt, TypeExpr};
 use crate::diagnostic::SourceRange;
-use crate::ir::Literal;
+use crate::ir::{Literal, Type};
+use crate::types::coerce::widening_join_all;
+use crate::types::infer::Subst;
 
 use super::destructure::bind_destructured;
 use super::error::{ConstError, ConstReason};
 use super::expr::{ConstCtx, eval_expr};
 
-/// Ceiling on the number of statements executed across an entire
-/// `eval_call` — including everything nested calls execute. Counts down
-/// once per statement and is never restored.
+/// Ceiling on the statements executed across one top-level `eval_call`,
+/// nested calls included. Counts down once per statement, never restored.
 const MAX_STEPS: u32 = 10_000;
-/// Ceiling on the number of nested `eval_call`s reachable from one top-level
-/// call. Wirescript has no recursion (WS020), so the only way a call chain
-/// gets deep is a straight-line sequence of distinct `const mod`s calling
-/// each other — a running total catches that exactly as well as a true
-/// stack-depth counter would, with none of the push/pop bookkeeping, so
-/// `depth` (like `steps`) only ever counts down and is never restored when a
-/// nested call returns.
+/// Ceiling on the `eval_call`s reachable from one top-level call. A running
+/// total, never restored when a nested call returns, so it bounds a call
+/// chain's total length rather than its stack depth.
 const MAX_DEPTH: u32 = 32;
 
 /// Bounds on the interpreter's total work for one top-level `eval_call`.
 /// Both bounds count down monotonically; hitting zero on either yields
 /// `ConstReason::BudgetExceeded`. Construct a fresh one with
 /// [`Budget::default`].
-pub struct Budget {
+pub(crate) struct Budget {
     pub steps: u32,
     pub depth: u32,
     /// Set once an evaluation under this budget applies an integer operation
@@ -50,7 +41,7 @@ pub struct Budget {
 
 impl Default for Budget {
     fn default() -> Self {
-        Budget {
+        Self {
             steps: MAX_STEPS,
             depth: MAX_DEPTH,
             uncertified: false,
@@ -59,72 +50,44 @@ impl Default for Budget {
 }
 
 /// Execute a `const mod`'s body at compile time and return its result: the
-/// `return` value when the body has one, or — for a body whose value comes
-/// from `out name = expr` statements instead — whatever those collected,
-/// shaped by [`build_output_value`] to match EXACTLY how `typecheck::call`
-/// types the same call (a bare value for one output, a `Literal::Record` for
-/// several). A multi-output record is the SAME shape a `return { a: .., b:
-/// .. }` body already produces (see `const_eval/expr.rs`'s `RecordLit`
-/// handling) — the language already models multi-output as a record, so the
-/// `out` form is just a second way to build one, not a second value shape for
-/// the rest of the compiler to learn about.
+/// `return` value, or else what its `out name = expr` statements collected,
+/// shaped as `typecheck::call` types the call (see [`build_output_value`]).
 ///
-/// `args` are already-evaluated argument literals, in `decl.inputs` order —
-/// the caller (an `eval_expr` call site resolving a call through
-/// `ConstCtx::lookup_mod`, or a nested call inside this same interpreter)
-/// evaluates each argument expression against ITS OWN scope before calling
-/// in.
+/// `args` are evaluated literals in `decl.inputs` order, each evaluated in the
+/// caller's own scope. `type_args` are the written type arguments
+/// (`f<float>(5)`), empty when there are none.
 ///
-/// The callee's environment is `cx.module_consts` — the MODULE-level
-/// constants — with a parameter frame written ON TOP, so a same-named
-/// parameter shadows a module constant. It is deliberately NOT built from
-/// `cx.consts`: that map is the module env already flattened with the
-/// CALLER's open scope frames, so seeding from it would leak the caller's
-/// scope-local bindings into the callee. This mirrors `lower::call::inline`,
-/// which pushes a fresh `ScopeTag::MODULE` frame for an ordinary mod's
-/// parameters on top of the module scope rather than the call site's — so a
-/// `const mod` body resolves exactly the names an ordinary `mod` body would,
-/// no more and no less.
-///
-/// `cx.lookup_mod` is threaded through unchanged so a nested call inside the
-/// body can resolve ITS callee the same way.
-///
-/// `type_args` are the call's written type arguments (`f<float>(5)`), empty
-/// when it writes none.
-pub fn eval_call(
+/// The body sees the callee module's constants with the parameters on top,
+/// never the caller's local bindings, so it resolves the same names an
+/// ordinary inlined `mod` body would.
+pub(super) fn eval_call(
     decl: &ChipDecl,
     args: &[Literal],
-    type_args: &[crate::ir::Type],
-    cx: &ConstCtx,
+    type_args: &[Type],
+    cx: &ConstCtx<'_>,
     budget: &mut Budget,
 ) -> Result<Literal, ConstError> {
     if budget.depth == 0 {
-        return Err(ConstError {
-            reason: ConstReason::BudgetExceeded,
-            range: decl.range.clone(),
-        });
+        return Err(ConstError::new(ConstReason::BudgetExceeded, &decl.range));
     }
     budget.depth -= 1;
 
     let module = cx.module_of(decl);
     let types = cx.types.in_file(&decl.range.file);
     let bound = type_params_of_call(decl, args, type_args, types);
-    let declared = |te: &crate::ast::TypeExpr| types.resolve_in(te, &bound);
-    let mut env = crate::const_scope::ConstNames::of(module.clone());
+    let declared = |te: &TypeExpr| types.resolve_in(te, &bound);
+    let mut env = crate::const_scope::ConstNames::of(std::sync::Arc::clone(&module));
     for (i, param) in decl.inputs.iter().enumerate() {
-        // Zipping `inputs` with `args` would silently truncate on an arity
-        // mismatch, and the unbound parameter would then surface as the
-        // flatly untrue "'x' is a runtime value" from the first expression
-        // that reads it. Blame the parameter with no argument instead — the
-        // same error `bind_call_args` produces for a nested call.
+        // A parameter with no argument is blamed here; left unbound, it would
+        // surface as a false "'x' is a runtime value" at its first read.
         let Some(arg) = args.get(i) else {
-            return Err(ConstError {
-                reason: ConstReason::Unsupported("a call missing an argument for this parameter"),
-                range: param.range.clone(),
-            });
+            return Err(ConstError::unsupported(
+                "a call missing an argument for this parameter",
+                &param.range,
+            ));
         };
         env.insert(
-            param.name.clone(),
+            &param.name,
             super::coerce_const_to_type(arg.clone(), &declared(&param.typ), types),
         );
     }
@@ -134,11 +97,8 @@ pub fn eval_call(
         ..cx.with_consts(env)
     };
 
-    // Collected OUTSIDE `call_cx`/`cx.consts` on purpose — see `exec_block`'s
-    // doc comment on `Shadowed`. A taken `if` branch's own environment gets
-    // merged back and then partially undone (its own declarations rewound);
-    // an `out` collected DURING that branch must survive the undo, which it
-    // can only do by living somewhere the undo never touches.
+    // Kept outside `call_cx` so an `out` inside a taken `if` branch survives
+    // the branch's declaration rewind (see `exec_block`).
     let mut outputs: Vec<(String, Literal)> = Vec::new();
     let sig = OutputSig {
         declared: &decl.outputs,
@@ -147,39 +107,31 @@ pub fn eval_call(
     let flow = exec_block(&decl.body, &mut call_cx, &sig, &mut outputs, budget)?.0;
     let result = match decl.outputs.as_slice() {
         [only] => declared(&only.typ),
-        outs => crate::ir::Type::Record(
+        outs => Type::Record(
             outs.iter()
                 .map(|o| (o.name.clone(), declared(&o.typ)))
                 .collect(),
         ),
     };
     let value = match flow {
-        // A `return <value>` wins outright — and cannot disagree with
-        // lowering about it, because the `Stmt::Return` arm has already
-        // rejected both ways that could happen: a value returned past an
-        // earlier `out` (lowering would wire that `out` instead), and a
-        // SCALAR value in a 2+-output mod (lowering wires nothing at all).
+        // The `Stmt::Return` arm has already rejected the returns lowering
+        // would wire differently, so a returned value wins outright.
         Flow::Returned {
             value: Some(value), ..
         } => Ok(reorder_to_declaration(value, &decl.outputs)),
-        // Either the body ran off the end or a `return` produced no value —
-        // both mean "the result, if any, is whatever the `out` statements
-        // collected".
+        // With no returned value, the result is what the `out`s collected.
         Flow::Returned { value: None, range } => {
-            build_or_else(&decl.outputs, &outputs, || ConstError {
-                // A body that DID hit a `return` must not be described as
-                // falling off the end. The arrow form synthesises a `_`
-                // output, so this message would otherwise be unreachable for
-                // every `-> T` mod.
-                reason: ConstReason::Unsupported("a `return` with no value"),
-                range: range.clone(),
+            // Blamed on the `return`, not as falling off the end: the arrow
+            // form synthesises a `_` output, which would hide that message.
+            build_or_else(&decl.outputs, &outputs, || {
+                ConstError::unsupported("a `return` with no value", &range)
             })
         }
-        Flow::Fell => build_or_else(&decl.outputs, &outputs, || ConstError {
-            reason: ConstReason::Unsupported(
+        Flow::Fell => build_or_else(&decl.outputs, &outputs, || {
+            ConstError::unsupported(
                 "a const mod body that falls off the end without a `return`",
-            ),
-            range: decl.body.range.clone(),
+                &decl.body.range,
+            )
         }),
     };
     value.map(|v| super::coerce_const_to_type(v, &result, types))
@@ -187,10 +139,7 @@ pub fn eval_call(
 
 /// The types a call's written type arguments name, read in the calling file
 /// with the caller's own type parameters bound.
-pub(super) fn written_type_args(
-    type_args: &[crate::ast::TypeExpr],
-    cx: &ConstCtx,
-) -> Vec<crate::ir::Type> {
+pub(super) fn written_type_args(type_args: &[TypeExpr], cx: &ConstCtx<'_>) -> Vec<Type> {
     type_args
         .iter()
         .map(|te| {
@@ -210,10 +159,9 @@ pub(super) fn written_type_args(
 fn type_params_of_call(
     decl: &ChipDecl,
     args: &[Literal],
-    type_args: &[crate::ir::Type],
+    type_args: &[Type],
     types: &super::DeclaredTypes,
-) -> crate::types::infer::Subst {
-    use crate::ir::Type;
+) -> Subst {
     let names: Vec<&String> = decl.type_params.iter().map(|p| &p.name).collect();
     if type_args.len() == names.len() {
         return names
@@ -222,7 +170,7 @@ fn type_params_of_call(
             .zip(type_args.iter().cloned())
             .collect();
     }
-    let open: crate::types::infer::Subst = names
+    let open: Subst = names
         .iter()
         .map(|n| ((*n).clone(), Type::Param((*n).clone())))
         .collect();
@@ -242,16 +190,15 @@ fn type_params_of_call(
                 .map(|crate::types::infer::Constraint::Eq(v, t)| (v, t))
                 .filter(|(v, t)| *v == n && !matches!(t, Type::Any))
                 .map(|(_, t)| t.clone());
-            let joined = crate::types::coerce::widening_join_all(bound);
+            let joined = widening_join_all(bound);
             (n.clone(), joined.unwrap_or(Type::Any))
         })
         .collect()
 }
 
 /// The type of the constant `lit`, as far as its value shows it.
-fn literal_type(lit: &Literal) -> crate::ir::Type {
-    use crate::ir::Type;
-    let join = |ts: Vec<Type>| crate::types::coerce::widening_join_all(ts).unwrap_or(Type::Any);
+fn literal_type(lit: &Literal) -> Type {
+    let join = |ts: Vec<Type>| widening_join_all(ts).unwrap_or(Type::Any);
     match lit {
         Literal::Bool(_) => Type::Bool,
         Literal::Int(_) => Type::Int,
@@ -278,15 +225,9 @@ fn literal_type(lit: &Literal) -> crate::ir::Type {
     }
 }
 
-/// Build the `out`-collected result, or produce `empty` when there is nothing
-/// to build from.
-///
-/// The fallback fires when the mod declares no outputs (nothing to build) or
-/// when the body assigned none of them. That second case keeps the
-/// pre-existing message and range for the overwhelmingly common no-`return`
-/// mistake: without it, `-> int { }` would blame the anonymous `_` output
-/// that `parse_chip_outputs` synthesises for the `-> type` form as "never
-/// assigned", which points at the return type instead of the body.
+/// Build the `out`-collected result, or return `empty()` when the mod declares
+/// no outputs or the body assigned none. The second case keeps `-> int { }`
+/// blaming the body rather than the synthesised `_` output in the signature.
 fn build_or_else(
     declared: &[NamedOutput],
     collected: &[(String, Literal)],
@@ -298,17 +239,9 @@ fn build_or_else(
     build_output_value(declared, collected)
 }
 
-/// Put a returned RECORD's fields into signature-declaration order, so the
-/// `return { … }` path and the `out` path produce identically-ordered records
-/// for the same signature. Fields the signature does not declare keep their
-/// source order after the declared ones, and a missing field is simply absent
-/// — this only ever REORDERS, never adds, drops, or rejects, so it cannot
-/// turn a working record return into an error.
-///
-/// Not observable through `==` today (comparing two constant records is
-/// WS047-refused), but a needless ordering difference between two paths that
-/// build the same thing is exactly the kind of drift that becomes a bug the
-/// moment something starts comparing or serialising these.
+/// Put a returned record's fields into signature declaration order, matching
+/// the record the `out` path builds. Undeclared fields follow in source order;
+/// this only reorders, never adds, drops or rejects a field.
 fn reorder_to_declaration(value: Literal, declared: &[NamedOutput]) -> Literal {
     let Literal::Record(fields) = value else {
         return value;
@@ -330,45 +263,14 @@ fn reorder_to_declaration(value: Literal, declared: &[NamedOutput]) -> Literal {
     Literal::Record(ordered)
 }
 
-/// Shapes a `const mod`'s `out`-collected value the way `typecheck::call`
-/// types the very same call, which is the whole correctness condition here:
+/// Shape a `const mod`'s `out`-collected value the way `typecheck::call`
+/// types the same call: one declared output gives that value bare, several
+/// give a `Literal::Record` in declaration order (not assignment order).
 ///
-/// - **exactly one** declared output -> that output's value, BARE. This
-///   mirrors `type_user_symbol_call`'s
-///   `if sig.outputs.len() == 1 && !has_exec_arg { return out_ty(&sig.outputs[0].ty) }`.
-///   Wrapping it in a 1-field record instead made const evaluation disagree
-///   with the type system about a value's very shape, which surfaced three
-///   different ways — a silently-zeroed baked array element, a WS028 that
-///   called a `string` a record, and an outright `UnrepresentableLiteral`
-///   emit abort.
-///
-///   Only the ARITY half of that condition is mirrored; `has_exec_arg` is
-///   NOT, and that is a known (benign, today) disagreement rather than an
-///   irrelevance. `bind_call_args` binds by walking `inputs`, silently
-///   ignoring a named argument that matches no parameter, so
-///   `const p = two(41, exec = go)` really does const-evaluate and bake —
-///   measured. Const evaluation then yields `Record([r, s])` while
-///   `typecheck::call` types that same call `Record([r, s, exec])`, having
-///   appended the completion exec. Nothing reads `.exec` off a compile-time
-///   constant (it is an exec signal, not a value), so the extra field is
-///   unreachable rather than wrong; mirroring it here would mean inventing a
-///   `Literal` for an exec edge, which has no constant form.
-
-/// - **several** -> a `Literal::Record`, built by walking `outs` in
-///   DECLARATION order, deliberately NOT the order the body's `out`
-///   statements ran in. `Literal::Record`'s field order is significant (it is
-///   what a destructure and an equality check both see), so tying it to the
-///   signature is the only order a caller can rely on —
-///   `a_multi_output_const_mod_record_is_in_declaration_order` pins this with
-///   a body that assigns its outputs backwards.
-///
-/// Either way, an output the body never assigned is
-/// `ConstReason::Unsupported` blamed on that OUTPUT's own
-/// `NamedOutput::range` — not the call, not the whole body — so the
-/// diagnostic underlines exactly the unassigned output in the signature.
-/// `collected` can only hold DECLARED names (`exec_block`'s
-/// `Stmt::OutBinding` arm rejects any other), so nothing collected is ever
-/// silently dropped on the floor here.
+/// The completion `exec` field typecheck adds for an `exec =` call is not
+/// mirrored: an exec edge has no constant form, and nothing reads it off a
+/// constant. An output the body never assigned is an error on that output's
+/// own range; collected names the signature does not declare are ignored.
 fn build_output_value(
     outs: &[NamedOutput],
     collected: &[(String, Literal)],
@@ -376,12 +278,12 @@ fn build_output_value(
     let mut fields = Vec::with_capacity(outs.len());
     for out in outs {
         let Some((_, value)) = collected.iter().find(|(n, _)| *n == out.name) else {
-            return Err(ConstError {
-                reason: ConstReason::UnsupportedMessage(
+            return Err(ConstError::new(
+                ConstReason::UnsupportedMessage(
                     "this const mod body never assigns a value to this output",
                 ),
-                range: out.range.clone(),
-            });
+                &out.range,
+            ));
         };
         fields.push((out.name.clone(), value.clone()));
     }
@@ -391,24 +293,13 @@ fn build_output_value(
     Ok(Literal::Record(fields))
 }
 
-/// What a name held immediately BEFORE a `let`/`const` in this block
-/// re-bound it: `Some(lit)` when an enclosing scope already bound it (the
-/// declaration shadows that value), `None` when the name was previously
-/// unbound entirely (the declaration introduces it). Restoring this exact
-/// snapshot when a branch ends is what confines a branch-local declaration —
-/// and only the declaration — to the branch.
+/// What each name a `let`/`const` in this block bound held just before it:
+/// `Some(lit)` when an enclosing scope bound it, `None` when it was unbound.
+/// Restoring these when a branch ends confines its declarations to the branch.
 type Shadowed = Vec<(String, Option<Literal>)>;
 
-/// How a block stopped running.
-///
-/// The two `Returned` payloads are NOT interchangeable with `Fell`, which is
-/// why this is an enum rather than the `Option<Literal>` it replaced: a BARE
-/// `return` (legal in the `out`-form, where the value comes from the `out`
-/// statements rather than the `return`) also produces no value, so as an
-/// `Option` it was indistinguishable from falling off the end — and the
-/// `Stmt::If` arm, which propagates a return out of a branch by testing for
-/// a value, would have let a bare `return` inside an `if` silently continue
-/// executing the REST of the enclosing body.
+/// How a block stopped running. A bare `return` produces no value yet must
+/// still stop the enclosing body, so it is distinct from `Fell`.
 enum Flow {
     /// Ran off the end of the block.
     Fell,
@@ -421,34 +312,20 @@ enum Flow {
     },
 }
 
-/// The facts about the enclosing `const mod`'s SIGNATURE that individual
-/// statement arms need. Computed once per [`eval_call`] and threaded down
-/// unchanged, because both consumers reason about the whole body rather than
-/// the block they appear in.
+/// The enclosing `const mod`'s signature facts that statement arms need,
+/// computed once per [`eval_call`] because they concern the whole body.
 struct OutputSig<'a> {
-    /// `decl.outputs` — the signature's declared outputs, in declaration
-    /// order.
+    /// The signature's declared outputs, in declaration order.
     declared: &'a [NamedOutput],
-    /// Source offset of the EARLIEST `out` statement anywhere in the body
-    /// that targets a DECLARED output, or `None` if there is none.
-    ///
-    /// This exists to make `Stmt::Return` agree with lowering about which
-    /// assignment to an output port wins. Lowering wires the FIRST one in
-    /// SOURCE order and drops the rest; const evaluation short-circuits at a
-    /// `return`, so the two disagree exactly when an `out` precedes a valued
-    /// `return` — verified in game-shaped output: `out r = 111` then
-    /// `if n > 0 { return 222 }` bakes 222 as a `const mod` and wires 111 as
-    /// a plain `mod`. Comparing source offsets is what catches that
-    /// regardless of whether the `out` actually RAN, which a
-    /// "was anything collected yet" test cannot do — an `out` inside an
-    /// UNTAKEN branch still lowers, still wins the port, and still diverges.
+    /// Source offset of the earliest `out` anywhere in the body that targets
+    /// a declared output. Lowering wires the first `out` in source order, even
+    /// one in an untaken branch, so a valued `return` after it would disagree.
     earliest_out: Option<usize>,
 }
 
-/// Source offset of the earliest `out` in `block` (recursively, including
-/// both arms of every nested `if`) that targets one of `declared`. See
-/// [`OutputSig::earliest_out`] for why this is a SYNTACTIC scan rather than a
-/// record of what executed.
+/// Source offset of the earliest `out` in `block`, both arms of nested `if`s
+/// included, that targets one of `declared`. A syntactic scan, not a record of
+/// what ran (see [`OutputSig::earliest_out`]).
 fn earliest_declared_out(block: &Block, declared: &[NamedOutput]) -> Option<usize> {
     fn min_opt(a: Option<usize>, b: Option<usize>) -> Option<usize> {
         match (a, b) {
@@ -475,107 +352,50 @@ fn earliest_declared_out(block: &Block, declared: &[NamedOutput]) -> Option<usiz
     best
 }
 
-/// Runs `block`'s statements against `cx`, mutating it with every
-/// `let`/`const` binding the block introduces, and every
-/// `t.push(…)`-shaped mutation of an already-bound const array/map (see
-/// [`exec_call_stmt`]). Returns `Ok((Flow::Returned(..), shadowed))` the
-/// moment a `return` is hit (short-circuiting the rest of the block, exactly
-/// like a real `return`), `Ok((Flow::Fell, shadowed))` if every statement ran
-/// without one, or `Err` naming the specific statement (or the
-/// sub-expression inside it) that could not be evaluated.
+/// Run `block`'s statements against `cx`, applying every `let`/`const` it
+/// declares and every mutation of a bound const array or map (see
+/// [`exec_call_stmt`]). Stops at a `return`; `Err` names the statement or
+/// sub-expression that could not be evaluated.
 ///
-/// `shadowed` records, per top-level `let`/`const` in `block` and IN
-/// DECLARATION ORDER, what the bound name held at the moment that
-/// declaration ran (see [`Shadowed`]). It exists purely for the `Stmt::If`
-/// arm's own caller — `exec_block` writes straight into whatever `cx` it is
-/// given, so scoping a branch is entirely the CALLER's job: clone `cx`
-/// before recursing, merge everything back, then undo exactly the
-/// declarations by replaying these snapshots in REVERSE.
+/// The returned [`Shadowed`] lists this block's own declarations in order.
+/// `exec_block` writes straight into `cx`, so the `Stmt::If` arm scopes a
+/// branch by replaying these in reverse.
 ///
-/// Nested `if`s inside `block` do NOT contribute here: such a branch has
-/// already undone its own declarations against `cx` before its `Stmt::If`
-/// arm returns, so by the time this function returns there is nothing left
-/// of them to undo.
-///
-/// `outputs` accumulates every `out name = expr` this call's body statements
-/// run (see the `Stmt::OutBinding` arm below), across every nested block —
-/// it is the SAME `Vec` passed all the way down through a taken `if`
-/// branch's own recursive `exec_block` call, never a fresh one. That is
-/// deliberate and load-bearing: it must NOT live in `cx.consts`, because the
-/// `Stmt::If` arm undoes exactly the branch's own `let`/`const` declarations
-/// against `cx` when the branch ends (see this comment's own discussion of
-/// `shadowed` above), and an `out` inside a taken branch has to survive that
-/// undo — `eval_call` still needs it once this whole call returns.
-/// `outputs` living outside `cx` entirely is what makes that automatic: the
-/// undo never touches it, so there is nothing extra to do for the branch
-/// case (an `out` inside an untaken branch simply never runs, exactly like
-/// every other statement in an untaken branch). Pinned by
-/// `an_out_inside_a_taken_branch_is_collected`, which fails if that
-/// recursive call is handed a fresh `Vec` instead.
-///
-/// `sig` carries the enclosing `const mod`'s signature facts (see
-/// [`OutputSig`]) purely so the `Stmt::Return` arm can reject the two shapes
-/// where a returned value would disagree with what lowering wires. It needs
-/// the DECLARATION, not the collected values, so neither check can be made in
-/// `eval_call` after the fact without losing the offending statement's own
-/// range.
+/// `outputs` collects every `out name = expr` that runs, nested blocks
+/// included. The same `Vec` is passed into every branch and lives outside
+/// `cx`, so the rewind never drops an `out` from a taken branch.
 fn exec_block(
     block: &Block,
-    cx: &mut ConstCtx,
-    sig: &OutputSig,
+    cx: &mut ConstCtx<'_>,
+    sig: &OutputSig<'_>,
     outputs: &mut Vec<(String, Literal)>,
     budget: &mut Budget,
 ) -> Result<(Flow, Shadowed), ConstError> {
     let mut shadowed: Shadowed = Vec::new();
     for stmt in &block.stmts {
         if budget.steps == 0 {
-            return Err(ConstError {
-                reason: ConstReason::BudgetExceeded,
-                range: stmt.range().clone(),
-            });
+            return Err(ConstError::new(ConstReason::BudgetExceeded, stmt.range()));
         }
         budget.steps -= 1;
 
         match stmt {
             Stmt::Let(l) => {
-                // Works uniformly for `const x = …` and a plain `let x = …`:
-                // there is no "fall back to a gate" path in this
-                // interpreter, so a plain `let` inside a const-evaluated
-                // body must ALSO have a constant initializer, and the error
-                // eval_expr produces already blames the right sub-expression.
+                // A plain `let` in a const body also needs a constant
+                // initializer: nothing here can fall back to a gate.
                 let lit = super::eval_let_value(l, cx, budget)?;
-                // Splits `lit` into every `(name, value)` pair `l.binding`
-                // introduces — one pair for a plain `Ident`, several for a
-                // record destructure (`bind_destructured` propagates its own
-                // error, e.g. a tuple destructure or a missing field).
                 let pairs = bind_destructured(&l.binding, lit)?;
-                // A destructure binds SEVERAL names from ONE statement, and
-                // each needs its OWN shadow snapshot taken immediately
-                // before ITS OWN insert — not one snapshot for the whole
-                // statement. One snapshot would remember only what a SINGLE
-                // name held, so undoing a branch-local destructure on branch
-                // exit (see this function's doc comment) would restore that
-                // one name and leave every OTHER name the same destructure
-                // bound (or clobbered) lingering past the branch.
+                // One snapshot per bound name, taken just before its insert,
+                // so a rewind restores every name a destructure bound,
+                // including mutations made to it earlier in this block.
                 for (name, value) in pairs {
-                    // Snapshot BEFORE the insert, and only ever record what
-                    // the name held AT THIS MOMENT — which, for a name
-                    // mutated earlier in this same block, is the
-                    // already-mutated value. That is the whole point:
-                    // restoring it later preserves everything done to the
-                    // outer binding before the shadow appeared, while still
-                    // dropping the shadow itself.
                     shadowed.push((name.clone(), cx.consts.get(name.as_str()).cloned()));
-                    cx.consts.insert(name, value);
+                    cx.consts.insert(&name, value);
                 }
             }
             Stmt::Return { value, range } => {
                 let Some(e) = value else {
-                    // A BARE `return` is the natural early exit for the
-                    // `out` form — the value comes from the `out`
-                    // statements, so there is nothing to return — and it
-                    // stops the block so `eval_call` can build from whatever
-                    // was collected.
+                    // A bare `return` is the `out` form's early exit:
+                    // `eval_call` builds the result from what was collected.
                     return Ok((
                         Flow::Returned {
                             value: None,
@@ -584,61 +404,35 @@ fn exec_block(
                         shadowed,
                     ));
                 };
-                // An `out` EARLIER IN THE SOURCE than this `return` wins the
-                // output port in lowering, which wires the first assignment
-                // and drops the rest — while const evaluation short-circuits
-                // here and hands back the returned value instead. That is a
-                // straight const-vs-runtime value disagreement, measured:
-                // `out r = 111` then `if n > 0 { return 222 }` bakes 222 as a
-                // `const mod` and wires 111 as a plain `mod`, both reporting
-                // no errors.
-                //
-                // Checked POSITIONALLY (and before evaluating `e`) rather
-                // than by asking whether an `out` has run yet: an `out` in an
-                // UNTAKEN branch never runs, yet still lowers and still wins
-                // the port, so a "has anything been collected" test would
-                // miss it and let the same divergence through. The converse
-                // ordering — `return` first, `out` after — genuinely AGREES
-                // (both sides yield the returned value, also measured), so it
-                // stays legal.
+                // Lowering wires the first `out` in source order, so a valued
+                // `return` after any `out` (taken or not) would bake a value
+                // the plain `mod` does not produce. `return` before `out`
+                // agrees and stays legal.
                 if let Some(out_offset) = sig.earliest_out
                     && out_offset < range.start.offset
                 {
-                    return Err(ConstError {
-                        reason: ConstReason::UnsupportedMessage(
+                    return Err(ConstError::new(
+                        ConstReason::UnsupportedMessage(
                             "this `return` of a value follows an earlier `out` in the same \
                              const mod. The wire graph keeps that first assignment and drops \
                              this one, so the two would disagree",
                         ),
-                        range: range.clone(),
-                    });
+                        range,
+                    ));
                 }
                 let lit = eval_expr(e, cx, budget)?;
-                // A SCALAR `return` in a mod declaring SEVERAL named outputs
-                // has no meaning anywhere: `lower::stmt`'s `Stmt::Return`
-                // arm wires a plain returned value only through
-                // `output_count() == 1`, so with 2+ outputs lowering
-                // silently drops it. Letting it win outright here would hand
-                // every consumer a bare scalar where the type system
-                // promised a record: a field read off that scalar (`c.a`)
-                // would lower to a `SplitColor` gate, reinterpreting the
-                // field as a colour channel with no diagnostic at all.
-                //
-                // A RECORD return is exempt because it IS the documented
-                // multi-output mechanism: the same `lower::stmt` arm stashes
-                // a `RecordLit` as `pending_return_record` and forwards it
-                // per-field. One declared output is exempt too — that is
-                // exactly the `output_count() == 1` case lowering wires, and
-                // it covers every ordinary `-> int { return x }` mod.
+                // Lowering wires a scalar `return` only when the mod has one
+                // output, so with several it is dropped and a field read off
+                // it would miscompile. A record return sets each output.
                 if sig.declared.len() > 1 && !matches!(lit, Literal::Record(_)) {
-                    return Err(ConstError {
-                        reason: ConstReason::UnsupportedMessage(
+                    return Err(ConstError::new(
+                        ConstReason::UnsupportedMessage(
                             "this const mod declares several named outputs, so a `return` of a \
                              single value has nowhere to go. Assign each output with \
                              `out name = …`, or return a record",
                         ),
-                        range: range.clone(),
-                    });
+                        range,
+                    ));
                 }
                 return Ok((
                     Flow::Returned {
@@ -651,18 +445,13 @@ fn exec_block(
             Stmt::If(if_stmt) => {
                 let cond = eval_expr(&if_stmt.cond, cx, budget)?;
                 let Literal::Bool(take_then) = cond else {
-                    return Err(ConstError {
-                        reason: ConstReason::Unsupported(
-                            "an `if` condition that is not a compile-time bool",
-                        ),
-                        range: if_stmt.cond.range().clone(),
-                    });
+                    return Err(ConstError::unsupported(
+                        "an `if` condition that is not a compile-time bool",
+                        if_stmt.cond.range(),
+                    ));
                 };
-                // Evaluate the condition, then recurse into the TAKEN block
-                // only — on a private copy of the environment, so a `const`
-                // the branch declares does not leak past the `if`, and the
-                // UNTAKEN block is never touched (does not even need to be
-                // evaluable).
+                // Only the taken block runs, on a copy of the environment;
+                // the untaken block need not be evaluable.
                 let branch = if take_then {
                     Some(&if_stmt.then_block)
                 } else {
@@ -672,78 +461,35 @@ fn exec_block(
                     let mut branch_cx = cx.with_consts(cx.consts.clone());
                     let (result, branch_shadowed) =
                         exec_block(taken, &mut branch_cx, sig, outputs, budget)?;
-                    // Take the branch's environment WHOLESALE — every
-                    // mutation it made to a binding from an enclosing scope
-                    // must survive (`if cond { t.push(x) }` has to leave `t`
-                    // changed, exactly like a real `if` would) — and then
-                    // undo precisely the branch's own DECLARATIONS by
-                    // replaying their snapshots.
-                    //
-                    // Replayed in REVERSE declaration order so that when one
-                    // name is declared more than once in the branch, the
-                    // EARLIEST snapshot (the true pre-branch value) is
-                    // applied last and therefore wins.
-                    //
-                    // Restoring a snapshot rather than skipping the name is
-                    // what makes a shadow declared AFTER a mutation correct:
-                    // `t.push(2)` then `const t = [9]` restores `t` to the
-                    // ALREADY-PUSHED `[1, 2]`, not to the pre-branch `[1]`.
-                    // Skipping every declared name (this code's first form)
-                    // silently discarded that earlier mutation — see
-                    // `a_shadow_declared_after_a_mutation_keeps_the_mutation`
-                    // in `tests.rs`.
+                    // Keep the branch's mutations of outer bindings
+                    // (`if c { t.push(x) }`), then rewind its declarations in
+                    // reverse so a name declared twice gets its pre-branch
+                    // value. `t.push(2)` then `const t = [9]` restores the
+                    // pushed `t`.
                     cx.consts = branch_cx.consts;
                     for (name, prev) in branch_shadowed.into_iter().rev() {
                         match prev {
-                            // Previously bound in an enclosing scope: put
-                            // that value back (mutations included).
-                            Some(value) => cx.consts.insert(name, value),
-                            // Previously unbound: the declaration introduced
-                            // the name, so it must vanish entirely rather
-                            // than linger as an empty/default value.
+                            Some(value) => cx.consts.insert(&name, value),
+                            // The declaration introduced the name: remove it.
                             None => cx.consts.remove(name.as_str()),
-                        };
+                        }
                     }
-                    // A `return` inside the branch stops the ENCLOSING body
-                    // too, bare or valued alike — matching on `Flow` rather
-                    // than on "did it produce a value" is what makes the
-                    // bare case propagate instead of silently running on.
+                    // A `return` in the branch, bare or valued, stops the
+                    // enclosing body too.
                     if let Flow::Returned { value, range } = result {
                         return Ok((Flow::Returned { value, range }, shadowed));
                     }
                 }
             }
-            // `out name = expr`: a multi-output `const mod`'s way of setting
-            // one of its `decl.outputs` (the `return`-less alternative to
-            // `return { a: .., b: .. }` — see `eval_call`'s doc comment).
-            // Evaluated and recorded under `name` in `outputs`, OVERWRITING
-            // an earlier assignment to the same name — mirroring what a real
-            // `out` port does when written more than once (last write
-            // wins) — so `eval_call` can assemble the final record once the
-            // whole body has run. A bare `out name` with no value (legal for
-            // a physical output PORT, which can be left unwired) has nothing
-            // to evaluate, so it is `Unsupported`, the same shape
-            // `Stmt::Return`'s own no-value case already refuses above.
+            // `out name = expr` records a value under `name`; a later write
+            // to the same name wins. A bare `out name` has no value to
+            // evaluate and is unsupported.
             Stmt::OutBinding(o) => {
-                // An `out` naming something the SIGNATURE does not declare is
-                // deliberately NOT rejected: declaring an output in the body
-                // is a supported form (`lower/mod.rs` and
-                // `lower/call/instance_body.rs` both route it to
-                // `pre_declare_output`), so the identical body compiles clean
-                // as a plain `mod`. It is also not part of this call's RESULT
-                // — `typecheck::call` types a signature-bearing mod's call
-                // from the signature alone, reporting
-                // `no field 'zz' on record (has: a, b)` for a body-declared
-                // output — so evaluating it and letting `build_output_value`
-                // (which walks the signature) ignore it is exactly the shape
-                // typecheck already promises. There is no signal that
-                // distinguishes a typo from an intentional body-declared
-                // output, so this cannot be narrowed to "typos only".
+                // An `out` the signature does not declare is a legal
+                // body-declared output. It is evaluated but not part of the
+                // result, since typecheck types the call from the signature.
                 let Some(value_expr) = &o.value else {
-                    return Err(ConstError {
-                        reason: ConstReason::Unsupported("an `out` with no value"),
-                        range: o.range.clone(),
-                    });
+                    return Err(ConstError::unsupported("an `out` with no value", &o.range));
                 };
                 let lit = eval_expr(value_expr, cx, budget)?;
                 match outputs.iter_mut().find(|(n, _)| *n == o.name) {
@@ -753,29 +499,23 @@ fn exec_block(
             }
             Stmt::ExprStmt(es) => exec_call_stmt(es, cx, budget)?,
             other => {
-                return Err(ConstError {
-                    reason: ConstReason::Unsupported("this statement"),
-                    range: other.range().clone(),
-                });
+                return Err(ConstError::unsupported("this statement", other.range()));
             }
         }
     }
     Ok((Flow::Fell, shadowed))
 }
 
-/// `Stmt::ExprStmt` is meaningful here in two shapes: a call to another
-/// `const mod` (its result discarded — there is no other observable effect a
-/// pure compile-time interpreter could have), or a mutating method call
-/// (`t.push(…)`, `t.set(…)`, …) on a LOCAL const array/map binding, handled
-/// by [`exec_mutating_method_call`]. Anything else — not a call, an
-/// unresolvable callee, or a call to a non-`const` mod — is
-/// `ConstReason::Unsupported("this statement")`, blamed on the statement
-/// itself via `es.range`.
-fn exec_call_stmt(es: &ExprStmt, cx: &mut ConstCtx, budget: &mut Budget) -> Result<(), ConstError> {
-    let unsupported = || ConstError {
-        reason: ConstReason::Unsupported("this statement"),
-        range: es.range.clone(),
-    };
+/// Run an expression statement: a call to another `const mod` (result
+/// discarded) or a mutating method call on a local const array or map (see
+/// [`exec_mutating_method_call`]). Anything else is unsupported, blamed on
+/// the statement.
+fn exec_call_stmt(
+    es: &ExprStmt,
+    cx: &mut ConstCtx<'_>,
+    budget: &mut Budget,
+) -> Result<(), ConstError> {
+    let unsupported = || ConstError::unsupported("this statement", &es.range);
 
     let Expr::Call {
         callee,
@@ -787,9 +527,6 @@ fn exec_call_stmt(es: &ExprStmt, cx: &mut ConstCtx, budget: &mut Budget) -> Resu
         return Err(unsupported());
     };
 
-    // A method-call callee (`t.push(10)`) is never the plain-`Ident` shape a
-    // nested const-mod call has, so it's checked first and handled entirely
-    // separately.
     if let Expr::FieldAccess { obj, field, .. } = callee.as_ref() {
         return exec_mutating_method_call(obj, field, args, es, cx, budget);
     }
@@ -810,47 +547,29 @@ fn exec_call_stmt(es: &ExprStmt, cx: &mut ConstCtx, budget: &mut Budget) -> Resu
     let arg_lits = bind_call_args(&target.inputs, args, cx, budget)?;
 
     if budget.depth == 0 {
-        return Err(ConstError {
-            reason: ConstReason::BudgetExceeded,
-            range: es.range.clone(),
-        });
+        return Err(ConstError::new(ConstReason::BudgetExceeded, &es.range));
     }
     let written = written_type_args(type_args, cx);
     eval_call(&target, &arg_lits, &written, &*cx, budget)?;
     Ok(())
 }
 
-/// `t.push(…)` / `t.set(…)` / … — a mutating method call whose receiver `obj`
-/// names a LOCAL const binding. The mutation is applied to a fresh owned
-/// copy of the current value and written back into `cx.consts` under the
-/// same name — there is no other storage a `const` binding has, which is
-/// exactly why this can only ever run here: [`exec_call_stmt`] is reachable
-/// only from `exec_block`, which runs only inside [`eval_call`] evaluating a
-/// `const mod` body. No other stage of the compiler calls into this
-/// interpreter, so a const collection cannot be mutated anywhere outside a
-/// const mod body — not because of a check, but because nothing else knows
-/// how to interpret `.push()` as a write.
+/// A mutating method call (`t.push(x)`, `t.set(k, v)`) on a const binding:
+/// the updated copy is written back into `cx.consts` under the same name.
+/// Only a const mod body runs this, so it is the only place a const
+/// collection can be mutated.
 ///
-/// `obj` must be a plain local name (not a nested field/index/call) — the
-/// write-back is by name, so there is nothing to write an arbitrary
-/// expression's result back into — and that name must already be bound to a
-/// `Literal::Array`/`Literal::Map` in `cx.consts`. Anything else (an
-/// unresolved name, a non-collection value, a non-Ident receiver) falls
-/// through to the same generic "this statement" error every other
-/// unsupported `ExprStmt` gets, since it isn't a const-collection mutation
-/// at all.
+/// `obj` must be a plain name already bound to an array or map; anything else
+/// is the generic "this statement" error.
 fn exec_mutating_method_call(
     obj: &Expr,
     field: &str,
     args: &[CallArg],
     es: &ExprStmt,
-    cx: &mut ConstCtx,
+    cx: &mut ConstCtx<'_>,
     budget: &mut Budget,
 ) -> Result<(), ConstError> {
-    let unsupported = || ConstError {
-        reason: ConstReason::Unsupported("this statement"),
-        range: es.range.clone(),
-    };
+    let unsupported = || ConstError::unsupported("this statement", &es.range);
 
     let Expr::Ident { name, .. } = obj else {
         return Err(unsupported());
@@ -866,25 +585,19 @@ fn exec_mutating_method_call(
         Literal::Map(pairs) => Literal::Map(mutate_map(pairs, field, args, es, &*cx, budget)?),
         _ => return Err(unsupported()),
     };
-    cx.consts.insert(name.clone(), updated);
+    cx.consts.insert(name, updated);
     Ok(())
 }
 
-/// Supports `push`, `set`, `clear`, `append` — mirroring the runtime array
-/// gates (`ARRAY_PUSH`/`ARRAY_SET_AT_INDEX`/`ARRAY_CLEAR`/`ARRAY_APPEND`)
-/// closely enough to read the same, even though `set` has no call-syntax
-/// counterpart at runtime (the real language spells element assignment
-/// `arr[i] = value`, which lowers via `Stmt::Assign` — a `const` binding has
-/// no gate for that statement to target, so `set` is offered as a method
-/// here instead). Any other method name is
-/// `ConstReason::UnsupportedMethod`, naming the method so the user learns
-/// which call is the problem rather than reading a generic "not constant".
+/// Apply `push`, `set`, `clear` or `append` to a const array, mirroring the
+/// runtime array gates. `set(i, v)` exists only here, standing in for
+/// `arr[i] = v`. Any other method is `ConstReason::UnsupportedMethod`.
 fn mutate_array(
     mut items: Vec<Literal>,
     field: &str,
     args: &[CallArg],
     es: &ExprStmt,
-    cx: &ConstCtx,
+    cx: &ConstCtx<'_>,
     budget: &mut Budget,
 ) -> Result<Vec<Literal>, ConstError> {
     match field {
@@ -906,17 +619,17 @@ fn mutate_array(
                     items[i as usize] = val_lit;
                     Ok(items)
                 }
-                Literal::Int(i) => Err(ConstError {
-                    reason: ConstReason::ArrayIndexOutOfRange {
+                Literal::Int(i) => Err(ConstError::new(
+                    ConstReason::ArrayIndexOutOfRange {
                         index: i,
                         len: items.len(),
                     },
-                    range: es.range.clone(),
-                }),
-                _ => Err(ConstError {
-                    reason: ConstReason::Unsupported("a non-integer array index"),
-                    range: index.range().clone(),
-                }),
+                    &es.range,
+                )),
+                _ => Err(ConstError::unsupported(
+                    "a non-integer array index",
+                    index.range(),
+                )),
             }
         }
         "clear" => {
@@ -932,10 +645,10 @@ fn mutate_array(
                     items.append(&mut more);
                     Ok(items)
                 }
-                _ => Err(ConstError {
-                    reason: ConstReason::Unsupported("appending a non-array value"),
-                    range: source.range().clone(),
-                }),
+                _ => Err(ConstError::unsupported(
+                    "appending a non-array value",
+                    source.range(),
+                )),
             }
         }
         other => Err(unsupported_collection_method(
@@ -947,17 +660,14 @@ fn mutate_array(
     }
 }
 
-/// Supports `set`, `remove`, `clear` — mirroring the runtime map gates
-/// (`MAP_SET`/`MAP_REMOVE`/`MAP_CLEAR`) 1:1 (unlike arrays, a map's `set` IS
-/// the real call-syntax method — `lower::access::lower_map_method`'s `"set"`
-/// arm lowers the exact same `t.set(k, v)` shape to `MAP_SET`). Any other
-/// method name is `ConstReason::UnsupportedMethod`, naming the method.
+/// Apply `set`, `remove` or `clear` to a const map, mirroring the runtime
+/// map gates one to one. Any other method is `ConstReason::UnsupportedMethod`.
 fn mutate_map(
     mut pairs: Vec<(Literal, Literal)>,
     field: &str,
     args: &[CallArg],
     es: &ExprStmt,
-    cx: &ConstCtx,
+    cx: &ConstCtx<'_>,
     budget: &mut Budget,
 ) -> Result<Vec<(Literal, Literal)>, ConstError> {
     match field {
@@ -1063,53 +773,39 @@ fn method_args<'a>(
         .collect()
 }
 
-/// A mutating method call missing a required positional argument (typecheck
-/// does not arity-check these — they are not real `catalog` call specs, see
-/// `mutate_array`'s doc comment on `set`), blamed on the whole statement
-/// since no single argument sub-expression is at fault.
+/// A mutating method call missing a required argument, blamed on the whole
+/// statement. Typecheck does not arity-check these methods.
 fn arity_error(es: &ExprStmt) -> ConstError {
-    ConstError {
-        reason: ConstReason::Unsupported("a call with the wrong number of arguments"),
-        range: es.range.clone(),
-    }
+    ConstError::unsupported("a call with the wrong number of arguments", &es.range)
 }
 
-/// A method name that is not one of the mutations this evaluator implements
-/// for `kind` ("array"/"map"), naming the actual method so the user learns
-/// which call is the problem instead of reading a generic "not constant".
+/// A method that is not a supported mutation of a const `kind` ("array" or
+/// "map"), naming the method.
 fn unsupported_collection_method(
     field: &str,
     kind: &'static str,
     supported: &'static str,
     es: &ExprStmt,
 ) -> ConstError {
-    ConstError {
-        reason: ConstReason::UnsupportedMethod(format!(
+    ConstError::new(
+        ConstReason::UnsupportedMethod(format!(
             "`.{field}(…)` is not a supported compile-time {kind} mutation; only {supported} are"
         )),
-        range: es.range.clone(),
-    }
+        &es.range,
+    )
 }
 
-/// Binds `args` to `inputs` with [`bind_args`] (leniently, as
-/// `eval_method_call` binds builtin receiver calls), then evaluates each
-/// bound expression against the CALLER's `cx` before handing the resulting
-/// literals to `eval_call`, which seeds a fresh environment from them. An
-/// omitted argument takes the parameter's default, evaluated against the
-/// caller's `cx` as lowering does. A parameter with neither (an arity
-/// mismatch, which typecheck's WS022 normally reports first) is
-/// `Unsupported`, blamed on the parameter's own declaration.
+/// Bind `args` to `inputs` leniently with [`bind_args`] and evaluate each in
+/// the caller's `cx`; an omitted argument takes the parameter's default,
+/// also evaluated in the caller's `cx`. A parameter with neither is
+/// `Unsupported`, blamed on the parameter.
 ///
-/// `budget` is threaded through to `eval_expr` (rather than each argument
-/// getting its own fresh one) so a call-chain reached from ARGUMENT
-/// evaluation counts against the SAME depth/step ceiling as the call it's
-/// an argument to — otherwise a self-referential or mutually-recursive
-/// `const mod` reached this way would reset its budget every level and
-/// overflow the native Rust stack instead of hitting `BudgetExceeded`.
+/// Arguments share the caller's `budget`, so a recursive `const mod` reached
+/// through an argument still hits `BudgetExceeded` instead of a stack overflow.
 pub(super) fn bind_call_args(
     inputs: &[Param],
     args: &[CallArg],
-    cx: &ConstCtx,
+    cx: &ConstCtx<'_>,
     budget: &mut Budget,
 ) -> Result<Vec<Literal>, ConstError> {
     let names: Vec<&str> = inputs.iter().map(|p| p.name.as_str()).collect();
@@ -1119,10 +815,10 @@ pub(super) fn bind_call_args(
     let mut out = Vec::with_capacity(inputs.len());
     for (p, slot) in inputs.iter().zip(slots) {
         let Some(expr) = slot.or(p.default.as_ref()) else {
-            return Err(ConstError {
-                reason: ConstReason::Unsupported("a call missing an argument for this parameter"),
-                range: p.range.clone(),
-            });
+            return Err(ConstError::unsupported(
+                "a call missing an argument for this parameter",
+                &p.range,
+            ));
         };
         out.push(eval_expr(expr, cx, budget)?);
     }

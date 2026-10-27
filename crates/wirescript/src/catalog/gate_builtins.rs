@@ -1,9 +1,8 @@
-//! Callable gate builtins — function-call forms of the wire-graph var/array/map
-//! gates (`GetMapElement(m, k)`, `SetVariable(v, x)`, …), named after the
-//! in-game gates. The parser desugars each to its method/assignment equivalent
-//! (`parser::desugar_gate_call` / `parser::gate_builtin_assign`), so behaviour is
-//! identical to the `m.get(k)` / `v = x` forms. This module is the single source
-//! of truth for the names — the desugar tables and editor completions read it.
+//! Callable gate builtins: function-call forms of the var/array/map gates
+//! (`GetMapElement(m, k)`, `SetVariable(v, x)`, and so on), named after the
+//! in-game gates. The parser desugars each to its method or assignment form
+//! (`parser::desugar_gate_call` / `parser::gate_builtin_assign`). The desugar
+//! tables and editor completions read the names from here.
 
 /// The builtins that read or write a variable or an array element, which the
 /// parser turns into a read or an assignment rather than a method call.
@@ -62,15 +61,10 @@ pub fn method_for(name: &str) -> Option<&'static str> {
     METHODS.iter().find(|(n, _)| *n == name).map(|(_, m)| *m)
 }
 
-/// A descriptive usage hint for a STATEMENT-form gate builtin (`parser::
-/// gate_builtin_assign`), shown when one fails to desugar — used as a value, or
-/// with the wrong number of arguments (e.g. still being typed). Completion
-/// offers these names, so recognizing them here (rather than reporting a bare
-/// "unknown identifier") keeps the error sensible. The hint only DESCRIBES the
-/// builtin — it never guesses which specific mistake was made, so it reads right
-/// whether the call was a value misuse or an incomplete statement. `None` for
-/// the expression-form builtins (which desugar to methods and CAN be
-/// expressions) and for non-builtins.
+/// A usage hint for a statement-form gate builtin that failed to desugar (used
+/// as a value, or with the wrong number of arguments). It describes the builtin
+/// rather than guessing the mistake. `None` for the expression-form builtins
+/// and for non-builtins.
 pub fn statement_usage_hint(name: &str) -> Option<&'static str> {
     Some(match name {
         SET_VARIABLE => {

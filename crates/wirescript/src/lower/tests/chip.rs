@@ -1,33 +1,30 @@
+use std::fmt::Write as _;
+
 use crate::ir::port_registry::WirePort;
 use crate::test_support::{assert_no_code, codes, report_failures};
 
 use super::shape::{assert_no_fan_in, without_names};
 use super::*;
 
-// ── Recursion guard (WS020) ──
+// Recursion guard (WS020)
 
 #[test]
 fn const_literal_reaches_into_anon_chip() {
-    // Regression: a top-level const `let` referenced inside a `chip on` handler
-    // must have its Literal cloned INTO the chip's child module. Otherwise the
-    // parent->chip data wire dangles (its target moved into the child during
-    // partition_anon_chips) and the chip-side input silently reads the port
-    // default (0) — exactly what broke every scalar const inside a `chip on`.
-    // K has two consumers (the top-level `out` and the in-chip comparison), so
-    // `inline_orphan_literals` (single-consumer only) leaves it a real Literal
-    // gate — the case that dangles across the chip boundary.
+    // A top-level const `let` referenced inside a `chip on` handler has its Literal
+    // cloned INTO the chip's child module; otherwise the parent->chip data wire
+    // dangles (its target moves into the child in partition_anon_chips) and the
+    // chip-side input reads the port default (0). K has two consumers, so
+    // `inline_orphan_literals` (single-consumer only) leaves it a real Literal gate.
     let src = "let K: int = 7\nout dummy = K\nin trigger: exec\nchip on trigger { var x: int = 0\n  if x == K { x = 1 } }";
     let r = compile_ok(src);
     let child = only_chip(
         &r,
         "the `chip on` block should produce one anon chip module",
     );
-    // The 7 must reach the chip-side comparison — either as a cloned Literal
-    // gate wired in, or (since scalar-to-dataless materialization made the EQ
-    // the literal's single consumer) as an inlined InputB data default on the
-    // CompareEqual node itself. Both deliver the value in-game; what broke
-    // originally was the value arriving as NEITHER (dangling cross-boundary
-    // wire reading 0).
+    // The 7 reaches the chip-side comparison, either as a cloned Literal gate wired
+    // in or as an inlined InputB data default on the CompareEqual node (when the EQ
+    // is the literal's single consumer). Both deliver the value in game; a dangling
+    // cross-boundary wire reads 0.
     let lit7_gate = child.nodes.values().any(|n| {
         n.gate_class == gc::LITERAL
             && n.properties.get(&*crate::intern::sym::VALUE) == Some(&crate::ir::Literal::Int(7))
@@ -124,10 +121,10 @@ fn a_nested_call_of_the_same_mod_is_not_recursion() {
     }
 }
 
-/// Regression: a local mod calling a SAME-NAMED mod imported from another
-/// module (`mod drawCard` calling `card.drawCard`) is not recursion — they're
-/// distinct decls. The name-based guard falsely flagged this; keying on the
-/// decl's source range (which includes the file) fixes it.
+/// A local mod calling a SAME-NAMED mod imported from another module (`mod
+/// drawCard` calling `card.drawCard`) is not recursion: they're distinct decls,
+/// and the guard keys on the decl's source range (which includes the file), not
+/// the name.
 #[test]
 fn same_name_mod_across_modules_is_not_recursion() {
     let display = "mod drawCard() -> int { return 1 }";
@@ -151,7 +148,7 @@ fn chip_decl_sets_child_root_scope_to_chip_body() {
         .expect("chip body root scope");
     match &root.kind {
         ScopeKind::ChipBody { name } => assert_eq!(name, "Foo"),
-        other => panic!("expected ChipBody, got {:?}", other),
+        other => panic!("expected ChipBody, got {other:?}"),
     }
 }
 
@@ -232,9 +229,8 @@ fn each_chip_call_is_one_instance_with_its_declared_outputs() {
 
 #[test]
 fn inline_mod_multi_output_fields_wire_to_sources() {
-    // Regression: `let s = M(...); s.p / s.q` on a multi-output inline mod used
-    // to bind `s` to a phantom node 0 (ExecOut), leaving the outputs
-    // disconnected. Each field must resolve to its real value source.
+    // `let s = M(...); s.p / s.q` on a multi-output inline mod resolves each field
+    // to its real value source, not a phantom node 0 (ExecOut).
     let src = "in a: float\n\
         mod M(v: float) -> (p: float, q: float) {\n  out p = v + 1.0\n  out q = v + 2.0\n}\n\
         let s = M(a)\nout x = s.p\nout y = s.q";
@@ -258,7 +254,7 @@ fn chip_call_wires_args_to_inputs() {
     // Parent module should have wires to child MicrochipInput nodes
     let child = r.module.chips.values().next().unwrap();
     let child_input_ids: crate::collections::HashSet<NodeId> =
-        child.inputs.iter().cloned().collect();
+        child.inputs.iter().copied().collect();
     let input_wires: Vec<_> = r
         .module
         .wires
@@ -284,7 +280,7 @@ fn chip_call_atom_arg_inlines_like_int_literal() {
         let r = compile_ok(src);
         let child = r.module.chips.values().next().unwrap();
         let child_input_ids: crate::collections::HashSet<NodeId> =
-            child.inputs.iter().cloned().collect();
+            child.inputs.iter().copied().collect();
         let input_wires: Vec<_> = r
             .module
             .wires
@@ -306,7 +302,7 @@ fn chip_call_output_wire_in_parent() {
     // Parent should have a wire from child MicrochipOutput to the out binding
     let child = r.module.chips.values().next().unwrap();
     let child_output_ids: crate::collections::HashSet<NodeId> =
-        child.outputs.iter().cloned().collect();
+        child.outputs.iter().copied().collect();
     let out_wires: Vec<_> = r
         .module
         .wires
@@ -355,13 +351,10 @@ fn chip_output_named_like_a_swizzle_is_not_split() {
 
 #[test]
 fn nested_chip_instance_exec_wire_stays_local() {
-    // A `chip` exec-called from INSIDE a nested anon chip must have its exec
-    // wire routed into that anon chip's module (one grid boundary from the
-    // instance), not left at the root spanning several grids. The game can
-    // route a wire one grid in, but an exec pulse can't cross into an instance
-    // grid nested inside another anon chip, so the called chip would silently
-    // never fire. Regression for the Secret Hitler chancellor-enact bug
-    // (applyEnact never ran; discard did).
+    // A `chip` exec-called from INSIDE a nested anon chip has its exec wire routed
+    // into that anon chip's module (one grid boundary from the instance), not left
+    // at the root spanning several grids: an exec pulse can't cross into an instance
+    // grid nested inside another anon chip, so the called chip would never fire.
     let src = "\
 var x: int = 0
 var y: int = 0
@@ -390,8 +383,8 @@ chip on trig {
 
     // In each module, a wire touching a chip-boundary pin that isn't one of the
     // module's OWN pins must have that pin on a DIRECT child chip.
-    fn check(m: &crate::ir::Module, is_pin: &dyn Fn(&crate::ir::NodeId) -> bool) {
-        let mut child_pins: crate::collections::HashSet<crate::ir::NodeId> = Default::default();
+    let check = |m: &crate::ir::Module| {
+        let mut child_pins: crate::collections::HashSet<crate::ir::NodeId> = HashSet::default();
         for c in m.chips.values() {
             child_pins.extend(c.inputs.iter().copied());
             child_pins.extend(c.outputs.iter().copied());
@@ -411,25 +404,17 @@ chip on trig {
                 }
             }
         }
-        for c in m.chips.values() {
-            check(c, is_pin);
-        }
-    }
-    check(&r.module, &is_pin);
+    };
+    r.module.walk(&mut |_, m| check(m));
 }
 
 #[test]
 fn dedup_keeps_constants_within_their_chip() {
-    // A constant used as a WIRED (multi-consumer) literal in two separate anon
-    // chips must NOT be merged across the chip boundary. `dedup_constant_gates`
-    // runs before `partition_anon_chips`, so merging to a keeper in a different
-    // chip leaves the other chip's consumer with a cross-chip literal data wire;
-    // partition keeps that wire in the parent without cloning the literal, and
-    // emit (which inlines _Literal sources per-module) can't reach it, so the
-    // operand silently reads its port default (0). This manifested as seat
-    // indices 7/9 folding to 0 in the Secret Hitler input queue. `i` is used
-    // twice so the arg literal stays wired (single-use args inline earlier and
-    // never reach dedup).
+    // A constant used as a WIRED (multi-consumer) literal in two separate anon chips
+    // is NOT merged across the chip boundary: `dedup_constant_gates` runs before
+    // `partition_anon_chips`, and a keeper in the other chip would leave a cross-chip
+    // literal wire that emit (inlining _Literal sources per module) can't reach, so
+    // the operand reads 0. `i` is used twice so the arg literal stays wired.
     let src = "\
 var q: int[]
 in trig: exec
@@ -444,15 +429,11 @@ on trig {
 
 #[test]
 fn let_constant_referenced_across_chips_is_cloned_per_module() {
-    // A `let`-bound constant declared in one chip and referenced in ANOTHER
-    // chip (or at the top level) shares a single `_Literal` value gate by
-    // reference — unlike the mod-inlined case above, dedup never runs on it.
-    // `partition_anon_chips` must clone that literal into EVERY consuming
-    // module (chip->chip AND chip->parent), because a `_Literal` is a compiler
-    // placeholder emit only inlines into SAME-module consumers; a cross-module
-    // literal->operand wire leaves the far operand reading its default 0.
-    // (In a real capture-point circuit `let capTotal = 20` in one chip read 0
-    // in the `capAmount < capTotal` of another chip.)
+    // A `let`-bound constant declared in one chip and referenced in ANOTHER chip (or
+    // at the top level) shares one `_Literal` gate by reference, which dedup never
+    // touches. `partition_anon_chips` clones that literal into EVERY consuming module
+    // (chip->chip AND chip->parent): emit inlines a `_Literal` only into same-module
+    // consumers, so a cross-module literal->operand wire reads its default 0.
     let src = "\
 chip {
   let k = 20
@@ -472,7 +453,7 @@ out b: int = k * 5";
 /// consumer's module: emit inlines a literal only into same-module consumers, so
 /// a literal wired across a chip boundary leaves the operand reading 0.
 fn assert_literal_operands_in_their_module(root: &crate::ir::Module) {
-    let mut module_of: crate::collections::HashMap<crate::ir::NodeId, usize> = Default::default();
+    let mut module_of: crate::collections::HashMap<crate::ir::NodeId, usize> = HashMap::default();
     for (i, m) in root.modules_deep().into_iter().enumerate() {
         module_of.extend(m.nodes.keys().map(|id| (*id, i)));
     }
@@ -499,11 +480,9 @@ fn assert_literal_operands_in_their_module(root: &crate::ir::Module) {
 #[test]
 fn pure_chip_after_handler_reads_vars_continuously() {
     // A top-level `chip { }` is a pure visual grouping. When it FOLLOWS an `on`
-    // handler, it must NOT inherit the post-handler exec context — otherwise its
-    // pure `let` var reads latch onto that exec chain as a one-shot
-    // `Exec_Var_Get` frozen at the var's init value, instead of reading the
-    // var's live `.Value`. (Symptom: a display chip's computed value stuck at 0
-    // even as the var updates — capTotal/timePercent-style.)
+    // handler it does NOT inherit the post-handler exec context: its pure `let` var
+    // reads stay live `.Value` reads, not a one-shot `Exec_Var_Get` frozen at the
+    // var's init value.
     for src in [
         "var v: int = 0
 in go: exec
@@ -555,7 +534,7 @@ out result = r.result";
         crate::test_support::error_codes(&tc.diagnostics),
         crate::test_support::error_codes(&lr.diagnostics),
     ];
-    assert!(errors.iter().all(|e| e.is_empty()), "{errors:?}");
+    assert!(errors.iter().all(std::vec::Vec::is_empty), "{errors:?}");
     assert_eq!(
         lr.module.chips.len(),
         1,
@@ -632,7 +611,7 @@ fn an_if_on_a_literal_condition_folds_to_the_chosen_body() {
     report_failures(&failures, rows.len());
 }
 
-/// Record params: ref/array fields are NOT declared MicrochipInput ports
+/// Record params: ref/array fields are NOT declared `MicrochipInput` ports
 /// under their record-field name (no `s_val`/`s_arr` labels); the crossing
 /// each dissolved field leaves behind is resolved by the boundary-pins pass
 /// into its own synthesized pin, leaving no raw external capture.
@@ -671,13 +650,11 @@ let r = Foo(s)",
         .collect();
     assert!(
         !input_labels.contains(&"s_val".to_string()),
-        "s_val (*int) should be scope-captured, not a MicrochipInput, got: {:?}",
-        input_labels
+        "s_val (*int) should be scope-captured, not a MicrochipInput, got: {input_labels:?}"
     );
     assert!(
         !input_labels.contains(&"s_arr".to_string()),
-        "s_arr (int[]) should be scope-captured, not a MicrochipInput, got: {:?}",
-        input_labels
+        "s_arr (int[]) should be scope-captured, not a MicrochipInput, got: {input_labels:?}"
     );
     assert!(
         chip.scope_captures.is_empty(),
@@ -694,8 +671,8 @@ let r = Foo(s)",
     );
 }
 
-/// `&x` (address-of) passed to a `*T` param must bind the SAME var as bare `x`,
-/// so a write through the param reaches the caller's var. The `&` form (the
+/// `&x` (address-of) passed to a `*T` param binds the SAME var as bare `x`, so a
+/// write through the param reaches the caller's var. The `&` form (the
 /// documented `inc(&x)` idiom) needs the inline ref-binding to unwrap
 /// `Expr::RefOf`, or the param binds to nothing and every write is dropped.
 #[test]
@@ -727,8 +704,8 @@ on go { inc(&x) }",
 
 /// The chip twin of `addr_of_arg_binds_ref_param_so_write_lands`. A chip
 /// resolves a ref/container argument in `call/binding.rs` and `call/wiring.rs`,
-/// neither of which saw through `Expr::RefOf`, so `&x` fed the ref pin nothing
-/// and every write through the param was dropped with no diagnostic.
+/// which see through `Expr::RefOf`, so `&x` feeds the ref pin and every write
+/// through the param lands.
 #[test]
 fn addr_of_arg_binds_chip_ref_param() {
     for arg in ["x", "&x", "ref x"] {
@@ -751,7 +728,7 @@ on go {{ inc({arg}) }}"
     }
 }
 
-/// Same for the container and record forms: `&arr` and `&rec` must bind the
+/// Same for the container and record forms: `&arr` and `&rec` bind the
 /// caller's storage exactly as the bare spellings do.
 #[test]
 fn addr_of_arg_binds_chip_container_and_record_params() {
@@ -822,9 +799,9 @@ on player {
     );
 }
 
-/// Regression: chip value params that require exec (Var_Get) must be read
-/// BEFORE the chip's auto-exec entry, not after. Otherwise the exec chain
-/// creates a cycle: chip._exec_out -> Var_Get -> ... -> chip.param (data back-edge).
+/// Chip value params that require exec (`Var_Get`) are read BEFORE the chip's
+/// auto-exec entry, not after; otherwise the exec chain creates a cycle:
+/// chip._`exec_out` -> `Var_Get` -> ... -> chip.param (data back-edge).
 #[test]
 fn chip_value_args_exec_before_chip_entry() {
     let src = "\
@@ -917,10 +894,10 @@ on t {
 #[test]
 fn map_get_with_exec_arg_lowers_in_pure_context() {
     // `m.get(k, exec = <trigger>)` in a PURE binding drives the read off an
-    // explicit trigger (mirrors the array `lut.get(i, exec = …)` path), so it must
-    // lower to a real Map_Get gate — not the `_Unsupported` placeholder.
-    // `Change(k).exec` is a bare-exec builtin result used as the trigger — the
-    // same shape the user hit — so this also guards the `.exec`-on-exec lowering.
+    // explicit trigger (mirrors the array `lut.get(i, exec = ...)` path), so it
+    // lowers to a real Map_Get gate, not the `_Unsupported` placeholder.
+    // `Change(k).exec` is a bare-exec builtin result used as the trigger, so this
+    // also guards the `.exec`-on-exec lowering.
     let src = "\
 var teams: Map<string, string> = { \"red\" => \"f00\" }
 in k: string
@@ -1006,9 +983,9 @@ fn a_chip_body_push_is_driven_by_the_exec_given_to_the_body() {
 
 #[test]
 fn entity_setters_compile_to_brz() {
-    // Entity Set*/Teleport gates derive their data structs (Vector/Rotator
-    // and composite TeleportDestination fields) — the writer must fill
-    // defaults for all of them without failing the emit.
+    // Entity Set*/Teleport gates derive their data structs (Vector/Rotator and
+    // composite TeleportDestination fields); the writer fills defaults for all of
+    // them without failing the emit.
     let src = "in trigger: exec\nin e: entity\nin d: teleport\non trigger {\n  \
         e.SetLocation(Vec(1.0, 2.0, 3.0))\n  \
         e.SetRotation(Rotation(0.0, 90.0, 0.0))\n  \
@@ -1063,9 +1040,8 @@ fn spawn_prefab_compiles_to_brz() {
 
 /// Assert a compiled `SpawnPrefab` call has no `_Unsupported` placeholder
 /// anywhere in the module, and its `Prefab` gate property was baked to the
-/// given path via `Literal::PrefabRef` — i.e. the `prefab = <name>` config
-/// arg resolved the `let`-bound name to its constant instead of falling
-/// through to an unresolvable wire.
+/// given path via `Literal::PrefabRef`: the `prefab = <name>` config arg
+/// resolved the `let`-bound name to its constant rather than a wire.
 fn assert_prefab_property_baked(r: &LowerResult, expected_path: &str) {
     assert_no_errors(r);
     assert!(
@@ -1100,16 +1076,12 @@ fn spawn_prefab_top_level_let_reaches_prefab_property() {
 
 #[test]
 fn spawn_prefab_body_local_let_reaches_prefab_property() {
-    // A BODY-LOCAL `let pf = $./foo.brz` (declared inside the handler that
-    // uses it) is the scope-aware case: `pf` only exists in the handler's
-    // block scope, so resolving it requires the lowering-side
-    // `scoped_consts` frame stack (mirroring typecheck's), not just the
-    // top-level `const_env`. Before that stack existed, `pf` didn't resolve
-    // as a constant — and `Expr::PrefabRef` has no general expression
-    // lowering of its own (`lower_expr` falls through to
-    // `synthesise_unsupported` for it) — so the `let` itself emitted an
-    // `_Unsupported` placeholder plus a warning, and the `prefab=` arg had
-    // no way to reach the gate's `Prefab` property.
+    // A BODY-LOCAL `let pf = $./foo.brz` (declared inside the handler that uses it)
+    // exists only in the handler's block scope, so resolving it needs the
+    // lowering-side `scoped_consts` frame stack (mirroring typecheck's), not just
+    // the top-level `const_env`. `Expr::PrefabRef` has no general expression
+    // lowering (`lower_expr` gives `synthesise_unsupported`), so an unresolved `pf`
+    // is an `_Unsupported` placeholder and never reaches the gate's `Prefab`.
     let src = "in go: exec\non go { let pf = $./foo.brz\n  SpawnPrefab(prefab = pf) }";
     let r = compile(src);
     assert_prefab_property_baked(&r, "./foo.brz");
@@ -1162,7 +1134,7 @@ fn exec_arg_call_exposes_exec_field() {
     );
 }
 
-// ── Use-before-declaration guard (WS021) ──
+// Use-before-declaration guard (WS021)
 
 /// A body reading a top-level `let` declared below its call, or a call before
 /// its mod's declaration, is WS021 once per read or call (it would lower to an
@@ -1233,7 +1205,7 @@ fn a_use_before_its_declaration_is_ws021_once_per_use() {
     report_failures(&failures, rows.len());
 }
 
-// ── `in` array inputs are first-class ──
+// `in` array inputs are first-class
 
 /// An `in X: T[]` input works like a var array: indexed, its methods called,
 /// and passed to an inline mod's `int[]` param, whose reads resolve to the
@@ -1253,7 +1225,7 @@ fn an_in_array_is_indexed_called_and_passed_like_a_var_array() {
     }
 }
 
-// ── Namespaced (`import * as`) mods resolve their siblings ──
+// Namespaced (`import * as`) mods resolve their siblings
 
 #[test]
 fn namespaced_mod_resolves_siblings() {
@@ -1279,14 +1251,10 @@ fn namespaced_mod_resolves_siblings() {
 
 #[test]
 fn chip_constant_arg_folds_into_the_instance() {
-    // A constant argument folds into the instance instead of crossing the boundary as a real gate: the caller
-    // built a `_Var` holding the value and wired it into the chip's input
-    // rerouter, because a rerouter has no data struct to carry inline gate data.
-    // That made `Bump(1)` strictly more expensive than the same call written as a
-    // `mod`, which folds the constant straight onto its consumer. The constant is
-    // now cloned into the instance and the pin it fed is dropped. Instances of one
-    // chip share a template, so the hazard is every instance collapsing onto a
-    // single call's value — each must keep its own.
+    // A constant argument is cloned into the instance and the pin it fed is
+    // dropped, as a `mod` folds the constant onto its consumer (a rerouter has no
+    // data struct to carry it). Instances of one chip share a template, so each
+    // must keep its own call's value rather than collapsing onto one.
     let src = "\
 var acc: int = 0
 in t: exec
@@ -1322,7 +1290,7 @@ on t { Bump(1) Bump(2) }";
             }
         }
     }
-    folded.sort();
+    folded.sort_unstable();
     assert_eq!(
         folded,
         vec![1, 2],
@@ -1332,8 +1300,8 @@ on t { Bump(1) Bump(2) }";
 
 #[test]
 fn gate_builtins_desugar_to_their_gates() {
-    // The callable gate builtins (GetMapElement, PushToArray, SetVariable, …)
-    // desugar to the SAME gates as the method / assignment forms — never an
+    // The callable gate builtins (GetMapElement, PushToArray, SetVariable, and so
+    // on) desugar to the SAME gates as the method / assignment forms, never an
     // `_Unsupported` placeholder.
     let src = "\
 var v: int = 0
@@ -1372,9 +1340,9 @@ out o = v";
 
 #[test]
 fn union_and_branch_builtins_lower_to_their_gates() {
-    // `Union(a, b)` merges two execs; `Branch(cond, e).A`/`.B` route one. Both
-    // are callable builtins that lower to their game gates — no `_Unsupported`,
-    // and the `.A`/`.B` friendly outputs resolve to the ExecOutA/ExecOutB ports.
+    // `Union(a, b)` merges two execs; `Branch(cond, e).A`/`.B` route one. Both are
+    // callable builtins that lower to their game gates with no `_Unsupported`, and
+    // the `.A`/`.B` friendly outputs resolve to the ExecOutA/ExecOutB ports.
     let src = "\
 in a: exec
 in b: exec
@@ -1396,8 +1364,8 @@ out o = x";
 
 #[test]
 fn fill_array_builtins_lower_to_their_gates() {
-    // The game-named array-fill builtins desugar to the array `fillFrom*`
-    // methods and lower to the Gamemode/Zone fill gates — no `_Unsupported`.
+    // The game-named array-fill builtins desugar to the array `fillFrom*` methods
+    // and lower to the Gamemode/Zone fill gates, with no `_Unsupported`.
     let src = "\
 var players: character[]
 var ents: character[]
@@ -1425,7 +1393,7 @@ on t {
     }
 }
 
-// ── Template cache must key on call-site context, not the bare name ──
+// Template cache must key on call-site context, not the bare name
 
 #[test]
 fn pure_then_exec_chip_call_gets_its_own_exec_body() {
@@ -1442,9 +1410,9 @@ var r: int = 0
 on go { r = Double(4) }";
     let r = compile_ok(src);
     // Two Double instances: the pure one exposes only `y`; the exec one also
-    // carries an `_exec_out` boundary pin. (Assert on OUTPUTS, not inputs — both
-    // calls pass a constant, so const-folding drops the `v` input pin either
-    // way.) Before the fix both share the pin-less body, so both have one output.
+    // carries an `_exec_out` boundary pin. (Asserted on OUTPUTS, not inputs: both
+    // calls pass a constant, so const-folding drops the `v` input pin either way.)
+    // A shared pin-less body would give both one output.
     let mut out_counts: Vec<usize> = r
         .module
         .chips
@@ -1508,15 +1476,15 @@ on go {
     );
 }
 
-// ── Two `return expr` in a non-inline chip must not fan in on the output ──
+// Two `return expr` in a non-inline chip must not fan in on the output
 
 #[test]
 fn standalone_chip_two_returns_route_through_pseudovar() {
-    // A standalone (non-inline) chip with two `return expr` must route both
-    // through a return PseudoVar (Var_Set per return, one Var_Get after the union
-    // -> a single output wire), exactly like the inline path. `build_chip_module`
-    // never set `mod_return_var`, so both returns wired straight into the output
-    // pin — a load-time fan-in failure with no diagnostic.
+    // A standalone (non-inline) chip with two `return expr` routes both through a
+    // return PseudoVar (Var_Set per return, one Var_Get after the union -> a single
+    // output wire), like the inline path: `build_chip_module` sets
+    // `mod_return_var`. Two returns wired straight into the pin are a load-time
+    // fan-in with no diagnostic.
     let src = "\
 in c: bool
 in go: exec
@@ -1535,7 +1503,7 @@ on go { r = pick() }";
         .find(|c| crate::intern::resolve(c.name).contains("pick"))
         .expect("pick chip instance");
     // The value output (declared first) takes exactly one incoming wire, fed by
-    // the return PseudoVar's Var_Get — not two (one per return).
+    // the return PseudoVar's Var_Get, not one per return.
     let val_out = chip.outputs[0];
     let into_val: Vec<_> = chip
         .wires
@@ -1563,14 +1531,13 @@ on go { r = pick() }";
     assert_eq!(set_count, 2, "a Var_Set per return");
 }
 
-// ── Multiple `emit out = v` sites must not fan in on the output ──
+// Multiple `emit out = v` sites must not fan in on the output
 
 #[test]
 fn multiple_emit_sites_to_one_output_route_through_backing_var() {
-    // Two handlers each `emit result = <v>` would otherwise wire each value
-    // straight into the output rerouter — a load-time fan-in with no diagnostic.
-    // They must instead share a backing PseudoVar (a Var_Set per site), the var
-    // feeding the output once (last-writer-wins).
+    // Two handlers each `emit result = <v>` share a backing PseudoVar (a Var_Set
+    // per site), the var feeding the output once (last-writer-wins). Each value
+    // wired straight into the output rerouter is a load-time fan-in.
     let src = "\
 out result: int
 in a: exec
@@ -1597,10 +1564,9 @@ on b { emit result = 2 }";
 }
 
 /// `on a | b { ... }` lowers its body once per trigger part, so ONE syntactic
-/// `emit` becomes two drivers on the output rerouter. The emit prescan walks a
-/// handler body once regardless of trigger count, so it saw a single emit,
-/// skipped the backing var, and the two copies fanned in. Fan-in on a rerouter
-/// makes the save fail to load, and `check` reported nothing.
+/// `emit` becomes two drivers on the output rerouter: the emit prescan counts
+/// per trigger part and uses the backing var. A fan-in on a rerouter makes the
+/// save fail to load with nothing reported by `check`.
 #[test]
 fn union_trigger_emit_routes_through_backing_var() {
     let src = "out result: int
@@ -1635,9 +1601,8 @@ chip on a | b { emit result = v }";
 #[test]
 fn chip_emit_to_its_exec_output_is_wired() {
     // A chip that emits its own declared exec output (`-> (next: exec)` + `emit
-    // next`) must wire the emit to that output. `build_chip_module` never flushed
-    // the child's pending emits, so `emit next` was silently dropped and the
-    // `next` output stayed dead — an awaiting caller could never resume.
+    // next`) wires the emit to that output: `build_chip_module` flushes the child's
+    // pending emits, so an awaiting caller can resume.
     let src = "\
 chip Emitter() -> (next: exec) {
   emit next
@@ -1746,8 +1711,8 @@ fn a_multi_output_chip_field_read_projects_the_named_output() {
 /// An anonymous `chip { }` body shares the top level, and its statements name
 /// its own storage whatever the top level declares of the name, before the
 /// chip or after it: each program saves what its twin with the top-level name
-/// renamed saves, in both fold modes. A `const` before the chip built a second,
-/// unused gate for the chip's `var`, and a write to it was `WS007`.
+/// renamed saves, in both fold modes. A `const` before the chip builds no
+/// second gate for the chip's `var`, and a write to it is no `WS007`.
 #[test]
 fn a_top_level_name_beside_anon_chip_storage_hides_nothing_from_the_chip() {
     // A gate is labelled with the name it stores or binds.
@@ -1947,13 +1912,10 @@ fn a_name_beside_anon_chip_storage_binds_one_declaration_at_each_place() {
     );
 }
 
-/// An anonymous `chip { }` writes its body wherever it is placed. The one
-/// placement that used to drop it on the floor is directly inside a NAMED
-/// chip's body: `build_chip_module`'s pre-declare loop never created the
-/// anon chip's `NodeKind::Chip` node, so `lower_anon_chip` found nothing to
-/// attach to and returned, discarding the whole body with no diagnostic.
-/// The other rows are the controls that always worked; they are here so a
-/// future change cannot fix one placement by breaking another.
+/// An anonymous `chip { }` writes its body wherever it is placed, including
+/// directly inside a NAMED chip's body, where `build_chip_module`'s pre-declare
+/// loop creates the anon chip's `NodeKind::Chip` node for `lower_anon_chip` to
+/// attach to. Without it the body is discarded with no diagnostic.
 #[test]
 fn an_anon_chip_body_lowers_in_every_placement() {
     // One body text in every row, so a row can only differ by where the
@@ -1998,13 +1960,10 @@ fn an_anon_chip_body_lowers_in_every_placement() {
     }
 }
 
-/// The same drop, seen through what the enclosing chip promised: a `var`, a
-/// `partition_anon_chips` walked only the root, so an anon `chip { }` written
-/// inside a NAMED chip kept its `chip_id` tags and never became a child
-/// module. Emit skips a `Chip` node with no `chips` entry, so the box the
-/// author labelled was silently dropped and its gates were emitted flat onto
-/// the enclosing chip's grid. Live in `secret-hitler/src/main.ws`, where 259
-/// nodes were affected.
+/// An anon `chip { }` written inside a NAMED chip becomes a child module:
+/// `partition_anon_chips` walks every module, not only the root. Emit skips a
+/// `Chip` node with no `chips` entry, so the labelled box would vanish and its
+/// gates be emitted flat onto the enclosing chip's grid.
 #[test]
 fn an_anon_chip_in_a_named_chip_gets_its_own_sub_grid() {
     let r = compile_ok(
@@ -2038,10 +1997,10 @@ fn an_anon_chip_in_a_named_chip_gets_its_own_sub_grid() {
     );
 }
 
-/// `let` and the named chip's own declared `out` all live inside the nested
-/// anon chip, so losing the body left `Outer_0` with three boundary pins and
-/// no gates at all, its declared output wired straight from the input
-/// rerouter. Documented as supported at `docs/src/chips.md:697,714`.
+/// The same placement, seen through what the enclosing chip promised: a `var`,
+/// a `let` and the named chip's own declared `out` all live inside the nested
+/// anon chip, so a lost body would leave `Outer_0` with three boundary pins, no
+/// gates, and its declared output wired straight from the input rerouter.
 #[test]
 fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
     let r = compile_ok(
@@ -2083,12 +2042,13 @@ fn an_anon_chip_in_a_named_chip_body_drives_the_declared_output() {
 /// `depth` anonymous chips nested one inside the next, each bumping its own
 /// var, wrapped by `wrap` (which receives the nested block).
 fn nested_anon_chips(depth: usize, wrap: impl Fn(&str, &str) -> String) -> String {
-    let vars: String = (1..=depth)
-        .map(|i| format!("var v{i}: int = 0\n"))
-        .collect();
+    let vars = (1..=depth).fold(String::new(), |mut vars, i| {
+        let _ = writeln!(vars, "var v{i}: int = 0");
+        vars
+    });
     let mut body = String::new();
     for i in 1..=depth {
-        body.push_str(&format!("chip {{\nv{i} = v{i} + {i}\n"));
+        let _ = writeln!(body, "chip {{\nv{i} = v{i} + {i}");
     }
     for _ in 1..=depth {
         body.push_str("}\n");
@@ -2098,28 +2058,26 @@ fn nested_anon_chips(depth: usize, wrap: impl Fn(&str, &str) -> String) -> Strin
 
 /// Every `Chip` node in the tree has a child module, and no node still carries
 /// the anon-chip tag the partition consumes.
-fn assert_chip_tree_complete(m: &crate::ir::Module, what: &str) {
-    for (id, n) in &m.nodes {
-        if n.kind == NodeKind::Chip {
+fn assert_chip_tree_complete(root: &crate::ir::Module, what: &str) {
+    root.walk(&mut |_, m| {
+        for (id, n) in &m.nodes {
+            if n.kind == NodeKind::Chip {
+                assert!(
+                    m.chips.contains_key(id),
+                    "{what}: chip node {id} in module {:?} has no child module",
+                    crate::intern::resolve(m.name)
+                );
+            }
             assert!(
-                m.chips.contains_key(id),
-                "{what}: chip node {id} in module {:?} has no child module",
-                crate::intern::resolve(m.name)
+                n.chip_id.is_none(),
+                "{what}: node {id} kept its chip_id tag"
             );
         }
-        assert!(
-            n.chip_id.is_none(),
-            "{what}: node {id} kept its chip_id tag"
-        );
-    }
-    for c in m.chips.values() {
-        assert_chip_tree_complete(c, what);
-    }
+    });
 }
 
-/// The partition built every anon chip's module flat and then re-nested them
-/// in hash order, dropping a grandchild's module whenever its parent moved
-/// first, so three or more levels failed at emit with a wire to an unknown node.
+/// Anon chips nested three or more levels deep each get their module: the
+/// partition re-nests every level, whatever order the parents are visited in.
 /// Nested in a handler, a named chip's handler, or a mod body, every level gets
 /// its module, keeps its increment, and the program emits.
 #[test]
@@ -2157,8 +2115,8 @@ fn deeply_nested_anon_chips_all_get_modules() {
 }
 
 /// A plain `emit` ending a handler's anon chip forks the chain; it does not end
-/// it, so the statement after the chip still runs (the same body in `if true`
-/// always kept it).
+/// it, so the statement after the chip still runs (as it does for the same body
+/// in `if true`).
 #[test]
 fn plain_emit_ending_an_anon_chip_keeps_the_chain() {
     let r = compile_ok(
@@ -2248,9 +2206,9 @@ fn assert_outputs_driven_once(m: &crate::ir::Module, what: &str) {
     }
 }
 
-/// Early returns in a multi-output chip each drove every output pin directly,
-/// a fan-in the emitter rejects; each return now stores the outputs, and the
-/// storage drives each pin once.
+/// Early returns in a multi-output chip each store the outputs, and the storage
+/// drives each pin once: each return driving every pin directly is a fan-in the
+/// emitter rejects.
 #[test]
 fn multi_output_chip_with_early_returns_drives_each_output_once() {
     let r = compile_ok(
@@ -2275,9 +2233,9 @@ fn multi_output_chip_with_early_returns_drives_each_output_once() {
     assert_emits(&r.module, &lr);
 }
 
-/// A record output among several has one pin per field. The return wired only
-/// the first output, and the caller read the record's pins as if each output
-/// had one, so `v.x` split a vector off the `p.x` pin and `w` read `p.y`.
+/// A record output among several has one pin per field, and the return wires
+/// every output: the caller reads each record field from its own pin, so `v.x`
+/// and `w` read their own values, not `p.x` and `p.y`.
 #[test]
 fn multi_output_chip_with_a_record_output_wires_every_pin() {
     let r = compile_ok(
@@ -2333,8 +2291,8 @@ fn multi_output_chip_with_a_record_output_and_early_returns() {
 }
 
 /// A tuple return with one element per VALUE output skips an exec output in
-/// the middle of the signature. Filled by raw position, `b`'s value went to
-/// the `done` exec pin (chip) or nowhere (mod), and `b` read 0.
+/// the middle of the signature: `b`'s value goes to `b`, not to the `done` exec
+/// pin (chip) or nowhere (mod).
 #[test]
 fn tuple_return_skips_an_exec_output_between_values() {
     for kw in ["chip", "mod"] {
@@ -2381,10 +2339,9 @@ fn tuple_return_skips_an_exec_output_between_values() {
     }
 }
 
-/// With no exec chain in the body a branch holding a `return` is never
-/// lowered, so the call always gave the last return's value. A chip of any
-/// output count, and a mod with several outputs, now say so (the one-output
-/// mod already did).
+/// With no exec chain in the body a branch holding a `return` is never lowered,
+/// so the call would always give the last return's value. A chip of any output
+/// count, and a mod with several outputs or one, report it.
 #[test]
 fn branch_returns_without_an_exec_chain_are_reported() {
     for (kw, sig, ret1, ret2, read) in [
@@ -2421,8 +2378,8 @@ fn branch_returns_without_an_exec_chain_are_reported() {
 }
 
 /// A chip whose one output is a record: `return rec` drives the field pins,
-/// once, from the return that ran. Every return used to be dropped, leaving
-/// the pins unwired, and two returns stored into a scalar var no pin read.
+/// once, from the return that ran, rather than leaving the pins unwired and
+/// storing into a scalar var no pin reads.
 #[test]
 fn record_output_chip_returns_drive_the_field_pins() {
     for (sig, body, sets) in [
@@ -2511,7 +2468,7 @@ fn chip_with_an_exec_first_param_names_its_trigger_in_ws007() {
 
 /// Returns inside a nested `on` or an anonymous `chip {}` of a chip or mod body
 /// store into the outputs' storage: the path that ran wins and the output holds
-/// it. They were not counted, so a misleading WS013 fired and the IR carried a
+/// it. They count as writes, so no misleading WS013 fires and the IR has no
 /// fan-in.
 #[test]
 fn returns_in_a_nested_handler_or_anon_chip_are_stored() {
@@ -2790,8 +2747,8 @@ fn a_signal_declared_through_an_alias_of_exec_is_its_exec_twin() {
 }
 
 /// A `const` parameter named like an outer binding (a module `var`, `let` or
-/// `const`) is the argument it was given, in a `mod` and in a `chip`: the
-/// body read the outer binding.
+/// `const`) is the argument it was given, in a `mod` and in a `chip`, never the
+/// outer binding.
 #[test]
 fn a_const_parameter_named_like_an_outer_binding_is_its_argument() {
     use crate::ir::Literal;
@@ -2843,8 +2800,8 @@ fn a_const_parameter_named_like_an_outer_binding_is_its_argument() {
 }
 
 /// A `const` record parameter named like an outer binding is the record it
-/// was given, in a `chip` as in a `mod`: the chip's body read the outer one
-/// (and failed to load without folding).
+/// was given, in a `chip` as in a `mod`, never the outer one (which fails to
+/// load without folding).
 #[test]
 fn a_const_record_parameter_named_like_an_outer_binding_is_its_argument() {
     use crate::ir::Literal;
@@ -2883,9 +2840,8 @@ fn a_const_record_parameter_named_like_an_outer_binding_is_its_argument() {
 /// A chip's `const` record parameter with no outer binding of its name is the
 /// record it was given, as a `mod`'s is: a field, a nested record's field, a
 /// string field and an array field, each reaching the chip's output through its
-/// wires. An integer given for a `float` field is that float. Every chip form
-/// was a placeholder that read zero or `""` (`WSP001`), or `WS044` for the
-/// array, and the integer divided as an integer.
+/// wires, with no `WSP001` placeholder or `WS044`. An integer given for a
+/// `float` field is that float and divides as one.
 #[test]
 fn a_chip_const_record_parameter_is_its_argument() {
     use crate::ir::{Literal, Module};
@@ -3013,8 +2969,8 @@ on go {{ {store} = C({arg}) }}"
 /// `let`, passed to a `mod`, returned, spread, put in a record literal,
 /// destructured, chosen by an `if` or a method's receiver) reads every field
 /// below it, so its array fields are the argument's tables: the `float` table
-/// reaches `r`. Each such read was a `WSP001` placeholder. An array field the
-/// body never reaches gets no table.
+/// reaches `r`, with no `WSP001` placeholder. An array field the body never
+/// reaches gets no table.
 #[test]
 fn a_nested_record_read_whole_keeps_every_field_below_it() {
     use crate::ir::Literal;
@@ -3111,8 +3067,8 @@ fn a_nested_record_read_whole_keeps_every_field_below_it() {
 /// A constant `if` or `match` is decided only by names that are the
 /// constants they name: a parameter, local, loop variable, destructured name
 /// or `const` record parameter named like an outer `const` is that binding,
-/// so each program compiles as its twin with the binding renamed. The outer
-/// constant decided the branch, and the other one was never built.
+/// so each program compiles as its twin with the binding renamed, both
+/// branches built.
 #[test]
 fn a_name_shadowing_a_constant_does_not_decide_an_if_or_match() {
     let head = "type P = { a: int, b: int }\nenum Hue { Red, Green }\nin go: exec\nvar n: int = 0\nvar k: int = 3\n\
@@ -3196,13 +3152,9 @@ fn a_name_shadowing_a_constant_does_not_decide_an_if_or_match() {
 /// declarations wherever it is called from: inside the chip, after it, above
 /// it, through a `mod` written outside, from a nested chip. A chip's own
 /// `const` or `let` is the chip's inside it and the top level's outside it,
-/// for value reads and constant-only slots alike. Each row equals its twin
-/// with the chip's declaration renamed (`@`), both folds; before, the rows
-/// after the chip read the top-level declaration (a string multiplied,
-/// constants folded from it) beside a false `WS091`, and a chip `const` was
-/// read by the slots outside it. Two declarations of one name in one chip are
-/// `WS013`; two at the top level are read by position (see
-/// `a_name_the_top_level_declares_twice_is_read_by_position`).
+/// for value reads and constant-only slots alike, with no false `WS091`. Each
+/// row equals its twin with the chip's declaration renamed (`@`), both folds.
+/// Two declarations of one name in one chip are `WS013`.
 #[test]
 fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_called() {
     let outcome = |src: &str, fold: bool| {
@@ -3308,18 +3260,12 @@ fn a_declaration_written_in_an_anonymous_chip_reads_the_chips_names_wherever_cal
 
 /// A name the top level of a file declares more than once is read by
 /// position (see `scope::top::TopNames::visible_decl`): every read, by every
-/// reader (value reads, constant-only slots, constant initializers, a `mod`,
-/// `chip`, generic or `const mod` body wherever it is called from, folded
-/// `if`s, the editor), names the latest declaration visible where it is
-/// written, and `WS108` warns at each later declaration. Storage is declared
-/// ahead of everything, so a read above every declaration names it; with no
-/// storage, a body above every declaration names the first. A library reads
-/// its own duplicates the same way however it is imported. Each row equals
-/// its twin where the earlier declaration and the reads that see it are
-/// renamed (`@`), both folds.
-/// Before, a top-level redeclaration was `WS013`; before that, value reads
-/// named the latest declaration while constant-only slots and constant
-/// initializers named the first.
+/// reader (value reads, constant-only slots, constant initializers, `mod`,
+/// `chip`, generic and `const mod` bodies, folded `if`s, the editor), names the
+/// latest declaration visible where it is written, and `WS108` warns at each
+/// later declaration. Storage is declared ahead of everything, so a read above
+/// every declaration names it; with no storage, a body above every declaration
+/// names the first. Each row equals its renamed twin (`@`), both folds.
 #[test]
 fn a_name_the_top_level_declares_twice_is_read_by_position() {
     let outcome = |src: &str, fold: bool| {

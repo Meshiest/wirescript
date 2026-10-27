@@ -2,6 +2,7 @@
 //! consistency and slot-inference passes.
 
 use super::*;
+use crate::ir::RefKind;
 use crate::types::mono::unwrap_ref;
 
 /// Which custom-event namespace a receiver belongs to. Personal (`CustomEvent` /
@@ -20,18 +21,17 @@ impl CeNamespace {
     /// event (`"CustomEvent"` -> Personal, `"GlobalCustomEvent"` -> Global).
     pub fn from_event_name(name: &str) -> Option<Self> {
         match name {
-            "CustomEvent" => Some(CeNamespace::Personal),
-            "GlobalCustomEvent" => Some(CeNamespace::Global),
+            "CustomEvent" => Some(Self::Personal),
+            "GlobalCustomEvent" => Some(Self::Global),
             _ => None,
         }
     }
 }
 
-/// Key for a custom-event receiver's data slot: `(namespace, file, start.offset,
-/// end.offset)` — the namespace plus the handler's source range. The range shape
-/// mirrors `tmap`/`type_of_expr` because `SourceRange`/`Pos` do not derive `Hash`;
-/// the namespace keeps personal and global receivers in disjoint key spaces.
-pub type CeSlotKey = (CeNamespace, Arc<str>, usize, usize);
+/// The key of a custom-event receiver's data slot: `(namespace, file,
+/// start.offset, end.offset)`, the namespace and the handler's range. The
+/// namespace keeps personal and global receivers in separate key spaces.
+pub(crate) type CeSlotKey = (CeNamespace, Arc<str>, usize, usize);
 
 /// Resolved types for custom-event receivers' data slots, keyed by `CeSlotKey`.
 /// `None` slot = declared (nothing to override); `Some(t)` = unannotated, resolve
@@ -41,10 +41,10 @@ pub type CeSlotMap = HashMap<CeSlotKey, Vec<Option<Type>>>;
 /// Build the `CeSlotKey` for a custom-event receiver handler `h` in namespace `ns`.
 /// Public so lowering builds the identical key (namespace + range) when it reads
 /// resolved slot types back out of the `CeSlotMap`.
-pub fn ce_slot_key(ns: CeNamespace, h: &Handler) -> CeSlotKey {
+pub(crate) fn ce_slot_key(ns: CeNamespace, h: &Handler) -> CeSlotKey {
     (
         ns,
-        h.range.file.clone(),
+        std::sync::Arc::clone(&h.range.file),
         h.range.start.offset,
         h.range.end.offset,
     )
@@ -52,11 +52,11 @@ pub fn ce_slot_key(ns: CeNamespace, h: &Handler) -> CeSlotKey {
 
 // ---------- custom-event sender/receiver type consistency (WS030) ----------
 
-/// The wire-variant class a custom-event value takes on the wire. Two types in
-/// the same class transfer identically (a `character` and an `entity` are both
-/// the `Object` variant), so only a cross-class disagreement is a real
-/// mismatch. Mirrors `emit::var_type_to_wire_variant`'s grouping. `None` means
-/// "unclassifiable" (`any`/`exec`/records/…) — never linted, either side.
+/// The wire-variant class a custom-event value takes. Two types in one class
+/// transfer alike (a `character` and an `entity` are both `Object`), so only a
+/// cross-class disagreement is a mismatch. Grouped as
+/// `emit::var_type_to_wire_variant` groups them; `None` (`any`, `exec`, records)
+/// is never linted.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WireClass {
     Bool,
@@ -77,10 +77,10 @@ enum WireClass {
 fn wire_class(t: &Type) -> Option<WireClass> {
     if let Some(k) = t.ref_kind() {
         return Some(match k {
-            crate::ir::RefKind::Var => WireClass::VarRef,
-            crate::ir::RefKind::Array => WireClass::ArrayRef,
-            crate::ir::RefKind::Map => WireClass::MapRef,
-            crate::ir::RefKind::Brick => WireClass::Brick,
+            RefKind::Var => WireClass::VarRef,
+            RefKind::Array => WireClass::ArrayRef,
+            RefKind::Map => WireClass::MapRef,
+            RefKind::Brick => WireClass::Brick,
         });
     }
     Some(match t {
@@ -97,13 +97,11 @@ fn wire_class(t: &Type) -> Option<WireClass> {
     })
 }
 
-/// `(channel name, per-slot declared type)` for a handler that is a custom-event
-/// receiver of kind `event_name` (`"CustomEvent"` or `"GlobalCustomEvent"`) with
-/// a literal channel name. `None` for any other handler (or a dynamic channel
-/// name — nothing to key receivers by). An unannotated slot falls back to
-/// `ce_slots`' inferred type for this handler (keyed by its source range) when
-/// present — pass 1 has no inference available yet, so it passes an empty map.
-/// `declared` holds each param's annotation as its declaring file reads it.
+/// The channel name and per-slot declared types of a handler receiving custom
+/// event `event_name` (`"CustomEvent"` or `"GlobalCustomEvent"`) on a literal
+/// channel; `None` for other handlers and dynamic channel names. An unannotated
+/// slot takes `ce_slots`' inferred type for this handler (pass 1 passes an empty
+/// map). `declared` holds each annotation as its declaring file reads it.
 fn ce_receiver_of(
     h: &Handler,
     event_name: &str,
@@ -179,11 +177,11 @@ fn ce_merge_receiver(
     }
 }
 
-/// The literal channel name a `SendCustomEvent` call targets, or `None` when it
-/// is passed dynamically (a variable/interpolation) — dynamic sends can reach
-/// any receiver, so they are never linted.
+/// The literal channel a `SendCustomEvent` call targets, or `None` for a dynamic
+/// one (a variable, an interpolation), which can reach any receiver and is never
+/// linted.
 fn ce_send_event_name(args: &[CallArg]) -> Option<String> {
-    // A named `eventName = …` is the channel if present; otherwise the first
+    // A named `eventName = ...` is the channel if present; otherwise the first
     // positional arg is.
     for a in args {
         if let CallArg::Named { name, value, .. } = a
@@ -241,9 +239,9 @@ fn ce_send_data_args(args: &[CallArg]) -> Vec<(usize, &Expr)> {
 }
 
 pub(super) fn check_custom_event_types(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     script: &Script,
-    tmap: &HashMap<(Arc<str>, usize, usize), Type>,
+    tmap: &HashMap<RangeKey, Type>,
     ce_slots: &CeSlotMap,
 ) {
     // Personal and Global custom events are SEPARATE channel namespaces: a
@@ -294,8 +292,8 @@ pub(super) fn check_custom_event_types(
         &mut |call| {
             if let Expr::Call { callee, .. } = call {
                 // The channel name + data args live in `call`'s positional args in
-                // both the plain `SendCustomEvent("x", …)` and the receiver form
-                // `entity.SendCustomEvent("x", …)` (the receiver is separate), so
+                // both the plain `SendCustomEvent("x", ...)` and the receiver form
+                // `entity.SendCustomEvent("x", ...)` (the receiver is separate), so
                 // both forms are collected the same way.
                 let callee_name = match callee.as_ref() {
                     Expr::Ident { name, .. } => Some(name.as_str()),
@@ -330,7 +328,7 @@ pub(super) fn check_custom_event_types(
         if let crate::ast::walk::Node::Stmt(Stmt::Await(a)) = n {
             awaits.push(a);
         }
-        crate::ast::walk::walk(n, Default::default(), &mut |m, _| {
+        crate::ast::walk::walk(n, crate::ast::walk::Ctx::default(), &mut |m, _| {
             if let crate::ast::walk::Node::Stmt(Stmt::Await(a)) = m {
                 awaits.push(a);
             }
@@ -353,9 +351,8 @@ pub(super) fn check_custom_event_types(
             continue;
         };
         // Reported where the capture is checked already.
-        let mark = ctx.diagnostics.len();
-        let ty = crate::typecheck::resolve::resolve_type_expr(ctx, te);
-        ctx.diagnostics.truncate(mark);
+        let ty =
+            ctx.discarding_diagnostics(|ctx| crate::typecheck::resolve::resolve_type_expr(ctx, te));
         let slot = vec![Some(RecvSlot {
             ty,
             declared: true,
@@ -387,10 +384,9 @@ pub(super) fn check_custom_event_types(
 
 /// The type a custom-event send's data value `e` sends: a gate read sends
 /// its first output.
-fn sent_type(tmap: &HashMap<(Arc<str>, usize, usize), Type>, e: &Expr) -> Option<Type> {
+fn sent_type(tmap: &HashMap<RangeKey, Type>, e: &Expr) -> Option<Type> {
     let r = e.range();
-    tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))
-        .map(super::infer::first_output)
+    tmap.get(&r.key()).map(super::infer::first_output)
 }
 
 /// Within ONE custom-event namespace, warn (WS030) when a send's data value type
@@ -399,10 +395,10 @@ fn sent_type(tmap: &HashMap<(Arc<str>, usize, usize), Type>, e: &Expr) -> Option
 /// sent as the type it has, so a number constant of the other number type is
 /// a mismatch too. Each receiver of the channel is checked.
 fn check_ce_namespace(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     senders: &[&Expr],
     receivers: &HashMap<String, Vec<Vec<RecvSlot>>>,
-    tmap: &HashMap<(Arc<str>, usize, usize), Type>,
+    tmap: &HashMap<RangeKey, Type>,
     send_name: &str,
     event_name: &str,
 ) {
@@ -413,12 +409,11 @@ fn check_ce_namespace(
         let Some(name) = ce_send_event_name(args) else {
             continue; // dynamic channel name — not linted
         };
-        // A data arg with NO wire class — `any`, or an `Opaque(...)` that erased
-        // its input's type — leaves the send port untyped, so it emits the float
-        // variant and cannot match a receiver that declares a real type. Report it
-        // whether or not a receiver is visible here: the receiver is usually in
-        // another file (a spawned chip), which is exactly where WS030 below is
-        // blind, and where the mismatch is fatal rather than merely wrong.
+        // A data argument with no wire class (`any`, or an `Opaque(...)` that erased
+        // its type) leaves the send port untyped, so it sends the float variant and
+        // cannot match a receiver with a real type. Reported whether or not a receiver
+        // is visible here: it is usually in another file (a spawned chip), out of
+        // WS030's sight, where the mismatch is fatal.
         for (slot, expr) in ce_send_data_args(args) {
             let r = expr.range();
             let Some(t) = sent_type(tmap, expr) else {
@@ -511,7 +506,7 @@ fn first_send_of<'a>(
     name: &str,
     slot: usize,
     class: WireClass,
-    tmap: &HashMap<(Arc<str>, usize, usize), Type>,
+    tmap: &HashMap<RangeKey, Type>,
 ) -> Option<&'a crate::diagnostic::SourceRange> {
     senders.iter().find_map(|call| {
         let Expr::Call { args, .. } = call else {
@@ -528,18 +523,14 @@ fn first_send_of<'a>(
     })
 }
 
-/// Resolve every UNANNOTATED custom-event receiver slot to a concrete type from
-/// the matching in-unit sender, or `float` (with a WS042 warning) when none is
-/// inferable. Returns the map (keyed by handler range) plus the WS042
-/// diagnostics. Reads sender arg types from `tmap` (the pass-1 `type_of_expr`).
-///
-/// Handles both namespaces (`CustomEvent`/`SendCustomEvent` and
-/// `GlobalCustomEvent`/`SendGlobalCustomEvent`), keeping them separate exactly
-/// as `check_custom_event_types` does — a personal send must never resolve a
-/// global receiver's slot, or vice versa.
+/// Resolve every unannotated custom-event receiver slot to a type from the
+/// matching in-unit sender, or `float` with WS042 when none is inferable.
+/// Returns the map (keyed by handler range) and the WS042 diagnostics; sender
+/// argument types come from `tmap` (pass 1's `type_of_expr`). Personal and
+/// global channels stay separate, as in `check_custom_event_types`.
 pub(super) fn infer_custom_event_slots(
     ast: &Script,
-    tmap: &HashMap<(Arc<str>, usize, usize), Type>,
+    tmap: &HashMap<RangeKey, Type>,
 ) -> (CeSlotMap, Vec<Diagnostic>) {
     // 1. Collect senders -> channel -> slot -> first concrete wire-typed value.
     //    (personal vs global namespaces, mirroring check_custom_event_types.)
@@ -619,7 +610,7 @@ pub(super) fn infer_custom_event_slots(
                 Some(t) => slots_out[i] = Some(t),
                 None => {
                     slots_out[i] = Some(Type::Float);
-                    // No WS042 for a dynamic (non-constant) channel — nothing to key on.
+                    // No WS042 for a dynamic channel: there is nothing to key on.
                     if chan.is_some() {
                         diags.push(Diagnostic {
                             severity: Severity::Warning,

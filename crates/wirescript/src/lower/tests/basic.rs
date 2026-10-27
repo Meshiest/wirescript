@@ -21,8 +21,7 @@ fn cast_then_method_without_parentheses_is_one_clear_error() {
         msg.contains("`(value as entity).GetLocation(...)`"),
         "{msg}"
     );
-    let tc =
-        crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&parsed.ast, &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.is_empty(),
         "the recovered parse is the parenthesised form: {:?}",
@@ -31,12 +30,11 @@ fn cast_then_method_without_parentheses_is_one_clear_error() {
     compile_ok(&src("(v as entity).GetLocation()"));
 }
 
-// ── Outputs: one driver per output rerouter ──
+// Outputs: one driver per output rerouter
 
-/// A single `emit out = <expr>` inside an `if` must be var-backed so the write
-/// is gated by the branch's taken-exec — not wired straight to the output
-/// rerouter (unconditional). The single-emit-site fast path used to bypass the
-/// guard, making the output continuously equal the value regardless of `c`.
+/// A single `emit out = <expr>` inside an `if` is var-backed so the write is
+/// gated by the branch's taken-exec. Wired straight to the output rerouter, the
+/// output would continuously equal the value regardless of `c`.
 #[test]
 fn single_conditional_emit_is_branch_gated() {
     let r =
@@ -74,7 +72,7 @@ fn single_conditional_emit_is_branch_gated() {
 
 /// Exactly one wire drives an output's `RER_Input` (2+ = a load-breaking
 /// fan-in). An output defaulted (`out r = 0`) and emitted, or emitted from a
-/// handler and from an anonymous `chip { … }` sharing the parent's output,
+/// handler and from an anonymous `chip { ... }` sharing the parent's output,
 /// is var-backed rather than driven by each site.
 #[test]
 fn an_output_written_from_two_places_has_one_driver() {
@@ -147,10 +145,10 @@ fn out_binding_named_like_storage_wires_the_storage() {
     crate::test_support::report_failures(&failures, rows.len());
 }
 
-// ── Spreads into call arguments ──
+// Spreads into call arguments
 
-/// `...tuple` splats a bound tuple across consecutive positional args — into a
-/// builtin's data slots and a user mod's params.
+/// `...tuple` splats a bound tuple across consecutive positional args, both into
+/// a builtin's data slots and into a user mod's params.
 #[test]
 fn spread_tuple_into_call_args() {
     let r = compile_ok(
@@ -170,6 +168,17 @@ fn spread_tuple_into_call_args() {
         ports.contains(&WirePort::DataIn1) && ports.contains(&WirePort::DataIn2),
         "spread must wire the tuple into DataIn1 + DataIn2: {ports:?}"
     );
+    // Each data port takes its element's type, not the whole tuple's.
+    let node = &r.module.nodes[&send];
+    let port_ty = |port: WirePort| {
+        node.ports
+            .inputs
+            .iter()
+            .find(|p| p.name == port.sym())
+            .map(|p| p.ty.clone())
+    };
+    assert_eq!(port_ty(WirePort::DataIn1), Some(Type::Int));
+    assert_eq!(port_ty(WirePort::DataIn2), Some(Type::Float));
 
     // A user mod: `add3(...t)` binds each element to a param.
     let m = compile_ok(
@@ -183,7 +192,7 @@ fn spread_tuple_into_call_args() {
 }
 
 /// A `...rest` variadic mod captures the trailing call args into a compile-time
-/// tuple and a `...rest` in its body splats them back — both into a builtin's
+/// tuple, and a `...rest` in its body splats them back, both into a builtin's
 /// data slots and into another (fixed-arity) mod's params.
 #[test]
 fn variadic_mod_captures_and_splats() {
@@ -218,9 +227,9 @@ fn variadic_mod_captures_and_splats() {
     );
 }
 
-/// Spreading a tuple that ORIGINATED from a multi-output mod call expands like
-/// `let (a, b) = f()` — one output per positional slot — instead of a numeric
-/// TuplePick that missed the name-keyed call record and left `_Unsupported`.
+/// Spreading a tuple that comes from a multi-output mod call expands like
+/// `let (a, b) = f()`, one output per positional slot, reading the name-keyed
+/// call record rather than leaving an `_Unsupported` placeholder.
 #[test]
 fn spread_multi_output_call_result_binds() {
     for (src, what) in [

@@ -1,9 +1,8 @@
-//! Atom literals (`:name`) — compile-time `int` constants (the xxHash64 of the
-//! name). Hover and find-references operate on the lexer's `Atom` tokens, so a
-//! `:name` inside a string or comment is correctly ignored and the result is
-//! independent of whether the surrounding program parses. Atoms are GLOBAL:
-//! every `:name` resolves to the same value regardless of scope, so
-//! find-references is a plain name match (no scope resolution).
+//! Atom literals (`:name`): compile-time `int` constants, the xxHash64 of the
+//! name. Hover and find-references read the lexer's `Atom` tokens, so a
+//! `:name` in a string or comment is ignored and the result does not depend on
+//! the program parsing. Atoms are global (every `:name` has one value whatever
+//! the scope), so find-references is a plain name match.
 
 use crate::diagnostic::SourceRange;
 use crate::lexer::{TokenKind, TokenValue, lex};

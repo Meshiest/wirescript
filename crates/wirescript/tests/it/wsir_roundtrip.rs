@@ -4,6 +4,7 @@
 //! must be byte-identical to the one compiled directly. (`just ir-oracle
 //! --via-ir` runs the same check over the whole oracle set.)
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use wirescript::{CompileInput, EmitOptions, FoldMode};
@@ -28,16 +29,8 @@ fn ws_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Compile `src` as `file`, then go through text: returns the canonical text,
 /// the direct `.brz`, and the `.brz` assembled from the text.
 fn through_text(src: &str, file: &str) -> Option<(String, Vec<u8>, Vec<u8>)> {
-    let result = wirescript::compile_to_world(
-        CompileInput {
-            source: src,
-            file,
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
-        EmitOptions::default(),
-    )
-    .ok()?;
+    let result =
+        wirescript::compile_to_world(CompileInput::new(src, file), EmitOptions::default()).ok()?;
     let direct = result.world.to_brz_vec().expect("encode");
     let ir_path = Path::new(file).with_extension("wsir");
     let mut program = result.program;
@@ -92,10 +85,10 @@ fn fixtures_and_examples_survive_the_text_form() {
     assert!(checked > 20, "only {checked} files compiled");
 }
 
-/// The chip example from the IR crate's spec: `--emit-ir` gives the same
-/// shape (an `in exec`, a `Var`, a closed chip with boundary pins fed from
-/// the parent and a `!layout_after` list, the `Var_Set`, and the typed
-/// output), and its text assembles to the same save.
+/// The chip example from the IR crate's spec: `--emit-ir` gives the documented
+/// shape (an `in exec`, a `Var`, a closed chip with boundary pins fed from the
+/// parent and a `!layout_after` list, the `Var_Set`, and the typed output), and
+/// its text assembles to the same save.
 #[test]
 fn the_chip_example_has_the_documented_shape() {
     let src = "in go: exec\nvar n: int = 0\n@closed chip {\n  in tick: exec\n  on tick { n = n + 1 }\n}\non go { n = 5 }\nout count: int = n\n";
@@ -128,11 +121,11 @@ fn the_chip_example_has_the_documented_shape() {
 fn the_label_map_order_does_not_reach_the_save() {
     let mut src = String::from("in go: exec\n");
     for i in 0..24 {
-        src += &format!("@label(v{i}) var v{i}: int = {i}\n");
+        let _ = writeln!(src, "@label(v{i}) var v{i}: int = {i}");
     }
     src += "on go {\n";
     for i in 0..24 {
-        src += &format!("  v{i} = v{i} + 1\n");
+        let _ = writeln!(src, "  v{i} = v{i} + 1");
     }
     src += "}\n";
     let program =

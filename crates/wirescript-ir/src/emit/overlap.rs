@@ -1,30 +1,27 @@
 //! Post-emit sweep: no two bricks in one grid may intersect.
 //!
-//! The game DROPS an intersecting brick at load, silently, orphaning its
-//! components and dangling every wire into it (`labels.rs:140-143`, pinned in
-//! game). That is the same load-failure class as a wire fan-in, and fan-in has
-//! a choke point (`EmitContext::add_wire`) while this had none: six unguarded
-//! `bricks.push` sites reach the world and nothing swept them.
+//! The game drops an intersecting brick at load, silently, orphaning its components and
+//! dangling every wire into it. Wires have a choke point (`EmitContext::add_wire`) but
+//! `bricks.push` sites reach the world unguarded, so the finished world is swept instead.
 //!
-//! The box is the one `layout/code/tests.rs::assert_no_overlap` adjudicates
-//! with, moved to the emitted side: the compiler's OWN catalog half_size per
-//! gate class, the procedural half-extent for a label carrier or a
-//! procedural gate (`PB_Gate_*`, sized per variant), and a
-//! quarter-turn x/y swap — the same swap `emit/module.rs` applies when it
-//! centres the brick. `brdb::Brick::local_bounds()` is NOT usable here: it
-//! ignores rotation (`brdb .../brick.rs:142`) and its asset table does not
-//! know 44 of the catalog's classes.
+//! Boxes use the compiler's own sizes: the catalog `half_size` for a gate class, the
+//! procedural half-extent for a label carrier or procedural gate, `brdb`'s `local_bounds`
+//! for other basic bricks, and an x/y swap on a quarter turn.
 
-use super::*;
+use brdb::{BrickType, World};
+
+use crate::catalog::{Catalog, default_catalog};
+
+use super::options::EmitError;
 
 /// Half-extent as the COMPILER believes it, in grid units.
-fn half_extent(catalog: &crate::catalog::Catalog, b: &brdb::Brick) -> [i32; 3] {
+fn half_extent(catalog: &Catalog, b: &brdb::Brick) -> [i32; 3] {
     let mut half = match &b.asset {
         // A procedural brick's size is its own: a label carrier, or a
         // procedural gate placed at the variant layout reserved (which the
         // catalog's default half-size below would understate).
         BrickType::Procedural { size, .. } => {
-            let h = [size.x as i32, size.y as i32, size.z as i32];
+            let h = [i32::from(size.x), i32::from(size.y), i32::from(size.z)];
             return match b.rotation {
                 brdb::Rotation::Deg90 | brdb::Rotation::Deg270 => [h[1], h[0], h[2]],
                 _ => h,
@@ -35,10 +32,8 @@ fn half_extent(catalog: &crate::catalog::Catalog, b: &brdb::Brick) -> [i32; 3] {
             [(hi.x - lo.x) / 2, (hi.y - lo.y) / 2, (hi.z - lo.z) / 2]
         }
     };
-    // `component_type_ref` borrows; `component_type` allocates a BString, so
-    // it is only reached for the handful of component kinds that lack the
-    // borrowing accessor. One String per brick here cost 6% of build_world's
-    // whole allocation count on 2raab.
+    // `component_type_ref` borrows; `component_type` allocates a BString, so it is only reached
+    // for the component kinds that lack the borrowing accessor.
     for c in &b.components {
         let found = match c.component_type_ref() {
             Some(ct) => catalog.find_by_class(ct),
@@ -64,7 +59,7 @@ fn describe(b: &brdb::Brick, h: [i32; 3]) -> String {
         .iter()
         .filter_map(|c| {
             c.component_type_ref()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| c.component_type().map(|s| s.to_string()))
         })
         .collect();
@@ -112,6 +107,10 @@ fn first_overlap_sweep(boxes: &[Box3], order: &[usize]) -> Option<(usize, usize)
 /// the largest box on each axis and a box covers the cells its interior
 /// reaches, so two intersecting boxes share a cell. Each cell's boxes are a
 /// list threaded through one array.
+#[expect(
+    clippy::option_option,
+    reason = "outer `None` means too sparse for cells; inner is the overlap found"
+)]
 fn first_overlap_cells(boxes: &[Box3], order: &[usize]) -> Option<Option<(usize, usize)>> {
     if boxes.is_empty() {
         return Some(None);
@@ -138,7 +137,8 @@ fn first_overlap_cells(boxes: &[Box3], order: &[usize]) -> Option<Option<(usize,
             max[k] = max[k].max(hi);
         }
     }
-    let dims: [usize; 3] = std::array::from_fn(|k| (max[k] as i64 - min[k] as i64 + 1) as usize);
+    let dims: [usize; 3] =
+        std::array::from_fn(|k| (i64::from(max[k]) - i64::from(min[k]) + 1) as usize);
     let volume = dims.iter().try_fold(1usize, |v, d| v.checked_mul(*d))?;
     if volume > boxes.len().saturating_mul(8) {
         return None;
@@ -183,11 +183,7 @@ fn first_overlap_cells(boxes: &[Box3], order: &[usize]) -> Option<Option<(usize,
 }
 
 /// Check one grid's brick list.
-fn scan(
-    catalog: &crate::catalog::Catalog,
-    label: &str,
-    bricks: &[brdb::Brick],
-) -> Result<(), EmitError> {
+fn scan(catalog: &Catalog, label: &str, bricks: &[brdb::Brick]) -> Result<(), EmitError> {
     let boxes: Vec<Box3> = bricks
         .iter()
         .map(|b| {
@@ -213,7 +209,7 @@ fn scan(
 /// Every brick in the finished world, per grid. Grids are separate coordinate
 /// spaces, so a root brick can never intersect a grid brick.
 pub(super) fn check_no_overlap(world: &World) -> Result<(), EmitError> {
-    let catalog = crate::catalog::default_catalog();
+    let catalog = default_catalog();
     scan(catalog, "root grid", &world.bricks)?;
     for (i, (entity, bricks)) in world.grids.iter().enumerate() {
         scan(catalog, &format!("grid {i} ({})", entity.asset), bricks)?;
@@ -233,8 +229,8 @@ mod tests {
         let mut seed = 0x9e37_79b9_u64;
         let mut rand = |n: i32| {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             ((seed >> 33) % n as u64) as i32
         };
         let mut used_cells = 0;

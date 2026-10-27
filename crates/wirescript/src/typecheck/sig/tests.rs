@@ -45,7 +45,7 @@ fn config_sig(
 
 /// Declare a runtime `var` of type `ty` named `name` in `ctx`'s scope, so an
 /// `Expr::Ident` reading it is a non-constant value (fails `expr_to_literal`).
-fn declare_var(ctx: &mut TypeCheckCtx, name: &str, ty: Type) {
+fn declare_var(ctx: &mut TypeCheckCtx<'_>, name: &str, ty: Type) {
     ctx.scope.declare(
         name,
         SymbolInfo {
@@ -315,7 +315,7 @@ fn check_args_reports_arity_types_config_and_named_args() {
     let mut failures = Vec::new();
     for r in &rows {
         let ce_slots = crate::typecheck::CeSlotMap::default();
-        let mut ctx = TypeCheckCtx::new("t", &ce_slots);
+        let mut ctx = TypeCheckCtx::new(&ce_slots);
         for (name, ty) in &r.vars {
             declare_var(&mut ctx, name, ty.clone());
         }
@@ -323,7 +323,6 @@ fn check_args_reports_arity_types_config_and_named_args() {
             &mut ctx,
             &r.sig,
             &r.args,
-            0,
             r.check_arity,
             r.check_named,
             &SourceRange::default(),

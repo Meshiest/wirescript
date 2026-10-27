@@ -10,7 +10,7 @@ fn tc(src: &str) -> TypeCheckResult {
         "parse diagnostics: {:?}",
         p.diagnostics
     );
-    typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    typecheck(&p.ast, &crate::typecheck::CeSlotMap::default())
 }
 
 fn codes(src: &str) -> Vec<String> {
@@ -267,11 +267,9 @@ fn refs_compare_only_within_their_kind() {
 
 #[test]
 fn a_ref_compared_against_any_still_ws004() {
-    // `Any` is the generic error-fallback type, not an operator wildcard —
-    // an out-of-range record `.9` pick returns it with no diagnostic of its
-    // own, so a ref (or any other operand) compared against it must still
-    // report WS004 through ordinary overload resolution, exactly as it did
-    // before ref comparisons existed.
+    // `Any` is the error-fallback type, not an operator wildcard: an out-of-range
+    // record `.9` pick returns it silently, so a ref (or any operand) compared
+    // against it still reports WS004 through overload resolution.
     let decls = "type P = { a: int }\nvar r: P = { a: 0 }\n";
     assert_code(&format!("{REFS}{decls}on go {{ c = h == r.9 }}"), "WS004");
     assert_code(
@@ -283,10 +281,9 @@ fn a_ref_compared_against_any_still_ws004() {
 
 #[test]
 fn an_array_ref_let_mismatch_keeps_the_lenient_warning() {
-    // The spec's no-conversion rule covers a `*T` var-ref and `brick` only.
-    // An array/map ref mismatch in a `let` annotation isn't this task's
-    // concern, so it must keep whatever diagnostic it already got (WS016,
-    // not escalate to WS003) — same as any other non-coercing annotation.
+    // The no-conversion rule covers a `*T` var ref and `brick` only: an array or
+    // map ref mismatch in a `let` annotation keeps its WS016, like any other
+    // non-coercing annotation.
     let r = tc("var row0: int[]\nlet a1: float[] = row0\n");
     assert!(
         !r.diagnostics.iter().any(|d| d.code == "WS003"),
@@ -401,14 +398,11 @@ fn event_data_kinds_must_match() {
 
 #[test]
 fn unannotated_custom_event_receiver_infers_ref_kind() {
-    // The receiver params here have NO annotation (`-> (r)`, not `-> (r: *color)`),
-    // so the type comes from the WS042 slot-inference pass (`infer_custom_event_slots`,
-    // run by `typecheck_with_inference` — the plain single-pass `tc()` helper
-    // never populates `ce_slots`, so it can't exercise this path at all). That
-    // pass must adopt the sender's REF KIND rather than the pointee/element
-    // type, or a deref/push inside the handler body sees the wrong (unwrapped)
-    // type and the WS030 cross-check compares an unwrapped sender type against
-    // a receiver with no ref-classed type to match.
+    // These receiver parameters have no annotation (`-> (r)`), so their type comes
+    // from the WS042 slot inference (`infer_custom_event_slots`, run by
+    // `typecheck_with_inference`; `tc()` never fills `ce_slots`). It adopts the
+    // sender's ref kind, not the pointee or element type, so a deref or push in
+    // the body sees the ref and WS030 compares like with like.
     let src = "var p0: color\nvar px: (*color)[]\nvar b: brick\nvar row: int[]\nin go: exec\n\
                on CustomEvent(\"reg\") -> (r) { *r = Color(1.0, 0.0, 0.0)\n px.push(r) }\n\
                on CustomEvent(\"brk\") -> (x) { }\n\
@@ -420,7 +414,7 @@ fn unannotated_custom_event_receiver_infers_ref_kind() {
         "parse diagnostics: {:?}",
         p.diagnostics
     );
-    let (r, _map) = typecheck_with_inference(&p.ast, "test");
+    let (r, _map) = typecheck_with_inference(&p.ast);
     let errs: Vec<_> = r
         .diagnostics
         .iter()
@@ -664,11 +658,7 @@ fn tc_multi(entry: &str, deps: &[(&str, &str)]) -> TypeCheckResult {
             .collect(),
     };
     let resolved = resolve(entry, "main", &loader);
-    typecheck(
-        &resolved.ast,
-        "main",
-        &crate::typecheck::CeSlotMap::default(),
-    )
+    typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default())
 }
 
 fn multi_errors(entry: &str, deps: &[(&str, &str)]) -> Vec<String> {

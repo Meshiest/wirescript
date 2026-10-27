@@ -11,26 +11,24 @@ pub enum ContainerKind {
 
 impl ContainerKind {
     /// The kind of a container type, looking through a ref wrapper.
-    pub fn of(t: &Type) -> Option<ContainerKind> {
+    pub fn of(t: &Type) -> Option<Self> {
         match t {
-            Type::Array(e) => Some(ContainerKind::Array {
+            Type::Array(e) => Some(Self::Array {
                 elem: (**e).clone(),
             }),
-            Type::Map(k, v) => Some(ContainerKind::Map {
+            Type::Map(k, v) => Some(Self::Map {
                 key: (**k).clone(),
                 value: (**v).clone(),
             }),
-            Type::Ref(inner) => ContainerKind::of(inner),
+            Type::Ref(inner) => Self::of(inner),
             _ => None,
         }
     }
 
     pub fn as_type(&self) -> Type {
         match self {
-            ContainerKind::Array { elem } => Type::Array(Box::new(elem.clone())),
-            ContainerKind::Map { key, value } => {
-                Type::Map(Box::new(key.clone()), Box::new(value.clone()))
-            }
+            Self::Array { elem } => Type::Array(Box::new(elem.clone())),
+            Self::Map { key, value } => Type::Map(Box::new(key.clone()), Box::new(value.clone())),
         }
     }
 }

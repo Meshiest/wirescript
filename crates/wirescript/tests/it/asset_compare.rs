@@ -1,10 +1,10 @@
 //! An asset reference compared against an entity value
 //! (`weapon == $BRItemBase/Weapon_Pickaxe`) must register the asset in the
 //! world's external-asset table and compare against it as a real `weak_object`
-//! reference — not silently drop it to a null object.
+//! reference, never a null object.
 
 use wirescript::emit::EmitOptions;
-use wirescript::{CompileInput, FoldMode, compile_to_world};
+use wirescript::{CompileInput, compile_to_world};
 
 #[test]
 fn asset_compare_registers_asset() {
@@ -13,12 +13,7 @@ fn asset_compare_registers_asset() {
                }\n\
                }";
     let r = match compile_to_world(
-        CompileInput {
-            source: src,
-            file: "t",
-            module_name: Some("m"),
-            fold_mode: FoldMode::Auto,
-        },
+        CompileInput::new(src, "t").module_name("m"),
         EmitOptions::default(),
     ) {
         Ok(r) => r,

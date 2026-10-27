@@ -1,6 +1,13 @@
 //! Text labels: chip titles, plane headers, comment annotations.
 
-use super::*;
+use brdb::{AsBrdbValue, IntVector, Vector3f, World, assets::LiteralComponent};
+
+use crate::intern::sym;
+use crate::ir::{Literal, Module, Node};
+use crate::layout::NodeRotation;
+
+/// The text component every floating label and header is.
+pub(super) const TEXT_DISPLAY: &str = "Component_TextDisplay";
 
 /// Name labels on chips, vars, and I/O gates.
 pub(super) const LABEL_LINE_HEIGHT: f32 = 2.4;
@@ -11,13 +18,10 @@ pub(super) const VAR_TAG_LINE_HEIGHT: f32 = 1.2;
 /// On-screen angle every name label and variable tag reads at.
 pub(super) const LABEL_ROTATION_DEG: f32 = -45.0;
 
-/// The `Rotation` to write on a name label riding a brick placed at
-/// `rotation`.
+/// The `Rotation` to write on a name label riding a brick placed at `rotation`.
 ///
-/// A label's rotation is brick-local — it rides the brick's yaw — so a
-/// quarter-turned brick would read its tag a quarter-turn off from every
-/// other tag on the plane. Taking the yaw back out lands the text at the
-/// same on-screen angle regardless of how the brick under it is turned.
+/// A label's rotation is brick-local (it rides the brick's yaw), so the yaw is taken back
+/// out to land the text at the same on-screen angle however the brick is turned.
 pub(super) fn label_rotation_deg(rotation: NodeRotation) -> f32 {
     match rotation {
         NodeRotation::Deg0 => LABEL_ROTATION_DEG,
@@ -39,10 +43,10 @@ pub(super) fn chip_is_closed(node: &Node) -> bool {
 /// Display name for a chip: the `@label` override wins, else the chip's
 /// declared name (anonymous partitions have none).
 pub(super) fn chip_display_name(node: &Node, child_module: &Module) -> Option<String> {
-    if let Some(Literal::String(s)) = node.properties.get(&*sym::NAME_LABEL) {
-        if !s.is_empty() {
-            return Some(s.clone());
-        }
+    if let Some(Literal::String(s)) = node.properties.get(&*sym::NAME_LABEL)
+        && !s.is_empty()
+    {
+        return Some(s.clone());
     }
     match child_module.scopes.get(&crate::ir::ROOT_SCOPE_ID) {
         Some(crate::ir::ScopeInfo {
@@ -53,18 +57,16 @@ pub(super) fn chip_display_name(node: &Node, child_module: &Module) -> Option<St
     }
 }
 
-/// Floating-label text for a microchip I/O gate, from its `PortLabel`
-/// property. User-given names label as themselves. Synthesized plumbing
-/// maps to friendly labels: the auto exec ports (`_exec_in`/`_exec_out`)
-/// read `exec`, and the anonymous `-> type` return output (`_`) reads
-/// `return`. Any other `_`-prefixed name stays unlabeled. `@label("…")`
-/// overrides all of the above (covers both pass-1 I/O gate labels and
-/// outer-rerouter labels — both call this).
+/// Floating-label text for a microchip I/O gate, from its `PortLabel` property. User-given
+/// names label as themselves. Synthesized plumbing maps to friendly labels: the auto exec
+/// ports (`_exec_in`/`_exec_out`) read `exec`, and the anonymous `-> type` return output
+/// (`_`) reads `return`. Any other `_`-prefixed name stays unlabeled. `@label("...")`
+/// overrides all of the above, for I/O gate labels and outer-rerouter labels alike.
 pub(super) fn microchip_io_label(node: &Node) -> Option<String> {
-    if let Some(Literal::String(s)) = node.properties.get(&*sym::NAME_LABEL) {
-        if !s.is_empty() {
-            return Some(s.clone());
-        }
+    if let Some(Literal::String(s)) = node.properties.get(&*sym::NAME_LABEL)
+        && !s.is_empty()
+    {
+        return Some(s.clone());
     }
     match node.properties.get(&*sym::PORT_LABEL)? {
         Literal::String(s) if s == "_exec_in" || s == "_exec_out" => Some("exec".to_string()),
@@ -74,10 +76,10 @@ pub(super) fn microchip_io_label(node: &Node) -> Option<String> {
     }
 }
 
-/// Floating text-label component (`Component_TextDisplay`) attached as a
-/// second component on chip / variable / I/O-gate bricks, showing the
-/// element's name. Fields left unset (colors, outline widths, sharp
-/// corners, …) are filled from brdb's `STRUCT_DEFAULTS`.
+/// Floating text-label component (`Component_TextDisplay`) attached as a second component
+/// on chip / variable / I/O-gate bricks, showing the element's name. Fields left unset
+/// (colors, outline widths, sharp corners, and so on) are filled from brdb's
+/// `STRUCT_DEFAULTS`.
 pub(super) fn text_label(
     world: &mut World,
     text: &str,
@@ -96,7 +98,7 @@ pub(super) fn text_label(
         ("X", Box::new(anchor_x) as Box<dyn AsBrdbValue>),
         ("Y", Box::new(anchor_y)),
     ]);
-    LiteralComponent::new("Component_TextDisplay").with_data([
+    LiteralComponent::new(TEXT_DISPLAY).with_data([
         ("Text", Box::new(text.to_string()) as Box<dyn AsBrdbValue>),
         ("Font", Box::new(BrdbValue::Asset(Some(font_idx)))),
         ("Rotation", Box::new(rotation_deg)),
@@ -112,21 +114,18 @@ pub(super) fn text_label(
         ),
         // Top face of the brick (enum default 0 is X_Positive).
         ("Face", Box::new(4u8)),
-        // EBRTextOutline::Outlined; the enum default (None) hides the
-        // outline entirely, and 4px reads better than the template's 2.
+        // EBRTextOutline::Outlined; the enum default (None) hides the outline entirely.
         ("Outline", Box::new(2u8)),
         ("OutlineWidth", Box::new(4.0f32)),
     ])
 }
 
-/// Header block for an opened plane: `<size="96">{title}</>` then the doc
-/// comment on the following lines. A documented but nameless chip renders the
-/// doc alone; nothing at all -> no header. Text passes through raw (rich-text
-/// tags in names/docs are a feature, not escaped).
+/// Header block for an opened plane: `<size="96">{title}</>` then the doc comment on the
+/// following lines. A documented but nameless chip renders the doc alone; with neither there
+/// is no header. Text passes through raw (rich-text tags in names/docs are not escaped).
 fn chip_header_text(title: Option<&str>, doc: Option<&str>) -> Option<String> {
     match (title, doc) {
-        // Blank line between the big title and the doc so the doc isn't cramped
-        // right under the size-96 heading.
+        // Blank line between the title and the doc so the doc is not cramped under the heading.
         (Some(t), Some(d)) => Some(format!("<size=\"96\">{t}</>\n\n{d}")),
         (Some(t), None) => Some(format!("<size=\"96\">{t}</>")),
         (None, Some(d)) => Some(d.to_string()),
@@ -134,19 +133,16 @@ fn chip_header_text(title: Option<&str>, doc: Option<&str>) -> Option<String> {
     }
 }
 
-/// Grid units the header brick's centre sits BEYOND the plane's top edge —
-/// which under the measured `WALL_ROT` mapping is the local +X edge (the
-/// brick is 1×1 -> half-size 5, so at +5 its near face rests exactly on the
-/// edge). It must never sit inside the plane: gates reach `extent.x - 5`
-/// (extent = layout half-span + 5), and the game DROPS overlapping bricks at
-/// load — orphaning the dropped brick's components and dangling every wire
-/// into it. Pinned during in-game verification.
+/// Grid units the header brick's centre sits beyond the plane's top edge (the local +X
+/// edge under the `WALL_ROT` mapping; the brick is 1x1 with half-size 5, so at +5 its near
+/// face rests on the edge). It must not sit inside the plane: gates reach `extent.x - 5`
+/// (extent = layout half-span + 5), and the game drops overlapping bricks at load, orphaning
+/// their components and dangling every wire into them.
 const HEADER_EDGE_LIFT: i32 = 5;
 
-/// Invisible 1×1 carrier brick floating just above the plane's top-centre —
-/// local (extent.x + lift, 0) under the measured `WALL_ROT` mapping (local
-/// +X = world up, local Y = world horizontal). Text is centred and flows
-/// downward from the top edge (`Anchor = (0.5, 0)`).
+/// Invisible 1x1 carrier brick floating just above the plane's top-centre, at local
+/// (extent.x + lift, 0) under the `WALL_ROT` mapping (local +X = world up, local Y = world
+/// horizontal). Text is centred and flows downward from the top edge (`Anchor = (0.5, 0)`).
 pub(super) fn emit_plane_header(
     world: &mut World,
     bricks: &mut Vec<brdb::Brick>,
@@ -206,12 +202,11 @@ pub(super) fn chip_name_label(world: &mut World, name: &str) -> LiteralComponent
     )
 }
 
-/// One invisible 1×1 carrier brick per layout text annotation — the source's
-/// own-line `//` comments under the code-shaped layout. Same font, outline and
-/// face treatment as a plane header, but anchored on the label's LEFT edge so
-/// the text runs rightward from the row's indent, the way the comment reads in
-/// the source. The annotation's position is the carrier's min corner, matching
-/// the gate-brick convention, so a comment sits on a row of its own.
+/// One invisible 1x1 carrier brick per layout text annotation (the source's own-line `//`
+/// comments under the code-shaped layout). Same font, outline and face treatment as a plane
+/// header, but anchored on the label's left edge so the text runs rightward from the row's
+/// indent. The annotation's position is the carrier's min corner, matching the gate-brick
+/// convention.
 pub(super) fn emit_annotations(
     world: &mut World,
     bricks: &mut Vec<brdb::Brick>,

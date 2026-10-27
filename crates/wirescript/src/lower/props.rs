@@ -9,7 +9,7 @@ use crate::typecheck::props::{self, PropertyError, ResolvedProperty};
 
 /// Whether the name `Environment` means the builtin here: a binding of the
 /// program's own by that name wins.
-fn environment_unshadowed(ctx: &LowerCtx) -> bool {
+fn environment_unshadowed(ctx: &LowerCtx<'_>) -> bool {
     ctx.scope.get(props::ENVIRONMENT).is_none()
 }
 
@@ -19,7 +19,7 @@ fn environment_unshadowed(ctx: &LowerCtx) -> bool {
 /// `None` means `e` is not an environment property path; an error, that it is
 /// but names nothing (typecheck reported it, and nothing is lowered for it).
 fn environment_property(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     e: &Expr,
 ) -> Option<Result<ResolvedProperty, PropertyError>> {
     let (env, property) = props::environment_path(e)?;
@@ -43,19 +43,19 @@ fn read_port_type(r: &ResolvedProperty) -> Type {
 }
 
 fn read_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     r: &ResolvedProperty,
     value: PortRef,
     range: &SourceRange,
 ) -> PortRef {
     if r.enum_type.is_some() {
-        crate::lower::convert::convert_port(ctx, value, &Type::Any, &Type::Int, range)
+        convert::convert_port(ctx, value, &Type::Any, &Type::Int, range)
     } else {
         value
     }
 }
 
-fn settings(r: &ResolvedProperty) -> HashMap<crate::intern::Sym, Literal> {
+fn settings(r: &ResolvedProperty) -> HashMap<Sym, Literal> {
     let mut out = HashMap::default();
     out.insert(
         intern_static("Environment"),
@@ -70,7 +70,7 @@ fn settings(r: &ResolvedProperty) -> HashMap<crate::intern::Sym, Literal> {
 
 /// A read of `Environment.<env>.<property>`, run on the exec chain. `None` when
 /// `e` is not one.
-pub(super) fn lower_environment_read(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
+pub(super) fn lower_environment_read(ctx: &mut LowerCtx<'_>, e: &Expr) -> Option<PortRef> {
     let Ok(r) = environment_property(ctx, e)? else {
         return Some(synthesise_unsupported_no_warn(ctx, e.range()));
     };
@@ -105,7 +105,7 @@ pub(super) fn lower_environment_read(ctx: &mut LowerCtx, e: &Expr) -> Option<Por
 
 /// `Environment.<env>.<property> = value`, run on the exec chain. Returns
 /// whether `s` was one.
-pub(super) fn lower_environment_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
+pub(super) fn lower_environment_write(ctx: &mut LowerCtx<'_>, s: &Assign) -> bool {
     let Some(r) = environment_property(ctx, &s.target) else {
         return false;
     };
@@ -149,7 +149,7 @@ pub(super) fn lower_environment_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
 
 /// The component settings of a Get/Set Component Property gate: the component
 /// type, as the external asset a save stores it as, and the property's name.
-fn component_settings(r: &ResolvedProperty) -> HashMap<crate::intern::Sym, Literal> {
+fn component_settings(r: &ResolvedProperty) -> HashMap<Sym, Literal> {
     let mut out = HashMap::default();
     out.insert(
         intern_static("ComponentType"),
@@ -166,7 +166,7 @@ fn component_settings(r: &ResolvedProperty) -> HashMap<crate::intern::Sym, Liter
 }
 
 /// The component class `obj` holds a reference to, if it is a component.
-fn component_class(ctx: &LowerCtx, obj: &Expr) -> Option<String> {
+fn component_class(ctx: &LowerCtx<'_>, obj: &Expr) -> Option<String> {
     match crate::types::mono::unwrap_ref(&ctx.type_of(obj)) {
         Type::Component(class) => Some(class),
         _ => None,
@@ -176,7 +176,7 @@ fn component_class(ctx: &LowerCtx, obj: &Expr) -> Option<String> {
 /// `obj.field` read off a component reference, run on the exec chain. `None`
 /// when `obj` is not a component.
 pub(super) fn lower_component_read(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     field: &str,
     e: &Expr,
@@ -220,7 +220,7 @@ pub(super) fn lower_component_read(
 
 /// `obj.field = value` on a component reference, run on the exec chain.
 /// Returns whether `s` was one.
-pub(super) fn lower_component_write(ctx: &mut LowerCtx, s: &Assign) -> bool {
+pub(super) fn lower_component_write(ctx: &mut LowerCtx<'_>, s: &Assign) -> bool {
     let Expr::FieldAccess { obj, field, .. } = &s.target else {
         return false;
     };

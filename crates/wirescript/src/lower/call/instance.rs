@@ -1,10 +1,12 @@
 //! The microchip instance call site. The only module that touches the
 //! template cache.
 
+use std::fmt::Write as _;
+
 use super::*;
 
 pub(in crate::lower) fn lower_chip_call_instance(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     chip_decl: &ChipDecl,
     args: &[CallArg],
     type_args: &[TypeExpr],
@@ -18,38 +20,22 @@ pub(in crate::lower) fn lower_chip_call_instance(
 
     // `exec = trigger` named arg: how exec chips get their chain when invoked
     // outside an exec context (mirrors the builtin exec-call convention).
-    let exec_arg = args.iter().find_map(|a| match a {
-        CallArg::Named { name, value, .. } if name == "exec" => Some(value),
-        _ => None,
-    });
+    let exec_arg = args.exec_arg();
 
-    // Monomorphize a generic chip per distinct type instantiation. Rebuild this
-    // call's type substitution (same inference the inline path + typecheck use)
-    // and key the template + emitted grid on `(name, concrete subst)` so
-    // `Box<int>` and `Box<vector>` get separate bodies AND separate grids (they
-    // dedup on `template_key`, which would otherwise collapse them into one).
-    // A non-generic chip keeps the bare name.
     let positional_args = positional_args(args);
     let first_param_is_exec = chip_decl
         .inputs
         .first()
         .map(|p| super::inline::is_exec_type(ctx, &p.typ))
         .unwrap_or(false);
-    // Auto-exec boundary pins are created when the call has (or is handed) an
-    // exec context and the chip doesn't take exec as its first param. Compute it
-    // here — BEFORE the cache lookup — because it decides the compiled body's pin
-    // shape and so must be part of the cache key (below). `build_chip_module`
-    // recomputes the identical predicate internally.
+    // Auto-exec boundary pins exist when the call has (or is handed) an exec
+    // context and the chip's first param is not exec. It sets the body's pin
+    // shape, so it is part of the cache key.
     let auto_exec = (ctx.current_exec.is_some() || exec_arg.is_some()) && !first_param_is_exec;
 
-    // A `const` parameter is a compile-time value, not a wire. Evaluate each
-    // one's argument HERE — before the cache key is built — because the value
-    // is baked INTO the compiled body: `build_chip_module` seeds it into the
-    // body's constant environment and gives the param no `MicrochipInput`
-    // pin, so it decides the body's content and pin shape exactly as the
-    // monomorph and the capture list do. Typecheck already reported any
-    // argument that fails to evaluate (WS046), so a failure is skipped here
-    // rather than double-reported.
+    // A `const` parameter's value is baked into the body (no pin), so it is
+    // evaluated before the cache key is built. A failing argument is skipped:
+    // typecheck reported it as WS046.
     let mut const_params: ConstEnv = ConstEnv::default();
     let mut const_key_parts: Vec<(usize, Literal)> = Vec::new();
     for (i, param) in chip_decl.inputs.iter().enumerate() {
@@ -59,10 +45,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
         let Some(arg) = positional_args.get(i) else {
             continue;
         };
-        let lookup = |n: &str| ctx.resolve_mod(n);
-        let mut budget = crate::const_eval::Budget::default();
-        let cx = ctx.const_ctx(Some(&lookup));
-        if let Ok(lit) = crate::const_eval::eval_expr(arg, &cx, &mut budget) {
+        if let Ok(lit) = ctx.const_eval(arg, ConstScope::Plain) {
             let lit = match ctx.declared_type(chip_decl, &param.typ, None) {
                 Some(ty) => crate::const_eval::coerce_const_to_type(lit, &ty, ctx.consts.types()),
                 None => lit,
@@ -72,6 +55,9 @@ pub(in crate::lower) fn lower_chip_call_instance(
         }
     }
 
+    // A generic chip is monomorphized per instantiation and keyed on
+    // `(name, concrete subst)`, so `Box<int>` and `Box<vector>` get separate
+    // bodies and grids. A non-generic chip keeps the bare name.
     let (mono_frame, base_key) = if chip_decl.type_params.is_empty() {
         (None, chip_decl.name.clone())
     } else {
@@ -83,19 +69,11 @@ pub(in crate::lower) fn lower_chip_call_instance(
         let key = mono_key(chip_decl, &frame);
         (Some(frame), key)
     };
-    // The compiled body's shape is set by call-site context that the bare name
-    // omits: the DECLARATION identity (two same-named chips in different
-    // namespaces collapse to one name), whether auto-exec pins exist, and which
-    // params were CAPTURED (no `MicrochipInput` pin) vs. pinned, and the VALUE
-    // of every `const` param (baked into the body, so two calls passing
-    // different constants compile to genuinely different bodies). Two calls may
-    // share the cached body only when ALL of these match — otherwise a second
-    // call in a different context reuses the first's body and mis-wires against a
-    // stale pin list, or silently runs with the first call's baked constants.
-    // The `chip_call_stack`
-    // recursion guard already keys on `chip_decl.range` for the same reason. This
-    // key doubles as the instance `template_key` (grid dedup) and `fold_key`
-    // base; making it more specific only ever makes those safer.
+    // Two calls share a cached body only when everything that shapes it
+    // matches: the declaration (same-named chips in different namespaces), the
+    // auto-exec pins, which params are captured, and each `const` param's
+    // value. A mismatch mis-wires against a stale pin list. The key is also the
+    // instance `template_key` (grid dedup) and the `fold_key` base.
     let mut cap_names: Vec<&str> = caller_captures.keys().map(String::as_str).collect();
     cap_names.sort_unstable();
     let dr = &chip_decl.range;
@@ -104,37 +82,34 @@ pub(in crate::lower) fn lower_chip_call_instance(
         dr.file,
         dr.start.offset,
         dr.end.offset,
-        auto_exec as u8,
+        u8::from(auto_exec),
         cap_names.join(",")
     );
     // `k`-prefixed so a const param's entry can never be confused with a
     // `fold_key` entry (which appends the same `{index}:{value:?}` shape
     // un-prefixed onto this same string).
     for (index, value) in &const_key_parts {
-        key.push_str(&format!("\u{1}k{index}:{value:?}"));
+        let _ = write!(key, "\u{1}k{index}:{value:?}");
     }
     // The body's resolution key: the enclosing generic instantiation it is
     // declared in, then its own substitution. A chip declared inside a generic
     // mod lowers its body under the outer `T`, so each outer instantiation is a
     // different body even though the chip itself is not generic. Empty for a
-    // top-level non-generic chip, which then keys exactly as before.
+    // top-level non-generic chip.
     let body_subst = ctx.body_resolution_subst(chip_decl, mono_frame.as_ref());
     if !super::mono::instantiation_checked(ctx, chip_decl, &body_subst) {
         return super::mono::report_unchecked_instantiation(ctx, chip_decl, range);
     }
     if !body_subst.is_empty() {
-        key.push_str(&format!("\u{1}r{body_subst:?}"));
+        let _ = write!(key, "\u{1}r{body_subst:?}");
     }
     // A chip declared inside a body captures the names that body bound where
     // it declared the chip, which are another body's each time the enclosing
     // mod expands.
-    if ctx
-        .decl_views
-        .contains_key(&(dr.file.clone(), dr.start.offset))
-    {
+    if ctx.decl_views.contains_key(&dr.start_key()) {
         let captured = ctx.with_decl_scope(chip_decl, |ctx| body_captures(ctx, chip_decl));
         if !captured.is_empty() {
-            key.push_str(&format!("\u{1}v{captured}"));
+            let _ = write!(key, "\u{1}v{captured}");
         }
     }
     // Container params whose argument is an immutable container: the body
@@ -142,7 +117,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
     // cannot be shared with this call.
     let immutable_params = immutable_container_params(ctx, chip_decl, &caller_captures);
     if !immutable_params.is_empty() {
-        key.push_str(&format!("\u{1}i[{}]", immutable_params.join(",")));
+        let _ = write!(key, "\u{1}i[{}]", immutable_params.join(","));
     }
     // The constants of the scope the body inherits are baked into it. The
     // body inherits its declaration's scope, not this call site's.
@@ -150,40 +125,38 @@ pub(in crate::lower) fn lower_chip_call_instance(
         .with_decl_scope(chip_decl, |ctx| ctx.consts.snapshot())
         .describe();
     if !inherited.is_empty() {
-        key.push_str(&format!("\u{1}s{inherited}"));
+        let _ = write!(key, "\u{1}s{inherited}");
     }
 
     let mut child_module = if let Some(template) = ctx.template_cache.get(&key) {
-        // Build remap: for each param name in the template's capture_names,
-        // look up the caller's VarRecord and map old_id -> new_id.
-        // Both keys are required: `stamp_module` resolves this module's own
-        // externals by param name (`external_refs`, rebuilt that way below) and
-        // a nested chip body's by `NodeId::to_string()` (`scope_captures`). A
-        // capture missing from either domain is left unremapped, so that body
-        // still points at the first call site's nodes.
-        let mut captures = std::collections::HashMap::default();
+        // Remap each captured param to this caller's node, under both keys
+        // `stamp_module` uses: the param name (this module's `external_refs`)
+        // and `NodeId::to_string()` (a nested chip body's `scope_captures`). A
+        // missing key leaves that body pointing at the first call site's nodes.
+        let mut captures = HashMap::default();
         for (name, old_id) in &template.external_refs {
             if let Some(var_rec) = caller_captures.get(name) {
                 captures.insert(name.clone(), var_rec.node_id);
                 captures.insert(old_id.to_string(), var_rec.node_id);
             }
         }
-        template.instantiate(&instance_name, &captures)
+        template.instantiate(&captures)
     } else {
         let module = build_chip_module(
             ctx,
-            chip_decl,
-            &instance_name,
-            &caller_captures,
-            exec_arg.is_some(),
-            mono_frame,
-            &const_params,
-            &immutable_params,
+            &ChipCallSite {
+                chip_decl,
+                instance_name: &instance_name,
+                caller_captures: &caller_captures,
+                auto_exec,
+                mono_frame: mono_frame.as_ref(),
+                const_params: &const_params,
+                immutable_params: &immutable_params,
+            },
         );
-        // Cache the first instance as a template for subsequent calls.
-        // Store capture_names so future instantiations can remap by param name.
+        // The first instance is cached as the template for later calls, its
+        // `external_refs` keyed by param name so they can remap by name.
         let mut template = crate::template::CompiledTemplate::from_module(module.clone());
-        // Rebuild external_refs keyed by param name instead of node_id string
         template.external_refs = caller_captures
             .iter()
             .map(|(name, var_rec)| (name.clone(), var_rec.node_id))
@@ -197,9 +170,8 @@ pub(in crate::lower) fn lower_chip_call_instance(
         report_unsequenced_chip_returns(ctx, chip_decl, cause, first_param_is_exec, range);
     }
 
-    // All wiring goes directly to child MicrochipInput/Output nodes.
-    // The chip node exists only for layout grouping + microchip link.
-    // (`first_param_is_exec` / `auto_exec` were computed above for the cache key.)
+    // All wiring goes directly to child MicrochipInput/Output nodes; the chip
+    // node exists only for layout grouping and the microchip link.
     let chip_node_id = ctx.add_gate(AddNodeOpts {
         gate_class: gc::MICROCHIP,
         source_range: range.clone(),
@@ -226,7 +198,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
             props.insert(*sym::DOC_TEXT, Literal::String(doc.clone()));
         }
     }
-    crate::lower::style::bake_style(
+    style::bake_style(
         ctx,
         chip_node_id,
         chip_decl.color_expr.as_ref(),
@@ -237,7 +209,7 @@ pub(in crate::lower) fn lower_chip_call_instance(
     let child_outputs = child_module.outputs.clone();
     ctx.insert_chip(chip_node_id, child_module);
 
-    // Wire args FIRST — this may create Var_Gets in the exec chain
+    // Arguments wire first, since they may add Var_Gets to the exec chain.
     let mut const_folds: Vec<ConstFold> = Vec::new();
     let result = wire_chip_args_and_outputs(
         ctx,
@@ -250,9 +222,8 @@ pub(in crate::lower) fn lower_chip_call_instance(
     );
     check_constant_pins(ctx, chip_node_id, &child_inputs, range);
 
-    // Wire auto-exec AFTER args so the exec chain is:
-    //   ... -> Var_Get(a) -> Var_Get(b) -> chip._exec_in -> chip._exec_out -> ...
-    // Not: ... -> chip._exec_in -> chip._exec_out -> Var_Get(a) -> chip.param (cycle!)
+    // Auto-exec wires after the arguments, so the chain runs the argument
+    // Var_Gets before `_exec_in`; the other order would be a cycle.
     if auto_exec {
         if let Some(exec_expr) = exec_arg {
             // Explicit trigger from a pure context: wire it to the boundary
@@ -261,7 +232,6 @@ pub(in crate::lower) fn lower_chip_call_instance(
             let exec_in_node = *child_inputs.last().unwrap();
             ctx.connect(src, exec_in_node.port(WirePort::RerInput));
         } else if let Some(caller_exec) = ctx.current_exec {
-            // Wire exec directly to child's _exec_in/_exec_out MicrochipInput/Output
             let exec_in_node = *child_inputs.last().unwrap();
             let exec_out_node = *child_outputs.last().unwrap();
             ctx.connect(caller_exec, exec_in_node.port(WirePort::RerInput));
@@ -269,18 +239,13 @@ pub(in crate::lower) fn lower_chip_call_instance(
         }
     }
 
-    // Constants live inside the instance, so instances that folded different
-    // values are no longer interchangeable. Fold the values into the template
-    // key as well, or grid dedup would hand one instance another's body; calls
-    // passing the same constants still share a key. The base is the monomorph
-    // `key` (not the bare name), so a generic chip folding the same constant at
-    // two DIFFERENT types (`Box<int>(5)` vs `Box<vector>(...)`) still keys apart
-    // — and `key` already carries every `const` param's value, so those key
-    // apart here too.
+    // Folded constants live inside the instance, so they join its template key
+    // (on top of the monomorph `key`), or grid dedup would hand one instance
+    // another's body. Calls passing the same constants still share a key.
     if !const_folds.is_empty() {
         let mut fold_key = key.clone();
         for fold in &const_folds {
-            fold_key.push_str(&format!("\u{1}{}:{:?}", fold.index, fold.value));
+            let _ = write!(fold_key, "\u{1}{}:{:?}", fold.index, fold.value);
         }
         if let Some(child) = ctx.builder.module.chips.get_mut(&chip_node_id) {
             child.template_key = Some(intern(&fold_key));
@@ -326,7 +291,7 @@ fn unsequenced_chip_returns(chip_decl: &ChipDecl) -> Option<&'static str> {
 /// A chip whose first parameter is `exec` never gets the caller's chain: its
 /// body runs only under `on <param>`.
 fn report_unsequenced_chip_returns(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     chip_decl: &ChipDecl,
     cause: &str,
     first_param_is_exec: bool,
@@ -354,7 +319,7 @@ fn report_unsequenced_chip_returns(
 /// a `let` of one, or a literal): the body is built knowing it, so a mutation
 /// there is WS044 at the mutation.
 fn immutable_container_params(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     chip_decl: &ChipDecl,
     caller_captures: &HashMap<String, VarRecord>,
 ) -> Vec<String> {
@@ -376,7 +341,7 @@ fn immutable_container_params(
 /// the instance's own modules: into nested chip pins, `Select`s and buffers,
 /// up to a gate that changes the container or stores its reference.
 fn check_constant_pins(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     chip_node: NodeId,
     pins: &[NodeId],
     range: &SourceRange,
@@ -384,15 +349,13 @@ fn check_constant_pins(
     if ctx.immutable_containers.is_empty() {
         return;
     }
-    let mut tainted: crate::collections::HashSet<NodeId> = pins
+    let mut tainted: HashSet<NodeId> = pins
         .iter()
         .copied()
         .filter(|p| {
-            crate::lower::ordered::feeds_of(ctx, *p)
-                .into_iter()
-                .any(|(port, src)| {
-                    port == WirePort::RerInput && is_immutable_container(ctx, src.node_id)
-                })
+            ordered::feeds_of(ctx, *p).into_iter().any(|(port, src)| {
+                port == WirePort::RerInput && is_immutable_container(ctx, src.node_id)
+            })
         })
         .collect();
     if tainted.is_empty() {
@@ -402,7 +365,7 @@ fn check_constant_pins(
         return;
     };
     let mut classes: HashMap<NodeId, &'static str> = HashMap::default();
-    let mut wires: Vec<crate::ir::Wire> = Vec::new();
+    let mut wires: Vec<Wire> = Vec::new();
     let mut stack = vec![child];
     while let Some(m) = stack.pop() {
         classes.extend(m.nodes.iter().map(|(id, n)| (*id, n.gate_class)));
@@ -462,8 +425,8 @@ fn check_constant_pins(
 /// than at the top level, each with what it denotes there, in name order.
 /// Empty when the body uses only its own params and top-level names. Read in
 /// `d`'s declaration scope.
-fn body_captures(ctx: &LowerCtx, d: &ChipDecl) -> String {
-    let mut names = crate::collections::HashSet::default();
+fn body_captures(ctx: &LowerCtx<'_>, d: &ChipDecl) -> String {
+    let mut names = HashSet::default();
     crate::resolve::collect_idents(
         crate::ast::walk::Node::Block(&d.body),
         crate::resolve::Uses::All,
@@ -497,8 +460,7 @@ fn body_captures(ctx: &LowerCtx, d: &ChipDecl) -> String {
 
 /// What `b` denotes, independent of its read cache: its gate or port, a
 /// nested declaration's registration, a record's fields in name order.
-fn push_binding_identity(ctx: &LowerCtx, b: &Binding, out: &mut String) {
-    use std::fmt::Write;
+fn push_binding_identity(ctx: &LowerCtx<'_>, b: &Binding, out: &mut String) {
     let _ = match b {
         Binding::Var(v) => write!(out, "v{}", v.node_id),
         Binding::Local(l) => write!(out, "l{:?}", l.port),
@@ -507,20 +469,17 @@ fn push_binding_identity(ctx: &LowerCtx, b: &Binding, out: &mut String) {
         }
         Binding::EventParam(p) => write!(out, "e{p:?}"),
         Binding::DynRef(d) => write!(out, "d{:?}", d.port),
-        Binding::Chip(c) => match ctx
-            .decl_views
-            .get(&(c.range.file.clone(), c.range.start.offset))
-        {
+        Binding::Chip(c) => match ctx.decl_views.get(&c.range.start_key()) {
             Some(view) => write!(out, "c{}", view.serial),
             None => write!(out, "c{}", c.range.start.offset),
         },
         Binding::Namespace(_) => write!(out, "ns"),
         Binding::Record(fields) => {
             let mut keys: Vec<_> = fields.keys().copied().collect();
-            keys.sort_by_key(|k| crate::intern::resolve(*k));
+            keys.sort_by_key(|k| resolve(*k));
             out.push('{');
             for k in keys {
-                out.push_str(crate::intern::resolve(k));
+                out.push_str(resolve(k));
                 out.push(':');
                 push_binding_identity(ctx, &fields[&k], out);
                 out.push(',');
@@ -532,7 +491,7 @@ fn push_binding_identity(ctx: &LowerCtx, b: &Binding, out: &mut String) {
 }
 
 /// Every name `block` emits, at any depth, nested declarations included.
-fn collect_emit_targets(block: &Block, names: &mut crate::collections::HashSet<String>) {
+fn collect_emit_targets(block: &Block, names: &mut HashSet<String>) {
     walk::walk(
         walk::Node::Block(block),
         walk::Ctx::default(),

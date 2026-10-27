@@ -29,12 +29,7 @@ fn every_example_and_fixture_holds_the_wiring_invariant() {
         let source = std::fs::read_to_string(path).unwrap();
         let file = path.to_string_lossy();
         let diags = wirescript::diagnostics_only(
-            wirescript::CompileInput {
-                source: &source,
-                file: &file,
-                module_name: None,
-                fold_mode: wirescript::FoldMode::Auto,
-            },
+            wirescript::CompileInput::new(&source, &file),
             &wirescript::FsLoader,
         );
         assert!(

@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     pub(super) fn parse_type(&mut self) -> TypeExpr {
         if !self.enter_nesting() {
             self.leave_nesting(1);
@@ -155,7 +155,7 @@ impl<'a> Parser<'a> {
                 range: self.make_range(start, end),
             };
         }
-        // Plain identifier type name (int, bool, controller, chipTypeName, …),
+        // Plain identifier type name (int, bool, controller, chipTypeName, ...),
         // or one qualified by a namespace alias (`T.Point` after
         // `import * as T`). The qualified form is kept as a dotted name and
         // resolved against that namespace's type aliases.

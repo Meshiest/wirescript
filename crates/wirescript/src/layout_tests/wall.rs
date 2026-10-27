@@ -224,14 +224,10 @@ chip { var inner: int = 0 }\n",
     }
 }
 
-/// A nested plane anchors on ITS OWN parent's plane — the parent's slot
-/// plus the chip brick's offset inside it — not on the wall's centre. The
-/// lone depth-2 plane here has nothing to collide with, so it lands
-/// exactly on its brick.
-///
-/// The anchored axis is the VERTICAL one: depth is carried by the
-/// column step, which frees world Z to track the brick's own row (local +X
-/// -> world up).
+/// A nested plane anchors on its own parent's plane (the parent's slot plus
+/// the chip brick's offset inside it), not on the wall's centre. The lone
+/// depth-2 plane here has nothing to collide with, so it lands exactly on
+/// its brick. The anchored axis is world Z, since local +X is world up.
 #[test]
 fn nested_planes_anchor_on_their_parents_plane() {
     let src = "in go: exec\n\
@@ -268,17 +264,10 @@ let b = B(go)\n";
     );
 }
 
-/// Depth grows RIGHTWARD, and a plane's height follows its own brick.
-///
-/// Stacking each nesting level above the last put a chip's interior a
-/// whole board-height away from the brick that opens it — the deeper the
-/// chip, the further the eye had to travel. Growing sideways instead keeps
-/// a plane beside its brick: the horizontal step is what separates the
-/// levels, which frees the vertical axis to track where the brick actually
-/// sits inside its parent.
-///
-/// Both halves matter. Rightward alone would leave every plane bottom
-/// aligned; brick-tracking alone would put a child on top of its parent.
+/// Depth grows rightward, and a plane's height follows its own brick, so a
+/// chip's interior opens beside the brick that holds it. Rightward alone
+/// would bottom-align every plane; brick-tracking alone would put a child on
+/// top of its parent.
 #[test]
 fn child_planes_grow_rightward_and_track_their_bricks_height() {
     let src = "in go: exec\n\
@@ -331,9 +320,9 @@ let b = B(go)\n";
     );
 }
 
-/// Single-page layouts (every Dag layout, and an empty module whose
-/// bounds are all zero) must keep the historical `Z_PLANE` half-extent
-/// on z — the paginated-layout z coverage must not disturb them.
+/// Single-page layouts (every Dag layout, and an empty module whose bounds
+/// are all zero) keep the `Z_PLANE` half-extent on z; only paginated layouts
+/// widen z.
 #[test]
 fn single_page_layouts_keep_the_historical_z_extent() {
     let module = lowered(SRC);

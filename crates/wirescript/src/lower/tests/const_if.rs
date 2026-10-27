@@ -1,9 +1,8 @@
-//! Tree-shaking must happen by NOT BUILDING the branch, never by deleting one
-//! afterwards. `lower_if` snapshots and restores the Var_Get cache around
-//! branch boundaries (`lower/stmt.rs`); a read cached while lowering
-//! the THEN block is only valid on that exec chain. The existing literal-bool
-//! elision is safe precisely because it lowers straight into the parent scope
-//! and never creates that machinery — this extension must stay on that path.
+//! Tree-shaking happens by not building the branch, never by deleting one afterwards.
+//! `lower_if` snapshots and restores the `Var_Get` cache around branch boundaries
+//! (`lower/stmt.rs`): a read cached while lowering the THEN block is valid only on that
+//! exec chain. Const-condition elision lowers straight into the parent scope and never
+//! creates that machinery, so it must stay on that path.
 use super::*;
 use crate::ir::gate_class as gc;
 

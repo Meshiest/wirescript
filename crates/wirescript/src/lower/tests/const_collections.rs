@@ -1,15 +1,13 @@
-//! A constant array/map initializer must bake into the gate's `InitialValue`
-//! with ZERO runtime gates — the same guarantee `predeclare.rs` already gives
-//! a plain literal initializer (`var t: int[] = [1, 2, 3]`), now routed
-//! through `const_eval::eval_expr` so a `const mod` call per element also
-//! qualifies, not just literals and named constants.
+//! A constant array/map initializer bakes into the gate's `InitialValue` with
+//! zero runtime gates, like a plain literal initializer (`var t: int[] = [1, 2, 3]`).
+//! Elements are evaluated through `const_eval::eval_expr`, so a `const mod` call per
+//! element qualifies as well as literals and named constants.
 use super::const_params::lower_ok;
 use super::*;
 
-/// A test using plain named constants (`[N, N * 2]`) would not discriminate
-/// this path — `array_elem_literal` already routes those through
-/// `expr_to_literal_in`, which resolves named constants. A const-mod CALL
-/// per element is the one form only `const_eval` can evaluate.
+/// A const-mod call per element is the one form only `const_eval` can evaluate;
+/// plain named constants (`[N, N * 2]`) would not discriminate this path, since
+/// `array_elem_literal` resolves them through `expr_to_literal_in`.
 #[test]
 fn a_const_mod_call_in_an_array_initializer_bakes_with_no_push_gates() {
     let m = lower_ok(
@@ -55,16 +53,12 @@ fn a_const_mod_call_in_a_map_initializer_bakes_with_no_set_gates() {
     );
 }
 
-/// An array with ONE non-constant element must still fall back to the
-/// existing "starts empty, warn" behaviour — routing through `const_eval`
-/// must not turn a genuine runtime value into a hard error at this site, nor
-/// silently bake a partial array. Nested inside a mod body (not top-level):
-/// a top-level array's "starts empty" is reported by TYPECHECK's WS003
-/// (`check_top_level_array_init`) instead, and lowering's OWN warning is
-/// deliberately suppressed there (`skip_array_inits`) to avoid double
-/// reporting — a `static var` local is where lowering's own warning path
-/// (`warn_unbaked_var_init`, `skip_array_inits: false`) actually fires, so
-/// this is what proves the `const_eval` routing didn't disturb it.
+/// An array with one non-constant element starts empty and warns: it is neither
+/// a hard error nor a silently baked partial array. The array sits in a mod body
+/// because a top-level array's "starts empty" is reported by typecheck's WS003
+/// (`check_top_level_array_init`) and lowering's own warning is suppressed there
+/// (`skip_array_inits`); a `static var` local reaches `warn_unbaked_var_init`
+/// with `skip_array_inits: false`.
 #[test]
 fn a_local_array_with_a_non_constant_element_still_starts_empty_and_warns() {
     let src = "mod f(v: int) {\n  static var t: int[] = [1, v, 3]\n}\n\
@@ -87,19 +81,15 @@ fn a_local_array_with_a_non_constant_element_still_starts_empty_and_warns() {
     );
 }
 
-/// SHADOWING. A chip-local `const mod` that shadows a same-named top-level
-/// one must win in the BAKE path exactly as it wins everywhere else. The
-/// bake's `pass1_chips` lookup is seeded from the ROOT module's declarations
-/// and inherited wholesale by every child chip context, so without an
-/// explicit per-child overlay the bake silently resolves the OUTER mod while
-/// the ordinary call path (`ping(size(1))`, via `ctx.scope`) resolves the
-/// inner one — two different answers for the same call text, with no
-/// diagnostic. That is strictly worse than the pre-feature behaviour, which
-/// baked nothing at all here.
+/// A chip-local `const mod` that shadows a same-named top-level one wins in the
+/// bake path as it does everywhere else. The bake's `pass1_chips` lookup is
+/// seeded from the root module's declarations and inherited by every child chip
+/// context, so without a per-child overlay the bake would resolve the outer mod
+/// while the ordinary call path (via `ctx.scope`) resolves the inner one.
 ///
-/// The `ping(size(1))` call is the control: it is a const-required position
-/// resolved through the ordinary scope path, so it pins what the CORRECT
-/// answer is (100, the inner mod) independently of the bake under test.
+/// The `ping(size(1))` call is the control: a const-required position resolved
+/// through the ordinary scope path, so it fixes the expected answer (100, the
+/// inner mod) independently of the bake.
 #[test]
 fn a_chip_local_const_mod_shadows_the_top_level_one_in_the_bake_path() {
     let m = lower_ok(
@@ -243,10 +233,9 @@ fn a_mod_local_const_mod_shadows_inside_the_body_and_nowhere_outside() {
     );
 }
 
-/// `const_eval::eval_expr` already tries `expr_to_literal_in` FIRST (the seam
-/// note in `const_eval::expr`), so routing `array_elem_literal` through it
-/// must not change what a plain-literal/named-constant array bakes to.
-/// Regression guard for the "keep what bakes today baking" requirement.
+/// A plain-literal/named-constant array bakes the same through
+/// `const_eval::eval_expr` as through `expr_to_literal_in`, which `eval_expr`
+/// tries first.
 #[test]
 fn a_plain_literal_array_still_bakes_exactly_as_before() {
     let m = lower_ok("const N = 4\nvar t: int[] = [1, N, N * 2]");
@@ -262,26 +251,17 @@ fn a_plain_literal_array_still_bakes_exactly_as_before() {
     );
 }
 
-/// WIDTH PARITY between typecheck's constant check and lowering's bake.
+/// Typecheck's constant check and lowering's bake must agree on which const-mod
+/// calls resolve. `check_top_level_array_init` resolves the callee via
+/// `ctx.resolve_mod`, which is forward-tolerant (typecheck registers every
+/// declaration first); the bake resolves via `resolve_mod_pass1`, which is
+/// source-ordered. Where they differ, typecheck would accept an initializer that
+/// lowering silently drops (array starts empty, no diagnostic).
 ///
-/// `check_top_level_array_init` (typecheck) resolves a `const mod` callee via
-/// `ctx.resolve_mod`, which is FORWARD-TOLERANT — typecheck registers every
-/// declaration in a first pass, so a call textually above its callee still
-/// resolves there. Lowering's bake resolves via `resolve_mod_pass1`, which is
-/// strictly SOURCE-ORDERED. Those two widths differ, and where they differ
-/// the failure mode is the one this feature has shipped twice already:
-/// typecheck accepts a program whose initializer lowering then silently
-/// drops (array starts empty, no diagnostic).
-///
-/// Today the gap is unreachable only because `infer::infer` runs FIRST in the
-/// same loop and emits WS021 for the use-before-declaration, rejecting the
-/// program before the divergence can matter. Nothing else pins that ordering.
-///
-/// This test asserts the INVARIANT rather than the mechanism: for a
-/// forward-declared const-mod call in an array initializer, either typecheck
-/// REJECTS the program, or lowering must actually BAKE it. Any future change
-/// that drops/reorders the WS021 emission without also widening
-/// `resolve_mod_pass1` lands in the forbidden middle and fails here.
+/// The gap is unreachable only because `infer::infer` runs first and emits WS021
+/// for the use-before-declaration. This test asserts the invariant rather than
+/// that mechanism: for a forward-declared const-mod call in an array
+/// initializer, either typecheck rejects the program or lowering bakes it.
 #[test]
 fn typecheck_never_accepts_an_initializer_that_lowering_silently_drops() {
     let src = "var t: int[] = [size(1)]\n\
@@ -322,24 +302,16 @@ fn typecheck_never_accepts_an_initializer_that_lowering_silently_drops() {
     );
 }
 
-/// An out-of-range const index INSIDE an array initializer must report the
-/// specific out-of-range message, not the generic "must be constant literals"
-/// WS003 — that advice ("build the array in an exec handler") is actively
-/// wrong for `[[1, 2][9]]`, whose problem is the index, not constant-ness.
-/// The two must never both fire, which is why the fold helper emits and the
-/// caller reports nothing further.
-///
-/// A pre-existing, unrelated WS007 (pure-context array read) also fires on
-/// this program; the assertion deliberately ignores it and pins only the
-/// const diagnostic.
+/// An out-of-range const index inside an array initializer reports the specific
+/// out-of-range message, not the generic "must be constant literals" WS003, whose
+/// advice ("build the array in an exec handler") does not apply to `[[1, 2][9]]`.
+/// The two never both fire: the fold helper emits and the caller reports nothing
+/// further. An unrelated WS007 (pure-context array read) also fires on this
+/// program; the assertions pin only the const diagnostic.
 #[test]
 fn an_out_of_range_index_in_an_initializer_reports_the_specific_reason() {
     let resolved = crate::resolve("var t: int[] = [[1,2][9]]", "test", &crate::FsLoader);
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = crate::typecheck::typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let ws046: Vec<_> = tc
         .diagnostics
         .iter()
@@ -365,18 +337,13 @@ fn an_out_of_range_index_in_an_initializer_reports_the_specific_reason() {
     );
 }
 
-/// A record `let` whose FIELD needs a `const mod` call must still lower
-/// through the ordinary `Binding::Record` path, NOT bake as a
-/// `Literal::Record`.
+/// A record `let` whose field needs a `const mod` call lowers through the
+/// ordinary `Binding::Record` path and does not bake as a `Literal::Record`.
 ///
-/// A record is the one bakeable literal kind with a pre-existing non-literal
-/// lowering, so `lower_let_decl` baking it early-returns straight past that
-/// path. The visible damage was a miscompile, not just a lost optimization:
-/// the later `p.x`/`p.y` reads lost their record binding and fell through to
-/// the vector-swizzle path, emitting a bogus `Expr_SplitVector` `.X`/`.Y` on
-/// a record — and the baked `Literal::Record` then reached emit, where it has
-/// no wire form at all. Arrays and maps have no such existing lowering, which
-/// is why only records need excluding from the bake.
+/// A record is the one bakeable literal kind with its own non-literal lowering.
+/// Baking it in `lower_let_decl` would skip that path: later `p.x`/`p.y` reads
+/// would lose their record binding and lower as a vector swizzle
+/// (`Expr_SplitVector`), and the baked `Literal::Record` has no wire form in emit.
 #[test]
 fn a_record_let_with_a_const_mod_field_keeps_its_record_binding() {
     for src in [
@@ -390,8 +357,8 @@ fn a_record_let_with_a_const_mod_field_keeps_its_record_binding() {
            ax = p.x + 1\n\
            ay = p.y + 1\n\
          }",
-        // top-level `let` — same bug, different frame (no `scoped_consts`
-        // frame exists there, but the bake path returns early regardless)
+        // top-level `let`: no `scoped_consts` frame exists there, but the bake
+        // path applies regardless
         "type Point = { x: int, y: int }\n\
          const mod mk(n: int) -> int { return n * 2 }\n\
          var ax: int = 0\n\
@@ -422,20 +389,16 @@ fn a_record_let_with_a_const_mod_field_keeps_its_record_binding() {
     }
 }
 
-/// A compile-time index into a compile-time array must reach emit as a real
-/// LITERAL in BOTH channels a constant can be consumed through — the bake slot
-/// (an `InitialValue` property) and a runtime WIRE OPERAND.
+/// A compile-time index into a compile-time array reaches emit as a real literal
+/// through both channels a constant is consumed by: the bake slot (an
+/// `InitialValue` property) and a runtime wire operand.
 ///
-/// The wire-operand half is the one that regressed: typecheck was narrowed to
-/// accept `const z = t[1]` at module level (the read emits no gate, so WS007's
-/// exec-context rule does not apply), but lowering had no form for it and
-/// synthesised an `_Unsupported` placeholder. Emit writes no component for a
-/// placeholder, so the wire feeding the consumer died and the gate silently
-/// read its type default — `if z == rv` compiled clean and compared against 0
-/// instead of 555. The bake channel alone could not catch it: an initializer
-/// resolves the NAME through `LowerCtx.const_env`, which always worked, while a
-/// runtime read resolves through the port binding the ordinary lowering
-/// installs. Both are asserted here for exactly that reason.
+/// The two resolve differently: an initializer resolves the name through
+/// `LowerCtx.const_env`, a runtime read through the port binding that ordinary
+/// lowering installs. A read with no literal form becomes an `_Unsupported`
+/// placeholder, which emit writes no component for, so the consumer's wire is
+/// lost and the gate reads its type default (`if z == rv` would compare against
+/// 0 instead of 555).
 #[test]
 fn a_const_index_reaches_emit_as_a_literal_in_both_the_bake_and_wire_channels() {
     // Bake channel: the folded `t[1]` lands in the array var's InitialValue,
@@ -456,8 +419,7 @@ fn a_const_index_reaches_emit_as_a_literal_in_both_the_bake_and_wire_channels() 
     );
 
     // Wire-operand channel: `z` feeds a Compare, so the folded literal must be
-    // inlined as the operand. Pre-fix this property was absent and the operand
-    // wire dangled, so the gate read 0.
+    // inlined as the operand rather than left as a dangling wire.
     let m = lower_ok(
         "const t = [777, 555]\n\
          const z = t[1]\n\
@@ -466,8 +428,8 @@ fn a_const_index_reaches_emit_as_a_literal_in_both_the_bake_and_wire_channels() 
          on go { if z == rv { BroadcastChatMessage(\"EQ\") } }",
     );
     // No placeholder anywhere: neither for `const z = t[1]` on line 2, nor for
-    // the `const t = [777, 555]` declaration on line 1, which used to leave an
-    // orphan `_Unsupported` plus a WSP001 warning behind on every compile.
+    // the `const t = [777, 555]` declaration on line 1 (a placeholder there would
+    // come with a WSP001 warning).
     assert!(
         nodes_of(&m, crate::ir::gate_class::UNSUPPORTED).is_empty(),
         "a const collection, and a const index into it, must lower to no _Unsupported placeholder"
@@ -480,16 +442,14 @@ fn a_const_index_reaches_emit_as_a_literal_in_both_the_bake_and_wire_channels() 
     );
 }
 
-/// A `const` container used ONLY at compile time costs nothing: no container
-/// gate, and no placeholder either.
+/// A `const` container used only at compile time emits no container gate and no
+/// placeholder.
 ///
-/// Both halves matter and neither implies the other. The placeholder half is
-/// the bug that shipped — `const t = [...]` recorded its value correctly AND
-/// lowered the same literal as a runtime expression, which has no lowering, so
-/// every compile emitted an orphan `_Unsupported` plus a WSP001 warning. The
-/// no-container half is the guarantee that the fix stayed LAZY: materializing
-/// eagerly would also kill the placeholder, while charging every compile-time
-/// const table a gate it never uses.
+/// Neither half implies the other. The placeholder half fails if `const t = [...]`
+/// also lowers its literal as a runtime expression (an orphan `_Unsupported` plus
+/// a WSP001 warning). The no-container half fails if materialization is eager,
+/// which would also avoid the placeholder but charge every compile-time const
+/// table a gate it never uses.
 #[test]
 fn a_const_container_used_only_at_compile_time_emits_no_gate() {
     let m = lower_ok(
@@ -529,16 +489,13 @@ fn a_const_container_used_only_at_compile_time_emits_no_gate() {
     );
 }
 
-/// A `const` table read at a RUNTIME index gets a real container gate with its
-/// contents baked into `InitialValue` — the same gate, and the same baked
-/// property, that `var t: int[] = [...]` gets.
+/// A `const` table read at a runtime index gets a real container gate with its
+/// contents baked into `InitialValue`, like `var t: int[] = [...]`.
 ///
-/// This is the silent miscompile the feature closes: the read used to fall
-/// through to an `_Unsupported` placeholder that emit writes no component for,
-/// so a const lookup table indexed by a runtime value compiled clean and read 0
-/// in game. Asserting the BAKED VALUES, not merely that a gate exists, is what
-/// makes that unfakeable — an empty container gate would read 0 exactly like
-/// the placeholder did.
+/// A read that lowered to an `_Unsupported` placeholder would compile clean and
+/// read 0 in game, since emit writes no component for it. The test asserts the
+/// baked values, not just that a gate exists: an empty container gate would also
+/// read 0.
 #[test]
 fn a_const_container_read_at_a_runtime_index_materializes_one_baked_gate() {
     let m = lower_ok(
@@ -572,7 +529,7 @@ fn a_const_container_read_at_a_runtime_index_materializes_one_baked_gate() {
     );
 
     // The map half. A constant key would be answered by the fold instead, so
-    // the key here is a runtime var — that is what forces the container.
+    // the key is a runtime var, which forces the container.
     let m = lower_ok(
         "const t = { \"a\": 11, \"b\": 22 }\n\
          var k: string = \"b\"\n\
@@ -601,12 +558,12 @@ fn a_const_container_read_at_a_runtime_index_materializes_one_baked_gate() {
     );
 }
 
-/// Materialization is memoized: many runtime uses of one `const` table share
-/// ONE container gate.
+/// Materialization is memoized: many runtime uses of one `const` table share one
+/// container gate.
 ///
-/// Three DIFFERENT shapes of use are mixed deliberately — an index read, a
-/// read-only method, and a `T[]` argument — because they enter through three
-/// separate call sites, so a per-site memo would still emit three gates.
+/// The uses mix an index read, a read-only method, and a `T[]` argument, which
+/// enter through three separate call sites, so a per-site memo would still emit
+/// three gates.
 #[test]
 fn many_runtime_uses_of_one_const_table_share_a_single_container_gate() {
     let m = lower_ok(
@@ -631,13 +588,10 @@ fn many_runtime_uses_of_one_const_table_share_a_single_container_gate() {
     );
 }
 
-/// A `const` container is IMMUTABLE, and that is what keeps its two forms —
-/// the compile-time value and the runtime gate — from ever disagreeing. A
-/// mutating method is WS044; a read-only one compiles.
-///
-/// Both halves run the SAME program shape, so this can only pass by
-/// distinguishing the METHODS, not by accepting or rejecting const containers
-/// wholesale.
+/// A `const` container is immutable, which keeps its compile-time value and its
+/// runtime gate from disagreeing. A mutating method is WS044; a read-only one
+/// compiles. Both cases run the same program shape, so the test passes only by
+/// distinguishing the methods.
 #[test]
 fn a_mutating_method_on_a_const_container_is_rejected_and_a_read_only_one_is_not() {
     const PROGRAM: &str = "const t = [777, 555]\n\
@@ -662,14 +616,12 @@ fn a_mutating_method_on_a_const_container_is_rejected_and_a_read_only_one_is_not
     crate::test_support::assert_code(&r.diagnostics, "WS044");
 }
 
-/// `.length()` on a `const` container in PURE context. Typecheck exempts a
+/// `.length()` on a `const` container in pure context folds. Typecheck exempts a
 /// non-mutating read on a `const` receiver from the exec-context rule
-/// (`container_call_exec_exempt`) on the premise that it folds, so lowering has
-/// to actually fold it. The map form used to wire the map REFERENCE into the
-/// consumer with no diagnostic at all, and the array form a placeholder.
-///
-/// The indexed analogue (`const_fold_index_access`) already closes exactly this
-/// hole for `t[i]` / `m[k]`.
+/// (`container_call_exec_exempt`) on the premise that it folds, so lowering must
+/// fold it: otherwise the map form wires the map reference into the consumer and
+/// the array form leaves a placeholder. `const_fold_index_access` does the same
+/// for `t[i]` / `m[k]`.
 #[test]
 fn const_container_length_folds_in_pure_context() {
     for (src, want) in [
@@ -722,12 +674,11 @@ fn const_container_length_folds_in_pure_context() {
     }
 }
 
-/// A `const`-receiver container read that CANNOT fold (a runtime key) has no
-/// pure-context form: there is no exec chain to sequence the gate on. It must
-/// say so. Handing back the receiver's own ref port instead makes the container
-/// REFERENCE stand in for the value, with no diagnostic anywhere - typecheck
-/// exempted the read (`container_call_exec_exempt`) expecting a fold that could
-/// not happen. The array path already reports; the map path did not.
+/// A `const`-receiver container read that cannot fold (a runtime key) has no
+/// pure-context form, since there is no exec chain to sequence the gate on, and
+/// is reported. Returning the receiver's own ref port would let the container
+/// reference stand in for the value with no diagnostic, because typecheck
+/// exempted the read (`container_call_exec_exempt`) expecting a fold.
 #[test]
 fn an_unfoldable_const_container_read_in_pure_context_is_reported() {
     for src in [
@@ -781,14 +732,12 @@ fn baked_arrays(r: &LowerResult) -> Vec<Option<Literal>> {
         .collect()
 }
 
-fn ints(xs: &[i64]) -> Option<Literal> {
-    Some(Literal::Array(
-        xs.iter().map(|&x| Literal::Int(x)).collect(),
-    ))
+fn ints(xs: &[i64]) -> Literal {
+    Literal::Array(xs.iter().map(|&x| Literal::Int(x)).collect())
 }
 
 /// `let x = T` aliases the const table: `x[i]` reads the materialized gate,
-/// not a placeholder wired into `m`'s Var_Set.
+/// not a placeholder wired into `m`'s `Var_Set`.
 #[test]
 fn a_let_bound_to_a_const_array_reads_the_materialized_gate() {
     for src in [
@@ -802,7 +751,7 @@ fn a_let_bound_to_a_const_array_reads_the_materialized_gate() {
          on go {\n  const x = T\n  m = x[i]\n}\nout r: int = m",
     ] {
         let r = lowers_clean(src);
-        assert_eq!(baked_arrays(&r), vec![ints(&[10, 20, 30])], "{src}");
+        assert_eq!(baked_arrays(&r), vec![Some(ints(&[10, 20, 30]))], "{src}");
         let arr = find_gate(&r, crate::ir::gate_class::ARRAY_VAR);
         let get = find_gate(&r, crate::ir::gate_class::ARRAY_GET);
         assert!(
@@ -869,7 +818,10 @@ fn a_const_container_in_a_value_position_materializes() {
         let r = lowers_clean(src);
         let baked = baked_arrays(&r);
         assert_eq!(
-            baked.iter().filter(|b| **b == ints(&[10, 20, 30])).count(),
+            baked
+                .iter()
+                .filter(|b| **b == Some(ints(&[10, 20, 30])))
+                .count(),
             1,
             "exactly one gate carries T's contents:\n{src}\n{baked:?}"
         );
@@ -923,7 +875,7 @@ fn a_const_container_passed_to_a_chip_container_param_materializes() {
          }\n\
          in go: exec\nin i: int\nlet c = C(go, T, i)\nout r: int = c",
     );
-    assert_eq!(baked_arrays(&r), vec![ints(&[10, 20, 30])]);
+    assert_eq!(baked_arrays(&r), vec![Some(ints(&[10, 20, 30]))]);
     assert_eq!(
         nodes_of(&r.module, crate::ir::gate_class::ARRAY_GET).len(),
         1
@@ -954,7 +906,7 @@ fn an_array_literal_passed_to_a_chip_container_param_materializes() {
          }\n\
          in go: exec\nin i: int\nlet c = C(go, [10, 20, 30], i)\nout r: int = c",
     );
-    assert_eq!(baked_arrays(&r), vec![ints(&[10, 20, 30])]);
+    assert_eq!(baked_arrays(&r), vec![Some(ints(&[10, 20, 30]))]);
 }
 
 /// A chip body that mutates its container parameter cannot take a const
@@ -1029,7 +981,7 @@ fn a_constant_container_let_shadows_an_outer_binding() {
         assert_eq!(sources.len(), 1, "{src}");
         assert_eq!(
             baked_of(&r, sources[0]),
-            ints(&[10, 20, 30]),
+            Some(ints(&[10, 20, 30])),
             "the read must use the shadowing constant:\n{src}"
         );
     }
@@ -1134,5 +1086,5 @@ fn an_array_literal_in_a_storing_position_is_loud() {
     }
     // Read-only uses of a literal still work.
     let r = lowers_clean("var a: int[]\nin go: exec\non go { a.append([10, 20, 30]) }");
-    assert!(baked_arrays(&r).contains(&ints(&[10, 20, 30])));
+    assert!(baked_arrays(&r).contains(&Some(ints(&[10, 20, 30]))));
 }

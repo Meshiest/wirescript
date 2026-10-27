@@ -15,7 +15,7 @@ fn check_typecheck_rows(rows: &[(&str, &str, Option<&str>, &[&str])]) {
         match code {
             None if !got.is_empty() => failures.push(format!("{label}: errors {got:?}\n{src}")),
             Some(c) if !got.iter().any(|g| g == c) => {
-                failures.push(format!("{label}: want {c}, got {got:?}\n{src}"))
+                failures.push(format!("{label}: want {c}, got {got:?}\n{src}"));
             }
             _ => {}
         }
@@ -423,7 +423,7 @@ fn an_event_called_as_an_expression_emits_its_gate() {
 /// An event's data outputs take the types its handler declares, infers from
 /// an in-unit sender, or (for a built-in event) its catalog gives; unused
 /// custom-event slots default to float, never `any`, and the channel name
-/// bakes into EventName.
+/// bakes into `EventName`.
 #[test]
 fn an_event_data_output_takes_its_declared_or_inferred_type() {
     let custom = crate::ir::gate_class::CUSTOM_EVENT;
@@ -554,7 +554,7 @@ fn an_on_trigger_on_an_inline_mod_call_is_ws043() {
 
 #[test]
 fn display_text_font_ref_lands_as_data() {
-    // `font` is a font asset ref (`$BrickFontDescriptor/…`) inlined into the
+    // `font` is a font asset ref (`$BrickFontDescriptor/...`) inlined into the
     // gate's `Font` (object) data field, reusing the asset-ref path.
     let src = "in go: exec\nin p: controller\non go {\n  p.DisplayText(\"hi\", font = $BrickFontDescriptor/Roboto)\n}\n";
     let r = compile_ok(src);
@@ -611,7 +611,7 @@ fn dynamic_clock_interval_stays_wired() {
     );
 }
 
-// ---- Advanced inventory: composite (array/struct) gate config -----------
+// Advanced inventory: composite (array/struct) gate config
 
 /// `weapon` is wired into `ItemType`, so the round-trip test never bakes an
 /// asset index the bare max schema (empty asset table) would reject on read.
@@ -769,10 +769,9 @@ fn adv_inventory_composite_config_roundtrips_to_bytes() {
 
 #[test]
 fn adv_inventory_omitted_ammo_override_still_fills_fixed_resources() {
-    // Regression: with NO `ammoOverride`, the WeaponAmmoOverride field must
-    // still serialize a full fixed-length Resources array (the schema writer's
-    // default would otherwise emit an empty one and the game load fails with
-    // `FixedArraySizeInvalid`). Overriding stays off; every slot is zero.
+    // With NO `ammoOverride`, the WeaponAmmoOverride field still serializes a full
+    // fixed-length Resources array: the schema writer's empty default fails the
+    // game load with `FixedArraySizeInvalid`. Overriding stays off; every slot is 0.
     let src = concat!(
         "in go: exec\nin c: character\nin weapon: entity\n",
         "on go {\n",
@@ -849,7 +848,7 @@ fn non_constant_bool_config_is_rejected() {
         "non-constant bool config should be WS028: {:?}",
         errs(src)
     );
-    // The lowering safety net drops it — no bogus property, and (since it never
+    // The lowering safety net drops it: no bogus property, and (since it never
     // reaches the wire path) no wire into the nonexistent config pin. The Slerp
     // gate keeps only its three real inputs (a, b, alpha).
     let r = compile(src);
@@ -898,7 +897,18 @@ fn event_expression_exposes_data_output() {
     // `CharacterSpawned().character` resolves the event's data output.
     let src = "in go: exec\nvar last: character\non go {\n  last = CharacterSpawned().character\n}";
     let r = compile_ok(src);
-    let _ = find_gate(&r, "BrickComponentType_Event_Gamemode_CharacterSpawned");
+    let event = find_gate(&r, "BrickComponentType_Event_Gamemode_CharacterSpawned");
+    assert!(
+        !has_unsupported(&r.module),
+        "the field read lowered to a placeholder"
+    );
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.source.node_id == event && w.source.port.as_str() == "Character"),
+        "the event's Character output must be wired"
+    );
 }
 
 #[test]
@@ -949,7 +959,7 @@ fn display_text_runtime_axis_wires_subport() {
     );
 }
 
-// ---- Custom events + Clock enabled-as-wire -------------------------------
+// Custom events + Clock enabled-as-wire
 
 #[test]
 fn send_ports_carrying_refs_keep_the_ref_type() {
@@ -1063,11 +1073,9 @@ fn custom_event_object_config_and_send_target() {
 
 #[test]
 fn map_containers_lower_without_unsupported() {
-    // Regression for the `Map<K,V>`-as-param/port/record-field silent
-    // miscompile: a map used as a mod param, a record field, an `in`/`out`
-    // port, and a `copyFrom` source must all lower to real MapVar gates wiring
-    // `MapVarRef`, never `_Unsupported`. (Preferred fix: maps work wherever
-    // arrays do.)
+    // A map used as a mod param, a record field, an `in`/`out` port, and a
+    // `copyFrom` source lowers to real MapVar gates wiring `MapVarRef`, never
+    // `_Unsupported`: maps work wherever arrays do.
     let src = "var m: Map<int, int>\n\
                var m2: Map<int, int>\n\
                type Bag = { counts: Map<int, int> }\n\
@@ -1127,11 +1135,11 @@ fn map_param_double_call_shares_one_map_gate() {
 
 #[test]
 fn exec_after_mod_ending_in_emit_signal_lowers() {
-    // A mod whose body ends with an unbuffered `emit sig` is a FORK, not a
-    // chain terminator — it fires the signal and the exec continues. When such
-    // a mod is inlined mid-chain, exec statements AFTER the call must still
-    // lower onto the chain, not fall to an `_Unsupported` placeholder. (Only a
-    // BUFFERED `buffer emit loop` back-edge terminates the chain.)
+    // A mod whose body ends with an unbuffered `emit sig` is a FORK, not a chain
+    // terminator: it fires the signal and the exec continues. Inlined mid-chain,
+    // exec statements AFTER the call still lower onto the chain, not to an
+    // `_Unsupported` placeholder. (Only a BUFFERED `buffer emit loop` back-edge
+    // terminates the chain.)
     let src = "let sig: exec\n\
                in cube: entity\n\
                in go: exec\n\
@@ -1145,7 +1153,7 @@ fn exec_after_mod_ending_in_emit_signal_lowers() {
     );
 }
 
-// ---- `on <Event> -> <pattern>` output capture ----------------------------
+// `on <Event> -> <pattern>` output capture
 
 #[test]
 fn on_arrow_record_named_event_binds_outputs() {
@@ -1167,14 +1175,11 @@ fn on_arrow_record_named_event_binds_outputs() {
 
 #[test]
 fn on_arrow_general_chip_call_exec_auto_extracted() {
-    // `on <chipCall>(..., exec = trigger) -> (pattern)` is a GENERAL
-    // (non-event) expr trigger. `on` auto-extracts the call's own completion
-    // exec (a structural `Type::Exec` field on the call's result record) to
-    // drive the body, and `-> (code)` binds the call's other (data) output.
-    // Same underlying mechanism as the already-working
-    // `let r = Init(...); on r.exec { }` (chip.rs's
-    // `exec_arg_call_exposes_exec_field`) — reached here through the new
-    // `on <call>(...) -> (...)` sugar instead of a manual `let` + `.exec`.
+    // `on <chipCall>(..., exec = trigger) -> (pattern)` is a GENERAL (non-event)
+    // expr trigger. `on` auto-extracts the call's own completion exec (a structural
+    // `Type::Exec` field on the call's result record) to drive the body, and
+    // `-> (code)` binds the call's other (data) output: sugar for
+    // `let r = Init(...); on r.exec { }`.
     let src = "var names: string[]\ntype Tables = { names: string[] }\nlet TB: Tables = { names }\nchip Init(tables: Tables) -> (code: int) {\n  tables.names.push(\"a\")\n  emit code = 5\n}\nin s: exec\nvar hit: int = 0\nvar last: int = 0\non Init(TB, exec = s) -> (code) {\n  hit = hit + 1\n  last = code\n}\n";
     let r = compile_ok(src);
     let child = only_chip(&r, "chip instance should produce a child module");
@@ -1202,10 +1207,10 @@ fn on_arrow_general_chip_call_exec_auto_extracted() {
 
 #[test]
 fn send_custom_event_receiver_form_binds_target() {
-    // `entity.SendCustomEvent("x", …)` is the receiver form: the object binds to
+    // `entity.SendCustomEvent("x", ...)` is the receiver form: the object binds to
     // the send gate's `target` (the object-event recipient's grid), NOT to the
-    // channel-name param — so the channel name + data still fill their normal
-    // slots and the receiver becomes the Target wire.
+    // channel-name param, so the channel name + data still fill their normal slots
+    // and the receiver becomes the Target wire.
     let src = "in go: exec\n\
                in obj: entity\n\
                on go {\n  obj.SendCustomEvent(\"dmg\", 7)\n}\n";
@@ -1279,9 +1284,8 @@ fn send_custom_event_exec_wires_to_execin_not_exec() {
 
 #[test]
 fn nested_on_negated_event_param_lowers_not_omitted() {
-    // `on !p` where p is a CustomEvent data param must LOWER (it was silently
-    // omitted before — EventParam wasn't in any trigger lookup): the negated
-    // trigger emits a LogicalNOT gate driven by p's port.
+    // `on !p` where p is a CustomEvent data param lowers (EventParam is a trigger
+    // lookup): the negated trigger emits a LogicalNOT gate driven by p's port.
     let src = "on CustomEvent(\"init\") -> (p: character) {\n  on !p {\n    BroadcastChatMessage(\"gone\")\n  }\n}\n";
     let r = compile(src);
     assert!(
@@ -1330,7 +1334,6 @@ fn global_custom_event_warns_and_keeps_separate_namespace() {
     let ws030 = |src: &str| {
         crate::typecheck::typecheck(
             &parse(src, "test").ast,
-            "test",
             &crate::typecheck::CeSlotMap::default(),
         )
         .diagnostics
@@ -1380,7 +1383,6 @@ fn team_predicates_are_pure_bool() {
     // proving the return type is a real bool rather than `any`.
     let bad = crate::typecheck::typecheck(
         &parse("in t: entity\nout v: vector = IsBuilderTeam(t)\n", "test").ast,
-        "test",
         &crate::typecheck::CeSlotMap::default(),
     );
     // IsBuilderTeam returns bool, which has no vector coercion.
@@ -1416,14 +1418,13 @@ fn team_join_leave_events_expose_team_and_playerstate() {
 
 #[test]
 fn untyped_custom_event_param_infers_or_warns_ws042() {
-    // A Custom Event receiver param without a type annotation is inferred from
-    // an in-unit sender (no warning); with no sender to infer from, it warns
-    // WS042 and defaults to float. WS029 (the old "always annotate" lint) is
-    // gone — replaced by inference.
+    // A Custom Event receiver param without a type annotation is inferred from an
+    // in-unit sender (no warning); with no sender to infer from, it warns WS042 and
+    // defaults to float.
     let no_sender =
         "static var n: int = 0\non CustomEvent(\"dmg\") -> (amount) {\n  n = n + 1\n}\n";
     let parsed = crate::parser::parse(no_sender, "test");
-    let (r, _map) = crate::typecheck::typecheck_with_inference(&parsed.ast, "test");
+    let (r, _map) = crate::typecheck::typecheck_with_inference(&parsed.ast);
     assert!(
         r.diagnostics
             .iter()
@@ -1431,7 +1432,7 @@ fn untyped_custom_event_param_infers_or_warns_ws042() {
         "untyped custom event param with no in-unit sender should warn WS042: {:?}",
         r.diagnostics
             .iter()
-            .map(|d| d.code.to_string())
+            .map(|d| d.code.clone())
             .collect::<Vec<_>>()
     );
     assert!(
@@ -1440,10 +1441,10 @@ fn untyped_custom_event_param_infers_or_warns_ws042() {
         r.diagnostics
     );
 
-    // A matching in-unit sender infers the type instead — no warning at all.
+    // A matching in-unit sender infers the type instead, with no warning at all.
     let with_sender = "in go: exec\nstatic var n: int = 0\non CustomEvent(\"dmg\") -> (amount) {\n  n = n + 1\n}\non go {\n  SendCustomEvent(\"dmg\", 42)\n}\n";
     let p = crate::parser::parse(with_sender, "test");
-    let (ri, _map) = crate::typecheck::typecheck_with_inference(&p.ast, "test");
+    let (ri, _map) = crate::typecheck::typecheck_with_inference(&p.ast);
     assert!(
         !ri.diagnostics
             .iter()
@@ -1451,7 +1452,7 @@ fn untyped_custom_event_param_infers_or_warns_ws042() {
         "inferred custom event param should not warn: {:?}",
         ri.diagnostics
             .iter()
-            .map(|d| d.code.to_string())
+            .map(|d| d.code.clone())
             .collect::<Vec<_>>()
     );
 
@@ -1461,7 +1462,7 @@ fn untyped_custom_event_param_infers_or_warns_ws042() {
         "on CharacterSpawned() -> (character) {}\n",
     ] {
         let p = crate::parser::parse(ok, "test");
-        let (d, _m) = crate::typecheck::typecheck_with_inference(&p.ast, "test");
+        let (d, _m) = crate::typecheck::typecheck_with_inference(&p.ast);
         assert!(
             !d.diagnostics
                 .iter()
@@ -1477,9 +1478,8 @@ fn send_custom_event_type_mismatch_lints_ws030() {
     // `on CustomEvent` receiver's declared param type warns (WS030).
     let src = "in go: exec\nvar last: int = 0\non CustomEvent(\"dmg\") -> (amount: int) {\n  last = amount\n}\non go {\n  SendCustomEvent(\"dmg\", 1.5)\n}\n";
     let parsed = crate::parser::parse(src, "test");
-    let diags =
-        crate::typecheck::typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default())
-            .diagnostics;
+    let diags = crate::typecheck::typecheck(&parsed.ast, &crate::typecheck::CeSlotMap::default())
+        .diagnostics;
     assert!(
         diags
             .iter()
@@ -1487,29 +1487,28 @@ fn send_custom_event_type_mismatch_lints_ws030() {
         "float sent to int custom-event param should warn WS030: {:?}",
         diags
             .iter()
-            .map(|d| (d.code.to_string(), d.message.clone()))
+            .map(|d| (d.code.clone(), d.message.clone()))
             .collect::<Vec<_>>()
     );
 
     for ok in [
-        // Exact type match — silent.
+        // Exact type match: silent.
         "in go: exec\nvar last: int = 0\non CustomEvent(\"dmg\") -> (amount: int) {\n  last = amount\n}\non go {\n  SendCustomEvent(\"dmg\", 7)\n}\n",
         // character vs entity: both the Object wire variant, not a real mismatch.
         "on CharacterSpawned() -> (character) {\n  SendCustomEvent(\"hit\", character)\n}\non CustomEvent(\"hit\") -> (who: entity) {}\n",
-        // Dynamic (non-literal) channel name — can reach any receiver, never linted.
+        // Dynamic (non-literal) channel name: can reach any receiver, never linted.
         "in go: exec\nvar chan: string = \"dmg\"\non CustomEvent(\"dmg\") -> (amount: int) {}\non go {\n  SendCustomEvent(chan, 1.5)\n}\n",
-        // No matching receiver in this unit — nothing to compare against.
+        // No matching receiver in this unit: nothing to compare against.
         "in go: exec\non go {\n  SendCustomEvent(\"orphan\", 1.5)\n}\n",
     ] {
         let p = crate::parser::parse(ok, "test");
-        let d =
-            crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
-                .diagnostics;
+        let d = crate::typecheck::typecheck(&p.ast, &crate::typecheck::CeSlotMap::default())
+            .diagnostics;
         assert!(
             !d.iter().any(|x| x.code == "WS030"),
             "should not warn WS030: {ok}\n{:?}",
             d.iter()
-                .map(|x| (x.code.to_string(), x.message.clone()))
+                .map(|x| (x.code.clone(), x.message.clone()))
                 .collect::<Vec<_>>()
         );
     }
@@ -1517,20 +1516,19 @@ fn send_custom_event_type_mismatch_lints_ws030() {
 
 #[test]
 fn ws030_sees_send_inside_captured_event() {
-    // A SendCustomEvent inside a captured event body (`let h = on go { … }`)
+    // A SendCustomEvent inside a captured event body (`let h = on go { ... }`)
     // must be seen by the WS030 sender/receiver type check.
     let src = "on CustomEvent(\"hp\") -> (amount: float) { let x = amount }\n\
                let h = on go { SendCustomEvent(\"hp\", 5) }\n";
     let d = crate::typecheck::typecheck(
         &crate::parser::parse(src, "t").ast,
-        "t",
         &crate::typecheck::CeSlotMap::default(),
     )
     .diagnostics;
     assert!(
         d.iter().any(|x| x.code == "WS030"),
         "WS030 must see a send inside a captured event body: {:?}",
-        d.iter().map(|x| x.code.to_string()).collect::<Vec<_>>()
+        d.iter().map(|x| x.code.clone()).collect::<Vec<_>>()
     );
 }
 
@@ -1539,7 +1537,6 @@ fn any_annotation_warns_but_storage_and_probe_do_not() {
     let diags = |s: &str| {
         crate::typecheck::typecheck(
             &crate::parser::parse(s, "t").ast,
-            "t",
             &crate::typecheck::CeSlotMap::default(),
         )
         .diagnostics
@@ -1583,7 +1580,6 @@ fn any_annotation_warns_on_compound_and_stmt_out() {
     let diags = |s: &str| {
         crate::typecheck::typecheck(
             &crate::parser::parse(s, "t").ast,
-            "t",
             &crate::typecheck::CeSlotMap::default(),
         )
         .diagnostics
@@ -1898,7 +1894,7 @@ fn a_constant_gate_setting_is_stored_exactly_or_reported() {
                     other.map(|c| c.out.diagnostics.len())
                 )),
                 (Setting::Exact(_) | Setting::Inexact(_), Err(codes)) => {
-                    failures.push(format!("{row} fold {fold}: does not compile: {codes:?}"))
+                    failures.push(format!("{row} fold {fold}: does not compile: {codes:?}"));
                 }
                 (Setting::Exact(stored) | Setting::Inexact(stored), Ok(c)) => {
                     let ws106: Vec<&String> = c
@@ -1910,7 +1906,7 @@ fn a_constant_gate_setting_is_stored_exactly_or_reported() {
                         .collect();
                     match want {
                         Setting::Exact(_) if !ws106.is_empty() => {
-                            failures.push(format!("{row} fold {fold}: exact, but {ws106:?}"))
+                            failures.push(format!("{row} fold {fold}: exact, but {ws106:?}"));
                         }
                         Setting::Inexact(_) if ws106.len() != 1 => failures
                             .push(format!("{row} fold {fold}: want one WS106, got {ws106:?}")),

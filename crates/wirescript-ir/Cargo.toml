@@ -1,7 +1,7 @@
 [package]
 name = "wirescript-ir"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 description = "Brickadia logic-gate IR: build or load a gate graph, lay it out, and assemble it into a .brz/.brdb save"
 
 [features]
@@ -15,13 +15,16 @@ test-internals = []
 
 [dependencies]
 brdb = { workspace = true, features = ["brz"] }
-rustc-hash = "2"
+rustc-hash.workspace = true
 thiserror.workspace = true
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-petgraph = "0.7"
-lasso = { version = "0.7", features = ["multi-threaded"] }
+serde.workspace = true
+serde_json.workspace = true
+petgraph.workspace = true
+lasso.workspace = true
 
 [[example]]
 name = "and_gate"
 required-features = ["test-internals"]
+
+[lints]
+workspace = true

@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
-use std::{error::Error, path::PathBuf};
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use wirescript::FoldMode;
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -20,7 +23,7 @@ enum Command {
         source: PathBuf,
 
         /// Output path; defaults to the source path with a `.brz` extension.
-        /// The extension picks the format: `.brdb` is SQLite, loadable via
+        /// The extension picks the format: `.brdb` is `SQLite`, loadable via
         /// `BR.World.LoadAdditive`. Any other extension, or none, writes a
         /// `.brz` (zstd bundle).
         #[arg(short, long)]
@@ -162,12 +165,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         } => {
             let fold_mode = match (fold, no_fold) {
                 (true, true) => unreachable!("clap conflicts_with rules out --fold --no-fold"),
-                (true, false) => wirescript::FoldMode::ForceOn,
-                (false, true) => wirescript::FoldMode::ForceOff,
-                (false, false) => wirescript::FoldMode::Auto,
+                (true, false) => FoldMode::ForceOn,
+                (false, true) => FoldMode::ForceOff,
+                (false, false) => FoldMode::Auto,
             };
             run_wirescript(
-                source, output, name, verbose, &place, dump_ir, emit_ir, fold_mode,
+                &source,
+                output,
+                name.as_deref(),
+                verbose,
+                &place,
+                dump_ir,
+                emit_ir,
+                fold_mode,
             )
         }
         Command::Assemble {
@@ -176,7 +186,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             place,
             check_roundtrip,
             no_validate,
-        } => run_assemble(source, output, &place, check_roundtrip, !no_validate),
+        } => run_assemble(&source, output, &place, check_roundtrip, !no_validate),
         Command::Fmt { paths, check } => run_fmt(&paths, check),
     }
 }
@@ -185,13 +195,13 @@ fn run() -> Result<(), Box<dyn Error>> {
 
 /// The `.ws` files in `path`: itself if a file, else every one beneath it,
 /// skipping hidden directories, `target` and `node_modules`.
-fn ws_files(path: &std::path::Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn ws_files(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if !path.is_dir() {
         out.push(path.to_path_buf());
         return Ok(());
     }
-    let mut entries: Vec<_> = std::fs::read_dir(path)?.collect::<Result<_, _>>()?;
-    entries.sort_by_key(|e| e.file_name());
+    let mut entries: Vec<_> = fs::read_dir(path)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let p = entry.path();
         let name = entry.file_name();
@@ -214,8 +224,8 @@ fn run_fmt(paths: &[PathBuf], check: bool) -> Result<(), Box<dyn Error>> {
     }
     let mut unformatted = 0usize;
     for file in &files {
-        let src = std::fs::read_to_string(file)
-            .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+        let src =
+            fs::read_to_string(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
         let opts = wirescript::analysis::FormatOptions::default().with_editorconfig(file);
         let formatted = wirescript::analysis::format_with(&src, &opts);
         if formatted == src {
@@ -225,7 +235,7 @@ fn run_fmt(paths: &[PathBuf], check: bool) -> Result<(), Box<dyn Error>> {
         if check {
             println!("{}", file.display());
         } else {
-            std::fs::write(file, formatted)
+            fs::write(file, formatted)
                 .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
             println!("formatted {}", file.display());
         }
@@ -239,14 +249,14 @@ fn run_fmt(paths: &[PathBuf], check: bool) -> Result<(), Box<dyn Error>> {
 // ---------- assemble ----------
 
 fn run_assemble(
-    source: PathBuf,
+    source: &Path,
     output: Option<PathBuf>,
     place: &PlacementArgs,
     check_roundtrip: bool,
     validate: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let text = std::fs::read_to_string(&source)
-        .map_err(|e| format!("cannot read {}: {e}", source.display()))?;
+    let text =
+        fs::read_to_string(source).map_err(|e| format!("cannot read {}: {e}", source.display()))?;
     let file = source.to_string_lossy().to_string();
     let program = wirescript::wsir::parse_program(&text, &file)?;
     if validate {
@@ -265,9 +275,9 @@ fn run_assemble(
     let opts = place.apply(wirescript::assemble_options(
         &file,
         if program.settings.no_fold {
-            wirescript::FoldMode::ForceOff
+            FoldMode::ForceOff
         } else {
-            wirescript::FoldMode::Auto
+            FoldMode::Auto
         },
     ));
     let world = wirescript::assemble(&program, &opts)?.world;
@@ -278,12 +288,12 @@ fn run_assemble(
 }
 
 /// Write `world` to `out_path`, in the format its extension picks: `.brdb` is
-/// SQLite, anything else a `.brz`.
-fn write_world(world: &brdb::World, out_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+/// `SQLite`, anything else a `.brz`.
+fn write_world(world: &brdb::World, out_path: &Path) -> Result<(), Box<dyn Error>> {
     if out_path.extension().is_some_and(|e| e == "brdb") {
         world.write_brdb(out_path)?;
     } else {
-        std::fs::write(out_path, world.to_brz_vec()?)?;
+        fs::write(out_path, world.to_brz_vec()?)?;
     }
     eprintln!("wrote {}", out_path.display());
     Ok(())
@@ -292,26 +302,27 @@ fn write_world(world: &brdb::World, out_path: &std::path::Path) -> Result<(), Bo
 // ---------- wirescript compile ----------
 
 fn run_wirescript(
-    source: PathBuf,
+    source: &Path,
     output: Option<PathBuf>,
-    module_name: Option<String>,
+    module_name: Option<&str>,
     verbose: bool,
     place: &PlacementArgs,
     dump_ir: bool,
     emit_ir: Option<PathBuf>,
-    fold_mode: wirescript::FoldMode,
+    fold_mode: FoldMode,
 ) -> Result<(), Box<dyn Error>> {
-    let src = std::fs::read_to_string(&source)
-        .map_err(|e| format!("cannot read {}: {e}", source.display()))?;
+    let src =
+        fs::read_to_string(source).map_err(|e| format!("cannot read {}: {e}", source.display()))?;
     let file = source.to_string_lossy().to_string();
 
     let input = wirescript::CompileInput {
         source: &src,
         file: &file,
-        module_name: module_name.as_deref(),
+        module_name,
         fold_mode,
     };
-    let result = wirescript::compile_to_world(input, place.apply(Default::default()))?;
+    let result =
+        wirescript::compile_to_world(input, place.apply(wirescript::emit::EmitOptions::default()))?;
     report_diagnostics(&result.diagnostics, verbose);
     write_world(
         &result.world,
@@ -324,7 +335,7 @@ fn run_wirescript(
         wirescript::prepare_program_for_text(
             &mut program,
             &file,
-            std::path::Path::new("dump.wsir"),
+            Path::new("dump.wsir"),
             fold_mode,
         )?;
         wirescript::wsir::write_program(&program, &mut std::io::stdout().lock())?;
@@ -332,7 +343,7 @@ fn run_wirescript(
     if let Some(ir_path) = emit_ir {
         let mut program = result.program;
         wirescript::prepare_program_for_text(&mut program, &file, &ir_path, fold_mode)?;
-        let f = std::fs::File::create(&ir_path)
+        let f = fs::File::create(&ir_path)
             .map_err(|e| format!("cannot write {}: {e}", ir_path.display()))?;
         let mut w = std::io::BufWriter::new(f);
         wirescript::wsir::write_program(&program, &mut w)?;
@@ -355,7 +366,7 @@ fn report_diagnostics(diags: &[wirescript::Diagnostic], verbose: bool) {
         let (label, color) = match d.severity {
             Severity::Error => ("ERROR", "[31m"),
             Severity::Warning => ("WARN", "[33m"),
-            _ => ("NOTE", "[36m"),
+            Severity::Info => ("NOTE", "[36m"),
         };
         eprintln!("{color}{label}[0m {d}");
     }

@@ -1,5 +1,5 @@
-//! Canonical map-method table — the methods callable on a `map` value
-//! (`m.get(k)`, `m.set(k, v)`, `m.has(k)`, ...). Parallels [`super::arrays`].
+//! The methods callable on a `map` value (`m.get(k)`, `m.set(k, v)`,
+//! `m.has(k)`, ...). Parallels [`super::arrays`].
 //!
 //! Each entry pairs a surface name with the `MapVar` gate it lowers to plus
 //! curated display strings and its [`Lowering`], which `lower::access` builds
@@ -21,13 +21,10 @@ pub struct MapMethod {
     pub doc: &'static str,
     /// Which argument feeds which gate input and which output the call
     /// returns. Typecheck reads the same arguments as the method's parameters
-    /// ([`MapMethod::params`]). `map_return_type` is the source of truth for
-    /// the return type; `CallSignature` doesn't carry one.
+    /// ([`MapMethod::params`]); the return type comes from `map_return_type`.
     pub lowering: Lowering,
-    /// Does this method CHANGE the receiver's contents? Same per-entry-data
-    /// rule and the same reader as [`super::arrays::ArrayMethod::mutates`].
-    /// `keys`/`values` are read-only here because what they write is a
-    /// caller-supplied destination ARRAY, not the map they are called on.
+    /// Whether the method changes the map, as [`super::arrays::ArrayMethod::mutates`].
+    /// `keys`/`values` count as read-only: they write the destination array.
     pub mutates: bool,
 }
 
@@ -113,9 +110,8 @@ pub static MAP_METHODS: &[MapMethod] = &[
         doc: "Number of entries",
         lowering: generic(&[], P::Length),
     },
-    // `keys`/`values` fill a caller-supplied destination array in place; the
-    // `destArray: K[]`/`V[]` array is a PARAMETER, and the call itself has no
-    // value (`Never`, `map_return_type`).
+    // `keys`/`values` fill the `destArray: K[]`/`V[]` parameter in place; the
+    // call itself has no value (`Never`).
     MapMethod {
         name: "keys",
         mutates: false,
@@ -153,7 +149,7 @@ pub fn map_method(name: &str) -> Option<&'static MapMethod> {
     MAP_METHODS.iter().find(|m| m.name == name)
 }
 
-static MAP_METHOD_NAMES: std::sync::LazyLock<std::collections::HashSet<&'static str>> =
+static MAP_METHOD_NAMES: std::sync::LazyLock<crate::collections::HashSet<&'static str>> =
     std::sync::LazyLock::new(|| MAP_METHODS.iter().map(|m| m.name).collect());
 
 pub fn is_map_method(name: &str) -> bool {
@@ -165,11 +161,9 @@ pub fn is_map_method(name: &str) -> bool {
 /// `Value`, `has`/`remove` a bool, `length` an int, and the mutations and
 /// `keys`/`values` (which fill the destination array they are given) `Never`.
 pub fn map_return_type(method: &str, key: &Type, value: &Type) -> Option<Type> {
-    // A record-valued map returns the value RECORD directly, so
-    // `m.get(k).field` and `p = m.get(k)` type-check like the `m[k]`
-    // subscript form (which the record-map lowering also fans out per
-    // field). There is no `Found` flag to expose alongside a record - the
-    // `{Value, Found}` pair is kept only for a scalar value.
+    // A record-valued map's `get` returns the record itself, with no `Found`
+    // flag, so it types like the `m[k]` subscript; only a scalar value gets
+    // the `{Value, Found}` pair.
     if method == "get" && matches!(value, Type::Record(_)) {
         return Some(Type::call_result(vec![("Value".into(), value.clone())]));
     }

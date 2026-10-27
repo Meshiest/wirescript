@@ -3,6 +3,7 @@
 //! typecheck accepts is the field lowering converts.
 
 use super::*;
+use crate::analysis::types::type_str;
 use crate::types::mono::unwrap_ref;
 
 /// `bool`, `int`, `float` and `string`, which the Convert gate turns into one
@@ -57,7 +58,7 @@ pub(crate) fn fold_as(lit: &crate::ir::Literal, dst: &Type) -> Option<crate::ir:
         (L::Int(n), Type::String) => L::String(n.to_string()),
         (L::Float(f), Type::Int) => L::Int(truncate(*f)?),
         (L::Float(f), Type::Bool) => L::Bool(*f != 0.0),
-        (L::Bool(b), Type::Int) => L::Int(*b as i64),
+        (L::Bool(b), Type::Int) => L::Int(i64::from(*b)),
         (L::Bool(b), Type::Float) => L::Float(if *b { 1.0 } else { 0.0 }),
         (L::Bool(b), Type::String) => L::String(b.to_string()),
         (L::String(s), Type::Int) => L::Int(truncate(decimal(s)?)?),
@@ -92,7 +93,7 @@ pub(crate) fn conversion(src: &Type, dst: &Type) -> Result<Type, String> {
     if src == *dst {
         return Ok(dst.clone());
     }
-    let shown = |t: &Type| crate::analysis::types::type_str(t);
+    let shown = |t: &Type| type_str(t);
     match (&src, dst) {
         // An earlier error, nothing to add.
         (Type::Any, _) => Ok(dst.clone()),
@@ -150,7 +151,7 @@ pub(crate) fn conversion(src: &Type, dst: &Type) -> Result<Type, String> {
 /// and leaves the value its own type, so what follows is checked against what
 /// the value really is.
 pub(super) fn infer_as(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     value: &Expr,
     ty: &TypeExpr,
     range: &SourceRange,
@@ -164,9 +165,9 @@ pub(super) fn infer_as(
                 "WS109",
                 format!(
                     "`as` cannot convert {} to {} yet: {why}; the value stays {}",
-                    crate::analysis::types::type_str(&src),
-                    crate::analysis::types::type_str(&dst),
-                    crate::analysis::types::type_str(&src),
+                    type_str(&src),
+                    type_str(&dst),
+                    type_str(&src),
                 ),
                 range.clone(),
             );

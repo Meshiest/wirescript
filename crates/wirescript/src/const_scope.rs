@@ -12,12 +12,17 @@
 //! a constant by name around the scope.
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
+use crate::ast::{Block, Stmt, TopDecl};
 use crate::collections::{HashMap, HashSet};
+use crate::const_eval::{ConstEnv, DeclaredTypes, bound_names};
+use crate::diagnostic::SourceRange;
+use crate::intern::{intern, resolve};
 use crate::ir::Literal;
-use crate::lower::ConstEnv;
 use crate::scope::Scope;
+use crate::scope::top::ReadAt;
 
 /// How an evaluation finds the `const mod` a call names, when it may call one.
 pub(crate) type ModLookup<'b> = Option<&'b dyn Fn(&str) -> Option<Arc<crate::ast::ChipDecl>>>;
@@ -64,10 +69,10 @@ impl Admit {
 
     fn slot(self) -> usize {
         match self {
-            Admit::All => 0,
-            Admit::NoPlaceholders => 1,
-            Admit::Declared => 2,
-            Admit::Certified => 3,
+            Self::All => 0,
+            Self::NoPlaceholders => 1,
+            Self::Declared => 2,
+            Self::Certified => 3,
         }
     }
 }
@@ -118,7 +123,7 @@ impl ConstFrames {
             let mut entries: Vec<(&String, &(Literal, Marks))> = f.values.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
             for (name, (lit, marks)) in entries {
-                out.push_str(&format!("{name}={lit:?}{marks:?};"));
+                let _ = write!(out, "{name}={lit:?}{marks:?};");
             }
         }
         out
@@ -133,7 +138,7 @@ struct Module {
     /// The top-level names spelled `const`.
     declared: Arc<HashSet<String>>,
     /// The top-level names whose value is not certified (see
-    /// [`crate::lower::build_const_uncertified`]).
+    /// [`crate::const_eval::build_const_uncertified`]).
     uncertified: Arc<HashSet<String>>,
     /// `values` as each [`Admit`] reads it, by [`Admit::slot`].
     admitted: [Arc<ConstEnv>; Admit::COUNT],
@@ -151,7 +156,7 @@ impl Module {
         uncertified: Arc<HashSet<String>>,
     ) -> Self {
         let certified = if uncertified.is_empty() {
-            values.clone()
+            Arc::clone(&values)
         } else {
             let kept = values.iter().filter(|(n, _)| !uncertified.contains(*n));
             Arc::new(kept.map(|(n, v)| (n.clone(), v.clone())).collect())
@@ -162,7 +167,12 @@ impl Module {
                 .filter_map(|n| values.get(n).map(|l| (n.clone(), l.clone())))
                 .collect(),
         );
-        let admitted = [values.clone(), values.clone(), declared_values, certified];
+        let admitted = [
+            Arc::clone(&values),
+            Arc::clone(&values),
+            declared_values,
+            certified,
+        ];
         Self {
             values,
             declared,
@@ -176,7 +186,7 @@ impl Module {
     /// than once at the top level by position (see `mod_dups`).
     fn with_dups(mut self, dups: &Dups) -> Self {
         if dups.top.has_dups() {
-            let values = |admit: Admit| -> Arc<crate::lower::DupConsts> {
+            let values = |admit: Admit| -> Arc<crate::const_eval::DupConsts> {
                 let kept = dups
                     .values
                     .iter()
@@ -185,8 +195,8 @@ impl Module {
             };
             let made = |base: &Arc<ConstEnv>, admit: Admit| {
                 Arc::new(crate::const_eval::ModDups::new(
-                    base.clone(),
-                    dups.top.clone(),
+                    Arc::clone(base),
+                    Arc::clone(&dups.top),
                     values(admit),
                 ))
             };
@@ -250,8 +260,8 @@ impl ConstNames {
     }
 
     /// Bind `name` to the constant `lit`.
-    pub(crate) fn insert(&mut self, name: String, lit: Literal) {
-        let name = crate::intern::resolve(crate::intern::intern(&name));
+    pub(crate) fn insert(&mut self, name: &str, lit: Literal) {
+        let name = resolve(intern(name));
         Arc::make_mut(&mut self.here).insert(name, Some(lit));
     }
 
@@ -323,7 +333,7 @@ pub(crate) struct ConstScope {
     by_file: [crate::const_eval::ModuleConsts; 2],
     /// The program's type declarations, which a constant with a declared type
     /// is held in.
-    types: Arc<crate::const_eval::DeclaredTypes>,
+    types: Arc<DeclaredTypes>,
     /// The names a read that reaches the top level does not find there: the
     /// value names of the anonymous chip being checked or lowered at the top
     /// level, which the top level shares (see [`hide_at_top`]). Each holds
@@ -336,7 +346,7 @@ pub(crate) struct ConstScope {
     /// [`set_cursor`](Self::set_cursor)), which decides which of their
     /// declarations a read names.
     dups: Arc<Dups>,
-    cursor: Option<crate::scope::top::ReadAt>,
+    cursor: Option<ReadAt>,
     /// Changes with every change to the frames, from one counter shared by
     /// every [`ConstScope`].
     rev: u64,
@@ -367,7 +377,7 @@ impl ConstScope {
         // an enum; `for_program` adds the enums and their variants.
         let by_name = ["EnumToInt", "IntToEnum"]
             .iter()
-            .map(|n| n.to_string())
+            .map(std::string::ToString::to_string)
             .chain(
                 values
                     .keys()
@@ -394,25 +404,23 @@ impl ConstScope {
     /// typecheck and lowering start from, so the two cannot disagree about
     /// what counts as a compile-time constant.
     pub(crate) fn for_program(
-        decls: &[crate::ast::TopDecl],
+        decls: &[TopDecl],
         enum_defs: &Arc<crate::typecheck::enums::EnumRegistry>,
         imports: &Arc<crate::ast::ImportScope>,
         top: &Arc<crate::scope::top::TopNames>,
     ) -> Self {
-        let types = Arc::new(crate::const_eval::DeclaredTypes::for_program_in(
-            decls, enum_defs, imports,
-        ));
+        let types = Arc::new(DeclaredTypes::for_program_in(decls, enum_defs, imports));
         let (values, dup_values) =
-            crate::lower::build_const_env_at(decls, enum_defs, imports, &types, top);
+            crate::const_eval::build_const_env_at(decls, enum_defs, imports, &types, top);
         let uncertified =
-            crate::lower::build_const_uncertified(decls, enum_defs, imports, &values, &types);
+            crate::const_eval::build_const_uncertified(decls, enum_defs, imports, &values, &types);
         let mut all: HashMap<Arc<str>, Arc<ConstEnv>> = HashMap::default();
         let mut certified: HashMap<Arc<str>, Arc<ConstEnv>> = HashMap::default();
         for d in decls {
-            let crate::ast::TopDecl::Namespace(ns) = d else {
+            let TopDecl::Namespace(ns) = d else {
                 continue;
             };
-            let Some(file) = ns.decls.first().map(|d| d.range().file.clone()) else {
+            let Some(file) = ns.decls.first().map(|d| Arc::clone(&d.range().file)) else {
                 continue;
             };
             let prefix = format!("{}.", ns.name);
@@ -428,19 +436,19 @@ impl ConstScope {
                         .collect(),
                 )
             };
-            all.insert(file.clone(), table(&|_| true));
+            all.insert(Arc::clone(&file), table(&|_| true));
             certified.insert(file, table(&|k| !uncertified.contains(k)));
         }
         let mut dups = Dups {
-            top: top.clone(),
+            top: Arc::clone(top),
             values: HashMap::default(),
         };
         for d in decls {
-            let crate::ast::TopDecl::Let(l) = d else {
+            let TopDecl::Let(l) = d else {
                 continue;
             };
-            for name in crate::const_eval::bound_names(&l.binding) {
-                let key = (l.range.file.clone(), l.range.start.offset, name);
+            for name in bound_names(&l.binding) {
+                let key = (Arc::clone(&l.range.file), l.range.start.offset, name);
                 if let Some(lit) = dup_values.get(&key) {
                     let uncertified = uncertified.contains(&key.2);
                     let marks = Marks {
@@ -454,7 +462,7 @@ impl ConstScope {
         }
         let mut out = Self::new(
             Arc::new(values),
-            Arc::new(crate::lower::build_const_declared_names(decls)),
+            Arc::new(crate::const_eval::build_const_declared_names(decls)),
             Arc::new(uncertified),
         );
         out.module = out.module.with_dups(&dups);
@@ -480,7 +488,7 @@ impl ConstScope {
     }
 
     /// The program's type declarations.
-    pub(crate) fn types(&self) -> &Arc<crate::const_eval::DeclaredTypes> {
+    pub(crate) fn types(&self) -> &Arc<DeclaredTypes> {
         &self.types
     }
 
@@ -507,12 +515,12 @@ impl ConstScope {
         Self {
             module,
             frames: frames.0,
-            by_name: self.by_name.clone(),
-            by_name_at_top: self.by_name_at_top.clone(),
+            by_name: Arc::clone(&self.by_name),
+            by_name_at_top: Arc::clone(&self.by_name_at_top),
             by_file: self.by_file.clone(),
-            types: self.types.clone(),
+            types: Arc::clone(&self.types),
             hidden_at_top: Vec::new(),
-            dups: self.dups.clone(),
+            dups: Arc::clone(&self.dups),
             cursor: self.cursor.clone(),
             rev: next_rev(),
             answered: RefCell::new(Default::default()),
@@ -543,10 +551,7 @@ impl ConstScope {
     /// declares more than once at its top level reads the declaration visible
     /// at `at` (see [`crate::scope::top::TopNames::visible_decl`]); with no
     /// place set, or read from another file, it reads the last one.
-    pub(crate) fn set_cursor(
-        &mut self,
-        at: Option<crate::scope::top::ReadAt>,
-    ) -> Option<crate::scope::top::ReadAt> {
+    pub(crate) fn set_cursor(&mut self, at: Option<ReadAt>) -> Option<ReadAt> {
         if !self.dups.top.has_dups() {
             return None;
         }
@@ -556,42 +561,42 @@ impl ConstScope {
 
     /// Move the place reads are made at past the top-level declaration at
     /// `range`, once it is bound: a read after it names it.
-    pub(crate) fn bound_at_top(&mut self, range: &crate::diagnostic::SourceRange) {
+    pub(crate) fn bound_at_top(&mut self, range: &SourceRange) {
         if self.frames.is_empty()
             && let Some(at) = self.cursor.as_ref().filter(|c| c.range.file == range.file)
         {
-            let end = crate::diagnostic::SourceRange {
+            let end = SourceRange {
                 start: range.end,
                 ..range.clone()
             };
             let body = at.body;
-            self.set_cursor(Some(crate::scope::top::ReadAt { range: end, body }));
+            self.set_cursor(Some(ReadAt { range: end, body }));
         }
     }
 
     /// The place at the top level reads are made at now (see
     /// [`set_cursor`](Self::set_cursor)).
-    pub(crate) fn cursor(&self) -> Option<crate::scope::top::ReadAt> {
+    pub(crate) fn cursor(&self) -> Option<ReadAt> {
         self.cursor.clone()
     }
 
     /// For a name a file declares more than once at its top level, read at
     /// the cursor in that file: the constant of the declaration visible
     /// there, `None` when it holds none. `None` for any other name.
+    #[expect(
+        clippy::option_option,
+        reason = "outer `None` means not a duplicate name; inner is its constant"
+    )]
     fn dup_answer(&self, name: &str) -> Option<Option<&(Literal, Marks)>> {
         let at = self.cursor.as_ref()?;
         let decl = self.dups.top.visible_decl(name, at)?;
-        Some(decl.and_then(|d| self.dups.values.get(&crate::lower::dup_key(d, name))))
+        Some(decl.and_then(|d| self.dups.values.get(&crate::const_eval::dup_key(d, name))))
     }
 
     /// The constant the top-level declaration written at `decl` holds under
     /// `name`, a name its file declares more than once there.
-    pub(crate) fn dup_constant(
-        &self,
-        decl: &crate::diagnostic::SourceRange,
-        name: &str,
-    ) -> Option<&Literal> {
-        let key = (decl.file.clone(), decl.start.offset, name.to_string());
+    pub(crate) fn dup_constant(&self, decl: &SourceRange, name: &str) -> Option<&Literal> {
+        let key = (Arc::clone(&decl.file), decl.start.offset, name.to_string());
         self.dups.values.get(&key).map(|(lit, _)| lit)
     }
 
@@ -854,11 +859,11 @@ impl ConstScope {
                     && let Some(names) = scope.inserted_since(s) =>
             {
                 let names: Vec<crate::intern::Sym> = names.collect();
-                let frames = self.env_frames(scope);
+                let frames = Self::env_frames(scope);
                 let recorded = self.recorded(&frames);
                 let mut here = (*env.here).clone();
                 for sym in names {
-                    let key = crate::intern::resolve(sym);
+                    let key = resolve(sym);
                     match self.answer(scope, bound, admit, &frames, &recorded, key) {
                         Some(answer) => here.insert(key, answer),
                         None => here.remove(key),
@@ -881,7 +886,7 @@ impl ConstScope {
     }
 
     /// The open frames [`env`](Self::env) reads, innermost first.
-    fn env_frames<V>(&self, scope: &Scope<V>) -> Vec<(usize, u64)> {
+    fn env_frames<V>(scope: &Scope<V>) -> Vec<(usize, u64)> {
         let floor = scope.floor().max(1);
         scope
             .visible_frame_ids()
@@ -894,12 +899,16 @@ impl ConstScope {
         frames
             .iter()
             .filter_map(|(_, id)| self.frame(*id))
-            .flat_map(|f| f.values.keys().map(|k| k.as_str()))
+            .flat_map(|f| f.values.keys().map(std::string::String::as_str))
             .collect()
     }
 
     /// [`env`](Self::env)'s answer for `key` alone, as [`rebuild`](Self::rebuild)
     /// decides it: `None` when `key` is left to the module.
+    #[expect(
+        clippy::option_option,
+        reason = "outer `None` leaves `key` to the module; inner is the frame's answer"
+    )]
     fn answer<V>(
         &self,
         scope: &Scope<V>,
@@ -909,7 +918,7 @@ impl ConstScope {
         recorded: &HashSet<&str>,
         key: &'static str,
     ) -> Option<Option<Literal>> {
-        let sym = crate::intern::intern(key);
+        let sym = intern(key);
         let module = &self.module.admitted[admit.slot()];
         for (i, id) in frames.iter().copied() {
             if let Some((lit, marks)) = self.frame(id).and_then(|f| f.values.get(key)) {
@@ -974,13 +983,13 @@ impl ConstScope {
         bound: &dyn Fn(&V) -> Bound,
         admit: Admit,
     ) -> ConstNames {
-        let module = self.module.admitted[admit.slot()].clone();
+        let module = Arc::clone(&self.module.admitted[admit.slot()]);
         // One pass over the open frames, innermost first: a name is decided
         // by the first frame that records it or binds it to a value, as
         // `get` and `walk` decide it. A gate holding a constant container is
         // left to `get`.
         let mut here: HashMap<&'static str, Option<Literal>> = HashMap::default();
-        let frames = self.env_frames(scope);
+        let frames = Self::env_frames(scope);
         // A binding needs an answer only when something else would answer
         // its name: the module, a frame further out, or an evaluator
         // resolving it itself.
@@ -988,8 +997,8 @@ impl ConstScope {
         for (i, id) in frames.iter().copied() {
             if let Some(frame) = self.frame(id) {
                 for (name, (lit, marks)) in &frame.values {
-                    let sym = crate::intern::intern(name);
-                    let key = crate::intern::resolve(sym);
+                    let sym = intern(name);
+                    let key = resolve(sym);
                     if here.contains_key(key) {
                         continue;
                     }
@@ -1004,7 +1013,7 @@ impl ConstScope {
                 }
             }
             for (sym, v) in scope.frame_entries(i) {
-                let key = crate::intern::resolve(sym);
+                let key = resolve(sym);
                 if here.contains_key(key) {
                     continue;
                 }
@@ -1026,7 +1035,7 @@ impl ConstScope {
         }
         if scope.floor() == 0 {
             for (name, held) in self.hidden_at_top.iter().rev() {
-                let key = crate::intern::resolve(crate::intern::intern(name));
+                let key = resolve(intern(name));
                 let lit = held
                     .as_ref()
                     .filter(|(_, marks)| marks.admit(admit))
@@ -1035,7 +1044,7 @@ impl ConstScope {
             }
             for (name, _) in self.dups.top.dups() {
                 if let Some(answer) = self.dup_answer(name) {
-                    let key = crate::intern::resolve(crate::intern::intern(name));
+                    let key = resolve(intern(name));
                     let lit = answer
                         .filter(|(_, marks)| marks.admit(admit))
                         .map(|(lit, _)| lit.clone());
@@ -1043,7 +1052,7 @@ impl ConstScope {
                 }
             }
             for name in self.by_name_at_top.iter() {
-                let key = crate::intern::resolve(crate::intern::intern(name));
+                let key = resolve(intern(name));
                 if !here.contains_key(key)
                     && scope
                         .visible_bindings(name)
@@ -1073,25 +1082,28 @@ impl ConstScope {
     ) -> crate::const_eval::ConstCtx<'b> {
         let (module_consts, by_file, mod_dups) = match admit {
             Admit::Certified => (
-                self.module.admitted[Admit::Certified.slot()].clone(),
+                Arc::clone(&self.module.admitted[Admit::Certified.slot()]),
                 &self.by_file[1],
                 self.module
                     .mod_dups
                     .as_ref()
-                    .map(|[_, certified]| certified.clone()),
+                    .map(|[_, certified]| Arc::clone(certified)),
             ),
             _ => (
-                self.module.values.clone(),
+                Arc::clone(&self.module.values),
                 &self.by_file[0],
-                self.module.mod_dups.as_ref().map(|[all, _]| all.clone()),
+                self.module
+                    .mod_dups
+                    .as_ref()
+                    .map(|[all, _]| Arc::clone(all)),
             ),
         };
         let consts = self.env(scope, bound, admit);
-        let types = self.types.clone();
+        let types = Arc::clone(&self.types);
         crate::const_eval::ConstCtx::new(
             consts,
             module_consts,
-            by_file.clone(),
+            Arc::clone(by_file),
             enum_defs,
             imports,
             types,
@@ -1102,8 +1114,7 @@ impl ConstScope {
 }
 
 /// The storage the top level of `decls` declares, anonymous chips included.
-fn top_level_storage(decls: &[crate::ast::TopDecl]) -> HashSet<String> {
-    use crate::ast::{Block, Stmt, TopDecl};
+fn top_level_storage(decls: &[TopDecl]) -> HashSet<String> {
     fn walk(block: &Block, out: &mut HashSet<String>) {
         for s in &block.stmts {
             match s {
@@ -1149,8 +1160,7 @@ fn top_level_storage(decls: &[crate::ast::TopDecl]) -> HashSet<String> {
 /// The names the top level of `decls` declares as values, anonymous chip
 /// bodies included: what a by-name evaluator must not take for an enum, a
 /// variant or a namespace there.
-fn top_level_values(decls: &[crate::ast::TopDecl]) -> Vec<String> {
-    use crate::ast::{Stmt, TopDecl};
+fn top_level_values(decls: &[TopDecl]) -> Vec<String> {
     let mut out = Vec::new();
     for d in decls {
         match d {
@@ -1160,7 +1170,7 @@ fn top_level_values(decls: &[crate::ast::TopDecl]) -> Vec<String> {
             TopDecl::Buffer(b) => out.push(b.name.clone()),
             TopDecl::In(i) => out.push(i.name.clone()),
             TopDecl::Out(o) => out.push(o.name.clone()),
-            TopDecl::Let(l) => out.extend(crate::const_eval::bound_names(&l.binding)),
+            TopDecl::Let(l) => out.extend(bound_names(&l.binding)),
             TopDecl::LetElse(l) => {
                 out.extend(crate::lower::matchtree::capture_names(&l.pattern));
             }
@@ -1173,7 +1183,7 @@ fn top_level_values(decls: &[crate::ast::TopDecl]) -> Vec<String> {
                         Stmt::Buffer(b) => out.push(b.name.clone()),
                         Stmt::In(i) => out.push(i.name.clone()),
                         Stmt::OutBinding(o) => out.push(o.name.clone()),
-                        Stmt::Let(l) => out.extend(crate::const_eval::bound_names(&l.binding)),
+                        Stmt::Let(l) => out.extend(bound_names(&l.binding)),
                         _ => {}
                     }
                 }

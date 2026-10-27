@@ -3,14 +3,14 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Trig / math (pure expression) ----------------------------------
+    // Trig / math (pure expression)
     m.insert("sin", math_unary("sin", gc::MATH_SIN));
     m.insert("cos", math_unary("cos", gc::MATH_COS));
     m.insert("asin", math_unary("asin", gc::MATH_ASIN));
     m.insert("acos", math_unary("acos", gc::MATH_ACOS));
     m.insert("atan", math_unary("atan", gc::MATH_ATAN));
 
-    // ---- Math (hyperbolic, exp/ln, sign, round, min/max) -----------------
+    // Math (hyperbolic, exp/ln, sign, round, min/max)
     m.insert("sinh", math_unary("sinh", gc::MATH_SINH));
     m.insert("cosh", math_unary("cosh", gc::MATH_COSH));
     m.insert("tanh", math_unary("tanh", gc::MATH_TANH));
@@ -103,7 +103,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Bitwise --------------------------------------------------------
+    // Bitwise
     m.insert(
         "BitCount",
         vec_expr(
@@ -115,7 +115,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Math (additional) -----------------------------------------------
+    // Math (additional)
     m.insert("tan", math_unary("tan", gc::MATH_TAN));
     m.insert(
         "log",
@@ -158,7 +158,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Bitwise (additional) --------------------------------------------
+    // Bitwise (additional)
     m.insert(
         "BitNand",
         vec_expr(

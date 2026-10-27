@@ -40,7 +40,7 @@ fn rerouter_bricks_sit_flush_per_side_in_source_order() {
         .iter()
         .map(|b| (b.position.x, b.position.y, b.position.z))
         .collect();
-    positions.sort();
+    positions.sort_unstable();
     // chip at (0,0,0), half-extent 5; rerouter half-extent 1 -> edge offset 6,
     // z −1 (bottom-aligned). World<->screen (pinned in-game): +X = up, +Y = right,
     // so left = −Y edge, right = +Y edge, top = +X edge, bottom = −X edge.
@@ -54,7 +54,7 @@ fn rerouter_bricks_sit_flush_per_side_in_source_order() {
         (6, -4, -1), // players (top edge dx=6, left corner y=−4)
         (4, 6, -1),  // score (right edge dy=6, top corner x=4)
     ];
-    expected.sort();
+    expected.sort_unstable();
     assert_eq!(positions, expected);
 }
 
@@ -241,7 +241,7 @@ fn each_side_runs_first_declared_from_the_top_left_corner() {
     }
 }
 
-/// Every chip's MicrochipInput and MicrochipOutput gates, read top to bottom
+/// Every chip's `MicrochipInput` and `MicrochipOutput` gates, read top to bottom
 /// (highest X first), come in declaration order: the root program's ports and
 /// a named chip's parameters and outputs alike.
 #[test]
@@ -338,7 +338,7 @@ fn bottom_side_two_ports_center_along_y() {
         .filter(|b| b.asset == brdb::BrickType::from("B_1x1_Reroute_Node"))
         .map(|b| (b.position.x, b.position.y, b.position.z))
         .collect();
-    positions.sort();
+    positions.sort_unstable();
     // Bottom = screen-down = −X edge (dx = −6), z = −1; pins run left->right from
     // the left corner (y=−4) at pitch 2. reset (in, source-first) at y=−4;
     // ready (out) at y=−2.
@@ -372,8 +372,7 @@ fn invisible_port_rerouter_is_hidden_and_noncolliding() {
             && !c.interact
             && !c.tool
             && !c.physics,
-        "invisible rerouter must not collide: {:?}",
-        c
+        "invisible rerouter must not collide: {c:?}"
     );
     assert!(
         !rer.components.iter().any(common::is_text_display),

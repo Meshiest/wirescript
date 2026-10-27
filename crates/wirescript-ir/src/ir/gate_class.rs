@@ -31,13 +31,12 @@ pub const CALLABLE_ENTRY_FUNCTION: &str = "BrickComponentType_CallableEntry_Func
 pub const FUNCTION_INPUT: &str = "BrickComponentType_FunctionInput";
 pub const FUNCTION_OUTPUT: &str = "BrickComponentType_FunctionOutput";
 
-/// True for a gate class that hosts an isolated plane (a callable loop or
-/// function shell).
-/// Distinct from `MICROCHIP`/`MICROCHIP_ALT`, whose wall is visual only.
+/// True for a gate class that hosts an isolated plane (a callable loop or function shell),
+/// unlike `MICROCHIP`/`MICROCHIP_ALT`, whose wall is visual only.
 ///
-/// Answered by asking for the class's plane spec rather than by a second list:
-/// a shell this accepted but that had no spec would emit as a plain microchip,
-/// a save that loads and does nothing.
+/// Answered by asking for the class's plane spec rather than by a second list: a shell this
+/// accepted but that had no spec would emit as a plain microchip, a save that loads and does
+/// nothing.
 pub fn is_plane_shell(class: &str) -> bool {
     crate::ir::plane::plane_spec_for_class(class).is_some()
 }
@@ -64,6 +63,20 @@ pub const BUFFER: &str = "BrickComponentType_Wires_Buffer";
 pub const VAR_GET: &str = "BrickComponentType_Exec_Var_Get";
 pub const VAR_SET: &str = "BrickComponentType_Exec_Var_Set";
 pub const VAR_INCREMENT: &str = "BrickComponentType_Exec_Var_Increment";
+
+/// Class prefixes of the exec gates that reach a Var, `ArrayVar` or `MapVar`
+/// through its ref port.
+pub const EXEC_VAR_PREFIX: &str = "BrickComponentType_Exec_Var_";
+pub const EXEC_ARRAY_VAR_PREFIX: &str = "BrickComponentType_Exec_ArrayVar_";
+pub const EXEC_MAP_VAR_PREFIX: &str = "BrickComponentType_Exec_MapVar_";
+
+/// Whether `class` is an exec gate that reads or writes a Var, `ArrayVar` or
+/// `MapVar` through its ref port.
+pub fn is_container_access(class: &str) -> bool {
+    [EXEC_VAR_PREFIX, EXEC_ARRAY_VAR_PREFIX, EXEC_MAP_VAR_PREFIX]
+        .iter()
+        .any(|p| class.starts_with(p))
+}
 
 // Array variables
 pub const ARRAY_SET_AT_INDEX: &str = "BrickComponentType_Exec_ArrayVar_SetAtIndex";
@@ -99,8 +112,27 @@ pub const RANDOM: &str = "BrickComponentType_Exec_Random";
 pub const SELECT: &str = "BrickComponentType_Expr_Select";
 pub const SWAP: &str = "BrickComponentType_Expr_Swap";
 
+/// The class prefix of every pure expression gate.
+pub const EXPR_PREFIX: &str = "BrickComponentType_Expr_";
+
+/// Whether `class` is a pure expression gate: its outputs follow its inputs
+/// with no exec pin.
+pub fn is_pure_expr(class: &str) -> bool {
+    class.starts_with(EXPR_PREFIX)
+}
+
 // Logic
+pub const LOGICAL_AND: &str = "BrickComponentType_Expr_LogicalAND";
+pub const LOGICAL_OR: &str = "BrickComponentType_Expr_LogicalOR";
+pub const LOGICAL_XOR: &str = "BrickComponentType_Expr_LogicalXOR";
+pub const LOGICAL_NAND: &str = "BrickComponentType_Expr_LogicalNAND";
+pub const LOGICAL_NOR: &str = "BrickComponentType_Expr_LogicalNOR";
 pub const LOGICAL_NOT: &str = "BrickComponentType_Expr_LogicalNOT";
+pub const BITWISE_AND: &str = "BrickComponentType_Expr_BitwiseAND";
+pub const BITWISE_OR: &str = "BrickComponentType_Expr_BitwiseOR";
+pub const BITWISE_XOR: &str = "BrickComponentType_Expr_BitwiseXOR";
+pub const BITWISE_SHIFT_LEFT: &str = "BrickComponentType_Expr_BitwiseShiftLeft";
+pub const BITWISE_SHIFT_RIGHT: &str = "BrickComponentType_Expr_BitwiseShiftRight";
 pub const BITWISE_NOT: &str = "BrickComponentType_Expr_BitwiseNOT";
 pub const BITWISE_NAND: &str = "BrickComponentType_Expr_BitwiseNAND";
 pub const BITWISE_NOR: &str = "BrickComponentType_Expr_BitwiseNOR";
@@ -109,6 +141,16 @@ pub const BITWISE_BIT_COUNT: &str = "BrickComponentType_Expr_BitwiseBitCount";
 // Compare
 pub const COMPARE_EQUAL: &str = "BrickComponentType_Expr_CompareEqual";
 pub const COMPARE_NOT_EQUAL: &str = "BrickComponentType_Expr_CompareNotEqual";
+pub const COMPARE_LESS: &str = "BrickComponentType_Expr_CompareLess";
+pub const COMPARE_LESS_OR_EQUAL: &str = "BrickComponentType_Expr_CompareLessOrEqual";
+pub const COMPARE_GREATER: &str = "BrickComponentType_Expr_CompareGreater";
+pub const COMPARE_GREATER_OR_EQUAL: &str = "BrickComponentType_Expr_CompareGreaterOrEqual";
+
+/// The class prefix of the `Expr_Math*` gate family.
+pub const EXPR_MATH_PREFIX: &str = "BrickComponentType_Expr_Math";
+
+/// The class prefix of the `Expr_Logical*` gate family.
+pub const EXPR_LOGICAL_PREFIX: &str = "BrickComponentType_Expr_Logical";
 
 // Math (unary)
 pub const MATH_SIN: &str = "BrickComponentType_Expr_MathSin";
@@ -136,6 +178,11 @@ pub const DEG2RAD: &str = "BrickComponentType_Expr_MathDegreesToRadians";
 pub const RAD2DEG: &str = "BrickComponentType_Expr_MathRadiansToDegrees";
 
 // Math (binary+)
+pub const MATH_ADD: &str = "BrickComponentType_Expr_MathAdd";
+pub const MATH_SUBTRACT: &str = "BrickComponentType_Expr_MathSubtract";
+pub const MATH_MULTIPLY: &str = "BrickComponentType_Expr_MathMultiply";
+pub const MATH_DIVIDE: &str = "BrickComponentType_Expr_MathDivide";
+pub const MATH_MODULO: &str = "BrickComponentType_Expr_MathModulo";
 pub const MATH_MIN: &str = "BrickComponentType_Expr_MathMin";
 pub const MATH_MAX: &str = "BrickComponentType_Expr_MathMax";
 pub const MATH_POW: &str = "BrickComponentType_Expr_MathPow";
@@ -198,9 +245,7 @@ pub const MAKE_COLOR_HEX: &str = "BrickComponentType_Expr_MakeColorHex";
 pub const COLOR_TO_HEX: &str = "BrickComponentType_Expr_ColorToHex";
 pub const COLOR_BLEND: &str = "BrickComponentType_Expr_ColorBlend";
 
-// PlayerState role check. The game replaced the old `Exec_Controller_*` gate
-// family with `Exec_PlayerState_*` (the player is now referenced by its
-// persistent PlayerState). The Wirescript `controller` type still wires
+// PlayerState role check (`Exec_PlayerState_*`). The Wirescript `controller` type wires
 // straight into these gates' entity-typed `PlayerState` ports.
 pub const PLAYERSTATE_HAS_ROLE: &str = "BrickComponentType_Exec_PlayerState_HasRole";
 
@@ -233,9 +278,8 @@ pub const GAMEMODE_FILL_FROM_TEAM: &str =
 pub const GAMEMODE_INC_TEAM_LEADERBOARD: &str =
     "BrickComponentType_Exec_Gamemode_IncrementTeamLeaderboardValue";
 
-// PlayerState / Character / Entity. The old `Exec_Controller_*` family was
-// replaced 1:1 by `Exec_PlayerState_*`; each gate's player port is now the
-// entity-typed `PlayerState` (a `controller` value wires straight in).
+// PlayerState / Character / Entity gates: each player port is the entity-typed
+// `PlayerState` (a `controller` value wires straight in).
 pub const PLAYERSTATE_DISPLAY_TEXT: &str = "BrickComponentType_Exec_PlayerState_DisplayText";
 pub const PLAYERSTATE_SHOW_STATUS: &str = "BrickComponentType_Exec_PlayerState_ShowStatusMessage";
 pub const PLAYERSTATE_GET_FROM_ENTITY: &str = "BrickComponentType_Exec_PlayerState_GetFromEntity";
@@ -379,7 +423,7 @@ pub const CHARACTER_ADD_INVENTORY_ITEM_ADV: &str =
 pub const CHARACTER_SET_INVENTORY_ITEM_ADV: &str =
     "BrickComponentType_Exec_Character_SetInventoryItemAdv";
 
-// Newer entity / character / zone / expr gates.
+// Entity / character / zone / expr gates.
 pub const ENTITY_DESTROY_SPAWNED: &str = "BrickComponentType_Exec_Entity_DestroySpawned";
 pub const ENTITY_DESTROY_SPAWNED_PREFAB: &str =
     "BrickComponentType_Exec_Entity_DestroySpawnedPrefab";

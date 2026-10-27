@@ -207,7 +207,7 @@ fn a_nested_loop_emits_bounds_on_both_shells() {
         "for_emit.ws",
     );
     let mut data = common::count_for_shell_data(&b);
-    data.sort();
+    data.sort_unstable();
     assert_eq!(
         data,
         vec![(3, 0, 1), (4, 0, 1)],

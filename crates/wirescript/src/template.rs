@@ -1,37 +1,23 @@
 //! Reusable compiled templates that can be instantiated with fresh, globally
 //! unique node IDs.
 //!
-//! The key problem this solves: when you clone a [`Module`] directly the
-//! internal [`NodeId`]s are shared across copies, causing collisions when
-//! multiple instances are merged into one graph.  [`CompiledTemplate`] wraps a
-//! module and provides [`CompiledTemplate::instantiate`], which deep-copies the
-//! module and mints a globally-fresh numeric ID (`NodeId::fresh()`) for every
-//! internal node, so instances are always disjoint regardless of call site.
+//! Cloning a [`Module`] directly shares its internal [`NodeId`]s across
+//! copies, which collide when multiple instances are merged into one graph.
+//! [`CompiledTemplate`] wraps a module and provides
+//! [`CompiledTemplate::instantiate`], which deep-copies the module and mints a
+//! globally-fresh numeric ID (`NodeId::fresh()`) for every internal node, so
+//! instances are always disjoint regardless of call site.
 
 use crate::collections::HashMap;
-
-use crate::emit::Placement;
 use crate::ir::{Module, Node, NodeId, PortRef, Wire};
-
-/// Axis-aligned bounding box in grid space, giving the spatial extent of a
-/// template's nodes (populated by the layout pass, not by compilation).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TemplateBounds {
-    pub min_x: i32,
-    pub min_y: i32,
-    pub min_z: i32,
-    pub max_x: i32,
-    pub max_y: i32,
-    pub max_z: i32,
-}
 
 /// A compiled module that can be stamped out multiple times with fresh IDs.
 ///
 /// # External references
 ///
 /// Some template nodes refer to variables or ports that live **outside** the
-/// template — captured from an enclosing scope.  These are listed in
-/// `external_refs` as `(original_name, original_id)` pairs.  When
+/// template, captured from an enclosing scope. These are listed in
+/// `external_refs` as `(original_name, original_id)` pairs. When
 /// [`instantiate`][CompiledTemplate::instantiate] is called the caller passes a
 /// `captures` map `{ original_name -> caller_node_id }` so that external wires
 /// are routed to the correct nodes in the merged graph rather than getting
@@ -39,10 +25,6 @@ pub struct TemplateBounds {
 #[derive(Clone, Debug)]
 pub struct CompiledTemplate {
     pub module: Module,
-    /// Spatial extent of the template (filled in by layout; `None` before layout).
-    pub bounds: Option<TemplateBounds>,
-    /// Per-node placement hints (filled in by layout; `None` before layout).
-    pub placements: Option<HashMap<NodeId, Placement>>,
     /// Nodes that are *defined outside* this template and must be resolved via
     /// the `captures` argument to [`instantiate`].  Each entry is
     /// `(name_string, original_node_id)`.
@@ -51,7 +33,7 @@ pub struct CompiledTemplate {
 
 impl CompiledTemplate {
     /// Wrap a compiled module, populating `external_refs` from its
-    /// `scope_captures` (node_ids referenced by wires but not in `nodes`).
+    /// `scope_captures` (`node_ids` referenced by wires but not in `nodes`).
     pub fn from_module(module: Module) -> Self {
         let external_refs = module
             .scope_captures
@@ -60,37 +42,22 @@ impl CompiledTemplate {
             .collect();
         Self {
             module,
-            bounds: None,
-            placements: None,
             external_refs,
         }
     }
 
     /// Instantiate the template, producing a fresh [`Module`] whose every
-    /// internal node ID is `intern("{prefix}/{old_name}")`.
+    /// internal node gets a fresh ID from `NodeId::fresh()`.
     ///
-    /// * `prefix` — a unique string that distinguishes this instance from all
-    ///   others (e.g. `"inst0"`, `"foo/bar/2"`).
-    /// * `captures` — maps each name in [`external_refs`] to the caller's node
-    ///   ID that should be wired in its place.  Pass `&HashMap::default()` when
+    /// * `captures`: maps each name in [`external_refs`] to the caller's node
+    ///   ID that should be wired in its place. Pass `&HashMap::default()` when
     ///   there are no external refs.
-    pub fn instantiate(&self, prefix: &str, captures: &HashMap<String, NodeId>) -> Module {
-        self.instantiate_with_map(prefix, captures).0
-    }
-
-    /// Like [`instantiate`] but also returns the `old_id -> new_id` mapping
-    /// so callers can remap PortRefs that reference template-internal nodes
-    /// (e.g. exec chain entry/exit points).
-    pub fn instantiate_with_map(
-        &self,
-        _prefix: &str,
-        captures: &HashMap<String, NodeId>,
-    ) -> (Module, HashMap<NodeId, NodeId>) {
-        stamp_module(&self.module, &self.external_refs, captures)
+    pub fn instantiate(&self, captures: &HashMap<String, NodeId>) -> Module {
+        stamp_module(&self.module, &self.external_refs, captures).0
     }
 }
 
-/// Recursive body of [`CompiledTemplate::instantiate_with_map`]: stamps a
+/// Recursive body of [`CompiledTemplate::instantiate`]: stamps a
 /// fresh copy of `module` by reference, so each chip child is copied once
 /// instead of being deep-cloned into a throwaway `CompiledTemplate` first.
 fn stamp_module(
@@ -98,14 +65,14 @@ fn stamp_module(
     external_refs: &[(String, NodeId)],
     captures: &HashMap<String, NodeId>,
 ) -> (Module, HashMap<NodeId, NodeId>) {
-    // --- 1. Build id_map: every internal node gets a fresh numeric ID ----
+    // 1. Build id_map: every internal node gets a fresh numeric ID
     let mut id_map: HashMap<NodeId, NodeId> =
-        HashMap::with_capacity_and_hasher(src.nodes.len(), Default::default());
+        HashMap::with_capacity_and_hasher(src.nodes.len(), rustc_hash::FxBuildHasher);
     for old_id in src.nodes.keys() {
         id_map.insert(*old_id, NodeId::fresh());
     }
 
-    // --- 2. Build external_map: captured scope vars use the caller's ID --
+    // 2. Build external_map: captured scope vars use the caller's ID
     let mut external_map: HashMap<NodeId, NodeId> = HashMap::default();
     for (name, old_id) in external_refs {
         if let Some(&caller_id) = captures.get(name) {
@@ -113,22 +80,22 @@ fn stamp_module(
         }
     }
 
-    // --- 3. Instantiate chip children FIRST, collecting each child's FULL
+    // 3. Instantiate chip children FIRST, collecting each child's full
     // (recursive) old->new id map. This module's wires can reference a child's
-    // boundary nodes directly — a parent gate wires into a nested chip's
+    // boundary nodes directly: a parent gate wires into a nested chip's
     // MicrochipInput, and a nested chip's MicrochipOutput feeds a parent
     // consumer. Those child IDs are not in `id_map` (they live in the child
     // module), so without the child maps the wire remap below would pass them
-    // through to the ORIGINAL template IDs, making every instance's boundary
-    // wires converge on the first instance's ports (fan-in collisions the game
-    // then fails to connect). Children must be stamped before the wires so the
+    // through to the original template IDs, and every instance's boundary
+    // wires would converge on the first instance's ports (fan-in collisions
+    // the game fails to connect). Children are stamped before the wires so the
     // wires can point at the freshly-minted child boundary nodes.
     let mut descendant_map: HashMap<NodeId, NodeId> = HashMap::default();
     let mut new_chips: HashMap<NodeId, Module> = HashMap::default();
     for (old_chip_key, child_module) in &src.chips {
         let new_chip_key = id_map.get(old_chip_key).copied().unwrap_or(*old_chip_key);
-        // Child external refs come from its `scope_captures` — the same
-        // `(id_string, id)` pairs `from_module` derives. Merge parent's
+        // Child external refs come from its `scope_captures`, the same
+        // `(id_string, id)` pairs `from_module` derives. Merge the parent's
         // id_map into child captures so internal-to-parent nodes that the
         // child references get remapped correctly.
         let mut child_captures = captures.clone();
@@ -146,7 +113,7 @@ fn stamp_module(
         new_chips.insert(new_chip_key, child_instance);
     }
 
-    // --- 4. Helper: remap a single NodeId -----------------------------------
+    // 4. Helper: remap a single NodeId
     // Priority: this module's fresh ID > freshly-stamped descendant (child)
     // ID > external caller ID > pass through. The three maps have disjoint
     // key domains (own nodes / descendant nodes / captured externals), so the
@@ -163,12 +130,12 @@ fn stamp_module(
         }
     };
 
-    // --- 5. Clone nodes with remapped IDs ----------------------------------
+    // 5. Clone nodes with remapped IDs
     let mut new_nodes: HashMap<NodeId, Node> =
-        HashMap::with_capacity_and_hasher(src.nodes.len(), Default::default());
+        HashMap::with_capacity_and_hasher(src.nodes.len(), rustc_hash::FxBuildHasher);
     for (old_id, node) in &src.nodes {
         let new_id = remap(*old_id);
-        let new_chip_id = node.chip_id.map(|c| remap(c));
+        let new_chip_id = node.chip_id.map(&remap);
         let new_node = Node {
             id: new_id,
             chip_id: new_chip_id,
@@ -177,19 +144,19 @@ fn stamp_module(
             // not node IDs, so they need no remapping).
             kind: node.kind,
             gate_class: node.gate_class,
-            properties: node.properties.clone(),
-            ports: node.ports.clone(),
+            properties: std::sync::Arc::clone(&node.properties),
+            ports: std::sync::Arc::clone(&node.ports),
             source_range: node.source_range.clone(),
             chain_id: node.chain_id,
             scope_id: node.scope_id,
-            note: node.note.clone(),
+            note: node.note,
         };
         new_nodes.insert(new_id, new_node);
     }
 
-    // --- 6. Clone wires with remapped node IDs -----------------------------
-    // Uses the combined remap, so a boundary wire targeting a child node now
-    // points at that child instance's fresh node instead of the template's.
+    // 6. Clone wires with remapped node IDs
+    // Uses the combined remap, so a boundary wire targeting a child node
+    // points at that child instance's fresh node, not the template's.
     let new_wires: Vec<Wire> = src
         .wires
         .iter()
@@ -205,11 +172,11 @@ fn stamp_module(
         })
         .collect();
 
-    // --- 7. Remap inputs / outputs vectors ---------------------------------
+    // 7. Remap inputs / outputs vectors
     let new_inputs: Vec<NodeId> = src.inputs.iter().map(|id| remap(*id)).collect();
     let new_outputs: Vec<NodeId> = src.outputs.iter().map(|id| remap(*id)).collect();
 
-    // --- 8. Assemble the new module ----------------------------------------
+    // 8. Assemble the new module
     let new_scope_captures: Vec<NodeId> = src
         .scope_captures
         .iter()
@@ -243,7 +210,7 @@ fn stamp_module(
             })
             .collect(),
         // Root-chip label lives only on the root module, never a chip template
-        // instance — carried through for correctness (both are `None` here).
+        // instance; carried through for completeness (both are `None` here).
         root_label_override: src.root_label_override.clone(),
         root_dynamic_label: src.root_dynamic_label.map(|p| PortRef {
             node_id: remap(p.node_id),
@@ -254,7 +221,7 @@ fn stamp_module(
         dynamic_colors: remap_hosts(&src.dynamic_colors, &remap),
         dynamic_materials: remap_hosts(&src.dynamic_materials, &remap),
         root_style: src.root_style.clone(),
-        value_names: Default::default(),
+        value_names: HashMap::default(),
     };
     // Return this module's map PLUS all descendants' maps, so a caller
     // remapping boundary PortRefs (or a parent instantiation) can resolve
@@ -282,9 +249,7 @@ fn remap_hosts(
         .collect()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests;

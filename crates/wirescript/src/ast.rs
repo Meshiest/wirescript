@@ -1,9 +1,11 @@
 //!
-//! Every node carries a [`SourceRange`] so diagnostics can attribute
-//! errors back to source. The typechecker attaches resolved types later
-//! by producing a parallel typed module — Phase 4 work.
+//! Every node carries a [`SourceRange`] so diagnostics can attribute errors back to source.
+//! The typechecker produces a parallel typed module rather than annotating these nodes.
 
-use crate::diagnostic::SourceRange;
+use std::sync::Arc;
+
+use crate::collections::{HashMap, HashSet};
+use crate::diagnostic::{SourceRange, StartKey};
 
 pub mod walk;
 
@@ -12,39 +14,38 @@ pub struct Script {
     pub decls: Vec<TopDecl>,
     pub range: SourceRange,
     /// A `///` doc block at the very top of the file, separated from the first
-    /// declaration by a blank line — documents the module (root plane header)
+    /// declaration by a blank line. It documents the module (root plane header)
     /// rather than the first declaration.
     pub module_doc: Option<String>,
-    /// A `@nofold` at the very top of the file (after any module doc),
-    /// separated from the first declaration by a blank line — marks the whole
-    /// module's lowered output `_nofold` (mirrors the module-doc rule).
+    /// A `@nofold` at the very top of the file (after any module doc), separated
+    /// from the first declaration by a blank line. Marks the whole module's
+    /// lowered output `_nofold`.
     pub no_fold: bool,
-    /// A `@fold` at the very top of the file (after any module doc),
-    /// separated from the first declaration by a blank line — opts the whole
-    /// module into the certified constant-fold pass under `FoldMode::Auto`
-    /// (mirrors the module-doc rule; same mechanics as `no_fold` above). If
-    /// both `@fold` and `@nofold` are present, `no_fold` wins.
+    /// A `@fold` at the very top of the file (after any module doc), separated
+    /// from the first declaration by a blank line. Opts the whole module into the
+    /// certified constant-fold pass under `FoldMode::Auto`. If both `@fold` and
+    /// `@nofold` are present, `no_fold` wins.
     pub fold: bool,
-    /// A `@layout("…")` at the very top of the file (same placement rule as
-    /// `fold` above) — names the placement engine to use. `None` leaves the
+    /// A `@layout("...")` at the very top of the file (same placement rule as
+    /// `fold` above): names the placement engine to use. `None` leaves the
     /// choice to the compiler.
     pub layout: Option<LayoutName>,
     /// A `@flat` at the very top of the file (same placement rule as `fold`
-    /// above) — every chip body is inlined into the module that instantiates
+    /// above): every chip body is inlined into the module that instantiates
     /// it, so the program emits no microchip bricks and no child brick grids.
     /// Independent of `layout`; the two compose.
     pub flat: bool,
     /// A `@invisible` at the very top of the file (same placement rule as
-    /// `fold` above) — the emitted top-level microchip shell is hidden,
+    /// `fold` above): the emitted top-level microchip shell is hidden,
     /// non-colliding, and carries no labels (root name, plane header, var
     /// tags, I/O gate labels). Independent of `flat`/`layout`.
     pub invisible: bool,
-    /// A `@label(<expr>)` at the very top of the file (same blank-line
-    /// placement rule as `fold` above) — labels the ROOT microchip rather than
-    /// a declaration. A constant expression bakes static title text; a runtime
-    /// expression wires the live value into the root chip's label. The
-    /// expression may forward-reference declarations below it (resolved in a
-    /// post-declaration pass), so `@label(x)` above `var x` is valid.
+    /// A `@label(<expr>)` at the very top of the file (same placement rule as
+    /// `fold` above): labels the ROOT microchip rather than a declaration. A
+    /// constant expression bakes static title text; a runtime expression wires
+    /// the live value into the root chip's label. The expression may
+    /// forward-reference declarations below it (resolved in a post-declaration
+    /// pass), so `@label(x)` above `var x` is valid.
     pub module_label: Option<Expr>,
     /// A `@color(<expr>)` at the top of the file (same placement rule as
     /// `module_label`): a Brick Property Changer on the ROOT microchip brick
@@ -55,7 +56,7 @@ pub struct Script {
     pub module_material: Option<Expr>,
     /// Which imported declarations each file named by its own imports. Filled
     /// by `resolve`; empty for a script that was only parsed.
-    pub imports: std::sync::Arc<ImportScope>,
+    pub imports: Arc<ImportScope>,
 }
 
 /// The declarations each file brings into scope by name through its own
@@ -67,20 +68,14 @@ pub struct Script {
 pub struct ImportScope {
     /// Importing file -> the `(file, start offset)` of each declaration its
     /// imports name, transitively through a module's own whole-module imports.
-    pub named: crate::collections::HashMap<
-        std::sync::Arc<str>,
-        crate::collections::HashSet<(std::sync::Arc<str>, usize)>,
-    >,
+    pub named: HashMap<Arc<str>, HashSet<StartKey>>,
     /// Importing file -> the files its own `import` declarations name.
-    pub files: crate::collections::HashMap<
-        std::sync::Arc<str>,
-        crate::collections::HashSet<std::sync::Arc<str>>,
-    >,
+    pub files: HashMap<Arc<str>, HashSet<Arc<str>>>,
     /// Imported file -> the type aliases its top level can name: the ones it
     /// declares and the ones its own imports bring in, with an `import * as`
     /// module's aliases kept inside their `Namespace`. A type written in that
     /// file reads its alias names here, whatever the importer declares.
-    pub aliases: crate::collections::HashMap<std::sync::Arc<str>, Vec<TopDecl>>,
+    pub aliases: HashMap<Arc<str>, Vec<TopDecl>>,
 }
 
 impl ImportScope {
@@ -91,18 +86,15 @@ impl ImportScope {
             || self
                 .named
                 .get(file)
-                .is_some_and(|s| s.contains(&(decl.file.clone(), decl.start.offset)))
+                .is_some_and(|s| s.contains(&decl.start_key()))
     }
 
     /// Whether the user `mod`/`chip` declared at `decl` answers a call written
-    /// in `call_file`, plain `f(x)` and method `x.f()` alike. It does only
-    /// when the calling file can name it: a file calls the mods it declares
-    /// and the ones its imports name. A module's private helper, present
-    /// because an imported body calls it, answers that body's calls and not
-    /// the importer's; the importer's own mods are not visible in the bodies
-    /// it imports. A builtin of the same name answers where the user's does
-    /// not. Typecheck, lowering, constant evaluation and call-site counting
-    /// all decide through this.
+    /// in `call_file`, plain `f(x)` and method `x.f()` alike. It does only when
+    /// the calling file can name it: a file calls the mods it declares and the
+    /// ones its imports name. A module's private helper, present because an
+    /// imported body calls it, answers that body's calls and not the importer's.
+    /// A builtin of the same name answers where the user's does not.
     pub fn user_mod_answers(&self, decl: &SourceRange, call_file: &str) -> bool {
         decl.file.is_empty() || self.sees(call_file, decl)
     }
@@ -110,7 +102,7 @@ impl ImportScope {
     /// Whether `importer` imports `module`, directly or through the modules
     /// it imports.
     pub fn imports_file(&self, importer: &str, module: &str) -> bool {
-        let mut seen: crate::collections::HashSet<&str> = crate::collections::HashSet::default();
+        let mut seen: HashSet<&str> = HashSet::default();
         let mut stack = vec![importer];
         while let Some(f) = stack.pop() {
             if !seen.insert(f) {
@@ -127,26 +119,25 @@ impl ImportScope {
     }
 }
 
-/// The engine a `@layout("…")` annotation names, spelled as the source spells
+/// The engine a `@layout("...")` annotation names, spelled as the source spells
 /// it. Distinct from [`crate::layout::LayoutMode`], which is the set of
 /// engines: the default engine has no annotation spelling, and an engine the
 /// compiler may pick on its own is not necessarily one a file may ask for.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LayoutName {
-    /// `@layout("code")` — row per source line, indent per source column.
+    /// `@layout("code")`: row per source line, indent per source column.
     Code,
-    /// `@layout("cube")` — the compact 3D grid arrangement the compiler
+    /// `@layout("cube")`: the compact 3D grid arrangement the compiler
     /// otherwise reaches for only on very large modules.
     Cube,
 }
 
 impl LayoutName {
-    /// The spellings accepted inside `@layout(…)`, in the order a diagnostic
+    /// The spellings accepted inside `@layout(...)`, in the order a diagnostic
     /// should offer them.
-    pub const ALL: [(&'static str, LayoutName); 2] =
-        [("code", LayoutName::Code), ("cube", LayoutName::Cube)];
+    pub const ALL: [(&'static str, Self); 2] = [("code", Self::Code), ("cube", Self::Cube)];
 
-    pub fn parse(name: &str) -> Option<LayoutName> {
+    pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.iter().find(|(s, _)| *s == name).map(|(_, m)| *m)
     }
 }
@@ -163,7 +154,7 @@ pub fn source_map_from_source(source: &str, file: &str) -> SourceMap {
     crate::lexer::lex(source, file).source_map
 }
 
-// ---------- top-level declarations ----------
+// top-level declarations
 
 #[derive(Clone, Debug)]
 pub enum ImportKind {
@@ -204,7 +195,6 @@ pub enum TopDecl {
     Array(ArrayDecl),
     Map(MapDecl),
     Buffer(BufferDecl),
-    Fn(FnDecl),
     Chip(ChipDecl),
     AnonChip(AnonChipDecl),
     Event(EventDecl),
@@ -225,28 +215,27 @@ pub enum TopDecl {
 impl TopDecl {
     pub fn range(&self) -> &SourceRange {
         match self {
-            TopDecl::Import(d) => &d.range,
-            TopDecl::Namespace(d) => &d.range,
-            TopDecl::Var(d) => &d.range,
-            TopDecl::Array(d) => &d.range,
-            TopDecl::Map(d) => &d.range,
-            TopDecl::Buffer(d) => &d.range,
-            TopDecl::Fn(d) => &d.range,
-            TopDecl::Chip(d) => &d.range,
-            TopDecl::AnonChip(d) => &d.range,
-            TopDecl::Event(d) => &d.range,
-            TopDecl::In(d) => &d.range,
-            TopDecl::Out(d) => &d.range,
-            TopDecl::Handler(d) => &d.range,
-            TopDecl::Let(d) => &d.range,
-            TopDecl::LetElse(d) => &d.range,
-            TopDecl::Await(d) => &d.range,
-            TopDecl::Assign(d) => &d.range,
-            TopDecl::If(d) => &d.range,
-            TopDecl::IfLet(d) => &d.range,
-            TopDecl::ExprStmt(d) => &d.range,
-            TopDecl::TypeAlias(d) => &d.range,
-            TopDecl::Enum(d) => &d.range,
+            Self::Import(d) => &d.range,
+            Self::Namespace(d) => &d.range,
+            Self::Var(d) => &d.range,
+            Self::Array(d) => &d.range,
+            Self::Map(d) => &d.range,
+            Self::Buffer(d) => &d.range,
+            Self::Chip(d) => &d.range,
+            Self::AnonChip(d) => &d.range,
+            Self::Event(d) => &d.range,
+            Self::In(d) => &d.range,
+            Self::Out(d) => &d.range,
+            Self::Handler(d) => &d.range,
+            Self::Let(d) => &d.range,
+            Self::LetElse(d) => &d.range,
+            Self::Await(d) => &d.range,
+            Self::Assign(d) => &d.range,
+            Self::If(d) => &d.range,
+            Self::IfLet(d) => &d.range,
+            Self::ExprStmt(d) => &d.range,
+            Self::TypeAlias(d) => &d.range,
+            Self::Enum(d) => &d.range,
         }
     }
 }
@@ -292,7 +281,7 @@ pub enum EnumPayloadDecl {
 }
 
 /// A generic type parameter on a `mod`/`chip`/`type` declaration, e.g. `T` or
-/// `T: Numeric`. `bound` is the constraint TypeExpr (a named class like
+/// `T: Numeric`. `bound` is the constraint `TypeExpr` (a named class like
 /// `Numeric`, or a union like `int | vector`); `None` = unbounded (= `Variant`).
 #[derive(Clone, Debug)]
 pub struct TypeParam {
@@ -310,10 +299,10 @@ pub struct VarDecl {
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
-    /// `@label("…")` display-text override for the var's floating label.
+    /// `@label("...")` display-text override for the var's floating label.
     pub label: Option<String>,
-    /// `@label(expr)` — a compile-time-constant expression form of the
-    /// above; folded to text at lowering. At most one of `label` /
+    /// `@label(expr)`: a compile-time-constant expression form of the
+    /// above, folded to text at lowering. At most one of `label` /
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
     /// `@color(expr)`: the color of the var's storage gate bricks, set by a
@@ -335,7 +324,7 @@ impl VarDecl {
     /// initializer then reads the names around the declaration, never the one
     /// it declares, as a `let`'s does. The caller binds `name` to it once it
     /// is declared.
-    pub fn declared_apart(&self) -> Option<VarDecl> {
+    pub fn declared_apart(&self) -> Option<Self> {
         let init = self.init.as_ref()?;
         if !walk::mentions(walk::Node::Expr(init), &self.name) {
             return None;
@@ -344,7 +333,7 @@ impl VarDecl {
             .label
             .clone()
             .or_else(|| self.label_expr.is_none().then(|| self.name.clone()));
-        Some(VarDecl {
+        Some(Self {
             name: format!("{}{DECLARED_APART}", self.name),
             label,
             ..self.clone()
@@ -368,7 +357,7 @@ pub struct ArrayDecl {
     pub range: SourceRange,
 }
 
-/// `map name: Map<K, V>` — a keyed variable collection (parallels `ArrayDecl`).
+/// `map name: Map<K, V>`, a keyed variable collection (parallels `ArrayDecl`).
 #[derive(Clone, Debug)]
 pub struct MapDecl {
     pub name: String,
@@ -393,7 +382,7 @@ pub struct Param {
     pub name: String,
     pub typ: TypeExpr,
     pub pattern: Option<ParamPattern>,
-    /// `name: const int` — the argument must be a compile-time constant, and
+    /// `name: const int`: the argument must be a compile-time constant, and
     /// inside the body the parameter reads as one. Set on every parameter of a
     /// `const mod`.
     pub is_const: bool,
@@ -424,16 +413,6 @@ pub struct NamedOutput {
 }
 
 #[derive(Clone, Debug)]
-pub struct FnDecl {
-    pub name: String,
-    pub params: Vec<Param>,
-    pub return_type: Option<TypeExpr>,
-    /// Expression-bodied: `fn foo(x: int) -> int = x + 1`
-    pub body: Expr,
-    pub range: SourceRange,
-}
-
-#[derive(Clone, Debug)]
 pub struct ChipDecl {
     pub name: String,
     /// Declaration-side generic type parameters: `mod pick<T>(...)` /
@@ -452,10 +431,10 @@ pub struct ChipDecl {
     /// When true, always expanded inline at call sites (no physical
     /// microchip). Set by the `mod` keyword.
     pub inline: bool,
-    /// `@label("…")` display-text override for the chip's labels and header.
+    /// `@label("...")` display-text override for the chip's labels and header.
     pub label: Option<String>,
-    /// `@label(expr)` — a compile-time-constant expression form of the
-    /// above; folded to text at lowering. At most one of `label` /
+    /// `@label(expr)`: a compile-time-constant expression form of the
+    /// above, folded to text at lowering. At most one of `label` /
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
     /// `@color(expr)`: the color of each instance's microchip brick, a
@@ -468,11 +447,11 @@ pub struct ChipDecl {
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
-    /// `const mod f(…)`: every parameter is const. The body may still emit
+    /// `const mod f(...)`: every parameter is const. The body may still emit
     /// gates; whether a CALL to it evaluates at compile time is decided by
     /// attempting evaluation (see `const_eval::interp`).
     pub is_const: bool,
-    /// `fn f(…)`: compiled once into a function definition plane and run
+    /// `fn f(...)`: compiled once into a function definition plane and run
     /// through a Function Call gate at each call site, where a `mod` is
     /// inlined. Shares the `mod` grammar and `inline: true`.
     pub is_fn: bool,
@@ -494,7 +473,7 @@ impl ChipDecl {
     /// mod/chip callable with method syntax: `v.method(args)` desugars to
     /// `method(v, args)`. `self` is otherwise an ordinary parameter of its
     /// declared type (it is not a magic value). A destructured first parameter
-    /// (`{ … }: T`) is never a receiver.
+    /// (`{ ... }: T`) is never a receiver.
     pub fn is_self_receiver(&self) -> bool {
         self.inputs
             .first()
@@ -502,17 +481,17 @@ impl ChipDecl {
     }
 }
 
-/// Anonymous chip: `chip { body }` — shares parent scope, creates a
+/// Anonymous chip: `chip { body }`. Shares the parent scope and creates a
 /// physical microchip grid for visual organization. Can have `in`/`out`
 /// declarations inside the body for explicit I/O ports.
 #[derive(Clone, Debug)]
 pub struct AnonChipDecl {
     pub body: Block,
     pub range: SourceRange,
-    /// `@label("…")` display-text override for the chip's labels and header.
+    /// `@label("...")` display-text override for the chip's labels and header.
     pub label: Option<String>,
-    /// `@label(expr)` — a compile-time-constant expression form of the
-    /// above; folded to text at lowering. At most one of `label` /
+    /// `@label(expr)`: a compile-time-constant expression form of the
+    /// above, folded to text at lowering. At most one of `label` /
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
     /// `@color(expr)`: the color of the chip's microchip brick, a
@@ -535,7 +514,7 @@ pub struct ForStmt {
     pub result: Option<(String, SourceRange)>,
     /// `@sliced for ...` - sets the shell's `bRunAcrossTicks`.
     pub sliced: bool,
-    /// `@label("…")` names the loop's microchip, as a `chip`'s.
+    /// `@label("...")` names the loop's microchip, as a `chip`'s.
     pub label: Option<String>,
     /// `@label(expr)`, the constant-expression form of `label`; at most one
     /// of the two is set.
@@ -561,15 +540,15 @@ pub enum ForPat {
 impl ForPat {
     pub fn range(&self) -> &SourceRange {
         match self {
-            ForPat::Name(_, r) | ForPat::Ignore(r) => r,
-            ForPat::Record { range, .. } => range,
+            Self::Name(_, r) | Self::Ignore(r) => r,
+            Self::Record { range, .. } => range,
         }
     }
 }
 
 impl crate::ir::plane::ForBinding for ForPat {
     fn is_record(&self) -> bool {
-        matches!(self, ForPat::Record { .. })
+        matches!(self, Self::Record { .. })
     }
 }
 
@@ -584,8 +563,8 @@ pub enum ForSource {
 impl ForSource {
     pub fn range(&self) -> &SourceRange {
         match self {
-            ForSource::Range(r) => &r.range,
-            ForSource::Collection { range, .. } => range,
+            Self::Range(r) => &r.range,
+            Self::Collection { range, .. } => range,
         }
     }
 }
@@ -663,10 +642,10 @@ pub struct InDecl {
     pub name: String,
     pub typ: TypeExpr,
     pub side: Option<PortSide>,
-    /// `@label("…")` display-text override for the port's floating label.
+    /// `@label("...")` display-text override for the port's floating label.
     pub label: Option<String>,
-    /// `@label(expr)` — a compile-time-constant expression form of the
-    /// above; folded to text at lowering. At most one of `label` /
+    /// `@label(expr)`: a compile-time-constant expression form of the
+    /// above, folded to text at lowering. At most one of `label` /
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
     /// `@invisible`: the port's rerouter is emitted hidden.
@@ -682,7 +661,7 @@ pub struct LetDecl {
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
-    /// `const x = …` rather than `let x = …`: the initializer MUST evaluate at
+    /// `const x = ...` rather than `let x = ...`: the initializer MUST evaluate at
     /// compile time (WS046 if it cannot). A `let` folds opportunistically and
     /// falls back to gates; a `const` is a guarantee.
     pub is_const: bool,
@@ -698,12 +677,11 @@ impl LetDecl {
     }
 }
 
-/// `let <pattern> = <scrutinee> else { <diverge> }` - a refutable single-
-/// binding pattern (shared with `match`/`if let`) that must destructure or
-/// the `else` block runs. Unlike `LetDecl`, whose `binding` shapes cover only
-/// irrefutable destructuring, `LetElse`'s `pattern` may fail to match, so the
-/// `else` block is mandatory rather than optional and must diverge (return/
-/// emit past this point) - enforced by Task 19 typecheck, not here.
+/// `let <pattern> = <scrutinee> else { <diverge> }`, a refutable single-binding
+/// pattern (shared with `match`/`if let`) that must destructure or the `else`
+/// block runs. Unlike `LetDecl`, whose `binding` shapes cover only irrefutable
+/// destructuring, `pattern` may fail to match, so the `else` block is mandatory
+/// and must diverge (return/emit past this point); typecheck enforces that.
 #[derive(Clone, Debug)]
 pub struct LetElse {
     pub pattern: Pattern,
@@ -726,10 +704,6 @@ pub enum LetBinding {
     Tuple {
         names: Vec<String>,
         rest: Option<String>,
-        range: SourceRange,
-    },
-    Record {
-        names: Vec<String>,
         range: SourceRange,
     },
     RecordDestruct {
@@ -755,25 +729,23 @@ pub enum RecordDestructField {
 pub struct HandlerParam {
     pub name: String,
     /// Optional type annotation (`a: int`). Events whose data-output types are
-    /// declared by the handler — Custom Event — use it to type their output
-    /// ports; `None` for events with fixed data types (RoundStart, etc.).
+    /// declared by the handler (Custom Event) use it to type their output
+    /// ports; `None` for events with fixed data types (`RoundStart`, etc.).
     pub ty: Option<TypeExpr>,
     /// Range of the param name (for diagnostics).
     pub range: SourceRange,
-    /// For a GENERAL-expression trigger's `-> { field: alias }` record capture
-    /// (a mod/chip call, not a built-in event — see `lower/handler.rs`'s
-    /// general-expr trigger case): the ORIGINAL field name to look up on the
-    /// trigger's result record, when it differs from `name` (the local bound
-    /// name written as the alias). `None` everywhere else — built-in event
-    /// records and tuple patterns resolve positionally (by index) and never
-    /// need a by-name lookup at lowering time.
+    /// For a general-expression trigger's `-> { field: alias }` record capture
+    /// (a mod/chip call, not a built-in event): the original field name to
+    /// look up on the trigger's result record, when it differs from `name` (the
+    /// local name written as the alias). `None` everywhere else: built-in event
+    /// records and tuple patterns resolve positionally.
     pub source_field: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Handler {
     pub trigger: Trigger,
-    /// `on Event() -> (a, b) { ... }` — the trailing tuple capture's params,
+    /// `on Event() -> (a, b) { ... }`: the trailing tuple capture's params,
     /// binding the event's data outputs (e.g. `controller`, `arguments`),
     /// optionally typed (`on CustomEvent("x") -> (a: int, b: float)`). A
     /// `-> { field: local }` record capture desugars to this same list (see
@@ -781,21 +753,20 @@ pub struct Handler {
     pub params: Vec<HandlerParam>,
     /// Literal/named config args that configure the event gate itself, e.g.
     /// `on ChatCommand("greet", Description = "Greets you") { ... }`. These map
-    /// to the gate's data-struct fields (not output bindings) — the call
-    /// parens hold config/inputs only; data outputs bind via `params` above.
+    /// to the gate's data-struct fields (not output bindings); the call
+    /// parens hold config/inputs only, and data outputs bind via `params` above.
     pub config: Vec<HandlerConfigArg>,
     pub body: Block,
     /// `@nofold`: every IR node lowered from this declaration's subtree
     /// carries the `_nofold` pseudo-property (the fold pass skips it).
     pub no_fold: bool,
-    /// For a GENERAL expression trigger (`on <call>(…) [-> <pattern>]`,
+    /// For a general expression trigger (`on <call>(...) [-> <pattern>]`,
     /// desugared to a synthetic `_on_expr_N` trigger): whether the originating
-    /// call carried an `exec = <x>` named arg. `exec =` is explicit "drive this
-    /// as an exec" intent — so `on` must trigger on the call's completion exec;
-    /// if the callee exposes none (e.g. an inline `mod`), lowering emits WS043
-    /// rather than silently orphaning `exec =` and firing on a value edge.
-    /// `false` for plain triggers and for expr triggers with no `exec =` arg
-    /// (a bare `on <call> { }` value-change trigger, left untouched).
+    /// call carried an `exec = <x>` named arg. `exec =` means "drive this as an
+    /// exec", so `on` must trigger on the call's completion exec; if the callee
+    /// exposes none (e.g. an inline `mod`), lowering emits WS043. `false` for
+    /// plain triggers and for expr triggers with no `exec =` arg (a bare
+    /// `on <call> { }` is a value-change trigger).
     pub expr_trigger_has_exec_arg: bool,
     /// The `let name = on <trigger>` alias the handler was written with, and
     /// where: `trigger` and `config` are then the alias's own.
@@ -823,42 +794,42 @@ pub enum Trigger {
         range: SourceRange,
     },
     Not {
-        inner: Box<Trigger>,
+        inner: Box<Self>,
         range: SourceRange,
     },
     Union {
-        parts: Vec<Trigger>,
+        parts: Vec<Self>,
         range: SourceRange,
     },
 }
 
-// ---------- type expressions ----------
+// type expressions
 
 #[derive(Clone, Debug)]
 pub enum TypeExpr {
-    /// `int`, `bool`, `entity`, chip type name, …
+    /// `int`, `bool`, `entity`, a chip type name, and so on.
     Name { name: String, range: SourceRange },
     /// `ref T`
     Ref {
-        inner: Box<TypeExpr>,
+        inner: Box<Self>,
         range: SourceRange,
     },
     /// `T[]`
     Array {
-        inner: Box<TypeExpr>,
+        inner: Box<Self>,
         range: SourceRange,
     },
     /// `(A, B, C)`
     Tuple {
-        fields: Vec<TypeExpr>,
+        fields: Vec<Self>,
         range: SourceRange,
     },
     /// `A | B | C`
     Union {
-        options: Vec<TypeExpr>,
+        options: Vec<Self>,
         range: SourceRange,
     },
-    /// `{ field: Type, ... }` — record type
+    /// `{ field: Type, ... }`, a record type
     Record {
         fields: Vec<RecordTypeField>,
         range: SourceRange,
@@ -869,7 +840,7 @@ pub enum TypeExpr {
     /// enum).
     Generic {
         name: String,
-        args: Vec<TypeExpr>,
+        args: Vec<Self>,
         range: SourceRange,
     },
 }
@@ -877,13 +848,13 @@ pub enum TypeExpr {
 impl TypeExpr {
     pub fn range(&self) -> &SourceRange {
         match self {
-            TypeExpr::Name { range, .. }
-            | TypeExpr::Ref { range, .. }
-            | TypeExpr::Array { range, .. }
-            | TypeExpr::Tuple { range, .. }
-            | TypeExpr::Union { range, .. }
-            | TypeExpr::Record { range, .. }
-            | TypeExpr::Generic { range, .. } => range,
+            Self::Name { range, .. }
+            | Self::Ref { range, .. }
+            | Self::Array { range, .. }
+            | Self::Tuple { range, .. }
+            | Self::Union { range, .. }
+            | Self::Record { range, .. }
+            | Self::Generic { range, .. } => range,
         }
     }
 }
@@ -895,7 +866,7 @@ pub struct RecordTypeField {
     pub range: SourceRange,
 }
 
-// ---------- statements ----------
+// statements
 
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -938,27 +909,27 @@ pub enum Stmt {
 impl Stmt {
     pub fn range(&self) -> &SourceRange {
         match self {
-            Stmt::Assign(d) => &d.range,
-            Stmt::Emit(d) => &d.range,
-            Stmt::Await(d) => &d.range,
-            Stmt::If(d) => &d.range,
-            Stmt::IfLet(d) => &d.range,
-            Stmt::In(d) => &d.range,
-            Stmt::Let(d) => &d.range,
-            Stmt::LetElse(d) => &d.range,
-            Stmt::OutBinding(d) => &d.range,
-            Stmt::ExprStmt(d) => &d.range,
-            Stmt::Var(d) => &d.range,
-            Stmt::Buffer(d) => &d.range,
-            Stmt::Array(d) => &d.range,
-            Stmt::Map(d) => &d.range,
-            Stmt::Handler(d) => &d.range,
-            Stmt::AnonChip(d) => &d.range,
-            Stmt::ChipDecl(d) => &d.range,
-            Stmt::Return { range, .. } => range,
-            Stmt::For(d) => &d.range,
-            Stmt::Break { range } => range,
-            Stmt::Continue { range } => range,
+            Self::Assign(d) => &d.range,
+            Self::Emit(d) => &d.range,
+            Self::Await(d) => &d.range,
+            Self::If(d) => &d.range,
+            Self::IfLet(d) => &d.range,
+            Self::In(d) => &d.range,
+            Self::Let(d) => &d.range,
+            Self::LetElse(d) => &d.range,
+            Self::OutBinding(d) => &d.range,
+            Self::ExprStmt(d) => &d.range,
+            Self::Var(d) => &d.range,
+            Self::Buffer(d) => &d.range,
+            Self::Array(d) => &d.range,
+            Self::Map(d) => &d.range,
+            Self::Handler(d) => &d.range,
+            Self::AnonChip(d) => &d.range,
+            Self::ChipDecl(d) => &d.range,
+            Self::Return { range, .. } => range,
+            Self::For(d) => &d.range,
+            Self::Break { range } => range,
+            Self::Continue { range } => range,
         }
     }
 }
@@ -966,12 +937,11 @@ impl Stmt {
 /// Every `out` a handler body declares as a module-boundary port, in source
 /// order.
 ///
-/// Three passes claim this exact set of sites and must never disagree on it -
+/// Three passes claim this exact set of sites and must never disagree on it:
 /// `lower::predeclare::pre_declare_handler_outputs` binds each as a port,
 /// `typecheck::register::register_handler_outputs` makes each readable, and
 /// `analysis::scoped_refs::widen_hoisted_out_bindings` widens each binding's
-/// scope so a rename reaches its reads. They share this one enumerator so the
-/// set cannot drift apart between them.
+/// scope so a rename reaches its reads.
 ///
 /// Reaches every branch, `match` arm, loop body and nested handler, so a
 /// conditional site still declares its port. Stops at a chip/mod or anon chip
@@ -995,8 +965,7 @@ pub fn handler_port_sites(block: &Block) -> Vec<&OutBinding> {
 
 /// Every `out` an anon chip body declares as a module-boundary port. An anon
 /// chip shares its parent's scope rather than opening one, so a plain `out`
-/// written DIRECTLY in its body is a boundary port like a top-level `out`,
-/// just drawn inside a box.
+/// written directly in its body is a boundary port like a top-level `out`.
 ///
 /// Shallow by design, and the same three passes consume it. An `@side`
 /// annotation is WS023 on a non-root `out` and never becomes a port, so it is
@@ -1027,7 +996,7 @@ pub struct Emit {
     pub range: SourceRange,
 }
 
-/// The `buffer(delay[, hold])` spec on an emit (or bare `buffer emit` — one
+/// The `buffer(delay[, hold])` spec on an emit (or bare `buffer emit`, one
 /// tick). `delay` maps to the Buffer gate's `TicksToWait`/`SecondsToWait`
 /// (`None` = 1 tick), `hold` to `ZeroTicksToWait`/`ZeroSecondsToWait` (how
 /// long the output stays up after the input drops; gate default `-1` = same
@@ -1052,7 +1021,7 @@ pub struct AwaitStmt {
     /// payload store of that name.
     pub destructure: Option<Vec<(String, String)>>,
     /// `let (a, b) = await CustomEvent("c")`: tuple-destructured POSITIONAL
-    /// capture of an event's data outputs (`a` = DataOut1, `b` = DataOut2).
+    /// capture of an event's data outputs (`a` = `DataOut1`, `b` = `DataOut2`).
     pub tuple_destructure: Option<Vec<String>>,
     pub value_expr: Option<Expr>,
     pub exec_expr: Expr,
@@ -1089,10 +1058,10 @@ pub struct OutBinding {
     pub value: Option<Expr>,
     pub typ: Option<TypeExpr>,
     pub side: Option<PortSide>,
-    /// `@label("…")` display-text override for the port's floating label.
+    /// `@label("...")` display-text override for the port's floating label.
     pub label: Option<String>,
-    /// `@label(expr)` — a compile-time-constant expression form of the
-    /// above; folded to text at lowering. At most one of `label` /
+    /// `@label(expr)`: a compile-time-constant expression form of the
+    /// above, folded to text at lowering. At most one of `label` /
     /// `label_expr` is ever set.
     pub label_expr: Option<Expr>,
     /// `@invisible`: the port's rerouter is emitted hidden.
@@ -1109,7 +1078,7 @@ pub struct ExprStmt {
     pub range: SourceRange,
 }
 
-// ---------- expressions ----------
+// expressions
 
 #[derive(Clone, Debug)]
 pub enum Expr {
@@ -1132,7 +1101,7 @@ pub enum Expr {
         value: String,
         range: SourceRange,
     },
-    /// `"hello ${name}"` — parts alternate between literal fragments and
+    /// `"hello ${name}"`: parts alternate between literal fragments and
     /// embedded expressions.
     InterpLit {
         parts: Vec<InterpPart>,
@@ -1142,8 +1111,8 @@ pub enum Expr {
         value: bool,
         range: SourceRange,
     },
-    /// `null` — a polymorphic literal that adopts its expected type and produces
-    /// that type's zero/default (an unset object, `0`, `false`, `""`, …).
+    /// `null`: a polymorphic literal that adopts its expected type and produces
+    /// that type's zero/default (an unset object, `0`, `false`, `""`, and so on).
     NullLit {
         range: SourceRange,
     },
@@ -1160,33 +1129,33 @@ pub enum Expr {
         range: SourceRange,
     },
     FieldAccess {
-        obj: Box<Expr>,
+        obj: Box<Self>,
         field: String,
         range: SourceRange,
     },
     IndexAccess {
-        obj: Box<Expr>,
-        index: Box<Expr>,
+        obj: Box<Self>,
+        index: Box<Self>,
         range: SourceRange,
     },
     TuplePick {
-        obj: Box<Expr>,
+        obj: Box<Self>,
         index: usize,
         range: SourceRange,
     },
     UnOp {
         op: String,
-        operand: Box<Expr>,
+        operand: Box<Self>,
         range: SourceRange,
     },
     BinOp {
         op: String,
-        left: Box<Expr>,
-        right: Box<Expr>,
+        left: Box<Self>,
+        right: Box<Self>,
         range: SourceRange,
     },
     Call {
-        callee: Box<Expr>,
+        callee: Box<Self>,
         args: Vec<CallArg>,
         /// Explicit type arguments: `pick<int>(...)`. Empty for an
         /// ordinary call (type params, if any, are inferred from the args).
@@ -1194,26 +1163,26 @@ pub enum Expr {
         range: SourceRange,
     },
     Deref {
-        operand: Box<Expr>,
+        operand: Box<Self>,
         range: SourceRange,
     },
     RefOf {
-        operand: Box<Expr>,
+        operand: Box<Self>,
         range: SourceRange,
     },
     IfExpr {
-        cond: Box<Expr>,
-        then_branch: Box<Expr>,
-        else_branch: Box<Expr>,
+        cond: Box<Self>,
+        then_branch: Box<Self>,
+        else_branch: Box<Self>,
         range: SourceRange,
     },
     BlockExpr {
         stmts: Vec<Stmt>,
-        value: Box<Expr>,
+        value: Box<Self>,
         range: SourceRange,
     },
     MatchExpr {
-        scrutinee: Box<Expr>,
+        scrutinee: Box<Self>,
         arms: Vec<MatchArm>,
         range: SourceRange,
     },
@@ -1228,8 +1197,8 @@ pub enum Expr {
         elements: Vec<ArrayElem>,
         range: SourceRange,
     },
-    /// Asset reference `$AssetType/AssetName` — an external asset the world
-    /// embeds by name (weapon, audio/font descriptor, …).
+    /// Asset reference `$AssetType/AssetName`, an external asset the world
+    /// embeds by name (a weapon, an audio or font descriptor, and so on).
     AssetRef {
         asset_type: String,
         asset_name: String,
@@ -1238,13 +1207,13 @@ pub enum Expr {
     /// Prefab file reference `$./rel/path.brz` (relative to the current source
     /// file) or `$/abs/path.brz` (filesystem-absolute). At emit the `.brz` is
     /// read, embedded via `World::add_prefab`, and the gate's `Prefab`
-    /// path string is set to the resulting `Prefabs/Uploads/…`
+    /// path string is set to the resulting `Prefabs/Uploads/...`
     /// path. `path` is the source-level string after `$` (e.g. `./turret.brz`).
     PrefabRef {
         path: String,
         range: SourceRange,
     },
-    /// Inline nested-prefab block `` $```…``` `` — the enclosed text is a
+    /// Inline nested-prefab block `` $```...``` ``: the enclosed text is a
     /// whole Wirescript source compiled as its own program and embedded as a
     /// prefab, the same way `PrefabRef` embeds a `.brz` on disk. `source` is
     /// the verbatim text between the fences (captured by the lexer).
@@ -1258,14 +1227,14 @@ pub enum Expr {
         entries: Vec<MapLitEntry>,
         range: SourceRange,
     },
-    /// Braced-named enum payload construction, `Enum.Variant { f: v, ... }` -
+    /// Braced-named enum payload construction, `Enum.Variant { f: v, ... }`,
     /// the record-literal-shaped sibling of a positional variant construction
     /// (`Enum.Variant(args)`, which reuses the ordinary `Call` node with
     /// `callee: FieldAccess`). `path` is the `Enum.Variant` `FieldAccess`;
     /// only the parser's `looks_like_record_lit` disambiguation against a
-    /// braced block ever produces this node (see `parser/expr.rs`).
+    /// braced block produces this node.
     VariantCtor {
-        path: Box<Expr>,
+        path: Box<Self>,
         fields: Vec<RecordLitField>,
         range: SourceRange,
     },
@@ -1277,11 +1246,11 @@ pub enum Expr {
     /// slot and leaves the tag alone, so reading a variant the value is not
     /// yields that slot's stale contents rather than an error.
     ///
-    /// `inner` is the whole `value.Variant.field…` `FieldAccess` chain; the
+    /// `inner` is the whole `value.Variant.field...` `FieldAccess` chain; the
     /// first two segments select the slot and any further ones index into a
     /// record-typed payload.
     Unsafe {
-        inner: Box<Expr>,
+        inner: Box<Self>,
         range: SourceRange,
     },
     /// `value is Enum.Variant`: whether the value currently holds that
@@ -1293,14 +1262,14 @@ pub enum Expr {
     /// variant name is a normal reference for hover, go-to-definition and
     /// rename.
     Is {
-        value: Box<Expr>,
-        path: Box<Expr>,
+        value: Box<Self>,
+        path: Box<Self>,
         range: SourceRange,
     },
     /// `value as T`: the value converted to `T` (a Convert gate per scalar
     /// that changes type; a record or tuple converts field by field).
     As {
-        value: Box<Expr>,
+        value: Box<Self>,
         ty: TypeExpr,
         range: SourceRange,
     },
@@ -1318,7 +1287,7 @@ impl ArrayElem {
     /// The inner expression, regardless of whether it's an item or a spread.
     pub fn expr(&self) -> &Expr {
         match self {
-            ArrayElem::Item(e) | ArrayElem::Spread(e) => e,
+            Self::Item(e) | Self::Spread(e) => e,
         }
     }
     pub fn range(&self) -> &SourceRange {
@@ -1330,15 +1299,15 @@ impl Expr {
     /// The `<value>.Discriminant == <path>.Discriminant` comparison an
     /// [`Expr::Is`] stands for. Lowering and constant folding both go through
     /// this, so the two spellings cannot drift apart.
-    pub fn variant_test_desugared(value: &Expr, path: &Expr, range: &SourceRange) -> Expr {
+    pub fn variant_test_desugared(value: &Self, path: &Self, range: &SourceRange) -> Self {
         fn discriminant_of(e: &Expr) -> Expr {
             Expr::FieldAccess {
                 obj: Box::new(e.clone()),
-                field: "Discriminant".to_string(),
+                field: crate::typecheck::enums::DISCRIMINANT_FIELD.to_string(),
                 range: e.range().clone(),
             }
         }
-        Expr::BinOp {
+        Self::BinOp {
             op: "==".to_string(),
             left: Box::new(discriminant_of(value)),
             right: Box::new(discriminant_of(path)),
@@ -1348,36 +1317,36 @@ impl Expr {
 
     pub fn range(&self) -> &SourceRange {
         match self {
-            Expr::IntLit { range, .. }
-            | Expr::AtomLit { range, .. }
-            | Expr::FloatLit { range, .. }
-            | Expr::StringLit { range, .. }
-            | Expr::InterpLit { range, .. }
-            | Expr::BoolLit { range, .. }
-            | Expr::NullLit { range, .. }
-            | Expr::CurrentExec { range, .. }
-            | Expr::Ident { range, .. }
-            | Expr::FieldAccess { range, .. }
-            | Expr::IndexAccess { range, .. }
-            | Expr::TuplePick { range, .. }
-            | Expr::UnOp { range, .. }
-            | Expr::BinOp { range, .. }
-            | Expr::Call { range, .. }
-            | Expr::Deref { range, .. }
-            | Expr::RefOf { range, .. }
-            | Expr::IfExpr { range, .. }
-            | Expr::BlockExpr { range, .. }
-            | Expr::MatchExpr { range, .. }
-            | Expr::RecordLit { range, .. }
-            | Expr::Array { range, .. }
-            | Expr::AssetRef { range, .. }
-            | Expr::PrefabRef { range, .. }
-            | Expr::NestedPrefab { range, .. }
-            | Expr::MapLit { range, .. }
-            | Expr::VariantCtor { range, .. }
-            | Expr::Unsafe { range, .. }
-            | Expr::Is { range, .. }
-            | Expr::As { range, .. } => range,
+            Self::IntLit { range, .. }
+            | Self::AtomLit { range, .. }
+            | Self::FloatLit { range, .. }
+            | Self::StringLit { range, .. }
+            | Self::InterpLit { range, .. }
+            | Self::BoolLit { range, .. }
+            | Self::NullLit { range, .. }
+            | Self::CurrentExec { range, .. }
+            | Self::Ident { range, .. }
+            | Self::FieldAccess { range, .. }
+            | Self::IndexAccess { range, .. }
+            | Self::TuplePick { range, .. }
+            | Self::UnOp { range, .. }
+            | Self::BinOp { range, .. }
+            | Self::Call { range, .. }
+            | Self::Deref { range, .. }
+            | Self::RefOf { range, .. }
+            | Self::IfExpr { range, .. }
+            | Self::BlockExpr { range, .. }
+            | Self::MatchExpr { range, .. }
+            | Self::RecordLit { range, .. }
+            | Self::Array { range, .. }
+            | Self::AssetRef { range, .. }
+            | Self::PrefabRef { range, .. }
+            | Self::NestedPrefab { range, .. }
+            | Self::MapLit { range, .. }
+            | Self::VariantCtor { range, .. }
+            | Self::Unsafe { range, .. }
+            | Self::Is { range, .. }
+            | Self::As { range, .. } => range,
         }
     }
 }
@@ -1427,6 +1396,49 @@ pub enum CallArg {
     Spread(Expr),
 }
 
+/// Lookups on a call's argument list.
+pub trait CallArgs {
+    /// The value of the first argument named exactly `name`.
+    fn named(&self, name: &str) -> Option<&Expr>;
+    /// The arguments given by position, in order.
+    fn positionals(&self) -> impl Iterator<Item = &Expr>;
+    fn has_spread(&self) -> bool;
+
+    /// The `exec = ...` argument's value.
+    fn exec_arg(&self) -> Option<&Expr> {
+        self.named("exec")
+    }
+
+    fn has_exec_arg(&self) -> bool {
+        self.exec_arg().is_some()
+    }
+
+    /// The argument named `name`, else the `pos`th positional one.
+    fn arg_for(&self, name: &str, pos: usize) -> Option<&Expr> {
+        self.named(name).or_else(|| self.positionals().nth(pos))
+    }
+}
+
+impl CallArgs for [CallArg] {
+    fn named(&self, name: &str) -> Option<&Expr> {
+        self.iter().find_map(|a| match a {
+            CallArg::Named { name: n, value, .. } if n == name => Some(value),
+            _ => None,
+        })
+    }
+
+    fn positionals(&self) -> impl Iterator<Item = &Expr> {
+        self.iter().filter_map(|a| match a {
+            CallArg::Positional(e) => Some(e),
+            _ => None,
+        })
+    }
+
+    fn has_spread(&self) -> bool {
+        self.iter().any(|a| matches!(a, CallArg::Spread(_)))
+    }
+}
+
 /// A refutable pattern, shared by `match` arms, `if let` and `let ... else`.
 /// The parser is deliberately naive about a bare identifier:
 /// `Pattern::Binding` covers both an irrefutable capture (`v`) and a unit
@@ -1441,10 +1453,10 @@ pub enum Pattern {
     },
     Variant {
         /// The enum the pattern names, when it was written qualified
-        /// (`Shape.Circle(r)`). Construction and `is` both REQUIRE the
+        /// (`Shape.Circle(r)`). Construction and `is` both require the
         /// qualified form, so a pattern is routinely written that way too;
-        /// the scrutinee's own type is what decides the enum, and this is
-        /// checked against it rather than used to resolve.
+        /// the scrutinee's own type decides the enum, and this is checked
+        /// against it rather than used to resolve.
         enum_path: Option<String>,
         variant: String,
         sub: VariantPattern,
@@ -1471,14 +1483,14 @@ pub enum Pattern {
     /// `template` when written as one string (`"say ${rest}"`), whose `${name}`
     /// reads like an interpolation but binds.
     Concat {
-        parts: Vec<Pattern>,
+        parts: Vec<Self>,
         template: bool,
         range: SourceRange,
     },
     /// `p | q`: matches when any alternative does. An alternative binds no
     /// names.
     Or {
-        alts: Vec<Pattern>,
+        alts: Vec<Self>,
         range: SourceRange,
     },
 }
@@ -1486,13 +1498,13 @@ pub enum Pattern {
 impl Pattern {
     pub fn range(&self) -> &SourceRange {
         match self {
-            Pattern::Wildcard(range)
-            | Pattern::Binding { range, .. }
-            | Pattern::Variant { range, .. }
-            | Pattern::Literal { range, .. }
-            | Pattern::Range { range, .. }
-            | Pattern::Concat { range, .. }
-            | Pattern::Or { range, .. } => range,
+            Self::Wildcard(range)
+            | Self::Binding { range, .. }
+            | Self::Variant { range, .. }
+            | Self::Literal { range, .. }
+            | Self::Range { range, .. }
+            | Self::Concat { range, .. }
+            | Self::Or { range, .. } => range,
         }
     }
 }

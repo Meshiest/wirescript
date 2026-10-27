@@ -2,15 +2,14 @@
 //!
 //! A whole-record assignment is a parallel assignment: every source is read
 //! before any field is written, in source order, and each container is copied
-//! before anything replaces it. [`assign_literal`] writes a literal in the
-//! order it has always been written (container elements and nested literals
-//! lowered where their field is written) whenever that order reads the same
-//! values, and otherwise evaluates first and orders the container writes.
+//! before anything replaces it. [`assign_literal`] lowers container elements and
+//! nested literals where their field is written whenever that reads the same
+//! values, and otherwise evaluates every source first and orders the container
+//! writes.
 
 use std::borrow::Cow;
 
 use super::*;
-use crate::intern::Sym;
 use crate::lower::ordered::{
     Held, Later, Ordered, Reads, State, Writes, binding_reads, copied, hold, live_reads,
     storage_leaves,
@@ -23,7 +22,7 @@ use crate::lower::stmt::{
 /// Whether evaluating `e` only reads: no call, no container method, nothing
 /// that runs. Such a value may be lowered later than its source position, with
 /// only its reads to account for.
-fn inert(ctx: &LowerCtx, e: &Expr) -> bool {
+fn inert(ctx: &LowerCtx<'_>, e: &Expr) -> bool {
     match e {
         Expr::IntLit { .. }
         | Expr::AtomLit { .. }
@@ -51,7 +50,7 @@ fn inert(ctx: &LowerCtx, e: &Expr) -> bool {
             .all(|en| inert(ctx, &en.key) && inert(ctx, &en.value)),
         Expr::InterpLit { parts, .. } => parts.iter().all(|p| match p {
             InterpPart::Expr(x) => inert(ctx, x),
-            _ => true,
+            InterpPart::Lit(_) => true,
         }),
         _ => false,
     }
@@ -59,7 +58,7 @@ fn inert(ctx: &LowerCtx, e: &Expr) -> bool {
 
 /// [`inert`] for a record literal's fields; a spread only of a record naming
 /// storage, whose fields are known without lowering it.
-fn inert_fields(ctx: &LowerCtx, fields: &[RecordLitField]) -> bool {
+fn inert_fields(ctx: &LowerCtx<'_>, fields: &[RecordLitField]) -> bool {
     fields.iter().all(|f| match f {
         RecordLitField::Named { value, .. } => inert(ctx, value),
         RecordLitField::Shorthand { .. } => true,
@@ -70,7 +69,7 @@ fn inert_fields(ctx: &LowerCtx, fields: &[RecordLitField]) -> bool {
 }
 
 /// What an [`inert`] expression reads.
-fn inert_reads(ctx: &LowerCtx, e: &Expr) -> Reads {
+fn inert_reads(ctx: &LowerCtx<'_>, e: &Expr) -> Reads {
     if let Some(b) = resolve_field_chain(ctx, e) {
         return binding_reads(ctx, b);
     }
@@ -99,13 +98,15 @@ fn inert_reads(ctx: &LowerCtx, e: &Expr) -> Reads {
             }
             RecordLitField::Shorthand { .. } => None,
         })),
-        Expr::Array { elements, .. } => all(&mut elements.iter().map(|el| el.expr())),
+        Expr::Array { elements, .. } => {
+            all(&mut elements.iter().map(super::super::ast::ArrayElem::expr));
+        }
         Expr::MapLit { entries, .. } => {
-            all(&mut entries.iter().flat_map(|en| [&en.key, &en.value]))
+            all(&mut entries.iter().flat_map(|en| [&en.key, &en.value]));
         }
         Expr::InterpLit { parts, .. } => all(&mut parts.iter().filter_map(|p| match p {
             InterpPart::Expr(x) => Some(x.as_ref()),
-            _ => None,
+            InterpPart::Lit(_) => None,
         })),
         _ => {}
     }
@@ -131,16 +132,14 @@ fn shorthand_names(e: &Expr) -> impl Iterator<Item = &String> {
 /// Whether a field of `target` given `value` is rebuilt from a literal or a
 /// named constant (or, for a plain container, reported as WS027) rather than
 /// written from a value.
-pub(super) fn rebuilt(ctx: &LowerCtx, target: Option<&Binding>, value: &Expr) -> bool {
+pub(super) fn rebuilt(ctx: &LowerCtx<'_>, target: Option<&Binding>, value: &Expr) -> bool {
     match (target, value) {
         (Some(Binding::Var(v)), _) => matches!(v.storage, VarStorage::Array | VarStorage::Map),
         (
             Some(Binding::Record(_)),
             Expr::Array { .. } | Expr::MapLit { .. } | Expr::RecordLit { .. },
         ) => true,
-        (Some(Binding::Record(_)), value) => {
-            crate::lower::predeclare::const_container_init(ctx, value).is_some()
-        }
+        (Some(Binding::Record(_)), value) => const_container_init(ctx, value).is_some(),
         _ => false,
     }
 }
@@ -162,7 +161,7 @@ pub(super) fn named_field(f: &RecordLitField) -> Option<(&String, Cow<'_, Expr>)
 
 /// A record literal being assigned, every source planned.
 struct Lit<'e> {
-    target: HashMap<Sym, Binding>,
+    target: Fields,
     path: String,
     /// Every source in source order, including the ones a later source
     /// overrides.
@@ -195,14 +194,17 @@ enum Part<'e> {
 
 /// Plan the literal `fields` assigned to `target`: every source that runs
 /// code is lowered now, in source order, and an [`inert`] one waits.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "recursion carries the whole planning state"
+)]
 fn plan<'e>(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     ord: &mut Ordered<'e>,
-    target: HashMap<Sym, Binding>,
+    target: Fields,
     path: String,
     fields: &'e [RecordLitField],
-    slots: Slots,
+    slots: Slots<'_>,
     deferred: bool,
     range: &SourceRange,
 ) -> Lit<'e> {
@@ -214,7 +216,7 @@ fn plan<'e>(
         deferred,
     };
     for (i, f) in fields.iter().enumerate() {
-        let key = named_field(f).map(|(name, _)| crate::intern::intern(name));
+        let key = named_field(f).map(|(name, _)| intern(name));
         let field_slots = named_field(f).map_or(Slots::Unknown, |(name, _)| slots.field(name));
         let t = key.and_then(|k| lit.target.get(&k)).cloned();
         let part = match (named_field(f), t) {
@@ -261,18 +263,14 @@ fn plan<'e>(
                 let lowered = (!deferred).then(|| {
                     // Fields a later source supplies again are never read, so
                     // never held.
-                    let later = crate::lower::decl::supplied_by(ctx, &fields[i + 1..]);
+                    let later = supplied_by(ctx, &fields[i + 1..]);
                     let target = &lit.target;
                     ord.source(ctx, &lit.path, Some(&t), range, |ctx| {
                         let full = match f {
                             RecordLitField::Spread { value, .. } => {
                                 branch_record_fields(ctx, value).unwrap_or_default()
                             }
-                            _ => crate::lower::decl::lower_record_lit(
-                                ctx,
-                                std::slice::from_ref(f),
-                                field_slots,
-                            ),
+                            _ => lower_record_lit(ctx, std::slice::from_ref(f), field_slots),
                         };
                         let mut read = full.clone();
                         read.retain(|k, b| {
@@ -296,7 +294,7 @@ fn plan<'e>(
                 let watches = named
                     .iter()
                     .filter_map(|(k, b)| {
-                        let path = format!("{}.{}", lit.path, crate::intern::resolve(*k));
+                        let path = format!("{}.{}", lit.path, resolve(*k));
                         Some((*k, ord.watch(path, copied(b), range)?))
                     })
                     .collect();
@@ -346,7 +344,7 @@ fn plan<'e>(
 /// Plan a container field rebuilt from the literal `value`: an [`inert`]
 /// element waits for the rebuild, any other is lowered now.
 fn plan_rebuild<'e>(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     ord: &mut Ordered<'e>,
     target: Binding,
     path: String,
@@ -428,7 +426,7 @@ impl Lit<'_> {
     /// The fields' sources, each from the last source supplying it, less any
     /// that would copy a field onto its own storage. `get` gives a slot's
     /// record.
-    fn sources(&self, get: &mut dyn FnMut(usize) -> Option<Binding>) -> HashMap<Sym, Binding> {
+    fn sources(&self, get: &mut dyn FnMut(usize) -> Option<Binding>) -> Fields {
         let mut src = HashMap::default();
         for (k, &p) in &self.latest {
             if let Part::Src { slot, .. } = &self.parts[p]
@@ -501,17 +499,12 @@ fn flat<'a>(
 
 /// The writes that put `src` into `target`, one per leaf, in `target`'s
 /// iteration order: a scalar leaf is set and a container leaf copied.
-fn field_writes(
-    target: &HashMap<Sym, Binding>,
-    src: &HashMap<Sym, Binding>,
-    path: &str,
-    out: &mut Vec<Write<'_>>,
-) {
-    for (fname, tbind) in crate::lower::stmt::in_field_order(target) {
+fn field_writes(target: &Fields, src: &Fields, path: &str, out: &mut Vec<Write<'_>>) {
+    for (fname, tbind) in in_field_order(target) {
         let Some(sbind) = src.get(&fname) else {
             continue;
         };
-        let field_path = format!("{path}.{}", crate::intern::resolve(fname));
+        let field_path = format!("{path}.{}", resolve(fname));
         match tbind {
             Binding::Record(tf) => {
                 if let Binding::Record(sf) = sbind {
@@ -534,7 +527,7 @@ fn field_writes(
 
 /// The containers `w` replaces, and the containers it reads when it runs (a
 /// copy's source, or a rebuild's spreads of other containers).
-fn container_io(ctx: &LowerCtx, w: &Write) -> (HashSet<NodeId>, HashSet<NodeId>) {
+fn container_io(ctx: &LowerCtx<'_>, w: &Write<'_>) -> (HashSet<NodeId>, HashSet<NodeId>) {
     let (mut dsts, mut reads) = (HashSet::default(), HashSet::default());
     match w {
         Write::Set { .. } => {}
@@ -563,7 +556,7 @@ fn container_io(ctx: &LowerCtx, w: &Write) -> (HashSet<NodeId>, HashSet<NodeId>)
 /// write replaces it, and otherwise as listed. Containers that read each
 /// other in a cycle have no such order; those come last, and are the second
 /// list.
-fn write_order(ctx: &LowerCtx, writes: &[Write]) -> (Vec<usize>, Vec<usize>) {
+fn write_order(ctx: &LowerCtx<'_>, writes: &[Write<'_>]) -> (Vec<usize>, Vec<usize>) {
     let io: Vec<(HashSet<NodeId>, HashSet<NodeId>)> =
         writes.iter().map(|w| container_io(ctx, w)).collect();
     // `before[j]`: every other write that reads a container write `j` replaces.
@@ -592,13 +585,13 @@ fn write_order(ctx: &LowerCtx, writes: &[Write]) -> (Vec<usize>, Vec<usize>) {
 
 /// Run `writes` in `order`.
 fn run_writes(
-    ctx: &mut LowerCtx,
-    ord: &mut Ordered,
-    writes: Vec<Write>,
+    ctx: &mut LowerCtx<'_>,
+    ord: &mut Ordered<'_>,
+    writes: Vec<Write<'_>>,
     order: &[usize],
     range: &SourceRange,
 ) {
-    let mut writes: Vec<Option<Write>> = writes.into_iter().map(Some).collect();
+    let mut writes: Vec<Option<Write<'_>>> = writes.into_iter().map(Some).collect();
     for &i in order {
         match writes[i].take() {
             Some(Write::Set { target, value }) => {
@@ -607,7 +600,7 @@ fn run_writes(
                 }
             }
             Some(Write::Copy { target, source, .. }) => {
-                copy_container(ctx, &target, &source, range)
+                copy_container(ctx, &target, &source, range);
             }
             Some(Write::Rebuild {
                 target,
@@ -623,8 +616,8 @@ fn run_writes(
 /// Rebuild the container `target` from the literal `value`, each element from
 /// its slots.
 fn rebuild(
-    ctx: &mut LowerCtx,
-    ord: &mut Ordered,
+    ctx: &mut LowerCtx<'_>,
+    ord: &mut Ordered<'_>,
     target: &Binding,
     path: &str,
     value: &Expr,
@@ -633,9 +626,9 @@ fn rebuild(
 ) {
     let columns = matches!(target, Binding::Record(_));
     if !literal_for(target, value)
-        && let Some(lit) = crate::lower::predeclare::const_container_init(ctx, value)
+        && let Some(lit) = const_container_init(ctx, value)
     {
-        crate::lower::stmt::rebuild_from_constant(ctx, target, path, value, lit, range);
+        rebuild_from_constant(ctx, target, path, value, lit, range);
         return;
     }
     if let Binding::Var(v) = target
@@ -650,7 +643,7 @@ fn rebuild(
         if slots.is_empty() || (is_map && columns && ctx.current_exec.is_none()) {
             return Supplied::Skip;
         }
-        let port = |ctx: &mut LowerCtx, b: Option<Binding>| {
+        let port = |ctx: &mut LowerCtx<'_>, b: Option<Binding>| {
             b.and_then(|b| binding_to_port(ctx, &b, range))
         };
         let first = ord.value(ctx, slots[0]);
@@ -690,7 +683,12 @@ fn literal_for(target: &Binding, value: &Expr) -> bool {
 /// Write `lit` as it lowers: a waiting literal's field sources where it is
 /// written, then its rebuilds in source order, their waiting elements lowered
 /// in place, then its fields.
-fn emit_in_place(ctx: &mut LowerCtx, ord: &mut Ordered, lit: &Lit, range: &SourceRange) {
+fn emit_in_place(
+    ctx: &mut LowerCtx<'_>,
+    ord: &mut Ordered<'_>,
+    lit: &Lit<'_>,
+    range: &SourceRange,
+) {
     if lit.deferred {
         for p in &lit.parts {
             if let Part::Src { slot, .. } = p {
@@ -715,7 +713,12 @@ fn emit_in_place(ctx: &mut LowerCtx, ord: &mut Ordered, lit: &Lit, range: &Sourc
 }
 
 /// WS087: the writes left undone each read a container another one replaces.
-fn report_cycle(ctx: &mut LowerCtx, writes: &[Write], stuck: &[usize], range: &SourceRange) {
+fn report_cycle(
+    ctx: &mut LowerCtx<'_>,
+    writes: &[Write<'_>],
+    stuck: &[usize],
+    range: &SourceRange,
+) {
     let mut paths: Vec<String> = stuck
         .iter()
         .filter_map(|&i| match &writes[i] {
@@ -743,8 +746,8 @@ fn report_cycle(ctx: &mut LowerCtx, writes: &[Write], stuck: &[usize], range: &S
 /// source supplies other than one naming the field's own storage. `named`
 /// gives a slot's record as far as it names storage.
 fn lit_written(
-    ctx: &LowerCtx,
-    lit: &Lit,
+    ctx: &LowerCtx<'_>,
+    lit: &Lit<'_>,
     named: &mut dyn FnMut(usize) -> Option<Binding>,
     w: &mut Writes,
 ) {
@@ -766,12 +769,12 @@ fn lit_written(
 }
 
 /// The storage `writes` write.
-fn written(ctx: &LowerCtx, writes: &[Write]) -> Writes {
+fn written(ctx: &LowerCtx<'_>, writes: &[Write<'_>]) -> Writes {
     let mut w = Writes::default();
     for write in writes {
         match write {
             Write::Set { target, .. } | Write::Copy { target, .. } => {
-                w.add(ctx, &Binding::Var(target.clone()))
+                w.add(ctx, &Binding::Var(target.clone()));
             }
             Write::Rebuild { target, .. } => w.add(ctx, target),
         }
@@ -793,11 +796,11 @@ fn written(ctx: &LowerCtx, writes: &[Write]) -> Writes {
 /// replaced it, every source is read first and the container writes are
 /// ordered; a cycle is WS087.
 pub(super) fn assign_literal(
-    ctx: &mut LowerCtx,
-    target: &HashMap<Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    target: &Fields,
     path: &str,
     fields: &[RecordLitField],
-    slots: Slots,
+    slots: Slots<'_>,
     range: &SourceRange,
 ) {
     let mut ord = Ordered::default();
@@ -845,7 +848,12 @@ pub(super) fn assign_literal(
 }
 
 /// Run `writes` in [`write_order`], reporting a cycle.
-fn order_and_run(ctx: &mut LowerCtx, ord: &mut Ordered, writes: Vec<Write>, range: &SourceRange) {
+fn order_and_run(
+    ctx: &mut LowerCtx<'_>,
+    ord: &mut Ordered<'_>,
+    writes: Vec<Write<'_>>,
+    range: &SourceRange,
+) {
     let (order, stuck) = write_order(ctx, &writes);
     if !stuck.is_empty() {
         report_cycle(ctx, &writes, &stuck, range);
@@ -857,22 +865,22 @@ fn order_and_run(ctx: &mut LowerCtx, ord: &mut Ordered, writes: Vec<Write>, rang
 /// storage the assignment writes read first, and each container copied before
 /// anything replaces it.
 pub(super) fn assign_value(
-    ctx: &mut LowerCtx,
-    target: &HashMap<Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    target: &Fields,
     path: &str,
-    mut src: HashMap<Sym, Binding>,
+    mut src: Fields,
     range: &SourceRange,
 ) {
     let mut writes = Vec::new();
     field_writes(target, &src, path, &mut writes);
     let w = written(ctx, &writes);
     let mut keys: Vec<Sym> = src.keys().copied().collect();
-    keys.sort_by_key(|k| crate::intern::resolve(*k));
+    keys.sort_by_key(|k| resolve(*k));
     let mut held = Held::default();
     let mut changed = false;
     for k in keys {
         if w.changes(&binding_reads(ctx, &src[&k])) {
-            let label = format!("{path}.{}", crate::intern::resolve(k));
+            let label = format!("{path}.{}", resolve(k));
             let now = hold(ctx, &src[&k], target.get(&k), &label, range, &mut held);
             src.insert(k, now);
             changed = true;

@@ -1,6 +1,6 @@
-//! Allocation-site attribution for the `lower` stage (temporary tooling).
-//!   cargo run --release -p wirescript --features dhat-heap --example dhat_lower -- <file.ws>
-//! Writes dhat-heap.json (view at https://nnethercote.github.io/dh_view/dh_view.html).
+//! Allocation-site attribution for the `lower` stage.
+//!   `cargo run --release -p wirescript --features dhat-heap --example dhat_lower -- <file.ws>`
+//! Writes dhat-heap.json (view at <https://nnethercote.github.io/dh_view/dh_view.html>).
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -17,23 +17,23 @@ fn main() {
         let source = std::fs::read_to_string(&file).expect("read source");
 
         let resolved = wirescript::resolve::resolve(&source, &file, &wirescript::resolve::FsLoader);
-        let (tc, ce_slots) = wirescript::typecheck::typecheck_with_inference(&resolved.ast, &file);
-        let cache = std::sync::Arc::new(wirescript::template_cache::TemplateCache::new());
+        let (tc, ce_slots) = wirescript::typecheck_with_inference(&resolved.ast);
+        let cache = std::sync::Arc::new(wirescript::TemplateCache::new());
 
-        let _profiler = dhat::Profiler::new_heap();
-        let lowered = wirescript::lower::lower(wirescript::lower::LowerInput {
+        let profiler = dhat::Profiler::new_heap();
+        let lowered = wirescript::lower(wirescript::LowerInput {
             ast: &resolved.ast,
             type_of_expr: &tc.type_of_expr,
             op_resolutions: &tc.op_resolutions,
             resolutions: &tc.resolutions,
             file: &file,
             module_name: None,
-            template_cache: cache.clone(),
+            template_cache: cache,
             doc_comments: &resolved.doc_comments,
-            fold_mode: wirescript::lower::FoldMode::Auto,
+            fold_mode: wirescript::FoldMode::Auto,
             ce_slots: &ce_slots,
         });
-        drop(_profiler);
+        drop(profiler);
         eprintln!("lowered: {} nodes", lowered.module.nodes.len());
     }
 }

@@ -5,7 +5,7 @@ use crate::typecheck::{ContainerKind, MethodTarget};
 
 /// Whether `obj` already names a real array/map storage gate, in which case the
 /// ordinary runtime lowering owns the call and no fold may run ahead of it.
-fn receiver_has_runtime_container(ctx: &LowerCtx, obj: &Expr) -> bool {
+fn receiver_has_runtime_container(ctx: &LowerCtx<'_>, obj: &Expr) -> bool {
     let Expr::Ident { name, .. } = obj else {
         // Any other receiver shape (a field, an element, a parameter) is
         // resolved by the paths below, which this fold must not pre-empt.
@@ -25,25 +25,25 @@ fn receiver_has_runtime_container(ctx: &LowerCtx, obj: &Expr) -> bool {
 /// as a literal source gate. The method-call analogue of
 /// `access::const_fold_index_access`, sharing its `wire_type_of_literal` +
 /// `literal_node_range` pair so both agree on which literals have a wire form.
-fn const_fold_container_call(ctx: &mut LowerCtx, e: &Expr, range: &SourceRange) -> Option<PortRef> {
-    let lit = {
-        let lookup = |n: &str| ctx.resolve_mod(n);
-        let mut budget = crate::const_eval::Budget::default();
-        crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()?
-    };
+fn const_fold_container_call(
+    ctx: &mut LowerCtx<'_>,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let lit = ctx.const_eval(e, ConstScope::Plain).ok()?;
     let ty = crate::lower::expr::wire_type_of_literal(&lit)?;
-    Some(crate::lower::expr::literal_node_range(ctx, range, ty, lit))
+    Some(literal_node_range(ctx, range, ty, lit))
 }
 
-pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
-    let (callee, args, type_args, range) = match e {
-        Expr::Call {
-            callee,
-            args,
-            type_args,
-            range,
-        } => (callee, args, type_args, range),
-        _ => return synthesise_unsupported(ctx, e),
+pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx<'_>, e: &Expr) -> PortRef {
+    let Expr::Call {
+        callee,
+        args,
+        type_args,
+        range,
+    } = e
+    else {
+        return synthesise_unsupported(ctx, e);
     };
     if let Expr::Ident {
         name,
@@ -58,14 +58,13 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         if let Some(spec) = find_call(name) {
             return lower_builtin_call(ctx, spec, None, args, range, e);
         }
-        // An event used as an expression (`RoundStart()`, `Clock(interval = 2.0)`,
-        // `CharacterSpawned()`): emit the event gate — wiring named args into its
-        // input ports and baking its config — and yield its exec output (data
-        // outputs are reachable by field access on the returned node, e.g.
-        // `CharacterSpawned().character`). Mirrors the `on <event>` handler path.
+        // An event used as an expression (`Clock(interval = 2.0)`) emits the
+        // event gate, wiring named args into its inputs and baking its config,
+        // and yields its exec output; data outputs are read by field access
+        // (`CharacterSpawned().character`). Mirrors the `on <event>` path.
         if let Some(evt) = crate::catalog::events::find_event(name) {
-            // Named args wired into a gate INPUT port (`interval`, `enabled`,
-            // `zone`, …); positional/named literals bake config below.
+            // Named args wired into a gate input port (`interval`, `enabled`,
+            // `zone` and so on); other literals bake config below.
             let mut input_wires: Vec<(&'static str, &Type, &Expr)> = Vec::new();
             for (surf, port, ty) in &evt.input_named {
                 for arg in args {
@@ -99,14 +98,10 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             return port_ref(event_node, evt.exec_out);
         }
-        // An identifier callee that is neither an in-scope chip/mod nor a
-        // builtin. If the name IS declared as a chip/mod somewhere in the
-        // program, it's a use-before-declaration (chips/mods register in source
-        // order): the call would otherwise synthesise an `_Unsupported` gate
-        // that silently reads its default (0) at runtime — make it a hard error.
-        // Names that are not chips/mods at all (e.g. a builtin not yet lowered)
-        // fall through to the usual placeholder path. A chip/mod in scope that
-        // the calling file can't name is the type checker's `WS002`.
+        // Neither a callable chip/mod nor a builtin. A chip/mod in scope that
+        // the calling file cannot name is typecheck's WS002. One declared later
+        // in the program is a use before declaration (chips/mods register in
+        // source order), a hard error rather than a placeholder reading 0.
         if ctx.lookup_chip(name).is_some() {
             return synthesise_unsupported_range(ctx, &format!("the call `{name}(..)`"), range);
         }
@@ -132,40 +127,23 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     }
     // Method calls: arr.push(val), arr.pop()
     if let Expr::FieldAccess { obj, field, .. } = callee.as_ref() {
-        // Test-only hook: pins that typecheck's recorded resolution and
-        // lowering's own re-derivation agree on the resolution KEY for nested
-        // and generic bodies — something no output-level test can observe
-        // (a wrong key can still lower to the right gates by luck). Costs
-        // nothing in non-test builds.
+        // Test-only hook: checks that typecheck's recorded resolution and
+        // lowering's re-derivation agree on the resolution key for nested and
+        // generic bodies, which output-level tests cannot observe.
         #[cfg(test)]
         crate::lower::tests::resolution::probe_method_call(ctx, e);
-        // A `const` array/map used as a method receiver: give it its runtime
-        // form first, so the receiver shapes below resolve it exactly like a
-        // `var` instead of falling through to the WS044 backstop. A no-op for
-        // every other receiver (and for a name that already has a binding), so
-        // the resolution order below is unchanged.
-        //
-        // MUTATION is not filtered here — `lower_array_method` /
-        // `lower_map_method` reject it on the resolved gate node (see
-        // `reject_const_container_mutation`), which also covers the aliased
-        // spellings this site can't see, such as the container arriving through
-        // a `ys: T[]` parameter.
+        // A `const` array/map receiver gets its runtime form first, so the
+        // shapes below resolve it like a `var` (a no-op for any other
+        // receiver). Mutation is rejected on the resolved gate node by
+        // `reject_const_container_mutation`, which also sees aliases.
         if crate::catalog::arrays::is_array_method(field)
             || crate::catalog::maps::is_map_method(field)
         {
-            // A read whose value is already compile-time known, on a receiver
-            // that has no runtime container gate here. Typecheck exempts a
-            // non-mutating call on a `const` receiver from the exec-context
-            // rule (`container_call_exec_exempt`) because it is expected to
-            // fold, so lowering owes it a fold: in pure context there is no
-            // exec chain to hang the real gate on, and the map path answers
-            // that by handing back the receiver's own ref port - the container
-            // reference silently standing in for the value.
-            //
-            // Ordered exactly like `const_fold_index_access`: only when the
-            // receiver resolves to NO runtime container binding, so a `const`
-            // shadowed by a same-named runtime `var` still reads the var and no
-            // program that already lowered correctly can change.
+            // A compile-time-known read on a receiver with no runtime
+            // container binding must fold: typecheck exempts it from the
+            // exec-context rule (`container_call_exec_exempt`), and the map
+            // path in pure context would return the container ref as the value.
+            // A runtime `var` shadowing the `const` still reads the var.
             if !receiver_has_runtime_container(ctx, obj)
                 && let Some(port) = const_fold_container_call(ctx, e, range)
             {
@@ -173,14 +151,10 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             materialize_const_container(ctx, obj);
         }
-        // `soa.field.sort(desc?)` where `soa` is a record array: sort the WHOLE
-        // record by that field (reorder every sibling column via sortMultiple),
-        // instead of sorting the one column and desyncing the rows. Checked
-        // before the column's own container method below, which would sort in place.
-        // Typecheck's kind for `soa` says whether `.field` is a column at all: a
-        // record VARIABLE with array fields binds the same way but is not one.
-        // A nested column (`qs.p.x`) climbs to the root record array, so every
-        // column of the row moves with the key.
+        // `soa.field.sort(desc?)` on a record array sorts whole rows by that
+        // field (every column of the root record array moves with the key),
+        // checked before the column's own in-place sort. Typecheck's kind tells
+        // a column from an array field of a record variable.
         if field == "sort"
             && let Expr::FieldAccess {
                 obj: base,
@@ -215,9 +189,15 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                             ContainerKind::Array { elem } => {
                                 lower_array_method(ctx, port, elem, &method, args, range, e)
                             }
-                            ContainerKind::Map { .. } => {
-                                lower_map_method(ctx, port, kind.as_type(), &method, args, range, e)
-                            }
+                            ContainerKind::Map { .. } => lower_map_method(
+                                ctx,
+                                port,
+                                &kind.as_type(),
+                                &method,
+                                args,
+                                range,
+                                e,
+                            ),
                         };
                     }
                     Some(ContainerSource::Columns(fields)) => {
@@ -235,11 +215,10 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             Some(MethodTarget::Builtin(name)) => {
                 if let Some(spec) = find_call(&name) {
-                    // A named-target receiver (`entity.SendCustomEvent(…)`) binds the
-                    // object to a specific param (`target`) rather than the first, so
-                    // append it as a named arg and let the normal binding path place it.
+                    // A named-target receiver (`entity.SendCustomEvent(...)`) binds
+                    // to a specific param (`target`), so it is appended as a named arg.
                     if let Some(tp) = spec.receiver_target_param() {
-                        let mut recv_args: Vec<CallArg> = args.to_vec();
+                        let mut recv_args: Vec<CallArg> = args.clone();
                         recv_args.push(CallArg::Named {
                             name: tp.to_string(),
                             name_range: obj.range().clone(),
@@ -247,24 +226,16 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                         });
                         return lower_builtin_call(ctx, spec, None, &recv_args, range, e);
                     }
-                    // The receiver fills the spec's first param; passing it separately
-                    // avoids deep-cloning the receiver + args into a new arg vector.
+                    // The receiver fills the spec's first param.
                     return lower_builtin_call(ctx, spec, Some(obj), args, range, e);
                 }
             }
-            // User `self`-receiver method calls: `v.dist(o)` where `dist` is a user
-            // mod/chip whose first parameter is named `self`. Desugars to
-            // `dist(v, o)` by prepending the receiver as positional arg 0.
-            // Typecheck classifies a builtin of the same name first, so the
-            // builtin wins on its own receiver type (WS035 rejects a self-mod
-            // shadowing a builtin).
+            // `v.dist(o)` on a user mod/chip whose first parameter is `self`
+            // desugars to `dist(v, o)`. A same-named builtin wins (WS035
+            // rejects a self-mod shadowing one).
             Some(MethodTarget::SelfMod(name)) => {
-                // Re-check `is_self_receiver` at the lowering scope: the
-                // recorded target names a chip that WAS a self-receiver where
-                // typecheck resolved it, but a lowering-scope shadow of a
-                // non-`self` chip with the same name (e.g. a different generic
-                // instantiation's local) would otherwise get the receiver
-                // prepended silently.
+                // Re-checked at the lowering scope, where a same-named
+                // non-`self` chip may shadow the one typecheck resolved.
                 if let Some(chip_decl) = ctx.self_mod_chip(&name, &range.file).cloned() {
                     let mut recv_args = Vec::with_capacity(args.len() + 1);
                     recv_args.push(CallArg::Positional(obj.as_ref().clone()));
@@ -274,12 +245,8 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
             }
             None => {}
         }
-        // Backstop for the whole container-method class: `field` IS an array/map
-        // method, but its receiver resolved to none of the container bindings
-        // above. Without this it would fall through to a silent `_Unsupported`
-        // gate (the exact `Map<K,V>`-passed-by-value failure mode). Report it so
-        // a future container type that misses a binding site can't ship a
-        // no-diagnostic miscompile.
+        // An array/map method whose receiver resolved to no container binding
+        // is reported, not left as a silent `_Unsupported` gate.
         if crate::catalog::arrays::is_array_method(field)
             || crate::catalog::maps::is_map_method(field)
         {
@@ -293,18 +260,17 @@ pub(in crate::lower) fn lower_call(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     synthesise_unsupported(ctx, e)
 }
 
-/// Bake an event's config args (`ChatCommand("greet", Description = "…")`) into
-/// its gate data-struct properties, for the event-as-expression form. Positional
-/// literals fill `config_positional` in order; a named arg targets a `config_named`
-/// field (case-insensitive). Non-matching or non-literal args are ignored — input
-/// wires (`config_named` is disjoint from `input_named`) and non-constant values
-/// are handled separately. Mirrors `handler::event_config_props`.
+/// Bake an event's config args (`ChatCommand("greet", Description = "...")`)
+/// into its gate properties, for the event-as-expression form. Positional
+/// literals fill `config_positional` in order; a named arg targets a
+/// `config_named` field (case-insensitive). Other args are ignored. Mirrors
+/// `handler::event_config_props`.
 fn event_config_props_from_call_args(
     evt: &crate::catalog::events::EventSpec,
     args: &[CallArg],
     consts: &crate::const_scope::ConstNames,
-) -> HashMap<crate::intern::Sym, Literal> {
-    let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::default();
+) -> HashMap<Sym, Literal> {
+    let mut props: HashMap<Sym, Literal> = HashMap::default();
     let mut positional = 0;
     for arg in args {
         let (field, value) = match arg {
@@ -331,7 +297,7 @@ fn event_config_props_from_call_args(
 }
 
 /// Whether typecheck resolved `e` as an array of records.
-fn is_record_array_kind(ctx: &LowerCtx, e: &Expr) -> bool {
+fn is_record_array_kind(ctx: &LowerCtx<'_>, e: &Expr) -> bool {
     matches!(
         ctx.container_kind(e),
         Some(ContainerKind::Array {

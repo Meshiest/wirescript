@@ -16,6 +16,14 @@ test-lib:
 test-exhaustive:
     cargo test --workspace -- --ignored
 
+# Format the Rust code
+fmt-rs:
+    cargo fmt --all
+
+# Lint every crate and target with the workspace lint table
+clippy:
+    cargo clippy --workspace --all-targets
+
 # Run a specific test by name
 test-one name:
     cargo test -p wirescript --lib -- {{name}}

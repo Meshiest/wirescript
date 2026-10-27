@@ -81,11 +81,11 @@ enum Form {
 impl Form {
     fn label(self) -> &'static str {
         match self {
-            Form::Positional => "pos",
-            Form::Required => "req",
-            Form::Exec => "exec",
-            Form::Named => "named",
-            Form::NamedExec => "named-exec",
+            Self::Positional => "pos",
+            Self::Required => "req",
+            Self::Exec => "exec",
+            Self::Named => "named",
+            Self::NamedExec => "named-exec",
         }
     }
 }
@@ -200,7 +200,11 @@ fn short(class: &str) -> &str {
 /// properties, inputs (sorted, each with the `class.port` feeding it), and
 /// outputs (value outputs in declared order, the order emit reads the first
 /// one in, then exec outputs).
-fn normalize(module: &Module, out: &mut Vec<String>) {
+fn normalize(root: &Module, out: &mut Vec<String>) {
+    root.walk(&mut |_, m| normalize_module(m, out));
+}
+
+fn normalize_module(module: &Module, out: &mut Vec<String>) {
     // A source is named by its class plus the name it carries, so the `t` and
     // `u` inputs (or two vars) stay distinguishable.
     let label = |id: &crate::ir::NodeId| -> String {
@@ -267,9 +271,6 @@ fn normalize(module: &Module, out: &mut Vec<String>) {
             inputs.join(" "),
             outputs.join(" ")
         ));
-    }
-    for chip in module.chips.values() {
-        normalize(chip, out);
     }
 }
 

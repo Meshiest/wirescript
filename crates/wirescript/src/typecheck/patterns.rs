@@ -1,18 +1,14 @@
-//! Usefulness / witness engine for `match` patterns (Maranget, "Warnings for
-//! pattern matching"): the shared U/M pattern-matrix algorithm that answers
-//! two questions about a set of arms matched against an enum-typed
-//! scrutinee - is every value covered (exhaustiveness), and does every arm
-//! ever get reached (unreachable-arm detection). Both the compiler
-//! exhaustiveness diagnostic and the LSP "fill missing arms" action consume
-//! this module's output, so it takes only pure inputs (no `TypeCheckCtx`)
-//! and never emits a diagnostic itself.
+//! The usefulness and witness engine for `match` patterns (Maranget, "Warnings
+//! for pattern matching"): the pattern-matrix algorithm answering whether a set
+//! of arms over an enum scrutinee covers every value (exhaustiveness) and
+//! whether every arm can be reached. The compiler's exhaustiveness diagnostic
+//! and the LSP's "fill missing arms" action both use it, so it takes pure inputs
+//! (no `TypeCheckCtx`) and reports nothing itself.
 //!
-//! The working representation is a "pattern matrix": each row is one arm's
-//! pattern expanded to a `Vec<Pattern>` of column entries, and a parallel
-//! `types` slice records the enum (if any) governing each column. A column
-//! whose type does not resolve to a registered enum is "opaque" - the
-//! language's pattern grammar only allows a wildcard/binding there, so it is
-//! always covered and never contributes a missing witness.
+//! Each matrix row is one arm's pattern as a `Vec<Pattern>` of columns, with a
+//! parallel `types` slice giving the enum (if any) of each column. A column
+//! whose type is not a registered enum is opaque: the grammar allows only a
+//! wildcard or binding there, so it is always covered.
 
 use crate::ast::{Pattern, TypeExpr, VariantPattern};
 use crate::collections::{HashMap, HashSet};
@@ -23,11 +19,11 @@ use super::enums::{EnumDef, Payload, VariantDef};
 
 /// A concrete pattern demonstrating one value the arms do not cover.
 #[derive(Clone, Debug)]
-pub struct Witness(pub Pattern);
+pub(crate) struct Witness(pub Pattern);
 
 /// The result of analyzing a `match`'s arms against its scrutinee type.
 #[derive(Clone, Debug, Default)]
-pub struct Usefulness {
+pub(crate) struct Usefulness {
     /// Non-empty means the arms are not exhaustive (WS054); each entry is
     /// one concrete uncovered value.
     pub missing: Vec<Witness>,
@@ -41,7 +37,7 @@ pub struct Usefulness {
 /// payload fields, not just the scrutinee's own enum). `guarded[i]` says arm
 /// `i` has an `if` guard: it can still be unreachable, but it covers nothing,
 /// since its guard may be false.
-pub fn analyze(
+pub(crate) fn analyze(
     enums: Enums<'_>,
     scrutinee: &Type,
     arms: &[Pattern],
@@ -94,7 +90,7 @@ pub fn analyze(
         types: Vec<Option<ColEnum<'a>>>,
         rows: Vec<Vec<Pattern>>,
     }
-    let mut spec: HashMap<&str, Spec> = HashMap::default();
+    let mut spec: HashMap<&str, Spec<'_>> = HashMap::default();
     // A wildcard-like arm is a full catch-all in a single-column matrix: every
     // arm after it is unreachable, and nothing can be missing past it.
     let mut seen_catchall = false;
@@ -336,16 +332,12 @@ fn is_catchall(p: &Pattern) -> bool {
 
 // ---------- constructor / column helpers ----------
 
-/// The variant name a pattern's head names, restricted to variants that
-/// actually belong to `edef`. `Pattern::Variant` matches a member by name
-/// (any payload shape); `Pattern::Binding` matches only a UNIT member (the
-/// parser's dumb bare-identifier reading of a unit-variant reference,
-/// reinterpreted here now that the column's enum is known). A `Wildcard`, an
-/// ordinary capture `Binding` (names no member), and - crucially - a
-/// `Variant` whose name is NOT a member of `edef` (a stale/mismatched name in
-/// a mid-edit LSP buffer) all return `None`, so an unknown constructor is
-/// treated uniformly as an inert wildcard by every matrix operation rather
-/// than crashing a downstream lookup.
+/// The variant a pattern's head names, among `edef`'s variants. A
+/// `Pattern::Variant` matches a member by name; a `Pattern::Binding` matches only
+/// a unit member (the parser's reading of a bare unit-variant reference). A
+/// wildcard, a capture binding, and a `Variant` naming no member of `edef` (a
+/// stale name in a mid-edit buffer) give `None`, so an unknown constructor acts
+/// as an inert wildcard.
 pub(crate) fn head_variant_name<'a>(p: &'a Pattern, edef: &EnumDef) -> Option<&'a str> {
     match p {
         Pattern::Variant { variant, .. } => {
@@ -389,19 +381,16 @@ pub(crate) fn payload_arity(payload: &Payload) -> usize {
 /// The enum registry, with the type declarations a payload field's type is
 /// read against: those of the file declaring the enum, aliases included.
 #[derive(Clone, Copy)]
-pub struct Enums<'a> {
+pub(crate) struct Enums<'a> {
     pub defs: &'a crate::typecheck::enums::EnumRegistry,
     pub types: &'a crate::const_eval::DeclaredTypes,
 }
 
-/// The concrete enum instance governing one match column: its declaration plus
-/// the generic type arguments it was instantiated with (empty for a
-/// non-generic enum). Threading `args` is what lets a nested type-parameter
-/// payload column resolve THROUGH the scrutinee's instantiation - `Option<Inner>`'s
-/// `Some(T)` slot is recognized as `Inner`, not an opaque `T` - so nested
-/// exhaustiveness over a generic enum is correct rather than silently
-/// over-approximated. Consistent with `typecheck::infer::resolve_payload_field_type`
-/// (the binding-side resolver), which substitutes the same args.
+/// The concrete enum instance of one match column: its declaration and type
+/// arguments (empty for a non-generic enum). With `args`, a nested
+/// type-parameter payload column resolves through the scrutinee's instance
+/// (`Option<Inner>`'s `Some(T)` slot is `Inner`, not an opaque `T`), as
+/// `typecheck::infer::resolve_payload_field_type` substitutes on the binding side.
 #[derive(Clone)]
 pub(crate) struct ColEnum<'a> {
     pub edef: &'a EnumDef,
@@ -414,7 +403,7 @@ pub(crate) struct ColEnum<'a> {
 /// name carries its own arguments (each itself resolved through the parent).
 /// Only the enum structure matters to the usefulness engine, so any non-enum
 /// field collapses to `Type::Any` (an opaque column).
-pub(crate) fn resolve_field_type(te: &TypeExpr, parent: &ColEnum, enums: Enums<'_>) -> Type {
+pub(crate) fn resolve_field_type(te: &TypeExpr, parent: &ColEnum<'_>, enums: Enums<'_>) -> Type {
     let params = &parent.edef.type_params;
     let param = |name: &str, _: &SourceRange| {
         params
@@ -532,7 +521,7 @@ fn build_variant_pattern(v: &VariantDef, subs: Vec<Pattern>) -> Pattern {
 fn used_constructors(matrix: &[Vec<Pattern>], edef: &EnumDef) -> HashSet<String> {
     matrix
         .iter()
-        .filter_map(|row| head_variant_name(&row[0], edef).map(|s| s.to_string()))
+        .filter_map(|row| head_variant_name(&row[0], edef).map(std::string::ToString::to_string))
         .collect()
 }
 
@@ -581,17 +570,15 @@ fn default_matrix(matrix: &[Vec<Pattern>], edef: &EnumDef) -> Vec<Vec<Pattern>> 
 
 // ---------- usefulness ----------
 
-/// Is `row` useful with respect to `matrix` (i.e. does some value it
-/// matches escape everything `matrix` already matches)? `types[i]` is the
-/// enum governing column `i`, or `None` for an opaque (always-wildcard)
-/// column. Structurally parallel to [`useful_witnesses`] (same
-/// opaque/complete/incomplete-signature split over the same
-/// specialize/default operations); an edit to one almost certainly needs the
-/// mirror edit in the other.
+/// Whether `row` is useful against `matrix`: some value it matches escapes
+/// everything `matrix` matches. `types[i]` is column `i`'s enum, `None` for an
+/// opaque column. It mirrors [`useful_witnesses`] (the same opaque, complete and
+/// incomplete split over the same specialize and default steps); an edit to one
+/// needs the same edit in the other.
 fn is_useful(
     matrix: &[Vec<Pattern>],
     row: &[Pattern],
-    types: &[Option<ColEnum>],
+    types: &[Option<ColEnum<'_>>],
     enums: Enums<'_>,
 ) -> bool {
     let Some((head, rest_types)) = types.split_first() else {
@@ -662,16 +649,13 @@ fn is_useful(
     }
 }
 
-/// The witness (`I`) construction: the set of pattern rows (parallel to
-/// `types`) that an all-wildcard probe would match but `matrix` does not -
-/// i.e. exactly the missing patterns. Empty means `matrix` is exhaustive
-/// over `types`. Structurally parallel to [`is_useful`] (same
-/// opaque/complete/incomplete-signature split over the same
-/// specialize/default operations); an edit to one almost certainly needs the
-/// mirror edit in the other.
+/// The witness construction: the pattern rows (parallel to `types`) an
+/// all-wildcard probe matches but `matrix` does not, which are the missing
+/// patterns; empty when `matrix` is exhaustive. It mirrors [`is_useful`]; an
+/// edit to one needs the same edit in the other.
 fn useful_witnesses(
     matrix: &[Vec<Pattern>],
-    types: &[Option<ColEnum>],
+    types: &[Option<ColEnum<'_>>],
     enums: Enums<'_>,
 ) -> Vec<Vec<Pattern>> {
     let Some((head, rest_types)) = types.split_first() else {
@@ -840,7 +824,7 @@ mod tests {
     }
 
     fn enums() -> EnumRegistry {
-        let mut m: EnumRegistry = Default::default();
+        let mut m: EnumRegistry = EnumRegistry::default();
         m.insert(shape_enum_def());
         m.insert(option_enum_def());
         m
@@ -887,7 +871,7 @@ mod tests {
     }
 
     fn box_enums() -> EnumRegistry {
-        let mut m: EnumRegistry = Default::default();
+        let mut m: EnumRegistry = EnumRegistry::default();
         m.insert(box_enum_def());
         m
     }
@@ -965,12 +949,9 @@ mod tests {
 
     #[test]
     fn unknown_variant_name_does_not_panic() {
-        // A pattern naming a variant that is NOT a member of the scrutinee
-        // enum (e.g. a stale name in a mid-edit LSP buffer) must degrade
-        // gracefully rather than crash the missing-variant lookup. The
-        // regression guard is that this call returns at all; the unknown
-        // `Triangle` is treated as an inert wildcard (catch-all), so no
-        // witness is produced.
+        // A pattern naming a variant that is not a member of the scrutinee enum (a
+        // stale name in a mid-edit buffer) acts as an inert wildcard instead of
+        // crashing the missing-variant lookup, so no witness is produced.
         let u = analyze(
             Reg::new(enums()).enums(),
             &enum_ty("Shape"),
@@ -1085,7 +1066,7 @@ mod tests {
             vec!["false"]
         );
         // A bool payload, too.
-        let mut m: EnumRegistry = Default::default();
+        let mut m: EnumRegistry = EnumRegistry::default();
         m.insert(EnumDef {
             name: "Flag".to_string(),
             type_params: vec![],

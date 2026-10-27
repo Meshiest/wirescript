@@ -3,10 +3,6 @@ use crate::catalog::methods::{ArgKind, Lowering, MethodArg};
 use crate::lower::ordered::lower_in_order;
 use crate::typecheck::ContainerKind;
 
-/// Walk a chain of `Ident` / `FieldAccess` nodes, resolving through
-/// `Binding::Record` maps (and one `Binding::Namespace` hop). Returns the final
-/// `Binding` if every step resolved, or `None` when the chain isn't entirely
-/// record-based (e.g. the root ident isn't a record, or a field is missing).
 /// Flatten a projection chain into its base and the named segments applied to
 /// it, so an `unsafe` access can pick out its variant and field. `.0` on a
 /// positional payload parses as a `TuplePick`, hence both forms.
@@ -26,29 +22,29 @@ fn flatten_segments(e: &Expr) -> (&Expr, Vec<String>) {
     }
 }
 
-/// The binding behind `unsafe <value>.<Variant>.<field>…`: the enum's own
+/// The binding behind `unsafe <value>.<Variant>.<field>...`: the enum's own
 /// `__{Variant}_{field}` slot, with any further segments walked into a
-/// record-typed payload. Returning the slot binding is all the unchecked form
-/// needs - every read and write path already handles a `Binding::Var` (a
-/// scalar slot) and a `Binding::Record` (a record payload), so the assertion
-/// costs no gate and touches nothing but the slot.
-pub(super) fn resolve_unsafe_slot<'a>(ctx: &'a LowerCtx, inner: &Expr) -> Option<&'a Binding> {
+/// record-typed payload. The assertion costs no gate and touches only the slot.
+pub(super) fn resolve_unsafe_slot<'a>(ctx: &'a LowerCtx<'_>, inner: &Expr) -> Option<&'a Binding> {
     let (base, segs) = flatten_segments(inner);
     let (variant, field) = (segs.first()?, segs.get(1)?);
     let Binding::Record(fields) = resolve_field_chain(ctx, base)? else {
         return None;
     };
-    let mut binding = fields.get(&crate::intern::intern(&format!("__{variant}_{field}")))?;
+    let mut binding = fields.get(&intern(&slot_name(variant, field)))?;
     for seg in &segs[2..] {
         let Binding::Record(inner_fields) = binding else {
             return None;
         };
-        binding = inner_fields.get(&crate::intern::intern(seg))?;
+        binding = inner_fields.get(&intern(seg))?;
     }
     Some(binding)
 }
 
-pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<&'a Binding> {
+/// Walk a chain of `Ident` / `FieldAccess` nodes, resolving through
+/// `Binding::Record` maps (and one `Binding::Namespace` hop). Returns `None`
+/// when the chain is not entirely record-based (a non-record root, a missing field).
+pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx<'_>, expr: &Expr) -> Option<&'a Binding> {
     match expr {
         Expr::Unsafe { inner, .. } => resolve_unsafe_slot(ctx, inner),
         Expr::Ident { name, .. } => ctx.scope.get(name),
@@ -56,7 +52,7 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
             let parent = resolve_field_chain(ctx, obj)?;
             match parent {
                 Binding::Record(fields) => fields
-                    .get(&crate::intern::intern(field))
+                    .get(&intern(field))
                     // `.Value`/`.prev` opens the variable: a var needing more
                     // than one storage gate binds here, never as a single-port
                     // `Binding::Var`. After the field lookup, so a real `Value`
@@ -66,15 +62,10 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
                             && record_is_variable_backed(fields))
                         .then_some(parent)
                     }),
-                // `ns.member` where `ns` came from `import * as ns`. The
-                // Namespace binding carries this module's own members, keyed by
-                // name — resolve through it rather than the shared bare-name
-                // scope, so two namespaces that export the same member name do
-                // not collide (the bare scope keeps only the last import's). A
-                // chained `ns.rec.field` continues through the Record arm on the
-                // record binding found here. The bare-scope fallback keeps
-                // anything not captured in the map (there should be none) from
-                // silently dropping to an `_Unsupported` placeholder.
+                // `ns.member` from `import * as ns` resolves through the
+                // namespace's own members, so two namespaces exporting the same
+                // name do not collide in the bare scope (which keeps only the last).
+                // The bare-scope fallback keeps an uncaptured member off `_Unsupported`.
                 Binding::Namespace(members) => members.get(field).or_else(|| ctx.scope.get(field)),
                 _ => None,
             }
@@ -82,7 +73,7 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
         Expr::TuplePick { obj, index, .. } => {
             let parent = resolve_field_chain(ctx, obj)?;
             if let Binding::Record(fields) = parent {
-                fields.get(&crate::intern::intern(&index.to_string()))
+                fields.get(&intern(&index.to_string()))
             } else {
                 None
             }
@@ -91,21 +82,15 @@ pub(super) fn resolve_field_chain<'a>(ctx: &'a LowerCtx, expr: &Expr) -> Option<
     }
 }
 
-/// A `Binding` that names an ARRAY container -> its ref port and element type.
-/// The bare-`Ident` index path already accepts four spellings of "an array
-/// lives here": a `var` array (ref on `ArrayVarRef`), an `in X: T[]` input and
-/// an `out X: T[]` (ref rides the rerouter's `RER_Output`), and a `let` bound
-/// to an array-valued expression (ref arrives on that wire). A record FIELD
-/// holding one resolves to exactly the same bindings, so the field chain
-/// resolves them the same way instead of accepting only the `var` case and
-/// leaving `m.rom[i]` on the silent `_Unsupported` placeholder.
+/// A `Binding` that names an ARRAY container -> its ref port and element type:
+/// a `var` array (`ArrayVarRef`), an `in`/`out X: T[]` (the rerouter's
+/// `RER_Output`), an array-valued `let` (its wire), or a dynamic ref. A record
+/// field holding one of these resolves the same way.
 ///
-/// `obj_ty` is the static type of the indexed expression, used for the
-/// port-only `Local` binding, which carries no type of its own. It is `Any` on
-/// an assignment target (typecheck records no `type_of_expr` for one), which
-/// only costs the `Local` case there.
+/// `obj_ty` types the port-only `Local` binding; it is `Any` on an assignment
+/// target, so a `Local` resolves to `None` there.
 pub(super) fn binding_array_ref(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     binding: &Binding,
     obj_ty: &Type,
 ) -> Option<(PortRef, Type)> {
@@ -132,12 +117,10 @@ pub(super) fn binding_array_ref(
     }
 }
 
-/// Does this port come off an `_Unsupported` placeholder? A field whose value
-/// failed to lower (a `const` container put in a record literal, say) binds to
-/// the placeholder's port, and a container ref taken from one would wire a real
-/// gate to a dead source — a read that is broken but no longer says so.
-/// Declining leaves the caller on its own placeholder path, which still warns.
-fn is_placeholder_port(ctx: &LowerCtx, port: PortRef) -> bool {
+/// Does this port come off an `_Unsupported` placeholder? A container ref taken
+/// from one would wire a real gate to a dead source without a warning; declining
+/// leaves the caller on its own placeholder path, which warns.
+fn is_placeholder_port(ctx: &LowerCtx<'_>, port: PortRef) -> bool {
     ctx.builder
         .module
         .nodes
@@ -148,7 +131,7 @@ fn is_placeholder_port(ctx: &LowerCtx, port: PortRef) -> bool {
 /// The map analogue of [`binding_array_ref`]: a `Binding` that names a MAP
 /// container -> its ref port and whole `Type::Map(K, V)`.
 pub(super) fn binding_map_ref(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     binding: &Binding,
     obj_ty: &Type,
 ) -> Option<(PortRef, Type)> {
@@ -175,7 +158,7 @@ pub(super) fn binding_map_ref(
 
 /// Whether this record IS variable storage (every leaf a var/buffer gate)
 /// rather than a compile-time record VALUE whose fields resolve to locals.
-fn record_is_variable_backed(fields: &HashMap<crate::intern::Sym, Binding>) -> bool {
+fn record_is_variable_backed(fields: &Fields) -> bool {
     !fields.is_empty()
         && fields.values().all(|b| match b {
             Binding::Var(_) | Binding::Buffer(_) => true,
@@ -187,13 +170,13 @@ fn record_is_variable_backed(fields: &HashMap<crate::intern::Sym, Binding>) -> b
 /// Convert a resolved `Binding` into a `PortRef` for use in expressions.
 /// For `Var` bindings in exec context, emits a `Var_Get` node.
 pub(super) fn binding_to_port(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     binding: &Binding,
     range: &SourceRange,
 ) -> Option<PortRef> {
     match binding {
         Binding::Local(local) => Some(local.port),
-        Binding::DynRef(d) => Some(crate::lower::expr::read_dyn_ref(ctx, d, range)),
+        Binding::DynRef(d) => Some(read_dyn_ref(ctx, d, range)),
         Binding::EventParam(p) => Some(*p),
         Binding::Buffer(buf) => Some(buf.node_id.port(WirePort::Output)),
         Binding::Input(inp) => Some(inp.node_id.port(WirePort::RerOutput)),
@@ -203,7 +186,7 @@ pub(super) fn binding_to_port(
                 ctx.unsequenced_reads.get(&var_rec.node_id).cloned()
             {
                 ctx.unsequenced_reads.retain(|_, v| v.2 != call);
-                crate::lower::stmt::report_unsequenced_output_write(ctx, &name, &call_range);
+                report_unsequenced_output_write(ctx, &name, &call_range);
                 return Some(synthesise_unsupported_no_warn(ctx, range));
             }
             if var_rec.storage == VarStorage::Buffer {
@@ -222,10 +205,8 @@ pub(super) fn binding_to_port(
             }
             Some(var_rec.node_id.port(WirePort::Value))
         }
-        // Reading an output's VALUE (a namespaced `L.count`): source its
-        // rerouter, which mirrors whatever drives the port from inside its
-        // module. Writing an output goes through `lookup_output`/`emit`, a
-        // separate path, so this only ever fires on a genuine read.
+        // Reading an output's value (a namespaced `L.count`) sources its
+        // rerouter. Writes go through `lookup_output`/`emit`, never here.
         Binding::Output(out) => Some(out.node_id.port(WirePort::RerOutput)),
         Binding::Record(_) | Binding::Chip(_) | Binding::Namespace(_) => None,
     }
@@ -233,32 +214,21 @@ pub(super) fn binding_to_port(
 
 /// The caller-side field->port record for a call that lowered to a MULTI-output
 /// chip instance. Pins are matched positionally against the signature's declared
-/// field order, the order `predeclare` created them in, so the two sides cannot
-/// drift. A record- or tuple-typed output has one pin per leaf
-/// (`record_output_pins`), so it takes that many pins as a nested record.
-///
-/// Multi-output chips are the one call shape neither general result path
-/// resolves: `lower_chip_call` stashes a `pending_inline_record` only for a
-/// SINGLE record-typed output, and a chip's outputs are separate rerouter nodes
-/// rather than sibling ports on one gate, so `resolve_output_field_port` finds
-/// nothing either. Shared by `lower_field_access` and `lower_let_decl` so the
-/// inline and let-bound spellings resolve identically.
+/// field order, the order `predeclare` created them in; a record- or tuple-typed
+/// output takes one pin per leaf (`record_output_pins`) as a nested record.
+/// `pending_inline_record` and `resolve_output_field_port` cannot see these pins.
 pub(super) fn multi_output_chip_record(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     call_port: PortRef,
     fields: &[(String, Type)],
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+) -> Option<Fields> {
     let child = ctx
         .builder
         .module
         .chips
         .values()
         .find(|child| child.outputs.contains(&call_port.node_id))?;
-    fn take_pins(
-        fields: &[(String, Type)],
-        outputs: &[crate::ir::NodeId],
-        idx: &mut usize,
-    ) -> HashMap<crate::intern::Sym, Binding> {
+    fn take_pins(fields: &[(String, Type)], outputs: &[NodeId], idx: &mut usize) -> Fields {
         let mut out = HashMap::default();
         for (name, ty) in fields {
             let sub = match unwrap_ref(ty) {
@@ -273,10 +243,7 @@ pub(super) fn multi_output_chip_record(
                 _ => None,
             };
             if let Some(sub) = sub {
-                out.insert(
-                    crate::intern::intern(name),
-                    Binding::Record(take_pins(&sub, outputs, idx)),
-                );
+                out.insert(intern(name), Binding::Record(take_pins(&sub, outputs, idx)));
                 continue;
             }
             let Some(&out_id) = outputs.get(*idx) else {
@@ -284,7 +251,7 @@ pub(super) fn multi_output_chip_record(
             };
             *idx += 1;
             out.insert(
-                crate::intern::intern(name),
+                intern(name),
                 Binding::Local(LocalRecord {
                     port: out_id.port(WirePort::RerOutput),
                 }),
@@ -298,7 +265,7 @@ pub(super) fn multi_output_chip_record(
 }
 
 /// Map a short field name (`.Forward`, `.Jump`) to the full gate port name it
-/// stands for. InputSplitter exposes a few arbitrarily-named ports whose
+/// stands for. `InputSplitter` exposes a few arbitrarily-named ports whose
 /// surface field names differ from the underlying port.
 pub(super) fn alias_output_field(field: &str) -> &str {
     match field {
@@ -317,19 +284,17 @@ pub(super) fn alias_output_field(field: &str) -> &str {
 /// match, or the port whose cleaned name matches (e.g. `bFound` for `.Found`).
 /// Returns `None` when no output port corresponds to the field.
 pub(super) fn resolve_output_field_port(
-    ctx: &LowerCtx,
-    node_id: crate::ir::NodeId,
+    ctx: &LowerCtx<'_>,
+    node_id: NodeId,
     field: &str,
 ) -> Option<PortRef> {
     let aliased = alias_output_field(field);
     let node = ctx.builder.module.nodes.get(&node_id)?;
     let pname = node.ports.outputs.iter().find_map(|p| {
-        let pname = crate::intern::resolve(p.name);
-        // Swizzle fields match a sibling port case-insensitively, so `.x`/`.y`/
-        // `.z` (and `.r`/`.g`/`.b`/`.a`, `.Pitch`/`.Yaw`/`.Roll`) on a
-        // multi-output result like `v.SplitVec()` / `r.ToEuler()` read its
-        // existing `X`/`Y`/`Z` / `Pitch`/`Yaw`/`Roll` port instead of
-        // re-splitting the first field.
+        let pname = resolve(p.name);
+        // Swizzle fields match a sibling port case-insensitively, so `.x` on a
+        // multi-output result like `v.SplitVec()` reads its existing `X` port
+        // rather than re-splitting the first field.
         (pname == aliased
             || crate::catalog::arrays::field_name_ref(pname) == field
             || (is_swizzle_field(field) && pname.eq_ignore_ascii_case(field)))
@@ -341,12 +306,9 @@ pub(super) fn resolve_output_field_port(
 /// The result port a subscript's field names (`arr[i].value`,
 /// `arr[i].bOutOfBounds`), or `None` for a field that names neither.
 ///
-/// Matched case-insensitively, with the `b` bool prefix optional, because
-/// typecheck accepts every capitalisation as a permissive escape hatch. A
-/// spelling this misses (`arr[i].Value`, the capitalisation the docs teach)
-/// type-checks and then lowers to an `_Unsupported` placeholder that emit
-/// refuses to spawn, deleting the read and every wire through it with no
-/// error.
+/// Matched case-insensitively with the `b` prefix optional, as typecheck
+/// accepts every capitalisation. A spelling missed here type-checks, then
+/// lowers to an unspawned `_Unsupported`, silently deleting the read.
 fn index_result_port(field: &str) -> Option<WirePort> {
     if field.eq_ignore_ascii_case("value") {
         Some(WirePort::Value)
@@ -362,18 +324,15 @@ fn index_result_port(field: &str) -> Option<WirePort> {
 }
 
 /// A vector, color, rotator or quat component name
-/// ([`crate::catalog::value_fields`]). These don't name gate ports — they
-/// desugar to a Split gate, so access through a local must fall through to
-/// that logic.
+/// ([`crate::catalog::value_fields`]). These name no gate port; they desugar
+/// to a Split gate, so access through a local must fall through to that logic.
 fn is_swizzle_field(field: &str) -> bool {
     crate::catalog::value_fields::is_field_name(field)
 }
 
-/// A scalar can never be swizzled. A chip whose output is named `x`/`y`/`z`/
-/// `r`/`g`/`b`/`a` binds its (auto-unwrapped) result to a local, and splitting
-/// that `int` as if it were a vector silently reads a garbage component instead
-/// of the chip's output. Only KNOWN scalars short-circuit the split — vector,
-/// color and unknown/`any` types keep the existing Split* behaviour.
+/// A scalar can never be swizzled: a chip output named `x` binds its result to
+/// a local, and splitting that `int` would read a garbage component. Only known
+/// scalars skip the split; vector, color and unknown/`any` types still split.
 fn is_known_scalar(ty: &Type) -> bool {
     matches!(
         ty,
@@ -381,24 +340,63 @@ fn is_known_scalar(ty: &Type) -> bool {
     )
 }
 
-/// Read one component of a quaternion through a `SplitQuaternion` gate. The
-/// game has no way to address a quaternion's X/Y/Z/W other than splitting it,
-/// so `q.x` costs the same one gate a `v.x` does — and repeated components of
-/// the same quaternion share it, since the gates are identical and CSE folds
-/// them together.
-fn split_quat_component(
-    ctx: &mut LowerCtx,
+/// The gate that splits a value into its components.
+#[derive(Clone, Copy)]
+enum SplitKind {
+    Quaternion,
+    Rotation,
+    Vector,
+    Color,
+}
+
+impl SplitKind {
+    fn gate_class(self) -> &'static str {
+        match self {
+            Self::Quaternion => gc::SPLIT_QUATERNION,
+            Self::Rotation => gc::SPLIT_ROTATION,
+            Self::Vector => gc::SPLIT_VECTOR,
+            Self::Color => gc::SPLIT_COLOR,
+        }
+    }
+
+    fn input_type(self) -> Type {
+        match self {
+            Self::Quaternion => Type::Quat,
+            Self::Rotation => Type::Rotator,
+            Self::Vector => Type::Vector,
+            Self::Color => Type::Color,
+        }
+    }
+
+    /// The gate's float output names, in port order.
+    fn outputs(self) -> &'static [&'static str] {
+        match self {
+            Self::Quaternion => &["X", "Y", "Z", "W"],
+            Self::Rotation => &["Pitch", "Yaw", "Roll"],
+            Self::Vector => &["X", "Y", "Z"],
+            Self::Color => &["R", "G", "B", "A"],
+        }
+    }
+}
+
+/// Read one component, `out_name`, of `obj_port` through a Split gate of `kind`.
+/// A quaternion's X/Y/Z/W are addressed only by splitting it, so `q.x` costs one
+/// gate; repeated components of one value share it through CSE.
+fn split_component(
+    ctx: &mut LowerCtx<'_>,
     obj_port: PortRef,
+    kind: SplitKind,
     out_name: &str,
     range: &SourceRange,
 ) -> PortRef {
     let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::SPLIT_QUATERNION,
+        gate_class: kind.gate_class(),
         source_range: range.clone(),
         ports: GateIO {
-            inputs: vec![PortSpec::new(*sym::INPUT, Type::Quat)],
-            outputs: ["X", "Y", "Z", "W"]
-                .into_iter()
+            inputs: vec![PortSpec::new(*sym::INPUT, kind.input_type())],
+            outputs: kind
+                .outputs()
+                .iter()
                 .map(|n| PortSpec::new(intern_static(n), Type::Float))
                 .collect(),
         },
@@ -413,7 +411,7 @@ fn split_quat_component(
 /// more than give its value: WS097, which a field read of it reports in its
 /// own words.
 fn acting_aggregate_choice<'a>(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     choice: &Expr,
     arms: impl IntoIterator<Item = &'a Expr>,
 ) -> bool {
@@ -422,22 +420,344 @@ fn acting_aggregate_choice<'a>(
             unwrap_ref(&ctx.type_of(choice)),
             Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }
         )
-        && arms
-            .into_iter()
-            .any(|x| crate::lower::expr::has_effects(ctx, x))
+        && arms.into_iter().any(|x| has_effects(ctx, x))
+}
+
+/// A field access on an `if` or `match` expression distributes over the
+/// branches: `(if c then a else b).f` becomes `if c then a.f else b.f`, since an
+/// aggregate branch carries no single wire for the field to read. `None` for any
+/// other object, and for a `match` with a block-bodied arm (no value, left to
+/// the statement form).
+fn distribute_field_over_choice(
+    ctx: &mut LowerCtx<'_>,
+    obj: &Expr,
+    field: &str,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let field_of = |value: &Expr| Expr::FieldAccess {
+        obj: Box::new(value.clone()),
+        field: field.to_string(),
+        range: range.clone(),
+    };
+    match obj {
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+            range: if_range,
+        } => {
+            if acting_aggregate_choice(ctx, obj, [then_branch.as_ref(), else_branch.as_ref()]) {
+                report_effectful_aggregate_field_read(ctx, field, range);
+                return Some(synthesise_unsupported_no_warn(ctx, range));
+            }
+            let distributed = Expr::IfExpr {
+                cond: cond.clone(),
+                then_branch: Box::new(field_of(then_branch)),
+                else_branch: Box::new(field_of(else_branch)),
+                range: if_range.clone(),
+            };
+            Some(lower_expr(ctx, &distributed))
+        }
+        // `(match s { A => p, B => q }).f` becomes `match s { A => p.f, B => q.f }`,
+        // one Select for the field.
+        Expr::MatchExpr {
+            scrutinee,
+            arms,
+            range: m_range,
+        } if arms.iter().all(|a| matches!(a.body, MatchBody::Expr(_))) => {
+            let values = arms.iter().filter_map(|a| match &a.body {
+                MatchBody::Expr(x) => Some(x),
+                MatchBody::Block(_) => None,
+            });
+            if acting_aggregate_choice(ctx, obj, values) {
+                report_effectful_aggregate_field_read(ctx, field, range);
+                return Some(synthesise_unsupported_no_warn(ctx, range));
+            }
+            let distributed = Expr::MatchExpr {
+                scrutinee: scrutinee.clone(),
+                arms: arms
+                    .iter()
+                    .map(|a| {
+                        let MatchBody::Expr(body) = &a.body else {
+                            unreachable!("guarded above")
+                        };
+                        MatchArm {
+                            pattern: a.pattern.clone(),
+                            guard: a.guard.clone(),
+                            body: MatchBody::Expr(field_of(body)),
+                            range: a.range.clone(),
+                        }
+                    })
+                    .collect(),
+                range: m_range.clone(),
+            };
+            Some(lower_expr(ctx, &distributed))
+        }
+        _ => None,
+    }
+}
+
+/// A field of a record output read straight off the call (`f(c).pp.x`): walk the
+/// call's own record, as `let t = f(c)` then `t.pp.x` does. `None` when `obj` is
+/// not a field path rooted at a call that carries it.
+fn lower_call_record_field(
+    ctx: &mut LowerCtx<'_>,
+    obj: &Expr,
+    field: &str,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let Expr::FieldAccess {
+        obj: base,
+        field: first,
+        ..
+    } = obj
+    else {
+        return None;
+    };
+    let mut root: &Expr = base;
+    let mut path = vec![first.clone()];
+    while let Expr::FieldAccess {
+        obj: o, field: f, ..
+    } = root
+    {
+        path.insert(0, f.clone());
+        root = o;
+    }
+    let decl = called_chip_decl(ctx, root);
+    let by_output = decl
+        .as_ref()
+        .is_some_and(|d| d.outputs.iter().any(|o| o.name == path[0]));
+    // A field of a call's one record output, reached through a nested
+    // record field (`f(p).inner.y`).
+    let by_field = !by_output
+        && decl.as_ref().is_some_and(|d| d.outputs.len() == 1)
+        && matches!(unwrap_ref(&ctx.type_of(obj)), Type::Record(_));
+    if !(by_output || by_field) {
+        return None;
+    }
+    ctx.pending_inline_record = None;
+    let port = lower_expr(ctx, root);
+    let mut rec =
+        ctx.pending_inline_record
+            .take()
+            .or_else(|| match unwrap_ref(&ctx.type_of(root)) {
+                Type::Record(fields) => multi_output_chip_record(ctx, port, &fields),
+                _ => None,
+            });
+    if by_field {
+        rec = rec.map(|r| unwrap_call_record(ctx, root, r));
+    }
+    for step in &path {
+        rec = match rec.as_ref().and_then(|r| r.get(&intern(step))) {
+            Some(Binding::Record(inner)) => Some(inner.clone()),
+            _ => None,
+        };
+    }
+    if let Some(binding) = rec.as_ref().and_then(|r| r.get(&intern(field))).cloned()
+        && let Some(port) = binding_to_port(ctx, &binding, range)
+    {
+        return Some(port);
+    }
+    ctx.error(
+        "WS072",
+        format!("`{field}` has no value to read here: the call's output does not carry it"),
+        range,
+    );
+    Some(synthesise_unsupported_no_warn(ctx, range))
+}
+
+/// How a field read on a call object resolved.
+enum CallField {
+    /// The read is answered; this is its port.
+    Done(PortRef),
+    /// Nothing named the field: the lowered call's primary port, for a
+    /// component split to read.
+    Lowered(PortRef),
+}
+
+/// A call object's field may name an output its own gate carries
+/// (`v.SplitVec().y`); resolve it before a Split would split the call's primary
+/// output again.
+fn lower_call_field(
+    ctx: &mut LowerCtx<'_>,
+    obj: &Expr,
+    field: &str,
+    obj_ty: &Type,
+    e: &Expr,
+    range: &SourceRange,
+) -> CallField {
+    // Where the caller's chain stands before the call runs. `.exec` names
+    // the call's own exec output and puts the chain back here, so the
+    // statement after it takes the same source the call did: one exec
+    // output driving two exec inputs runs both, which is the fork.
+    let entry_exec = ctx.current_exec;
+    // A named output of the call is read from its record below, so the
+    // call need not also read its first output as a single value.
+    let names_output =
+        called_chip_decl(ctx, obj).is_some_and(|d| d.outputs.iter().any(|o| o.name == field));
+    let saved_record_call = ctx.record_result_call.clone();
+    if names_output {
+        ctx.record_result_call = Some(obj.range().clone());
+    }
+    // Only this call's own record is read below, never one an earlier
+    // call left (an argument read as one value keeps its stash).
+    ctx.pending_inline_record = None;
+    let obj_port = lower_expr(ctx, obj);
+    ctx.record_result_call = saved_record_call;
+    if field == "exec"
+        && let Some(done) = ctx.current_exec
+        && Some(done) != entry_exec
+    {
+        // A multi-output mod stashed its record; nothing here reads it, and
+        // leaving it would hand the stash to an unrelated later field access.
+        ctx.pending_inline_record.take();
+        ctx.current_exec = entry_exec;
+        return CallField::Done(done);
+    }
+    // An inline mod stashes its multi-output record (field -> binding)
+    // rather than exposing ports; project the field from it, as
+    // `let r = f()` then `r.field` does. Gate calls resolve ports by name.
+    if let Some(record) = ctx.pending_inline_record.take()
+        && let Some(binding) = record.get(&intern(field))
+        // A payload-free enum field is its tag.
+        && let binding = match binding {
+            Binding::Record(rec) => enum_tag(ctx, rec, &ctx.type_of(e))
+                .cloned()
+                .or_else(|| held_output(ctx, rec, e.range(), OutputPick::First))
+                .unwrap_or_else(|| binding.clone()),
+            _ => binding.clone(),
+        }
+        && let Some(port) = binding_to_port(ctx, &binding, range)
+    {
+        return CallField::Done(port);
+    }
+    // An event call's field is the data output it names
+    // (`CharacterSpawned().character` reads the `Character` port).
+    if let Expr::Call { callee, .. } = obj
+        && let Expr::Ident { name, .. } = callee.as_ref()
+        && let Some(evt) = crate::catalog::events::find_event(name)
+        && ctx
+            .builder
+            .module
+            .nodes
+            .get(&obj_port.node_id)
+            .is_some_and(|n| n.gate_class == evt.gate_class)
+        && let Some(data) = evt.data.iter().find(|d| d.name == field)
+    {
+        return CallField::Done(port_ref(obj_port.node_id, data.port));
+    }
+    if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
+        return CallField::Done(port);
+    }
+    // A multi-output chip (`-> (a: ..., b: ...)`) stashes no inline record and
+    // its outputs are separate rerouter nodes, so neither path above sees
+    // them.
+    if let Type::Record(rec_fields) = obj_ty
+        && let Some(record) = multi_output_chip_record(ctx, obj_port, rec_fields)
+        && let Some(binding) = record.get(&intern(field)).cloned()
+        && let Some(port) = binding_to_port(ctx, &binding, range)
+    {
+        return CallField::Done(port);
+    }
+    // A named output of a multi-output result that none of the above could
+    // find has no wire; the component fallbacks would split the
+    // call's primary output (possibly its exec) as a vector or color.
+    if let Some(decl) = called_chip_decl(ctx, obj)
+        && decl.outputs.iter().any(|o| o.name == field)
+    {
+        // The only output IS the call's value (`f(c).r` on `-> (r: int)`),
+        // unless it is a record, which the stash above already served.
+        if decl.outputs.len() == 1 && ctx.record_or_tuple_fields(&decl.outputs[0].typ).is_none() {
+            return CallField::Done(obj_port);
+        }
+        ctx.error(
+            "WS072",
+            format!(
+                "output `{field}` of this call has no value to read: nothing in the \
+                 callee sets it (with `return` or `emit {field} = ...`) where this \
+                 call can see it"
+            ),
+            range,
+        );
+        return CallField::Done(synthesise_unsupported_no_warn(ctx, range));
+    }
+    // A call that took no step on an exec chain (an inline `mod` whose
+    // body is all values) has no completion for `.exec` to name.
+    if field == "exec" {
+        ctx.error(
+            "WS043",
+            "this call exposes no exec output for `.exec` to name: it runs no exec step. \
+             `.exec` names the completion of a `fn` call, a `chip` call, or a `mod` whose \
+             body runs exec statements"
+                .to_string(),
+            range,
+        );
+        return CallField::Done(synthesise_unsupported_no_warn(ctx, range));
+    }
+    CallField::Lowered(obj_port)
+}
+
+/// Read a vector, color, rotator or quaternion component, or a subscript's
+/// result field, off `obj`. The field name picks the Split gate; the type is
+/// consulted only to choose between vector and quaternion for `.x`/`.y`/`.z`,
+/// since it may be unrecorded. `call_port` is `obj` already lowered.
+fn lower_component_split(
+    ctx: &mut LowerCtx<'_>,
+    obj: &Expr,
+    field: &str,
+    obj_ty: &Type,
+    call_port: Option<PortRef>,
+    e: &Expr,
+    range: &SourceRange,
+) -> PortRef {
+    let (kind, out_name) = match field {
+        // A quaternion's X/Y/Z share the vector's names; an unknown type keeps
+        // the vector reading.
+        "x" | "X" | "y" | "Y" | "z" | "Z" if matches!(obj_ty, Type::Quat) => {
+            (SplitKind::Quaternion, field[..1].to_uppercase())
+        }
+        "w" | "W" => (SplitKind::Quaternion, "W".to_string()),
+        "pitch" | "Pitch" | "yaw" | "Yaw" | "roll" | "Roll" => {
+            let mut out_name = field.to_string();
+            out_name[..1].make_ascii_uppercase();
+            (SplitKind::Rotation, out_name)
+        }
+        "x" | "X" | "y" | "Y" | "z" | "Z" => (SplitKind::Vector, field[..1].to_uppercase()),
+        "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A" => {
+            (SplitKind::Color, field[..1].to_uppercase())
+        }
+        // Array index result fields: arr[i].value / arr[i].bOutOfBounds
+        f if index_result_port(f).is_some() => {
+            let port_id = index_result_port(f).expect("guarded by the arm");
+            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
+            // The name alone does not prove the gate carries the port (`x.Value`
+            // on any call result reaches here), and emit silently drops a wire
+            // to an undeclared port.
+            return match resolve_output_field_port(ctx, obj_port.node_id, port_id.as_str()) {
+                Some(port) => port,
+                None => synthesise_unsupported(ctx, e),
+            };
+        }
+        // A field naming neither an inline-record entry nor a sibling output
+        // port (both resolved earlier, for a call object) has nothing to read:
+        // it degrades to an `_Unsupported` placeholder.
+        _ => return synthesise_unsupported(ctx, e),
+    };
+    let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
+    split_component(ctx, obj_port, kind, &out_name, range)
 }
 
 pub(super) fn lower_field_access(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     field: &str,
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    if let Some(port) = crate::lower::props::lower_environment_read(ctx, e) {
+    if let Some(port) = props::lower_environment_read(ctx, e) {
         return port;
     }
-    if let Some(port) = crate::lower::props::lower_component_read(ctx, obj, field, e) {
+    if let Some(port) = props::lower_component_read(ctx, obj, field, e) {
         return port;
     }
     // A call's one enum output, named (`f(c).r` on `-> (r: Hue)`), is the
@@ -454,102 +774,22 @@ pub(super) fn lower_field_access(
         };
         return lower_field_access(ctx, call, field, range, &on_call);
     }
-    // A field access on an if-expression distributes over the branches:
-    // `(if c then a else b).f` becomes `if c then a.f else b.f`. An aggregate
-    // if-expr's branches carry no single wire, so without this a scalar field
-    // (`.u`) fell to an `_Unsupported` placeholder and a swizzle (`.x`) to a
-    // Split* over two placeholders. The rewritten branches are scalar, so the
-    // Select the if-expr lowers to picks between the two field values.
-    if let Expr::IfExpr {
-        cond,
-        then_branch,
-        else_branch,
-        range: if_range,
-    } = obj
-    {
-        if acting_aggregate_choice(ctx, obj, [then_branch.as_ref(), else_branch.as_ref()]) {
-            crate::lower::stmt::report_effectful_aggregate_field_read(ctx, field, range);
-            return synthesise_unsupported_no_warn(ctx, range);
-        }
-        let branch_field = |br: &Expr| Expr::FieldAccess {
-            obj: Box::new(br.clone()),
-            field: field.to_string(),
-            range: range.clone(),
-        };
-        let distributed = Expr::IfExpr {
-            cond: cond.clone(),
-            then_branch: Box::new(branch_field(then_branch)),
-            else_branch: Box::new(branch_field(else_branch)),
-            range: if_range.clone(),
-        };
-        return lower_expr(ctx, &distributed);
+    if let Some(port) = distribute_field_over_choice(ctx, obj, field, range) {
+        return port;
     }
-    // The same distribution over a `match`: `(match s { A => p, B => q }).f`
-    // becomes `match s { A => p.f, B => q.f }`. Record/enum arms carry no single
-    // wire, so without this the field fell to the swizzle / SplitVector
-    // fallback over a placeholder. Distributing (rather than reading one leaf
-    // out of the per-field Select tree the value form builds) also costs one
-    // Select instead of one per leaf. Block-bodied arms carry no value, so they
-    // are left to the statement form.
-    if let Expr::MatchExpr {
-        scrutinee,
-        arms,
-        range: m_range,
-    } = obj
-        && arms.iter().all(|a| matches!(a.body, MatchBody::Expr(_)))
-    {
-        let values = arms.iter().filter_map(|a| match &a.body {
-            MatchBody::Expr(x) => Some(x),
-            MatchBody::Block(_) => None,
-        });
-        if acting_aggregate_choice(ctx, obj, values) {
-            crate::lower::stmt::report_effectful_aggregate_field_read(ctx, field, range);
-            return synthesise_unsupported_no_warn(ctx, range);
-        }
-        let distributed = Expr::MatchExpr {
-            scrutinee: scrutinee.clone(),
-            arms: arms
-                .iter()
-                .map(|a| {
-                    let MatchBody::Expr(body) = &a.body else {
-                        unreachable!("guarded above")
-                    };
-                    MatchArm {
-                        pattern: a.pattern.clone(),
-                        guard: a.guard.clone(),
-                        body: MatchBody::Expr(Expr::FieldAccess {
-                            obj: Box::new(body.clone()),
-                            field: field.to_string(),
-                            range: range.clone(),
-                        }),
-                        range: a.range.clone(),
-                    }
-                })
-                .collect(),
-            range: m_range.clone(),
-        };
-        return lower_expr(ctx, &distributed);
-    }
-    // `<value>.Discriminant` (an enum value, or a bare variant path like
-    // `Shape.Circle`) always projects to its integer discriminant - see the
-    // "Enum value layout" doc on `LowerCtx::enum_defs`. Checked directly on
-    // `field` (ahead of the general record-field resolution below, which only
-    // knows the LITERAL `__disc` sub-binding name, not the surface
-    // `Discriminant` spelling) so both forms resolve: a variant PATH bakes the
-    // registry discriminant as a literal (no gate for `obj` itself - a bare
-    // `Enum.Variant` has no storage of its own); a stored/merged enum VALUE
-    // reads through its `Binding::Record`'s `__disc` sub-binding (a `Var_Get`
-    // for a stored var, matching any other field read).
-    if field == "Discriminant"
+    // `<value>.Discriminant` projects to the integer discriminant (see
+    // `LowerCtx::enum_defs`). Checked ahead of the record-field resolution,
+    // which knows only the `__disc` sub-binding name. A variant path bakes a
+    // literal; a stored enum value reads its `__disc` sub-binding.
+    if field == DISCRIMINANT_FIELD
         && let Some(port) = lower_discriminant(ctx, obj, range)
     {
         return port;
     }
-    // Try resolving through record bindings first.
-    // The full expression `e` is `obj.field`, so resolve_field_chain on `e`
-    // walks the entire chain (potentially nested: `a.b.c`).
+    // Resolve the whole chain `e` (possibly nested, `a.b.c`) through record
+    // bindings first.
     if let Some(binding) = resolve_field_chain(ctx, e).cloned()
-        && let binding = crate::lower::ref_fields::as_typed(ctx, obj, e, binding, range)
+        && let binding = ref_fields::as_typed(ctx, obj, e, binding, range)
         // A payload-free enum field is its tag.
         && let binding = match &binding {
             Binding::Record(rec) => enum_tag(ctx, rec, &ctx.type_of(e))
@@ -562,41 +802,32 @@ pub(super) fn lower_field_access(
     {
         return port;
     }
-    // If it's a nested record, we can't return a single port — fall through.
+    // A nested record has no single port, so it falls through.
 
-    // A field read on a record LITERAL such as `({...}).field`. Because
-    // `resolve_field_chain` walks only names and chains, read the field from the
-    // literal's lowered per-field bindings before the swizzle / SplitVector
-    // fallback claims `.x`/`.y`.
+    // A field read on a record literal (`({...}).field`), which
+    // `resolve_field_chain` cannot walk. Read before the swizzle fallback
+    // claims `.x`/`.y`.
     if matches!(obj, Expr::RecordLit { .. })
-        && let Some(fields) = crate::lower::stmt::value_record_fields(ctx, obj)
-        && let Some(binding) = fields.get(&crate::intern::intern(field)).cloned()
+        && let Some(fields) = value_record_fields(ctx, obj)
+        && let Some(binding) = fields.get(&intern(field)).cloned()
         && let Some(port) = binding_to_port(ctx, &binding, range)
     {
         return port;
     }
 
-    // `pts[i].f1.f2…` — a field (possibly nested) of a record array's element.
-    // The chain resolve above can't see through the index subscript, so read
-    // the field's parallel array here before the swizzle / SplitVector fallback
-    // claims `.x`/`.y` (and before it claims a genuine `.a`/`.b`/`.r`/`.g` record
-    // field as a colour component). Uses the whole expr `e`, so a nested path
-    // like `pts[i].inner.a` resolves rather than degrading to a placeholder.
+    // `pts[i].f1.f2...`: a (possibly nested) field of a record array's element,
+    // read from its parallel array. Must run before the swizzle fallback, which
+    // would claim a record field named `.x` or `.a` as a component.
     if let Some(port) = lower_record_field_path(ctx, Columns::Array, e, range) {
         return port;
     }
-    // `m[k].f1.f2…` / `m.get(k).f1.f2…` — a field (possibly nested) of a record
-    // map's value. Uses the whole expr `e`, so a nested path resolves rather than
-    // degrading to a placeholder (and before the swizzle fallback claims a
-    // genuine `.a`/`.b`/`.x`/`.y` record field as a colour/vector component).
+    // `m[k].f1.f2...` / `m.get(k).f1.f2...`: the same for a record map's value.
     if let Some(port) = lower_record_field_path(ctx, Columns::Map, e, range) {
         return port;
     }
 
-    // `rec.field.Value` / `.prev` — the explicit read of a ref-typed record
-    // field. The `Ident` arm below covers `x.Value` on a plain var; a field is
-    // equally var-backed, so resolve the OBJECT through the chain and read it
-    // the same way.
+    // `rec.field.Value` / `.prev`: the explicit read of a var-backed record
+    // field, resolved through the chain as the `Ident` arm below reads `x.Value`.
     if (field == "Value" || field == "prev")
         && matches!(obj, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
         && let Some(binding) = resolve_field_chain(ctx, obj).cloned()
@@ -611,37 +842,23 @@ pub(super) fn lower_field_access(
         {
             return var_rec.node_id.port(WirePort::Value);
         }
-        // Gate output port access: `input.Forward` resolves to the
-        // named port on the gate node referenced by the local.
-        // Short field names map to full port names for known components.
+        // Gate output port access: `input.Forward` resolves to the named
+        // port on the gate node the local refers to.
         if let Some(local) = ctx.lookup_local(name).cloned() {
-            // Resolve the field to a real output port on the node: an exact /
-            // aliased match (InputReader exposes a few arbitrarily-named
-            // ports), the port whose cleaned name matches (e.g. the `bFound`
-            // port for `.Found`, derived via the same rule the return type
-            // uses), or a case-insensitive swizzle. Falls back to the port
-            // directly for a single-output auto-unwrapped result.
             if let Some(port) = resolve_output_field_port(ctx, local.port.node_id, field) {
                 return port;
             }
-            // A vector/color component (`v.x`, `c.r`) on a local doesn't name a
-            // gate output port — fall through to the SplitVector / SplitColor
-            // logic below, which feeds this local's value in as the split input.
-            // Only when the local really holds a vector/color, though: a chip
-            // output named `y` binds an `int` here, and splitting it would read
-            // a garbage component instead of the chip's output.
+            // A component (`v.x`, `c.r`) falls through to the Split logic
+            // below, unless the local is a known scalar (a chip output named `y`),
+            // which is the single-output result itself.
             if !is_swizzle_field(field) || is_known_scalar(&ctx.type_of(obj)) {
                 return local.port;
             }
         }
     }
-    // `.exec` names the exec output of an exec-producing expression: a bare
-    // exec value (identity), or an event/call that carries data alongside its
-    // exec (`GlobalCustomEvent(c) -> (n)`, typed as a record with the exec
-    // output FIRST). A data-carrying event lowers with its exec port as the
-    // primary output (see the event-call dispatch), so lowering the object
-    // yields that exec directly. Lets a data-carrying event compose into
-    // `Union(...)` explicitly.
+    // `.exec` names the exec output of an exec value (identity) or of a
+    // data-carrying event, typed as a record with the exec first. Such an event
+    // lowers with its exec as the primary output, so lowering the object yields it.
     if field == "exec" {
         let ot = ctx.type_of(obj);
         if matches!(ot, Type::Exec)
@@ -651,296 +868,34 @@ pub(super) fn lower_field_access(
         }
     }
 
-    // Read the object's type BEFORE anything is lowered: lowering writes into
-    // the same range-keyed map, so a nested expression can overwrite the entry
-    // the quaternion arm below consults.
-    // A field of a record output read straight off the call (`f(c).pp.x`):
-    // walk the call's own record, as `let t = f(c)` then `t.pp.x` does.
-    if let Expr::FieldAccess {
-        obj: base,
-        field: first,
-        ..
-    } = obj
-    {
-        let mut root: &Expr = base;
-        let mut path = vec![first.clone()];
-        while let Expr::FieldAccess {
-            obj: o, field: f, ..
-        } = root
-        {
-            path.insert(0, f.clone());
-            root = o;
-        }
-        let decl = called_chip_decl(ctx, root);
-        let by_output = decl
-            .as_ref()
-            .is_some_and(|d| d.outputs.iter().any(|o| o.name == path[0]));
-        // A field of a call's one record output, reached through a nested
-        // record field (`f(p).inner.y`).
-        let by_field = !by_output
-            && decl.as_ref().is_some_and(|d| d.outputs.len() == 1)
-            && matches!(unwrap_ref(&ctx.type_of(obj)), Type::Record(_));
-        if by_output || by_field {
-            ctx.pending_inline_record = None;
-            let port = lower_expr(ctx, root);
-            let mut rec =
-                ctx.pending_inline_record
-                    .take()
-                    .or_else(|| match unwrap_ref(&ctx.type_of(root)) {
-                        Type::Record(fields) => multi_output_chip_record(ctx, port, &fields),
-                        _ => None,
-                    });
-            if by_field {
-                rec = rec.map(|r| crate::lower::stmt::unwrap_call_record(ctx, root, r));
-            }
-            for step in &path {
-                rec = match rec
-                    .as_ref()
-                    .and_then(|r| r.get(&crate::intern::intern(step)))
-                {
-                    Some(Binding::Record(inner)) => Some(inner.clone()),
-                    _ => None,
-                };
-            }
-            if let Some(binding) = rec
-                .as_ref()
-                .and_then(|r| r.get(&crate::intern::intern(field)))
-                .cloned()
-                && let Some(port) = binding_to_port(ctx, &binding, range)
-            {
-                return port;
-            }
-            ctx.error(
-                "WS072",
-                format!("`{field}` has no value to read here: the call's output does not carry it"),
-                range,
-            );
-            return synthesise_unsupported_no_warn(ctx, range);
-        }
+    if let Some(port) = lower_call_record_field(ctx, obj, field, range) {
+        return port;
     }
+    // Read the object's type before lowering it: lowering writes the same
+    // range-keyed map, so a nested expression can overwrite this entry.
     let obj_ty = ctx.type_of(obj);
 
-    // A CALL object's field may name an output its own gate already carries.
-    // The `Ident` arm above resolves that through the local a call's result was
-    // bound to, but a call written inline (`v.SplitVec().y`, `r.ToEuler().Yaw`)
-    // reached neither that arm nor the by-name resolution in the catch-all
-    // below, because a swizzle field name is claimed by one of the Split* arms
-    // first. It then split the call's PRIMARY output a second time: an extra
-    // Split gate reading the wrong component. Lowered once here; the arms below
-    // reuse the port rather than lowering the object again.
-    let mut call_port = None;
-    if let Expr::Call { .. } = obj {
-        // Where the caller's chain stands before the call runs. `.exec` names
-        // the call's own exec output and puts the chain back here, so the
-        // statement after it takes the same source the call did: one exec
-        // output driving two exec inputs runs both, which is the fork.
-        let entry_exec = ctx.current_exec;
-        // A named output of the call is read from its record below, so the
-        // call need not also read its first output as a single value.
-        let names_output =
-            called_chip_decl(ctx, obj).is_some_and(|d| d.outputs.iter().any(|o| o.name == field));
-        let saved_record_call = ctx.record_result_call.clone();
-        if names_output {
-            ctx.record_result_call = Some(obj.range().clone());
+    let call_port = if let Expr::Call { .. } = obj {
+        match lower_call_field(ctx, obj, field, &obj_ty, e, range) {
+            CallField::Done(port) => return port,
+            CallField::Lowered(port) => Some(port),
         }
-        // Only this call's own record is read below, never one an earlier
-        // call left (an argument read as one value keeps its stash).
-        ctx.pending_inline_record = None;
-        let obj_port = lower_expr(ctx, obj);
-        ctx.record_result_call = saved_record_call;
-        if field == "exec"
-            && let Some(done) = ctx.current_exec
-            && Some(done) != entry_exec
-        {
-            // A multi-output mod stashed its record; nothing here reads it, and
-            // leaving it would hand the stash to an unrelated later field access.
-            ctx.pending_inline_record.take();
-            ctx.current_exec = entry_exec;
-            return done;
-        }
-        // An inline mod stashes its multi-output record (field -> source
-        // binding) instead of exposing named ports, so prefer that stash and
-        // project the field out of it - exactly as `lower_let_decl` binds
-        // `let r = f()` then reads `r.field`. A chip / builtin / event call
-        // instead lowers to a real gate with sibling output ports (`.Found` /
-        // `.Index` on `arr.find(x)`); resolve those by name.
-        if let Some(record) = ctx.pending_inline_record.take()
-            && let Some(binding) = record.get(&crate::intern::intern(field))
-            // A payload-free enum field is its tag.
-            && let binding = match binding {
-                Binding::Record(rec) => enum_tag(ctx, rec, &ctx.type_of(e))
-                    .cloned()
-                    .or_else(|| held_output(ctx, rec, e.range(), OutputPick::First))
-                    .unwrap_or_else(|| binding.clone()),
-                _ => binding.clone(),
-            }
-            && let Some(port) = binding_to_port(ctx, &binding, range)
-        {
-            return port;
-        }
-        if let Some(port) = resolve_output_field_port(ctx, obj_port.node_id, field) {
-            return port;
-        }
-        // A MULTI-output chip (`-> (a: …, b: …)`) stashes no inline record and
-        // its outputs are separate rerouter nodes, so neither path above sees
-        // them.
-        if let Type::Record(rec_fields) = &obj_ty
-            && let Some(record) = multi_output_chip_record(ctx, obj_port, rec_fields)
-            && let Some(binding) = record.get(&crate::intern::intern(field)).cloned()
-            && let Some(port) = binding_to_port(ctx, &binding, range)
-        {
-            return port;
-        }
-        // A named output of a multi-output result that none of the above could
-        // find has no wire; the component fallbacks below would split the
-        // call's primary output (possibly its exec) as a vector or color.
-        if let Some(decl) = called_chip_decl(ctx, obj)
-            && decl.outputs.iter().any(|o| o.name == field)
-        {
-            // The only output IS the call's value (`f(c).r` on `-> (r: int)`),
-            // unless it is a record, which the stash above already served.
-            if decl.outputs.len() == 1 && ctx.record_or_tuple_fields(&decl.outputs[0].typ).is_none()
-            {
-                return obj_port;
-            }
-            ctx.error(
-                "WS072",
-                format!(
-                    "output `{field}` of this call has no value to read: nothing in the \
-                     callee sets it (with `return` or `emit {field} = ...`) where this \
-                     call can see it"
-                ),
-                range,
-            );
-            return synthesise_unsupported_no_warn(ctx, range);
-        }
-        // A call that took no step on an exec chain (an inline `mod` whose
-        // body is all values) has no completion for `.exec` to name.
-        if field == "exec" {
-            ctx.error(
-                "WS043",
-                "this call exposes no exec output for `.exec` to name: it runs no exec step. \
-                 `.exec` names the completion of a `fn` call, a `chip` call, or a `mod` whose \
-                 body runs exec statements"
-                    .to_string(),
-                range,
-            );
-            return synthesise_unsupported_no_warn(ctx, range);
-        }
-        call_port = Some(obj_port);
-    }
-
-    // Match on the field NAME: every component name below belongs to exactly
-    // one type, so the name alone picks the Split gate. The one exception is
-    // `.x`/`.y`/`.z`, shared by vector and quaternion, whose first arm
-    // consults `ctx.type_of` — used only to choose between two gates, never to
-    // decide whether to split, since nested exprs can overwrite each other in
-    // the type_of_expr map and leave the object's type unrecorded.
-    match field {
-        // A quaternion's X/Y/Z share the vector's names, so this one arm needs
-        // the object's type to pick its gate; `.w` below is quat-only and needs
-        // no such test. An unknown type keeps the vector reading, which is what
-        // every such access did before quaternions had components at all.
-        "x" | "X" | "y" | "Y" | "z" | "Z" if matches!(&obj_ty, Type::Quat) => {
-            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
-            split_quat_component(ctx, obj_port, &field[..1].to_uppercase(), range)
-        }
-        "w" | "W" => {
-            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
-            split_quat_component(ctx, obj_port, "W", range)
-        }
-        "pitch" | "Pitch" | "yaw" | "Yaw" | "roll" | "Roll" => {
-            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
-            let mut out_name = field.to_string();
-            out_name[..1].make_ascii_uppercase();
-            let node_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::SPLIT_ROTATION,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![PortSpec::new(*sym::INPUT, Type::Rotator)],
-                    outputs: ["Pitch", "Yaw", "Roll"]
-                        .into_iter()
-                        .map(|n| PortSpec::new(intern_static(n), Type::Float))
-                        .collect(),
-                },
-                ..Default::default()
-            });
-            ctx.connect(obj_port, node_id.port(WirePort::Input));
-            port_ref(node_id, &out_name)
-        }
-        "x" | "X" | "y" | "Y" | "z" | "Z" => {
-            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
-            let out_name = field[..1].to_uppercase();
-            let node_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::SPLIT_VECTOR,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![PortSpec::new(*sym::INPUT, Type::Vector)],
-                    outputs: vec![
-                        PortSpec::new(intern_static("X"), Type::Float),
-                        PortSpec::new(intern_static("Y"), Type::Float),
-                        PortSpec::new(intern_static("Z"), Type::Float),
-                    ],
-                },
-                ..Default::default()
-            });
-            ctx.connect(obj_port, node_id.port(WirePort::Input));
-            port_ref(node_id, &out_name)
-        }
-        "r" | "R" | "g" | "G" | "b" | "B" | "a" | "A" => {
-            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
-            let out_name = field[..1].to_uppercase();
-            let node_id = ctx.add_gate(AddNodeOpts {
-                gate_class: gc::SPLIT_COLOR,
-                source_range: range.clone(),
-                ports: GateIO {
-                    inputs: vec![PortSpec::new(*sym::INPUT, Type::Color)],
-                    outputs: vec![
-                        PortSpec::new(intern_static("R"), Type::Float),
-                        PortSpec::new(intern_static("G"), Type::Float),
-                        PortSpec::new(intern_static("B"), Type::Float),
-                        PortSpec::new(intern_static("A"), Type::Float),
-                    ],
-                },
-                ..Default::default()
-            });
-            ctx.connect(obj_port, node_id.port(WirePort::Input));
-            port_ref(node_id, &out_name)
-        }
-        // Array index result fields: arr[i].value / arr[i].bOutOfBounds
-        f if index_result_port(f).is_some() => {
-            let port_id = index_result_port(f).expect("guarded by the arm");
-            let obj_port = call_port.unwrap_or_else(|| lower_expr(ctx, obj));
-            // The name alone doesn't prove the object's gate carries the port:
-            // `x.Value` on an arbitrary call result reaches here too, and a wire
-            // to a port the node never declared is dropped at emit as silently
-            // as the placeholder was.
-            match resolve_output_field_port(ctx, obj_port.node_id, port_id.as_str()) {
-                Some(port) => port,
-                None => synthesise_unsupported(ctx, e),
-            }
-        }
-        // A field naming neither an inline-record entry nor a sibling output
-        // port (both resolved above, for a call object) has nothing to read:
-        // it degrades to an `_Unsupported` placeholder.
-        _ => synthesise_unsupported(ctx, e),
-    }
+    } else {
+        None
+    };
+    lower_component_split(ctx, obj, field, &obj_ty, call_port, e, range)
 }
 
-/// `.Discriminant`'s two forms - see the call site in `lower_field_access`.
-/// Returns `None` for anything that is neither a known variant path nor a
-/// value resolving to an enum's `Binding::Record` (the caller falls through
-/// to the ordinary field-access handling, e.g. for a typecheck-error program).
+/// `<obj>.Discriminant` for a variant path or an enum value. `None` for
+/// anything else, which the caller lowers as an ordinary field access.
 pub(super) fn lower_discriminant(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     range: &SourceRange,
 ) -> Option<PortRef> {
-    // A variant PATH (`Shape.Circle`) is statically known: bake the registry
-    // discriminant directly as a literal, no gate for `obj` itself. Guarded
-    // (mirrors `resolve_variant_for_construction`'s shadow guard in
-    // typecheck) so a value symbol shadowing the enum's name falls through to
-    // the value branch below instead of misreading it as a type name.
+    // A variant path (`Shape.Circle`) bakes the registry discriminant as a
+    // literal. `enum_head` declines a value shadowing the enum's name (as
+    // typecheck's `resolve_variant_for_construction` does), leaving it to the value branches.
     if let Expr::FieldAccess {
         obj: enum_obj,
         field: variant,
@@ -958,15 +913,14 @@ pub(super) fn lower_discriminant(
         ));
     }
     // A gate read whose first output is an enum reads that output's tag.
-    if let Some(fields) = crate::lower::expr::gate_read_enum_value(ctx, obj)
-        && let Some(disc_binding) = fields.get(&crate::intern::intern("__disc")).cloned()
+    if let Some(fields) = gate_read_enum_value(ctx, obj)
+        && let Some(disc_binding) = fields.get(&*DISC).cloned()
     {
         return binding_to_port(ctx, &disc_binding, range);
     }
-    // A stored/merged enum VALUE: resolve to its `Binding::Record`, index
-    // `__disc`, and read it like any other field.
+    // A stored or selected enum value reads its record's `__disc` like any field.
     if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, obj).cloned()
-        && let Some(disc_binding) = fields.get(&crate::intern::intern("__disc")).cloned()
+        && let Some(disc_binding) = fields.get(&*DISC).cloned()
     {
         return binding_to_port(ctx, &disc_binding, range);
     }
@@ -975,54 +929,40 @@ pub(super) fn lower_discriminant(
     // result or its one output by name (`f(c)`, `f(c).r`), an `if` or `match`
     // choosing one.
     if matches!(unwrap_ref(&ctx.type_of(obj)), Type::Enum { .. })
-        && let Some(fields) = crate::lower::stmt::value_record_fields(ctx, obj)
-        && let Some(disc_binding) = fields.get(&crate::intern::intern("__disc")).cloned()
+        && let Some(fields) = value_record_fields(ctx, obj)
+        && let Some(disc_binding) = fields.get(&*DISC).cloned()
     {
         return binding_to_port(ctx, &disc_binding, range);
     }
     None
 }
 
-/// `t[i]` / `m[k]` whose RUNTIME lowering is unavailable but whose value is a
-/// compile-time constant: materialize it as a literal source gate, exactly as
-/// `lower_ident`'s constant fallback does for a bare constant name (see its
-/// comment — this is the indexed analogue, and shares its `wire_type_of_literal`
-/// + `literal_node_range` pair so both agree on which literals have a wire form).
+/// `t[i]` / `m[k]` with no runtime lowering but a compile-time-constant value,
+/// as a literal source gate (the indexed analogue of `lower_ident`'s constant
+/// fallback, sharing `wire_type_of_literal` and `literal_node_range`).
 ///
-/// Called ONLY after [`lower_index_access_runtime`] has declined, so this is
-/// strictly a NARROWING of the `_Unsupported` case: an index that resolves to a
-/// real array/map var never reaches here, and no program that already lowered
-/// correctly can change. That ordering is load-bearing rather than stylistic —
-/// a `const t = [...]` shadowed by a same-named runtime `var t: int[]` must read
-/// the VAR, so the fold can never run before the ordinary resolution.
-///
-/// This closes a real silent miscompile: typecheck accepts `const z = t[1]`
-/// (the read emits no gate, so its exec-context rule does not apply), but the
-/// ordinary lowering had no form for it and synthesised an `_Unsupported`
-/// placeholder that emit never writes a component for — so `z`'s wire died and
-/// every runtime consumer read the type default (0) instead of the real value.
-fn const_fold_index_access(ctx: &mut LowerCtx, e: &Expr, range: &SourceRange) -> Option<PortRef> {
-    let lit = {
-        let lookup = |n: &str| ctx.resolve_mod(n);
-        let mut budget = crate::const_eval::Budget::default();
-        crate::const_eval::eval_expr(e, &ctx.const_ctx(Some(&lookup)), &mut budget).ok()?
-    };
+/// Must run only after [`lower_index_access_runtime`] declines: a `const t`
+/// shadowed by a runtime `var t: int[]` must read the var.
+fn const_fold_index_access(
+    ctx: &mut LowerCtx<'_>,
+    e: &Expr,
+    range: &SourceRange,
+) -> Option<PortRef> {
+    let lit = ctx.const_eval(e, ConstScope::Plain).ok()?;
     let ty = wire_type_of_literal(&lit)?;
     Some(literal_node_range(ctx, range, ty, lit))
 }
 
 pub(super) fn lower_index_access(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     index: &Expr,
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
     // An index on an if-expression distributes over the branches:
-    // `(if c then a else b)[i]` becomes `if c then a[i] else b[i]`, so each
-    // branch indexes its own container instead of the if-expr failing to
-    // resolve as a container (scalar-element arrays; a record-element array
-    // still hits the record-value limit inside a branch).
+    // `(if c then a else b)[i]` becomes `if c then a[i] else b[i]`. A
+    // record-element array still hits the record-value limit in a branch.
     if let Expr::IfExpr {
         cond,
         then_branch,
@@ -1058,17 +998,9 @@ pub(super) fn lower_index_access(
     if let Some(port) = const_fold_index_access(ctx, e, range) {
         return port;
     }
-    // Neither a real container nor a compile-time-constant read: the last case
-    // is a `const` container read at a RUNTIME index (`xs[i]`), which would
-    // otherwise land on the placeholder below and silently read 0. Give the
-    // container its runtime form and retry the ordinary lowering.
-    //
-    // Placed THIRD, after the fold, and that order is load-bearing: it keeps
-    // `const z = t[1]` folding to a literal with no gate at all. Like the fold
-    // above it, this is strictly a NARROWING of the `_Unsupported` case —
-    // `lower_index_access_runtime` reaches every `None` exit before lowering
-    // the index expression (see its doc comment), so the retry cannot
-    // duplicate gates.
+    // A `const` container read at a runtime index (`xs[i]`): give the
+    // container its runtime form and retry. Must follow the fold, so
+    // `const z = t[1]` stays a literal; the retry cannot duplicate gates.
     if materialize_const_container(ctx, obj).is_some()
         && let Some(port) = lower_index_access_runtime(ctx, obj, index, range)
     {
@@ -1078,11 +1010,7 @@ pub(super) fn lower_index_access(
     // skipping the others skips no call.
     if let Expr::Array { elements, .. } = obj
         && elements.iter().all(|el| matches!(el, ArrayElem::Item(_)))
-        && let Ok(Literal::Int(k)) = {
-            let lookup = |n: &str| ctx.resolve_mod(n);
-            let mut budget = crate::const_eval::Budget::default();
-            crate::const_eval::eval_expr(index, &ctx.const_ctx(Some(&lookup)), &mut budget)
-        }
+        && let Ok(Literal::Int(k)) = ctx.const_eval(index, ConstScope::Plain)
         && let Some(ArrayElem::Item(chosen)) = usize::try_from(k).ok().and_then(|k| elements.get(k))
         && elements.iter().all(|el| {
             std::ptr::eq(el.expr(), chosen) || !crate::analysis::visit::contains_call(el.expr())
@@ -1106,8 +1034,8 @@ pub(super) fn lower_index_access(
     }
     // An element of a container of payload-free enums, read as one value: its
     // tag, as a name bound to it (`let x = hs[k]`) reads.
-    if crate::lower::predeclare::unit_enum_port(ctx, &unwrap_ref(&ctx.type_of(e)))
-        && let Some(fields) = crate::lower::stmt::value_record_fields(ctx, e)
+    if unit_enum_port(ctx, &unwrap_ref(&ctx.type_of(e)))
+        && let Some(fields) = value_record_fields(ctx, e)
         && let Some(tag) = enum_tag(ctx, &fields, &ctx.type_of(e)).cloned()
         && let Some(port) = binding_to_port(ctx, &tag, range)
     {
@@ -1120,7 +1048,7 @@ pub(super) fn lower_index_access(
 /// gate with a baked `Length` of 1. Negative and out-of-range indices are the
 /// gate's own business, which is why the constant fold declines them.
 fn lower_string_index(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     index: &Expr,
     range: &SourceRange,
@@ -1153,17 +1081,11 @@ fn lower_string_index(
     node_id.port(WirePort::Output)
 }
 
-/// The ordinary (gate-emitting) lowering of `obj[index]`. `None` means "no
-/// runtime form here", letting [`lower_index_access`] try a compile-time fold
-/// before falling back to the `_Unsupported` placeholder.
-///
-/// Every `None` exit is reached BEFORE the index expression is lowered
-/// ([`container_ref`]'s static steps take their binding through
-/// `resolve_field_chain` and emit nothing, and its runtime step lowers `obj`
-/// only when it succeeds), so declining here leaves no half-built gates behind
-/// for the fold to trip over.
+/// The gate-emitting lowering of `obj[index]`, or `None` for no runtime form.
+/// Every `None` exit precedes any lowering ([`container_ref`] emits only on
+/// success), so declining leaves no half-built gates for the fold.
 fn lower_index_access_runtime(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     index: &Expr,
     range: &SourceRange,
@@ -1173,10 +1095,9 @@ fn lower_index_access_runtime(
     let ContainerSource::Ref(container) = container_ref(ctx, obj, &kind)? else {
         return None;
     };
-    // Map subscript `m[k]` desugars to a MapVar_Get (the same gate `m.get(k)`
-    // lowers to), auto-unwrapping to the Value port. The Key/Value ports
-    // carry the map's CONCRETE k/v types (not `any`) — see the comment at
-    // `lower_map_method` on why a generic `any` Key would bake a bad default.
+    // Map subscript `m[k]` is a MapVar_Get (as `m.get(k)`) read at its Value.
+    // The Key/Value ports carry the map's concrete types; see
+    // `lower_map_method` on why an `any` Key bakes a bad default.
     if let ContainerKind::Map { key: k, value: v } = &kind {
         let key = lower_expr(ctx, index);
         return Some(map_exec_op(
@@ -1198,7 +1119,7 @@ fn lower_index_access_runtime(
 /// An `ArrayVar_Get` of `array_ref` at `index` on the current exec chain,
 /// returning its `Value`. `None` with no exec chain to sequence it on.
 fn array_get(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     array_ref: PortRef,
     elem: Type,
     index: &Expr,
@@ -1206,8 +1127,8 @@ fn array_get(
 ) -> Option<PortRef> {
     let current_exec = ctx.current_exec?;
     let index_port = lower_expr(ctx, index);
-    // lower_expr for the index may have advanced the exec chain via
-    // Var_Get etc.; use the updated head, not the entry-time capture.
+    // Lowering the index may advance the exec chain (a Var_Get), so chain
+    // from the updated head.
     let current_exec = ctx.current_exec.unwrap_or(current_exec);
     let elem_ty = elem;
     let node_id = ctx.add_gate(AddNodeOpts {
@@ -1247,16 +1168,16 @@ pub(super) enum Columns {
 impl Columns {
     fn storage(self) -> VarStorage {
         match self {
-            Columns::Array => VarStorage::Array,
-            Columns::Map => VarStorage::Map,
+            Self::Array => VarStorage::Array,
+            Self::Map => VarStorage::Map,
         }
     }
 
     /// The port a column's ref arrives on, and the type its gates declare it.
     fn ref_port(self) -> (WirePort, Type) {
         match self {
-            Columns::Array => (WirePort::ArrayVarRef, Type::Array(Box::new(Type::Any))),
-            Columns::Map => (WirePort::MapVarRef, Type::Ref(Box::new(Type::Any))),
+            Self::Array => (WirePort::ArrayVarRef, Type::Array(Box::new(Type::Any))),
+            Self::Map => (WirePort::MapVarRef, Type::Ref(Box::new(Type::Any))),
         }
     }
 
@@ -1264,47 +1185,47 @@ impl Columns {
     /// index, or the key.
     fn position(self, v: &VarRecord) -> (WirePort, Type) {
         match self {
-            Columns::Array => (WirePort::Index, Type::Int),
-            Columns::Map => (WirePort::Key, map_kv(v).0),
+            Self::Array => (WirePort::Index, Type::Int),
+            Self::Map => (WirePort::Key, map_kv(v).0),
         }
     }
 
     /// The type one position of column `v` holds.
     fn value_type(self, v: &VarRecord) -> Type {
         match self {
-            Columns::Array => v.inner_type.clone(),
-            Columns::Map => map_kv(v).1,
+            Self::Array => v.inner_type.clone(),
+            Self::Map => map_kv(v).1,
         }
     }
 
     /// The get gate, and the flag it reports beside the value.
     fn get(self) -> (&'static str, WirePort) {
         match self {
-            Columns::Array => (gc::ARRAY_GET, WirePort::BOutOfBounds),
-            Columns::Map => (gc::MAP_GET, WirePort::BFound),
+            Self::Array => (gc::ARRAY_GET, WirePort::BOutOfBounds),
+            Self::Map => (gc::MAP_GET, WirePort::BFound),
         }
     }
 
     fn set(self) -> &'static str {
         match self {
-            Columns::Array => gc::ARRAY_SET_AT_INDEX,
-            Columns::Map => gc::MAP_SET,
+            Self::Array => gc::ARRAY_SET_AT_INDEX,
+            Self::Map => gc::MAP_SET,
         }
     }
 
     /// What a record written into one position is called in a message.
     fn written(self) -> &'static str {
         match self {
-            Columns::Array => "the element written here",
-            Columns::Map => "the value written here",
+            Self::Array => "the element written here",
+            Self::Map => "the value written here",
         }
     }
 
     /// What a read with no exec chain is called in a message.
     fn read(self) -> &'static str {
         match self {
-            Columns::Array => "an array read with no exec chain to run on",
-            Columns::Map => "a map read with no exec chain to run on",
+            Self::Array => "an array read with no exec chain to run on",
+            Self::Map => "a map read with no exec chain to run on",
         }
     }
 }
@@ -1313,15 +1234,15 @@ impl Columns {
 /// ref `container` and `extra_in`, exposes `extra_out`, advances the exec
 /// chain, and returns the `ret` port.
 ///
-/// With no exec chain there is no form for the op, so it is reported: handing
-/// back the ref would put the container REFERENCE where the consumer expects
-/// the VALUE. A read on a `const` map receiver reaches here that way, as it is
-/// exempt from the exec-context rule (`container_call_exec_exempt`) on the
-/// premise that it folds, and nothing else speaks up when the fold declines.
-/// Every array caller checks for an exec chain first.
-#[allow(clippy::too_many_arguments)]
+/// With no exec chain the op is reported rather than returning the ref, which
+/// would put a container reference where a value is expected. A `const` map
+/// read reaches here when its fold declines (`container_call_exec_exempt`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each input is a separate part of the gate's shape"
+)]
 pub(super) fn column_exec_op(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
     range: &SourceRange,
     container: PortRef,
@@ -1343,8 +1264,8 @@ pub(super) fn column_exec_op(
         inputs.push(PortSpec::new(port.sym(), ty.clone()));
     }
     let mut outputs = vec![PortSpec::exec(*sym::EXEC_OUT)];
-    for (port, ty) in &extra_out {
-        outputs.push(PortSpec::new(port.sym(), ty.clone()));
+    for (port, ty) in extra_out {
+        outputs.push(PortSpec::new(port.sym(), ty));
     }
     let mut wired = vec![(container, ref_port)];
     wired.extend(extra_in.into_iter().map(|(port, _, src)| (src, port)));
@@ -1360,7 +1281,7 @@ pub(super) fn column_exec_op(
 
 /// [`column_exec_op`] on an array.
 pub(super) fn array_exec_op(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     range: &SourceRange,
     array_ref: PortRef,
     gate_class: &'static str,
@@ -1381,11 +1302,9 @@ pub(super) fn array_exec_op(
     )
 }
 
-/// [`column_exec_op`] on a map. `pub(super)` so the `m[k] = v` write desugar
-/// in `stmt.rs::lower_assign` can call it directly, mirroring the read desugar
-/// in `lower_index_access` below.
+/// [`column_exec_op`] on a map; also the `m[k] = v` write in `lower_assign`.
 pub(super) fn map_exec_op(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     range: &SourceRange,
     map_ref: PortRef,
     gate_class: &'static str,
@@ -1409,10 +1328,7 @@ pub(super) fn map_exec_op(
 /// The leaf columns of a record container's field map, name-sorted for a
 /// stable fan-out order, recursing through nested record fields: one parallel
 /// array (or map) per record field.
-pub(super) fn leaf_columns(
-    cols: Columns,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-) -> Vec<VarRecord> {
+pub(super) fn leaf_columns(cols: Columns, fields: &Fields) -> Vec<VarRecord> {
     let names = sorted_field_names(fields);
     let mut out = Vec::new();
     for k in names {
@@ -1428,10 +1344,10 @@ pub(super) fn leaf_columns(
 /// Resolve `base` (an identifier or a record field chain) to a record
 /// container's field map: a `Binding::Record` with at least one leaf column.
 pub(super) fn resolve_record_columns(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     cols: Columns,
     base: &Expr,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+) -> Option<Fields> {
     let binding = match base {
         Expr::Ident { name, .. } => ctx.scope.get(name).cloned(),
         _ => resolve_field_chain(ctx, base).cloned(),
@@ -1442,11 +1358,9 @@ pub(super) fn resolve_record_columns(
     }
 }
 
-/// Decompose `c[p].f1.f2…` into the container base, the position expr and the
-/// trailing field path (source order). Both named fields (`.inner`) and tuple
-/// picks (`.0`) contribute a path segment, so a record whose field is itself a
-/// tuple decomposes the same way. A map's position is either key-access
-/// spelling, `m[k]` or `m.get(k)` ([`record_map_key_source`]). `None` unless
+/// Decompose `c[p].f1.f2...` into the container base, the position expr and the
+/// field path in source order (`.inner` and `.0` both add a segment). A map's
+/// position is `m[k]` or `m.get(k)` ([`record_map_key_source`]). `None` unless
 /// field/tuple accesses wrap a position access.
 fn split_record_access(cols: Columns, e: &Expr) -> Option<(&Expr, &Expr, Vec<String>)> {
     let mut path: Vec<String> = Vec::new();
@@ -1478,7 +1392,7 @@ fn split_record_access(cols: Columns, e: &Expr) -> Option<(&Expr, &Expr, Vec<Str
 
 /// Read column `v` at `position`: the get gate's `Value` port.
 fn column_get(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
     v: &VarRecord,
     position: PortRef,
@@ -1502,7 +1416,7 @@ fn column_get(
 
 /// Write `value` into column `v` at `position`.
 fn column_set(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
     v: &VarRecord,
     position: PortRef,
@@ -1530,12 +1444,12 @@ fn column_set(
 /// Read every leaf column at `position` into a `Binding::Record` of `Local`
 /// ports, recursing through nested records.
 pub(super) fn record_column_read(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
-    fields: &HashMap<crate::intern::Sym, Binding>,
+    fields: &Fields,
     position: PortRef,
     range: &SourceRange,
-) -> HashMap<crate::intern::Sym, Binding> {
+) -> Fields {
     let mut out = HashMap::default();
     let names = sorted_field_names(fields);
     for k in names {
@@ -1556,13 +1470,13 @@ pub(super) fn record_column_read(
     out
 }
 
-/// `pts[i] = rec` / `m[k] = rec` / `m.set(k, rec)` — write a whole record by
-/// fanning the record VALUE across the leaf columns at the shared position.
+/// `pts[i] = rec` / `m[k] = rec` / `m.set(k, rec)`: write a whole record by
+/// fanning the record value across the leaf columns at the shared position.
 /// Returns `true` when it handled the assignment.
 pub(super) fn lower_record_position_set(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
-    fields: &HashMap<crate::intern::Sym, Binding>,
+    fields: &Fields,
     position: &Expr,
     value: &Expr,
     range: &SourceRange,
@@ -1573,8 +1487,7 @@ pub(super) fn lower_record_position_set(
     let Some((position_port, src)) = keyed_record(ctx, position, value) else {
         return false;
     };
-    if let Some(src) = crate::lower::stmt::fit_record_value(ctx, cols.written(), value, fields, src)
-    {
+    if let Some(src) = fit_record_value(ctx, cols.written(), value, fields, src) {
         record_set_walk(ctx, cols, fields, &src, position_port, range);
     }
     true
@@ -1583,10 +1496,10 @@ pub(super) fn lower_record_position_set(
 /// Write the record value `src` field by field into the leaf columns at
 /// `position`, recursing through nested records.
 pub(super) fn record_set_walk(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    src: &HashMap<crate::intern::Sym, Binding>,
+    fields: &Fields,
+    src: &Fields,
     position: PortRef,
     range: &SourceRange,
 ) {
@@ -1612,15 +1525,12 @@ pub(super) fn record_set_walk(
     }
 }
 
-/// `c[p].f1.f2…` — read a field of a record container's entry. A SCALAR-leaf
-/// path yields that field's column `Value` port; a path landing on a NESTED
-/// RECORD reads every leaf of that sub-record at the shared position into a
-/// `Binding::Record` value (stashed in `pending_inline_record` for a record
-/// consumer) and returns its first leaf port so a scalar consumer still
-/// auto-unwraps. `None` unless `e` is a record-container field path that
-/// resolves, with an exec context to read on.
+/// `c[p].f1.f2...`: read a field of a record container's entry. A scalar leaf
+/// yields its column's `Value`; a nested record reads every leaf into
+/// `pending_inline_record` and returns its first leaf port. `None` unless the
+/// path resolves and there is an exec context.
 pub(super) fn lower_record_field_path(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
     e: &Expr,
     range: &SourceRange,
@@ -1651,11 +1561,11 @@ pub(super) fn lower_record_field_path(
 /// path landing on a nested record. `None` otherwise, or with no exec context
 /// to read on.
 pub(super) fn lower_record_field_path_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
     e: &Expr,
     range: &SourceRange,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+) -> Option<Fields> {
     let (base, position, path) = split_record_access(cols, e)?;
     if path.is_empty() {
         return None;
@@ -1669,12 +1579,12 @@ pub(super) fn lower_record_field_path_value(
     Some(record_column_read(ctx, cols, &sub, position_port, range))
 }
 
-/// `c[p].f1.f2… = value` — write a field of a record container's entry. A
-/// SCALAR-leaf path writes that field's column; a NESTED-RECORD path fans the
-/// record value across the sub-record's columns at the shared position.
+/// `c[p].f1.f2... = value`: write a field of a record container's entry. A
+/// scalar leaf writes its column; a nested record fans the value across the
+/// sub-record's columns at the shared position.
 /// Returns `true` when it handled the assignment.
 pub(super) fn lower_record_field_path_set(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cols: Columns,
     target: &Expr,
     value: &Expr,
@@ -1703,12 +1613,10 @@ pub(super) fn lower_record_field_path_set(
             true
         }
         Binding::Record(sub) => {
-            let Some(src) = crate::lower::stmt::value_record_fields(ctx, value) else {
+            let Some(src) = value_record_fields(ctx, value) else {
                 return false;
             };
-            let Some(src) =
-                crate::lower::stmt::fit_record_value(ctx, cols.written(), value, &sub, src)
-            else {
+            let Some(src) = fit_record_value(ctx, cols.written(), value, &sub, src) else {
                 return true;
             };
             let position_port = lower_expr(ctx, position);
@@ -1719,13 +1627,10 @@ pub(super) fn lower_record_field_path_set(
     }
 }
 
-/// Resolve an argument that names another array to its ref port (for
-/// the dual-array ops append/copyFrom/slice, a map's keys/values destination and
-/// sortMultiple's parallel arrays). The argument resolves through typecheck's
-/// recorded kind like every other receiver, and a constant array argument
-/// (a `const`, a `let` of one, an array literal) resolves to its
-/// materialized gate.
-pub(super) fn resolve_array_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
+/// Resolve an argument naming another array (append/copyFrom/slice, a map's
+/// keys/values destination, sortMultiple's arrays) to its ref port. A constant
+/// array argument (a `const`, a `let` of one, a literal) resolves to its materialized gate.
+pub(super) fn resolve_array_ref_arg(ctx: &mut LowerCtx<'_>, e: &Expr) -> Option<PortRef> {
     materialize_const_container(ctx, e);
     if let Some(rec) = materialize_literal_container(ctx, e, "literal") {
         return Some(rec.node_id.port(WirePort::ArrayVarRef));
@@ -1739,11 +1644,9 @@ pub(super) fn resolve_array_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<Port
     }
 }
 
-/// Resolve an argument that names another map to its ref port (for
-/// `copyFrom`). The argument resolves through typecheck's recorded kind like
-/// every other receiver, and a constant map argument resolves to its
-/// materialized gate.
-fn resolve_map_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
+/// Resolve an argument naming another map (`copyFrom`) to its ref port; a
+/// constant map argument resolves to its materialized gate.
+fn resolve_map_ref_arg(ctx: &mut LowerCtx<'_>, e: &Expr) -> Option<PortRef> {
     materialize_const_container(ctx, e);
     let kind @ ContainerKind::Map { .. } = ctx.container_kind(e)? else {
         return None;
@@ -1754,18 +1657,11 @@ fn resolve_map_ref_arg(ctx: &mut LowerCtx, e: &Expr) -> Option<PortRef> {
     }
 }
 
-/// Whether `obj`'s value is a container ref that only exists at runtime (an
-/// element `rows[y]`, a var holding one, event data, a call result) rather
-/// than a container the static resolvers above already bind. A record or enum
-/// container is several parallel containers with no single ref.
-///
-/// Declines what `obj` is reached from when that has no runtime value: a name
-/// with no binding is a `const`, whose reads fold or go through
-/// `materialize_const_container`; an unresolved namespace member is a
-/// namespaced `const`; a field bound to an `_Unsupported` placeholder (see
-/// [`is_placeholder_port`]) has no ref to give. Nothing reached from any of
-/// them takes this path, so it keeps its WS044 or placeholder diagnostic.
-fn is_runtime_container(ctx: &LowerCtx, obj: &Expr, elem: &Type) -> bool {
+/// Whether `obj`'s value is a container ref that exists only at runtime (an
+/// element `rows[y]`, event data, a call result). Declines record/enum elements
+/// (no single ref) and chains rooted in a `const` or an `_Unsupported`
+/// placeholder, so those keep their WS044 or placeholder diagnostic.
+fn is_runtime_container(ctx: &LowerCtx<'_>, obj: &Expr, elem: &Type) -> bool {
     if matches!(elem, Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }) {
         return false;
     }
@@ -1803,11 +1699,15 @@ fn is_runtime_container(ctx: &LowerCtx, obj: &Expr, elem: &Type) -> bool {
     match obj {
         Expr::Ident { name, .. } => !matches!(
             ctx.scope.get(name),
-            Some(Binding::Record(_) | Binding::Namespace(_) | Binding::Chip(_))
-                | Some(Binding::Var(VarRecord {
-                    storage: VarStorage::Array | VarStorage::Map,
-                    ..
-                }))
+            Some(
+                Binding::Record(_)
+                    | Binding::Namespace(_)
+                    | Binding::Chip(_)
+                    | Binding::Var(VarRecord {
+                        storage: VarStorage::Array | VarStorage::Map,
+                        ..
+                    })
+            )
         ),
         // A literal names no container; a constant one is materialized by the
         // caller (`materialize_literal_container`).
@@ -1818,10 +1718,10 @@ fn is_runtime_container(ctx: &LowerCtx, obj: &Expr, elem: &Type) -> bool {
 
 /// Where a container receiver's ref comes from.
 pub(super) enum ContainerSource {
-    /// One ArrayVarRef / MapVarRef port.
+    /// One `ArrayVarRef` / `MapVarRef` port.
     Ref(PortRef),
     /// A record (or tuple or enum) container stored as parallel per-field columns.
-    Columns(HashMap<crate::intern::Sym, Binding>),
+    Columns(Fields),
 }
 
 /// The one receiver resolver. `kind` is typecheck's answer for what `obj` is;
@@ -1830,7 +1730,7 @@ pub(super) enum ContainerSource {
 /// `let`), then the receiver's runtime value. A `const` receiver must already be
 /// materialized by the caller, which owns the fold-versus-materialize order.
 pub(super) fn container_ref(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     kind: &ContainerKind,
 ) -> Option<ContainerSource> {
@@ -1875,7 +1775,7 @@ pub(super) fn container_ref(
 
 /// The container backstop: an array/map operation whose receiver resolved to no
 /// container ref here. `what` names the operation and leads the message.
-pub(super) fn report_unresolved_container(ctx: &mut LowerCtx, what: &str, range: &SourceRange) {
+pub(super) fn report_unresolved_container(ctx: &mut LowerCtx<'_>, what: &str, range: &SourceRange) {
     ctx.error(
         "WS044",
         format!(
@@ -1889,7 +1789,7 @@ pub(super) fn report_unresolved_container(ctx: &mut LowerCtx, what: &str, range:
 /// The WS044 for a container ARGUMENT (a source or destination array/map) that
 /// resolved to no container ref here, so the operation has nothing to act on.
 pub(super) fn report_unresolved_container_arg(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     method: &str,
     range: &SourceRange,
 ) {
@@ -1906,12 +1806,12 @@ pub(super) fn report_unresolved_container_arg(
 
 /// Whether `node` is an immutable container gate, or a `Select` or buffer in
 /// this module that can pass one through (`if c then T else xs`, `buffer b = T`).
-pub(super) fn is_immutable_container(ctx: &LowerCtx, node: NodeId) -> bool {
+pub(super) fn is_immutable_container(ctx: &LowerCtx<'_>, node: NodeId) -> bool {
     if ctx.immutable_containers.is_empty() {
         return false;
     }
     let mut stack = vec![node];
-    let mut seen: crate::collections::HashSet<NodeId> = crate::collections::HashSet::default();
+    let mut seen: HashSet<NodeId> = HashSet::default();
     while let Some(id) = stack.pop() {
         if !seen.insert(id) {
             continue;
@@ -1930,7 +1830,7 @@ pub(super) fn is_immutable_container(ctx: &LowerCtx, node: NodeId) -> bool {
         if !matches!(class, gc::SELECT | gc::BUFFER_TICKS | gc::BUFFER_SECONDS) {
             continue;
         }
-        let feeds = crate::lower::ordered::feeds_of(ctx, id);
+        let feeds = ordered::feeds_of(ctx, id);
         stack.extend(
             feeds
                 .into_iter()
@@ -1941,25 +1841,12 @@ pub(super) fn is_immutable_container(ctx: &LowerCtx, node: NodeId) -> bool {
     false
 }
 
-/// Reject a method that would CHANGE a `const` container's contents.
-///
-/// A `const` array/map is two things at once — a compile-time value the const
-/// environment answers questions about, and (once something reads it at
-/// runtime) a real container gate. Mutation is what makes those two disagree:
-/// after `xs.push(40)`, `const n = xs.length()` and the gate would both be
-/// "right" with different answers, and the const environment would stop being a
-/// single source of truth. So it stays an error.
-///
-/// Reuses WS044 (the container-method diagnostic) with a message naming the
-/// real cause: the backstop's generic "did not resolve to an array or map"
-/// text would be actively wrong here, since the receiver resolved fine.
-///
-/// Keyed on the gate NODE, so it holds through aliasing — a `const` table
-/// passed to a `ys: T[]` parameter binds `ys` to this same node, and
-/// `ys.push(…)` inside the callee is rejected exactly like `xs.push(…)` outside
-/// it. Returns `true` when it reported (the caller must not emit the op).
+/// Reject (WS044) a method that would change a `const` container's contents,
+/// which would make its compile-time value and its runtime gate disagree.
+/// Keyed on the gate node, so it holds through aliasing (a `const` passed to a
+/// `ys: T[]` parameter). Returns `true` when it reported; the caller must not emit the op.
 pub(super) fn reject_const_container_mutation(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     target: NodeId,
     mutates: bool,
     op: &str,
@@ -1981,16 +1868,11 @@ pub(super) fn reject_const_container_mutation(
     true
 }
 
-/// A record binding's field names in a stable order.
-///
-/// Every walk over a `Binding::Record` emits gates, and the map's own iteration
-/// order is a hash order, so walking it directly would let the emitted node ids
-/// (and therefore the output bytes) move between compiles. Sorting by the
-/// interned STRING rather than the `Sym` keeps the order independent of intern
-/// order too.
-fn sorted_field_names(fields: &HashMap<crate::intern::Sym, Binding>) -> Vec<crate::intern::Sym> {
-    let mut names: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    names.sort_by_key(|s| crate::intern::resolve(*s));
+/// A record binding's field names, sorted by string. Walks emit gates, so hash
+/// or intern order would make node ids (and output bytes) vary between compiles.
+fn sorted_field_names(fields: &Fields) -> Vec<Sym> {
+    let mut names: Vec<Sym> = fields.keys().copied().collect();
+    names.sort_by_key(|s| resolve(*s));
     names
 }
 
@@ -2001,8 +1883,8 @@ pub(super) fn map_kv(v: &VarRecord) -> (Type, Type) {
     }
 }
 
-/// `m[key]` / `m.get(key)` — recover the map base expr and the key expr from
-/// either spelling, so both route through the same record-map read/field paths.
+/// The map base expr and key expr of `m[key]` or `m.get(key)`, so both
+/// spellings route through the same record-map paths.
 fn record_map_key_source(expr: &Expr) -> Option<(&Expr, &Expr)> {
     match expr {
         Expr::IndexAccess { obj, index, .. } => Some((obj, index)),
@@ -2020,14 +1902,14 @@ fn record_map_key_source(expr: &Expr) -> Option<(&Expr, &Expr)> {
     }
 }
 
-/// `m.get(k)` / `m[k]` as a record VALUE — read every parallel field map at the
-/// shared key into a `Binding::Record` of `Local` ports (recursing nested
-/// records). Mirrors [`lower_record_array_index_value`].
+/// `m.get(k)` / `m[k]` as a record value: every parallel field map read at the
+/// shared key into a `Binding::Record` of `Local` ports, recursing nested
+/// records. Mirrors [`lower_record_array_index_value`].
 pub(super) fn lower_record_map_key_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     expr: &Expr,
     range: &SourceRange,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+) -> Option<Fields> {
     let (base, key) = record_map_key_source(expr)?;
     let fields = resolve_record_columns(ctx, Columns::Map, base)?;
     ctx.current_exec?;
@@ -2046,8 +1928,8 @@ pub(super) fn lower_record_map_key_value(
 /// same keys); `clear`/`remove` fan out; `get` builds the record value and
 /// stashes it in `pending_inline_record` (a let/out consumer picks it up).
 pub(super) fn lower_record_map_method(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    fields: &Fields,
     method: &str,
     args: &[CallArg],
     range: &SourceRange,
@@ -2062,7 +1944,7 @@ pub(super) fn lower_record_map_method(
         "length" | "has" => lower_map_method(
             ctx,
             first_ref,
-            leaves[0].inner_type.clone(),
+            &leaves[0].inner_type,
             method,
             args,
             range,
@@ -2074,7 +1956,7 @@ pub(super) fn lower_record_map_method(
                 ret = Some(lower_map_method(
                     ctx,
                     leaf.node_id.port(WirePort::MapVarRef),
-                    leaf.inner_type.clone(),
+                    &leaf.inner_type,
                     method,
                     args,
                     range,
@@ -2110,10 +1992,9 @@ pub(super) fn lower_record_map_method(
             let record = lower_record_map_key_value(ctx, e, range);
             match record {
                 Some(rec) => {
-                    // Primary port (a record auto-unwraps to its first field) so a
-                    // scalar misuse still has something; record consumers use the
-                    // pending record instead.
-                    let primary = crate::lower::context::in_declared_order(ctx, &rec, e.range())
+                    // A record auto-unwraps to its first field for a scalar
+                    // consumer; record consumers take the pending record.
+                    let primary = in_declared_order(ctx, &rec, e.range())
                         .into_iter()
                         .find_map(|b| match b {
                             Binding::Local(l) => Some(l.port),
@@ -2126,19 +2007,19 @@ pub(super) fn lower_record_map_method(
                 None => synthesise_unsupported(ctx, e),
             }
         }
-        // Keys are identical across every parallel field map, so `keys(dest)`
-        // reads them from the FIRST field into the (scalar-keyed) destination.
+        // Every parallel field map has the same keys, so `keys(dest)` reads
+        // the first field's.
         "keys" => lower_map_method(
             ctx,
             first_ref,
-            leaves[0].inner_type.clone(),
+            &leaves[0].inner_type,
             "keys",
             args,
             range,
             e,
         ),
-        // `values` would fill a RECORD array (per-field split needed) and
-        // `copyFrom` needs a matching record map - neither is implemented yet.
+        // `values` (a per-field split into a record array) and `copyFrom` (a
+        // matching record map) have no record-map form.
         _ => {
             ctx.error(
                 "WS050",
@@ -2154,7 +2035,7 @@ pub(super) fn lower_record_map_method(
     }
 }
 
-fn nth_positional<'a>(args: &'a [CallArg], i: usize) -> Option<&'a Expr> {
+fn nth_positional(args: &[CallArg], i: usize) -> Option<&Expr> {
     match args.get(i) {
         Some(CallArg::Positional(e)) => Some(e),
         _ => None,
@@ -2162,13 +2043,13 @@ fn nth_positional<'a>(args: &'a [CallArg], i: usize) -> Option<&'a Expr> {
 }
 
 /// Apply a value-carrying array op (push / insert / fill) to each parallel field
-/// array, reading the source record VALUE field by field (`binding_to_port`
-/// yields the scalar the field's array should store). `idx` (Some for `insert`)
-/// fans the same index into every field. Recurses through nested record fields.
+/// array, reading the source record value field by field and recursing through
+/// nested records. `scalar` (the index for `insert`) fans the same extra input
+/// into every field.
 pub(super) fn record_array_value_op(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    src: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    fields: &Fields,
+    src: &Fields,
     range: &SourceRange,
     gate_class: &'static str,
     scalar: Option<(WirePort, PortRef)>,
@@ -2220,13 +2101,10 @@ pub(super) fn record_array_value_op(
 /// names. Every earlier segment must name a nested record to descend through;
 /// a non-record earlier segment (or any missing name) yields `None`. `path`
 /// must be non-empty.
-fn navigate_record_fields<'a>(
-    fields: &'a HashMap<crate::intern::Sym, Binding>,
-    path: &[String],
-) -> Option<&'a Binding> {
+fn navigate_record_fields<'a>(fields: &'a Fields, path: &[String]) -> Option<&'a Binding> {
     let mut cur = fields;
     for (i, seg) in path.iter().enumerate() {
-        let b = cur.get(&crate::intern::intern(seg))?;
+        let b = cur.get(&intern(seg))?;
         if i + 1 == path.len() {
             return Some(b);
         }
@@ -2241,7 +2119,7 @@ fn navigate_record_fields<'a>(
 /// The first leaf `Local` port of a lowered record value, in name-sorted order,
 /// descending through nested records. A record auto-unwraps to this port when
 /// used where a scalar is expected. `None` for an empty record.
-fn first_leaf_port(rec: &HashMap<crate::intern::Sym, Binding>) -> Option<PortRef> {
+fn first_leaf_port(rec: &Fields) -> Option<PortRef> {
     let names = sorted_field_names(rec);
     for k in names {
         match rec.get(&k) {
@@ -2260,10 +2138,7 @@ fn first_leaf_port(rec: &HashMap<crate::intern::Sym, Binding>) -> Option<PortRef
 /// The array var backing the leaf column `path` names in a record array
 /// (`pts.x` is `["x"]`, `qs.p.x` is `["p", "x"]`). `None` if the path does not
 /// end on a scalar parallel array.
-fn record_array_field(
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    path: &[String],
-) -> Option<VarRecord> {
+fn record_array_field(fields: &Fields, path: &[String]) -> Option<VarRecord> {
     match navigate_record_fields(fields, path) {
         Some(Binding::Var(v)) if v.storage == VarStorage::Array => Some(v.clone()),
         _ => None,
@@ -2272,26 +2147,20 @@ fn record_array_field(
 
 /// `value`'s fields as an element of the record or enum container whose
 /// columns are `columns`, fitted to them (see `stmt::fit_record_value`).
-fn element_fields(
-    ctx: &mut LowerCtx,
-    columns: &HashMap<crate::intern::Sym, Binding>,
-    value: &Expr,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
-    let src = crate::lower::stmt::value_record_fields(ctx, value)?;
-    crate::lower::stmt::fit_record_value(ctx, "the element written here", value, columns, src)
+fn element_fields(ctx: &mut LowerCtx<'_>, columns: &Fields, value: &Expr) -> Option<Fields> {
+    let src = value_record_fields(ctx, value)?;
+    fit_record_value(ctx, "the element written here", value, columns, src)
 }
 
-/// `pts[i]` as a record VALUE — read every parallel field array at the shared
-/// index into a `Binding::Record` of `Local` ports (recursing for nested record
-/// fields). Lets `p = pts[i]`, `pts.push(other[i])`, `out o = pts[i]`, etc. flow
-/// through the ordinary record-value machinery. `None` if `base` isn't a record
-/// array or there is no exec context to read on.
+/// `pts[i]` as a record value: every parallel field array read at the shared
+/// index into a `Binding::Record` of `Local` ports, recursing nested records.
+/// `None` if `base` is not a record array or there is no exec context.
 pub(super) fn lower_record_array_index_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     base: &Expr,
     index: &Expr,
     range: &SourceRange,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+) -> Option<Fields> {
     let fields = resolve_record_columns(ctx, Columns::Array, base)?;
     ctx.current_exec?;
     let index_port = lower_expr(ctx, index);
@@ -2305,25 +2174,21 @@ pub(super) fn lower_record_array_index_value(
 }
 
 /// A fresh, unbound `Pseudo_ArrayVar` scratch gate of element type `elem` (for
-/// the multi-pass record sort's key copies). Not bound in scope — only its ref
+/// the multi-pass record sort's key copies). Not bound in scope; only its ref
 /// port is wired.
-fn make_scratch_array(ctx: &mut LowerCtx, elem: &Type, range: &SourceRange) -> PortRef {
+fn make_scratch_array(ctx: &mut LowerCtx<'_>, elem: &Type, range: &SourceRange) -> PortRef {
     make_array_var_gate(ctx, elem, HashMap::default(), range, Some("sort key copy"))
         .port(WirePort::ArrayVarRef)
 }
 
-/// `soa.field.sort(descending?)` on a record array: sort the WHOLE record by
-/// the column `path` names (a nested `qs.p.x` is `["p", "x"]`), reordering
-/// every other leaf column of the record array to match, so rows stay intact.
-/// The `sortMultiple` gate carries a sort key plus 7 parallel columns, so a
-/// record wider than 8 fields is sorted in GROUPS of 7: each later group is
-/// sorted against a COPY of the original key taken before any sort, and a
-/// deterministic sort applies the identical permutation to every group. `None`
-/// if `path` doesn't name a scalar parallel array (a nested-record field can't
-/// be a sort key).
+/// `soa.field.sort(descending?)` on a record array: sort whole rows by the
+/// column `path` names (`qs.p.x` is `["p", "x"]`). `sortMultiple` carries a key
+/// plus 7 columns, so wider records sort in groups of 7, each later group against
+/// a pre-sort copy of the key; the deterministic sort gives every group the same
+/// permutation. `None` if `path` names no scalar column.
 pub(super) fn lower_record_array_field_sort(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    fields: &Fields,
     path: &[String],
     args: &[CallArg],
     range: &SourceRange,
@@ -2372,9 +2237,8 @@ pub(super) fn lower_record_array_field_sort(
     }
 
     let groups: Vec<&[VarRecord]> = parallels.chunks(REFS.len()).collect();
-    // Copy the ORIGINAL key for every group past the first, BEFORE any sort runs
-    // (so each copy holds the pre-sort values). One `sortMultiple` per group then
-    // reorders that group's ≤7 columns by the key's (identical) permutation.
+    // Copy the key for every group past the first before any sort runs, so
+    // each copy holds the pre-sort values.
     let mut sort_keys: Vec<PortRef> = vec![key_ref];
     for _ in 1..groups.len() {
         let scratch = make_scratch_array(ctx, &key_elem, range);
@@ -2420,14 +2284,12 @@ pub(super) fn lower_record_array_field_sort(
 }
 
 /// Fan a record-array method across the parallel per-field arrays. `fields` is
-/// the record array's `Binding::Record`. Ops that keep the parallel arrays in
-/// lockstep — push/insert/remove/fill/clear/reverse — fan out; `length` reads
-/// the first field (all fields share one count). Ops that would DESYNC the
-/// arrays if applied per field (sort/shuffle/find and the aggregates) are left
-/// unsupported here rather than silently corrupting row correspondence.
+/// the record array's `Binding::Record`. Ops that keep the arrays in lockstep
+/// fan out; `length` reads the first field. Ops that would desync rows if run
+/// per field (sort, shuffle, find, the aggregates) are WS050.
 pub(super) fn lower_record_array_method(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    fields: &Fields,
     method: &str,
     args: &[CallArg],
     range: &SourceRange,
@@ -2510,9 +2372,7 @@ pub(super) fn lower_record_array_method(
                 None => synthesise_unsupported(ctx, e),
             }
         }
-        // Index-scalar mutations that reorder ROWS as a whole keep the parallel
-        // arrays in lockstep, so they fan out: `swap(a, b)` moves both endpoints'
-        // full records.
+        // `swap(a, b)` on every column moves whole rows, keeping lockstep.
         "swap" => {
             let (Some(a), Some(b)) = (nth_positional(args, 0), nth_positional(args, 1)) else {
                 return synthesise_unsupported(ctx, e);
@@ -2535,11 +2395,11 @@ pub(super) fn lower_record_array_method(
             }
             ret.unwrap_or_else(|| synthesise_unsupported(ctx, e))
         }
-        // `pop` removes the last ROW and returns it as a record value (per-field
-        // pop), stashed in `pending_inline_record` for a let/assign/out consumer.
+        // `pop` removes the last row and stashes it in `pending_inline_record`
+        // for a let/assign/out consumer.
         "pop" => {
             let record = record_array_pop(ctx, fields, range);
-            let primary = crate::lower::context::in_declared_order(ctx, &record, e.range())
+            let primary = in_declared_order(ctx, &record, e.range())
                 .into_iter()
                 .find_map(|b| match b {
                     Binding::Local(l) => Some(l.port),
@@ -2549,12 +2409,9 @@ pub(super) fn lower_record_array_method(
             ctx.pending_inline_record = Some(record);
             primary
         }
-        // Everything else has no per-field-parallel-array meaning: `sort`/`shuffle`
-        // reorder by value/randomly (desyncs the fields), the aggregates
-        // (`sum`/`min`/`max`/`average`) fold over whole records, `find` needs an
-        // all-fields match, `get(i)` duplicates `pts[i]`, and the dual-array /
-        // fill-from-* ops need matching record arrays. Reject cleanly (WS050)
-        // rather than silently lowering to a no-op placeholder.
+        // Everything else has no per-column meaning (sort/shuffle desync rows,
+        // aggregates and `find` need whole records, dual-array ops need a
+        // matching record array), so it is WS050.
         _ => {
             ctx.error(
                 "WS050",
@@ -2573,11 +2430,7 @@ pub(super) fn lower_record_array_method(
 
 /// Pop the last row of a record array: pop every parallel field array (lockstep)
 /// and collect the popped values into a record. Recurses for nested records.
-fn record_array_pop(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    range: &SourceRange,
-) -> HashMap<crate::intern::Sym, Binding> {
+fn record_array_pop(ctx: &mut LowerCtx<'_>, fields: &Fields, range: &SourceRange) -> Fields {
     let mut out = HashMap::default();
     let names = sorted_field_names(fields);
     for k in names {
@@ -2609,7 +2462,7 @@ fn record_array_pop(
 /// `elem_ty`. Every method in [`crate::catalog::arrays::ARRAY_METHODS`] lowers
 /// through its entry's [`Lowering`].
 pub(super) fn lower_array_method(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     array_ref: PortRef,
     elem_ty: Type,
     method: &str,
@@ -2625,15 +2478,15 @@ pub(super) fn lower_array_method(
 /// `Type::Map(K, V)`. Every method in [`crate::catalog::maps::MAP_METHODS`]
 /// lowers through its entry's [`Lowering`].
 pub(super) fn lower_map_method(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     map_ref: PortRef,
-    map_type: Type,
+    map_type: &Type,
     method: &str,
     args: &[CallArg],
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    let kind = match ContainerKind::of(&map_type) {
+    let kind = match ContainerKind::of(map_type) {
         Some(k @ ContainerKind::Map { .. }) => k,
         _ => ContainerKind::Map {
             key: Type::Any,
@@ -2660,7 +2513,7 @@ fn container_method_entry(
 }
 
 fn lower_container_method(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     recv: PortRef,
     kind: &ContainerKind,
     method: &str,
@@ -2668,12 +2521,9 @@ fn lower_container_method(
     range: &SourceRange,
     e: &Expr,
 ) -> PortRef {
-    // `exec = <trigger>` makes the op a leaf, so the caller's exec context is
-    // restored on every exit; saving around one call means no early return can
-    // leave the following statements wired onto the trigger.
-    let uses_exec_arg = args
-        .iter()
-        .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"));
+    // `exec = <trigger>` makes the op a leaf: restore the caller's exec context
+    // around the whole call so no early return leaves later statements on the trigger.
+    let uses_exec_arg = args.has_exec_arg();
     let saved_exec = ctx.current_exec;
     let result = lower_container_method_inner(ctx, recv, kind, method, args, range, e);
     if uses_exec_arg {
@@ -2683,7 +2533,7 @@ fn lower_container_method(
 }
 
 fn lower_container_method_inner(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     recv: PortRef,
     kind: &ContainerKind,
     method: &str,
@@ -2698,14 +2548,9 @@ fn lower_container_method_inner(
     {
         return synthesise_unsupported(ctx, e);
     }
-    // `exec = <trigger>` named arg: drive the op off an explicit trigger instead
-    // of the surrounding exec chain, so a read like `lut.get(i, exec = i + 1)`
-    // works in a PURE context (e.g. an output binding).
-    let exec_arg = args.iter().find_map(|a| match a {
-        CallArg::Named { name, value, .. } if name == "exec" => Some(value),
-        _ => None,
-    });
-    if let Some(exec_expr) = exec_arg {
+    // `exec = <trigger>` drives the op off an explicit trigger, so a read like
+    // `lut.get(i, exec = i + 1)` works in a pure context.
+    if let Some(exec_expr) = args.exec_arg() {
         let src = lower_expr(ctx, exec_expr);
         ctx.current_exec = Some(src);
     }
@@ -2788,12 +2633,12 @@ fn bind_method_args<'a>(
                 Some(next - 1).filter(|&i| i < specs.len())
             }
             CallArg::Named { name, .. } => specs.iter().position(|s| s.name == name.as_str()),
-            _ => None,
+            CallArg::Spread(_) => None,
         };
         let value = match a {
             CallArg::Positional(x) => x,
             CallArg::Named { value, .. } => value,
-            _ => continue,
+            CallArg::Spread(_) => continue,
         };
         if let Some(i) = slot
             && !taken[i]
@@ -2815,7 +2660,7 @@ fn bind_method_args<'a>(
 /// them, either overridden by the entry's `port_types`. Advances the exec chain
 /// and returns the entry's result port.
 pub(super) fn emit_container_op(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     range: &SourceRange,
     recv: PortRef,
     kind: &ContainerKind,
@@ -2868,7 +2713,7 @@ pub(super) fn emit_container_op(
 /// is sorted along as every one of its columns. Variadic, so it has no
 /// argument list in the table.
 fn lower_sort_multiple(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     array_ref: PortRef,
     args: &[CallArg],
     range: &SourceRange,
@@ -2975,30 +2820,25 @@ fn lower_sort_multiple(
 }
 
 pub(super) fn lower_array_set(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     index: &Expr,
     value: &Expr,
     range: &SourceRange,
 ) {
-    let current_exec = match ctx.current_exec {
-        Some(e) => e,
-        None => return,
+    let Some(current_exec) = ctx.current_exec else {
+        return;
     };
-    // `pts[i] = rec` where `pts` is a record array: fan the record VALUE across
-    // the parallel field arrays at the shared index. Checked before the single-
-    // array resolution below, which would otherwise miss the `Binding::Record`.
+    // `pts[i] = rec` on a record array fans the record value across the field
+    // arrays; checked first, as the single-array resolution misses the record.
     if let Some(fields) = resolve_record_columns(ctx, Columns::Array, obj)
         && lower_record_position_set(ctx, Columns::Array, &fields, index, value, range)
     {
         return;
     }
-    // The element type comes from typecheck's kind, so the `Value` port is
-    // declared with it (a `Type::Any` port would hide the string -> bool
-    // coercion from the `ctx.connect` choke point).
-    // A target that resolves to no single container ref would drop the write,
-    // so it is reported (a map target the map and record-map paths in
-    // `lower_assign` declined lands here too).
+    // The `Value` port takes typecheck's element type; a `Type::Any` port
+    // would hide the string -> bool coercion from `ctx.connect`. A target with
+    // no single container ref would drop the write, so it is reported.
     let unresolved = "`[..] =` is an array/map index write";
     let Some(ContainerKind::Array { elem: elem_ty }) = ctx.container_kind(obj) else {
         report_unresolved_container(ctx, unresolved, range);
@@ -3026,10 +2866,9 @@ pub(super) fn lower_array_set(
         }
         _ => String::new(),
     };
-    // `xs[i] = v` is a mutation, so the `const` container rule applies to it
-    // exactly as it does to `xs.fill(v)`. Typecheck rejects the direct spelling
-    // by name; this catches the aliased ones (a `const` table reaching a
-    // `ys: T[]` parameter), which resolve to the same gate node.
+    // `xs[i] = v` mutates, so the `const` container rule applies. Typecheck
+    // rejects the direct spelling; this catches aliases (a `const` passed to a
+    // `ys: T[]` parameter), which share the gate node.
     if reject_const_container_mutation(ctx, array_ref.node_id, true, "an index write", range) {
         return;
     }
@@ -3054,11 +2893,9 @@ pub(super) fn lower_array_set(
     }
 }
 
-/// The user `mod`/`chip` a call expression invokes, in any callee form: a bare
-/// name, a namespace member (`u.f(x)`), or a `self`-receiver method (`v.f()`).
 /// The call `e` reads when `e` names that call's one output and the output
 /// is an enum (`f(c).r` on `-> (r: Hue)`).
-pub(super) fn named_enum_output_call<'e>(ctx: &LowerCtx, e: &'e Expr) -> Option<&'e Expr> {
+pub(super) fn named_enum_output_call<'e>(ctx: &LowerCtx<'_>, e: &'e Expr) -> Option<&'e Expr> {
     let Expr::FieldAccess { obj, field, .. } = e else {
         return None;
     };
@@ -3069,7 +2906,12 @@ pub(super) fn named_enum_output_call<'e>(ctx: &LowerCtx, e: &'e Expr) -> Option<
     .then_some(obj.as_ref())
 }
 
-pub(super) fn called_chip_decl(ctx: &LowerCtx, call: &Expr) -> Option<std::sync::Arc<ChipDecl>> {
+/// The user `mod`/`chip` a call expression invokes, in any callee form: a bare
+/// name, a namespace member (`u.f(x)`), or a `self`-receiver method (`v.f()`).
+pub(super) fn called_chip_decl(
+    ctx: &LowerCtx<'_>,
+    call: &Expr,
+) -> Option<std::sync::Arc<ChipDecl>> {
     let Expr::Call { callee, .. } = call else {
         return None;
     };
@@ -3079,7 +2921,7 @@ pub(super) fn called_chip_decl(ctx: &LowerCtx, call: &Expr) -> Option<std::sync:
             if let Expr::Ident { name: ns, .. } = obj.as_ref()
                 && let Some(c) = ctx.lookup_ns_chip(ns, field)
             {
-                return Some(c.clone());
+                return Some(std::sync::Arc::clone(c));
             }
             ctx.self_mod_chip(field, &range.file).cloned()
         }
@@ -3090,15 +2932,11 @@ pub(super) fn called_chip_decl(ctx: &LowerCtx, call: &Expr) -> Option<std::sync:
 /// The index or key `key` and the record `value` written at it, lowered in
 /// that order, the key held before the value runs code that may change what
 /// it reads. `None` when `value` has no record form.
-fn keyed_record(
-    ctx: &mut LowerCtx,
-    key: &Expr,
-    value: &Expr,
-) -> Option<(PortRef, HashMap<crate::intern::Sym, Binding>)> {
-    let mut ord = crate::lower::ordered::Ordered::default();
+fn keyed_record(ctx: &mut LowerCtx<'_>, key: &Expr, value: &Expr) -> Option<(PortRef, Fields)> {
+    let mut ord = ordered::Ordered::default();
     let k = ord.port(ctx, key);
     let v = ord.source(ctx, "", None, value.range(), |ctx| {
-        crate::lower::stmt::value_record_fields(ctx, value).map(Binding::Record)
+        value_record_fields(ctx, value).map(Binding::Record)
     });
     let key_port = ord.port_of(ctx, k);
     match v.and_then(|v| ord.value(ctx, v)) {
@@ -3109,7 +2947,7 @@ fn keyed_record(
 
 /// Two values lowered in order, the first held before the second runs code
 /// that may change what it reads.
-fn lower_pair(ctx: &mut LowerCtx, a: &Expr, b: &Expr) -> (PortRef, PortRef) {
+fn lower_pair(ctx: &mut LowerCtx<'_>, a: &Expr, b: &Expr) -> (PortRef, PortRef) {
     let ports = lower_in_order(ctx, &[a, b]);
     (ports[0], ports[1])
 }

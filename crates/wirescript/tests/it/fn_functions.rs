@@ -58,11 +58,7 @@ fn one_plane_and_a_call_per_site() {
     assert_eq!(count(&m, gc::FUNCTION_CALL), 5);
     assert_eq!(count(&m, gc::CALLABLE_ENTRY_FUNCTION), 1);
     assert_eq!(count(&m, gc::FUNCTION_INPUT), 1);
-    assert_eq!(
-        count(&m, "BrickComponentType_Expr_MathMultiply"),
-        1,
-        "the body is emitted once"
-    );
+    assert_eq!(count(&m, gc::MATH_MULTIPLY), 1, "the body is emitted once");
     // The plane is its own module, holding the body.
     let shell = m
         .nodes
@@ -74,7 +70,7 @@ fn one_plane_and_a_call_per_site() {
         plane
             .nodes
             .values()
-            .any(|n| n.gate_class == "BrickComponentType_Expr_MathMultiply")
+            .any(|n| n.gate_class == gc::MATH_MULTIPLY)
     );
     // Every call binds the plane by a wire from its shell.
     let bound = m
@@ -175,12 +171,11 @@ fn reads_and_writes_go_through_handles() {
         .filter(|n| n.note == Some("fn handle"))
         .collect();
     assert_eq!(handles.len(), 2, "one handle per outer storage");
-    for gate in plane.nodes.values().filter(|n| {
-        matches!(
-            n.gate_class,
-            "BrickComponentType_Exec_Var_Increment" | "BrickComponentType_Exec_ArrayVar_Push"
-        )
-    }) {
+    for gate in plane
+        .nodes
+        .values()
+        .filter(|n| matches!(n.gate_class, gc::VAR_INCREMENT | gc::ARRAY_PUSH))
+    {
         let src = plane
             .wires
             .iter()
@@ -218,7 +213,7 @@ fn labelled(
         let mut per: std::collections::BTreeMap<
             u32,
             (Option<String>, Vec<(u16, String)>, Vec<BrdbValue>),
-        > = Default::default();
+        > = std::collections::BTreeMap::default();
         for (i, c) in comps.iter().enumerate() {
             let e = per.entry(soa.component_brick_indices[i]).or_default();
             e.1.push((types[i] as u16, names[types[i] as usize].clone()));
@@ -294,9 +289,12 @@ fn no_wire_crosses_a_function_plane() {
         }
         let src = std::fs::read_to_string(&path).unwrap();
         let file = path.to_string_lossy().to_string();
-        let world = compile_to_world(common::input(&src, &file), Default::default())
-            .unwrap_or_else(|e| panic!("{file}: {e:?}"))
-            .world;
+        let world = compile_to_world(
+            common::input(&src, &file),
+            wirescript::emit::EmitOptions::default(),
+        )
+        .unwrap_or_else(|e| panic!("{file}: {e:?}"))
+        .world;
         // brick id -> grid (0 = main), and which grids are function planes.
         let mut grid_of = std::collections::HashMap::new();
         for b in &world.bricks {
@@ -442,7 +440,7 @@ fn a_mod_default_fills_an_omitted_argument() {
     );
     let mul = all_nodes(&m)
         .into_iter()
-        .find(|n| n.gate_class == "BrickComponentType_Expr_MathMultiply")
+        .find(|n| n.gate_class == gc::MATH_MULTIPLY)
         .expect("the multiply");
     let by = mul.properties.get(&wirescript::intern::intern("InputB"));
     assert_eq!(
@@ -459,9 +457,12 @@ fn a_mod_default_fills_an_omitted_argument() {
 #[test]
 fn ports_are_placed_top_to_bottom_in_slot_order() {
     let src = "fn swap(a: int, b: int, c: int) -> (x: int, y: int) { return (c + b, a) }\nin go: exec\nvar res: int = 0\non go { let r = swap(1, 2, 3)\n res = r.x + r.y }\n";
-    let world = compile_to_world(common::input(src, "fn.ws"), Default::default())
-        .unwrap()
-        .world;
+    let world = compile_to_world(
+        common::input(src, "fn.ws"),
+        wirescript::emit::EmitOptions::default(),
+    )
+    .unwrap()
+    .world;
     let order = |class: &str| -> Vec<i32> {
         let mut found: Vec<(i32, i32)> = Vec::new();
         for b in world.grids.iter().flat_map(|(_, b)| b.iter()) {
@@ -595,8 +596,8 @@ on add(2, exec = go) -> (v) {
     let m = lowered(src);
     let go = node(&m, gc::MICROCHIP_INPUT);
     let call = node(&m, gc::FUNCTION_CALL);
-    let inc = node(&m, "BrickComponentType_Exec_Var_Increment");
-    let set = node(&m, "BrickComponentType_Exec_Var_Set");
+    let inc = node(&m, gc::VAR_INCREMENT);
+    let set = node(&m, gc::VAR_SET);
     assert!(wired(&m, (go, "RER_Output"), (call, "Exec")));
     assert!(wired(&m, (call, "Completed"), (inc, "Exec")));
     assert!(wired(&m, (call, "Output0"), (set, "Value")));
@@ -621,7 +622,7 @@ on r.exec { hits += 2 }
     let incs: Vec<&Node> = m
         .nodes
         .values()
-        .filter(|n| n.gate_class == "BrickComponentType_Exec_Var_Increment")
+        .filter(|n| n.gate_class == gc::VAR_INCREMENT)
         .collect();
     for call in calls {
         assert!(
@@ -646,7 +647,7 @@ on e { hits += 1 }
 ";
     let m = lowered(src);
     let call = node(&m, gc::FUNCTION_CALL);
-    let inc = node(&m, "BrickComponentType_Exec_Var_Increment");
+    let inc = node(&m, gc::VAR_INCREMENT);
     assert!(wired(&m, (call, "Completed"), (inc, "Exec")));
 
     let mod_src = "in go: exec\nvar hits: int = 0\nmod inc(x: int) -> int { return x + 1 }\non go {\n  let e = inc(1).exec\n  on e { hits += 1 }\n}\n";
@@ -681,11 +682,11 @@ on go { r = add(k, y = k + 2) }
 ";
     let m = lowered(src);
     let call = node(&m, gc::FUNCTION_CALL);
-    let plus = node(&m, "BrickComponentType_Expr_MathAdd");
+    let plus = node(&m, gc::MATH_ADD);
     assert!(wired(&m, (plus, "Output"), (call, "Input1")));
     assert_eq!(
         call.properties
-            .get(&wirescript::intern::intern("InputSources")),
+            .get(&*wirescript::intern::sym::INPUT_SOURCES),
         Some(&wirescript::ir::Literal::Array(
             [1, 1, 0, 0, 0, 0, 0, 0]
                 .into_iter()

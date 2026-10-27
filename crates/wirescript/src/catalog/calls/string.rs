@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Format text ---------------------------------------------------
+    // Format text
     // Wraps the FormatText gate. Format string may be wired or literal.
     // Up to 7 inputs (InputA-G). Output is the formatted string.
     m.insert(
@@ -27,7 +27,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- String operations -----------------------------------------------
+    // String operations
     m.insert(
         "Length",
         CallSpec {
@@ -190,7 +190,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- String parsing (pure) -------------------------------------------
+    // String parsing (pure)
     m.insert(
         "ParseInt",
         CallSpec {

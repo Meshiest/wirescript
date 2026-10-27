@@ -185,13 +185,9 @@ on go {
 
 // --- value-use collection + `references_at` -----------------------
 
-/// Resolve the binding under `(line, col)` (0-based, LSP-style — matches
-/// `references_at`'s own contract) and return its name plus every site's
-/// `(line, col)`, sorted. Sites come back as 1-based `Pos` fields (the AST's
-/// native coordinates); subtract 1 on both so callers can compare directly
-/// against 0-based positions in the source fixture, the same conversion
-/// `analysis::definition` uses when turning a `SourceRange` into a
-/// (0-based) `Location`.
+/// Resolve the binding under the 0-based `(line, col)` (as `references_at`
+/// takes it) and return its name and every site's 0-based `(line, col)`,
+/// sorted. The AST's `Pos` is 1-based, so both fields drop by one.
 fn rename_sites(src: &str, line: usize, col: usize) -> (String, Vec<(usize, usize)>) {
     let (t, sites) =
         references_at(&parse(src, "t.ws").ast, src, "t.ws", line, col).expect("target");
@@ -204,7 +200,7 @@ fn rename_sites(src: &str, line: usize, col: usize) -> (String, Vec<(usize, usiz
             )
         })
         .collect();
-    cols.sort();
+    cols.sort_unstable();
     (t.name, cols)
 }
 
@@ -427,8 +423,7 @@ on go {
 
 #[test]
 fn interpolation_use_is_included() {
-    // `"${name}"` must be a real use, not textually inert — the whole point
-    // of walking `InterpLit`'s `Expr` parts rather than skipping them.
+    // `"${name}"` is a real use: the walk visits `InterpLit`'s expression parts.
     let src = "\
 in go: exec
 on go {
@@ -472,9 +467,9 @@ fn file_scope_var_target_is_local_not_exported() {
 
 #[test]
 fn cursor_on_second_tuple_name_resolves_to_that_name() {
-    // `let (aa, bb) = …` registers `aa` and `bb` with ONE shared container
-    // `name_range` — clicking the `bb` token must resolve to `bb` (via the
-    // word-under-cursor tie-break), not the first-registered `aa`.
+    // `let (aa, bb) = ...` registers `aa` and `bb` with one shared container
+    // range; clicking `bb` resolves to `bb` through the word-under-cursor
+    // tie-break, not to the first-registered `aa`.
     let src = "\
 in go: exec
 on go {
@@ -521,9 +516,9 @@ on go { let { x } = p
 
 #[test]
 fn destructure_alias_decl_is_coarse_not_shorthand() {
-    // `let { src: bound } = p` binds `bound`: the decl RefSite is coarse
-    // (range spans `src: bound `, narrowed to `bound` downstream) but NOT
-    // shorthand — rename plain-replaces the `bound` token -> `{ src: new }`.
+    // `let { src: bound } = p` binds `bound`: the declaration site is coarse (it
+    // spans `src: bound `, narrowed later) but not shorthand, so rename replaces
+    // the `bound` token, giving `{ src: new }`.
     let src = "\
 let { src: bound } = p
 in go: exec
@@ -573,18 +568,17 @@ let q: Point = p";
 
 #[test]
 fn builtin_type_name_never_resolves_to_a_shadowing_user_type_alias() {
-    // `character`, `int`, … are plain identifiers (not lexer keywords, see
-    // `lexer::KEYWORDS`), so `type character = …` parses — but a builtin
-    // type-position use must NEVER resolve to it; the builtin always wins
-    // over a same-named user alias.
+    // `character` and `int` are identifiers, not keywords (`lexer::KEYWORDS`),
+    // so `type character = ...` parses, but a builtin type-position use never
+    // resolves to it: the builtin wins over a user alias of the same name.
     let src = "\
 type character = { x: int }
 in p: character";
     // cursor on the alias decl name `character` (0-based line 0, col 5).
     let (name, sites) = rename_sites(src, 0, 5);
     assert_eq!(name, "character");
-    // only the decl itself — the builtin-type-position `in p: character`
-    // (line 1) must NOT be pulled in as a site.
+    // Only the declaration: the builtin-type use in `in p: character` (line 1) is
+    // not a site.
     assert_eq!(
         sites.len(),
         1,
@@ -594,8 +588,8 @@ in p: character";
 
 #[test]
 fn emit_target_is_a_reference_of_the_out() {
-    // `emit r = <expr>` writes the `out r` port — renaming `r` must update
-    // the emit site too, or the renamed program stops compiling.
+    // `emit r = <expr>` writes the `out r` port, so renaming `r` updates the
+    // emit site too.
     let src = "\
 out r = 0
 in go: exec
@@ -700,9 +694,8 @@ in p: {ty}"
 #[test]
 fn ordinary_local_is_renameable() {
     let src = "in go: exec\non go { let v = 1\n let w = v }";
-    // cursor on the `v` use inside `let w = v` (0-based line 2, col 9 — the
-    // start of the single-char token; see `inner_shadow_wins_and_outer_is_untouched`
-    // for the same "cursor at token start" convention).
+    // Cursor on the `v` use in `let w = v` (0-based line 2, col 9, the token's
+    // start, as in `inner_shadow_wins_and_outer_is_untouched`).
     assert!(prepare_rename_at(&parse(src, "t.ws").ast, src, "t.ws", 2, 9).is_some());
 }
 
@@ -714,8 +707,8 @@ fn imported_name_use_classifies_as_imported() {
 import { helper } from \"lib\"
 in go: exec
 on go { helper(1) }";
-    // cursor on the `helper` call site (0-based line 2, col 8 — the start of
-    // `helper` in `on go { helper(1) }`).
+    // Cursor on the `helper` call (0-based line 2, col 8, the start of `helper`
+    // in `on go { helper(1) }`).
     let (t, _sites) =
         references_at(&parse(importer, "main.ws").ast, importer, "main.ws", 2, 8).expect("target");
     assert!(
@@ -727,14 +720,11 @@ on go { helper(1) }";
 
 #[test]
 fn aliased_import_use_classifies_as_local() {
-    // `import { orig as name }` — the alias is a purely FILE-LOCAL name.
-    // Renaming it must stay in this file (rename the alias specifier token +
-    // its uses), never reach the defining file whose decl still spells
-    // `orig`. So an aliased import target classifies as `Local`, NOT
-    // `Imported` — otherwise the cross-file path would try to narrow
-    // `mod orig(){…}`'s decl range against the local alias and corrupt it.
-    // (A NON-aliased import stays `Imported`; see
-    // `imported_name_use_classifies_as_imported`.)
+    // `import { orig as name }`: the alias is file-local, so an aliased import
+    // classifies as `Local`, keeping the rename in this file. As `Imported`, the
+    // cross-file path would narrow `mod orig(){...}` against the alias and
+    // replace the declaration. A plain import stays `Imported`
+    // (`imported_name_use_classifies_as_imported`).
     let importer = "\
 import { orig as aliased } from \"lib\"
 in go: exec
@@ -796,7 +786,7 @@ fn references_to_export_finds_the_importers_sites() {
         ),
         // For an ALIASED importer (`import { helper as x }` + `x(1)`), an
         // EXPORT rename of `helper` touches ONLY the specifier, as a coarse
-        // whole-`import …` span the LSP narrows to the original `helper`
+        // whole-`import ...` span the LSP narrows to the original `helper`
         // token, and NOT the alias uses (`x(1)`), which keep the alias name.
         (
             "an aliased import: the coarse specifier only",
@@ -809,7 +799,7 @@ fn references_to_export_finds_the_importers_sites() {
     ];
     let mut failures = Vec::new();
     for (label, importer, export, ns, want, coarse) in rows {
-        let sites = references_to_export(&parse(importer, "main.ws").ast, "main.ws", export, *ns);
+        let sites = references_to_export(&parse(importer, "main.ws").ast, export, *ns);
         if sites.len() != *want || coarse.is_some_and(|c| sites[0].coarse != c) {
             failures.push(format!(
                 "{label}: want {want} sites (coarse {coarse:?}), got {sites:?}"
@@ -821,11 +811,9 @@ fn references_to_export_finds_the_importers_sites() {
 
 #[test]
 fn rename_exec_port_includes_its_on_trigger() {
-    // `register_handler` previously never walked `h.trigger`,
-    // so `on go` produced no `Use` of the `in go` binding at all — renaming
-    // the port left every handler that triggers on it dangling, and the
-    // trigger token itself wasn't even a valid rename START point. Both the
-    // decl and the trigger must now resolve to the SAME two-site target.
+    // `register_handler` walks `h.trigger`, so `on go` is a use of the `in go`
+    // binding: the declaration and the trigger resolve to the same two-site
+    // target, and the trigger is a valid place to start a rename.
     let src = "\
 in go: exec
 on go { emit r = 1 }
@@ -852,10 +840,9 @@ out r = 0";
 
 #[test]
 fn user_event_trigger_is_renameable() {
-    // A user `event` (captured via `let Name = on Trigger`) is a real
-    // `Binding` (`TopDecl::Event`, importable) — `on Name { … }` must be a
-    // value use of it, just like a builtin-port trigger, so renaming the
-    // event also updates every handler that fires on it.
+    // A user `event` (`let Name = on Trigger`) is a `Binding` (`TopDecl::Event`,
+    // importable), and `on Name { ... }` is a use of it, so renaming the event
+    // renames the handlers that fire on it.
     let src = "\
 in go: exec
 let MyEvent = on go
@@ -877,10 +864,8 @@ out r = 0";
 
 #[test]
 fn trigger_field_object_is_a_use_and_field_half_is_refused() {
-    // `on split.Forward` — the OBJECT half (`split`) is a value use of
-    // whatever binds that name; the FIELD half (`Forward`) is a member
-    // reference and must never be a rename target (mirrors
-    // `Expr::FieldAccess` field-refusal handling).
+    // `on split.Forward`: `split` is a value use of whatever binds it; `Forward`
+    // is a member reference and never a rename target, as for `Expr::FieldAccess`.
     let src = "\
 in go: exec
 let split = go
@@ -902,17 +887,13 @@ on split.Forward { }";
     );
 }
 
-// --- retire the textual scanner + regression suite -----------------
+// Rename precision
 
 #[test]
 fn consolidated_regression_comment_string_type_and_sibling_scope_excluded() {
-    // Renaming a `character` VALUE capture must not touch: (a) a `//
-    // character` comment, (b) a `"character"` string literal, (c) a builtin
-    // `: character` TYPE-position annotation (a different namespace), or (d)
-    // a same-named capture in a SIBLING handler (a different binding). These
-    // are exactly the categories the old textual `find_all_references`
-    // scanner used to catch (it matched on name text alone, with no notion
-    // of comments, strings, namespaces, or lexical scope).
+    // Renaming a `character` value capture touches none of: a `// character`
+    // comment, a `"character"` string, a `: character` type annotation (another
+    // namespace), or a same-named capture in a sibling handler (another binding).
     let src = "\
 in a: exec
 in b: exec
@@ -944,12 +925,10 @@ on ZoneLeft(zone = b) -> (character) {
 
 #[test]
 fn original_repro_capture_in_nested_chip_excludes_comment_and_type_annotation() {
-    // Manual end-to-end confirmation of the originally reported bug: a
-    // `character` capture on a `ZoneEntered` handler NESTED INSIDE an
-    // anonymous `chip { … }` block (not a top-level handler), alongside a
-    // `// character` comment and an `in foo: character` builtin-type
-    // annotation. Renaming the capture must touch ONLY the capture decl plus
-    // its one body use — never the comment or the annotation.
+    // A `character` capture on a `ZoneEntered` handler nested in an anonymous
+    // `chip { ... }`, beside a `// character` comment and an `in foo: character`
+    // annotation: renaming the capture touches only its declaration and its one
+    // use.
     let src = "\
 in zoneM: exec
 in foo: character
@@ -977,10 +956,9 @@ chip {
 
 // --- semantic-token overrides -----------------------------------------
 
-/// Find the [`SemSpan`] whose start lands exactly at 0-based `(line, col)`
-/// (mirrors the LSP's own coordinates — the AST's 1-based `Pos` is converted
-/// the same way `rename_sites` above does).
-fn span_at<'a>(spans: &'a [SemSpan], line: usize, col: usize) -> Option<&'a SemSpan> {
+/// The [`SemSpan`] starting exactly at the 0-based `(line, col)` (the LSP's
+/// coordinates; the 1-based `Pos` is converted as in `rename_sites`).
+fn span_at(spans: &[SemSpan], line: usize, col: usize) -> Option<&SemSpan> {
     spans
         .iter()
         .find(|s| s.range.start.line == line as u32 + 1 && s.range.start.col == col as u32 + 1)
@@ -988,12 +966,10 @@ fn span_at<'a>(spans: &'a [SemSpan], line: usize, col: usize) -> Option<&'a SemS
 
 #[test]
 fn capture_named_like_a_type_is_a_variable_token_not_type() {
-    // A `character` handler capture and its body use share their spelling
-    // with the builtin `character` TYPE — the grammar's blanket
-    // `support.type` regex can't tell them apart from an ACTUAL `: character`
-    // type annotation. The resolver must: keep the annotation `Type`, but
-    // reclassify the capture decl + its use as a plain `Variable` (every user
-    // value identifier gets one uniform token, so highlighting is consistent).
+    // A `character` handler capture and its use share their spelling with the
+    // builtin type, which the grammar's `support.type` pattern cannot tell apart
+    // from a real `: character` annotation. The annotation stays `Type`; the
+    // capture and its use become `Variable`, like every user value.
     let src = "\
 in go: exec
 in foo: character
@@ -1003,12 +979,12 @@ on CharacterSpawned() -> (character) {
     let ast = parse(src, "t.ws").ast;
     let spans = semantic_tokens(&ast);
 
-    // `: character` on `in foo: character` (line 1, 0-based) — TYPE position.
+    // The `: character` of `in foo: character` (0-based line 1): type position.
     let type_col = src.lines().nth(1).unwrap().find("character").unwrap();
     let type_span = span_at(&spans, 1, type_col).expect("type annotation span missing");
     assert_eq!(type_span.kind, SemTokenKind::Type);
 
-    // The capture decl `-> (character)` on line 2 (0-based) — VALUE position.
+    // The capture `-> (character)` on 0-based line 2: value position.
     let decl_col = src.lines().nth(2).unwrap().find("character").unwrap();
     let decl_span = span_at(&spans, 2, decl_col).expect("capture decl span missing");
     assert_eq!(decl_span.kind, SemTokenKind::Variable);
@@ -1021,11 +997,9 @@ on CharacterSpawned() -> (character) {
 
 #[test]
 fn value_binding_named_like_a_builtin_is_a_variable_token() {
-    // `round` is a builtin math function, so the grammar colors every `round`
-    // as `support.function`. A value binding named `round` must be reclassified
-    // to a plain `Variable` — the same uniform treatment a type-keyword-named
-    // binding gets — so it doesn't read as a builtin call. An ordinary-named
-    // binding (`ctrl`) gets the SAME `Variable`, so highlighting is consistent.
+    // `round` is a builtin function, which the grammar colors `support.function`.
+    // A value binding named `round` becomes `Variable`, the same token an
+    // ordinary binding (`ctrl`) gets, so it does not read as a builtin call.
     let src = "\
 in go: exec
 on go {
@@ -1050,11 +1024,9 @@ on go {
 
 #[test]
 fn user_type_alias_use_is_a_type_token() {
-    // `Point` isn't a builtin type keyword, so the grammar's `support.type`
-    // coloring depends entirely on it being capitalized — this confirms the
-    // resolver ALSO gives it the `Type` token (a use in TYPE position always
-    // does, builtin or user-defined), the case the grammar's fixed builtin
-    // list can't cover on its own.
+    // `Point` is not a builtin type keyword, so the grammar colors it only for
+    // being capitalized; the resolver also gives it the `Type` token, as it does
+    // every type-position use, user-defined or builtin.
     let src = "type Point = { x: int }\nin p: Point";
     let ast = parse(src, "t.ws").ast;
     let spans = semantic_tokens(&ast);
@@ -1067,10 +1039,9 @@ fn user_type_alias_use_is_a_type_token() {
 
 #[test]
 fn general_expr_trigger_call_is_not_recolored_by_a_synthetic_token() {
-    // `on ReadBrickGrid()` desugars to a synthetic `let _on_expr_0 = ReadBrickGrid()`.
-    // Semantic tokens must NOT emit a token for `_on_expr_0` (its range spans the
-    // whole `ReadBrickGrid()` call), so the call keeps the grammar's function
-    // coloring — consistent with a plain `let foo = ReadBrickGrid()` call.
+    // `on ReadBrickGrid()` desugars to `let _on_expr_0 = ReadBrickGrid()`. No
+    // token is emitted for `_on_expr_0` (its range spans the whole call), so the
+    // call keeps the grammar's function color, as `let foo = ReadBrickGrid()` does.
     let src = "in go: exec\non ReadBrickGrid() {\n  let foo = ReadBrickGrid()\n}";
     let spans = semantic_tokens(&parse(src, "t.ws").ast);
     assert!(

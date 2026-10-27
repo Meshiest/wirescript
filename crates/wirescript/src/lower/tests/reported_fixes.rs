@@ -1,6 +1,6 @@
-//! Regressions for a batch of reported miscompiles: type-preserving math
-//! builtins, constant compound assignment, a `_` arm after a full `match`,
-//! event aliases and captured events, and a back-edge loop inside a branch.
+//! Type-preserving math builtins, constant compound assignment, a `_` arm after a
+//! full `match`, event aliases and captured events, and a back-edge loop inside a
+//! branch.
 
 use super::{wsir_and_diags as ir, wsir_line as line};
 
@@ -254,7 +254,7 @@ fn an_enum_returned_from_a_branch_of_a_pure_call_is_ws007() {
     };
     match crate::compile(input) {
         Err(crate::CompileError::HasErrors(ds)) => {
-            assert!(ds.iter().any(|d| d.code == "WS007"), "{ds:?}")
+            assert!(ds.iter().any(|d| d.code == "WS007"), "{ds:?}");
         }
         other => panic!("compiled: {:?}", other.map(|r| r.diagnostics)),
     }
@@ -341,9 +341,9 @@ fn remap_takes_lowercase_easing_settings() {
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
     };
-    match crate::compile_to_world(input, Default::default()) {
+    match crate::compile_to_world(input, crate::emit::EmitOptions::default()) {
         Err(crate::CompileError::HasErrors(ds)) => {
-            assert!(ds.iter().any(|d| d.code == "WS028"), "{ds:?}")
+            assert!(ds.iter().any(|d| d.code == "WS028"), "{ds:?}");
         }
         other => panic!(
             "a runtime `function` must be WS028, got {:?}",

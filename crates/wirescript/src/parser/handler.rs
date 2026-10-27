@@ -1,5 +1,7 @@
-//! The `on …` grammar: triggers, handler bodies, and the expression-trigger
+//! The `on ...` grammar: triggers, handler bodies, and the expression-trigger
 //! desugar.
+
+use crate::catalog::events::find_event;
 
 use super::*;
 
@@ -38,14 +40,11 @@ pub(super) fn trigger_to_expr(t: &Trigger) -> Expr {
 /// Whether a general expression trigger's expression is a call carrying an
 /// `exec = <x>` named arg (`on doWork(5, exec = s)`). A trailing postfix
 /// (`on doWork(5, exec = s).field`) is unwrapped to the underlying call so the
-/// `exec =` intent is still seen. Used to flag the `Handler` so lowering can
-/// reject an `exec =` whose callee has no completion exec (WS043) instead of
-/// silently orphaning it.
+/// `exec =` intent is still seen. Flags the `Handler` so lowering can reject an
+/// `exec =` whose callee has no completion exec (WS043).
 pub(super) fn expr_call_has_exec_arg(e: &Expr) -> bool {
     match e {
-        Expr::Call { args, .. } => args
-            .iter()
-            .any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec")),
+        Expr::Call { args, .. } => args.has_exec_arg(),
         Expr::FieldAccess { obj, .. }
         | Expr::TuplePick { obj, .. }
         | Expr::IndexAccess { obj, .. } => expr_call_has_exec_arg(obj),
@@ -53,7 +52,7 @@ pub(super) fn expr_call_has_exec_arg(e: &Expr) -> bool {
     }
 }
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     /// Return `true` when the tokens after `on` look like an arbitrary
     /// expression rather than a simple trigger pattern.
     ///
@@ -61,7 +60,7 @@ impl<'a> Parser<'a> {
     ///   `!* ident (. ident)?` repeated, separated by `|`
     /// If, after scanning that pattern, the next real token is `{` or `(`
     /// (body / params), the trigger is simple.  Any other token (e.g. `&&`,
-    /// `||`, `+`, a literal, …) means the user wrote an expression trigger.
+    /// `||`, `+`, a literal) means the user wrote an expression trigger.
     pub(super) fn looks_like_expr_trigger(&self) -> bool {
         let mut i = self.pos;
         let len = self.tokens.len();
@@ -72,21 +71,13 @@ impl<'a> Parser<'a> {
         };
 
         // `on Foo(...)` where `Foo` is NOT a known event is a call-expression
-        // trigger — `on ServerUptime()` fires whenever a builtin's pure value
-        // changes, and `on myMod(x, exec = go)` fires on the call's own
-        // exec-typed output. Both desugar the same way, like any other expr
-        // trigger: `let _on_expr_N = Foo(...)` +
-        // `on _on_expr_N`. The parser can't tell a builtin call from a
-        // user-declared chip/mod call from a genuinely unknown name here (chips
-        // and mods aren't tracked by the parser — they may be declared later in
-        // the file, or imported), so ANY non-event `Ident(...)` is routed
-        // through the expr-trigger desugar; lowering resolves what `Foo`
-        // actually is. This is distinct from the event-with-args form (`on
-        // Clock(...)`, `on CustomEvent(...)`), whose name resolves as an event
-        // and stays a plain trigger with config/data args.
+        // trigger (`on ServerUptime()`, `on myMod(x, exec = go)`). The parser
+        // does not track chips and mods (they may be declared later or
+        // imported), so ANY non-event `Ident(...)` takes the expr-trigger
+        // desugar and lowering resolves what `Foo` is.
         if get(i).kind == TokenKind::Ident
             && get(i + 1).kind == TokenKind::LParen
-            && crate::catalog::events::find_event(&get(i).text).is_none()
+            && find_event(&get(i).text).is_none()
         {
             return true;
         }
@@ -131,10 +122,8 @@ impl<'a> Parser<'a> {
             }
             // Must see an ident for a simple trigger.
             if i >= len || get(i).kind != TokenKind::Ident {
-                // Non-ident at atom start -> expression trigger (e.g. a literal
-                // or a `(` grouping used as expression, not trigger grouping).
-                // Actually `(` is also valid for trigger grouping; treat as
-                // expression only when it's not an ident or `!`.
+                // A non-ident atom start (a literal, say) is an expression
+                // trigger, except `(`, which can also group triggers.
                 return get(i).kind != TokenKind::LParen && get(i).kind != TokenKind::Ident;
             }
             i += 1; // consume ident
@@ -174,7 +163,7 @@ impl<'a> Parser<'a> {
         }
 
         // After the last atom the next meaningful token should be `{` or `(`.
-        // Anything else (e.g. `&&`, `||`, `+`, …) means expression trigger.
+        // Anything else (`&&`, `||`, `+` and so on) means expression trigger.
         let t = get(i);
         !matches!(
             t.kind,
@@ -186,7 +175,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    // `event name = expr` or `event name = on Trigger { body }`
+    // `on <trigger> [-> <pattern>] { body }`
     pub(super) fn parse_handler(&mut self, no_fold: bool) -> Handler {
         let start = self.expect(TokenKind::Kw, Some("on")).start;
 
@@ -195,8 +184,8 @@ impl<'a> Parser<'a> {
         // the body's own `parse_block` call draining the pending queue early.
         let mut pending_let: Option<LetDecl> = None;
         // Whether a general expression trigger's call carried an `exec = <x>`
-        // arg — set below and stored on the `Handler` so lowering can reject
-        // (WS043) an `exec =` whose callee exposes no completion exec.
+        // arg, stored on the `Handler` so lowering can reject (WS043) an
+        // `exec =` whose callee exposes no completion exec.
         let mut expr_trigger_has_exec_arg = false;
 
         // `on name` for a `let name = on <trigger>` alias is that trigger,
@@ -205,7 +194,7 @@ impl<'a> Parser<'a> {
         let trigger = if let Some((_, t, _)) = &alias {
             t.clone()
         } else if self.looks_like_expr_trigger() {
-            // `on <expr> { body }` — desugar into:
+            // `on <expr> { body }` desugars into:
             //   let _on_expr_N = <expr>
             //   on _on_expr_N { body }
             // Header position: the trailing `{` is the handler BODY block, so
@@ -216,7 +205,7 @@ impl<'a> Parser<'a> {
             let expr_range = expr.range().clone();
             let n = self.expr_trigger_counter;
             self.expr_trigger_counter += 1;
-            let synth_name = format!("_on_expr_{}", n);
+            let synth_name = format!("_on_expr_{n}");
 
             pending_let = Some(LetDecl {
                 binding: LetBinding::Ident {
@@ -238,17 +227,16 @@ impl<'a> Parser<'a> {
             self.parse_trigger()
         };
 
-        // An event trigger is a CALL, uniform with `on <call> -> (…)` — `on
+        // An event trigger is a CALL, uniform with `on <call> -> (...)`: `on
         // RoundStart { }` must be written `on RoundStart() { }`. Recover as
         // if `()` were present so the rest of the handler parses.
         if alias.is_none() {
             self.require_event_call_parens(&trigger);
         }
 
-        // Trigger args: the event call's parens hold config ONLY — string/
-        // number literals and `name = value` pairs (e.g. `on ChatCommand("greet",
-        // Description = "Greets you")`). Binding the event's data outputs is
-        // done exclusively via a trailing `-> <pattern>` capture, parsed below.
+        // Trigger args: the event call's parens hold config ONLY, as literals
+        // and `name = value` pairs (`on ChatCommand("greet", Description =
+        // "Greets you")`). Data outputs bind only via a trailing `-> <pattern>`.
         let mut params: Vec<HandlerParam> = Vec::new();
         let (alias, mut config) = match alias {
             Some((name, _, config)) => (Some(name), config),
@@ -257,29 +245,25 @@ impl<'a> Parser<'a> {
         if self.match_tok(TokenKind::LParen, None).is_some() {
             // How many POSITIONAL config slots this trigger's event declares
             // (`CustomEvent`/`GlobalCustomEvent`: one, the channel name;
-            // everything else: none). An identifier landing in one of those
-            // slots is a legitimate constant config VALUE — `on
-            // CustomEvent(CH)` for a `const CH` — so the steer-to-`->`
-            // heuristic below must not claim it. Events with NO positional
-            // slot keep the heuristic exactly as it was.
+            // everything else: none). An identifier in one of those slots is a
+            // constant config VALUE (`on CustomEvent(CH)` for a `const CH`), so
+            // the steer-to-`->` heuristic below must not claim it.
             let positional_config_slots = match &trigger {
-                Trigger::Ident { name, .. } => crate::catalog::events::find_event(name)
-                    .map_or(0, |evt| evt.config_positional.len()),
+                Trigger::Ident { name, .. } => {
+                    find_event(name).map_or(0, |evt| evt.config_positional.len())
+                }
                 _ => 0,
             };
             let mut positional_seen = 0usize;
             while !self.check(TokenKind::RParen, None) {
                 let at_ident = self.check(TokenKind::Ident, None);
-                // `name = value` — a named config arg, on every event.
+                // `name = value`: a named config arg, on every event.
                 let is_named = at_ident
                     && self.peek_at(1).kind == TokenKind::Op
                     && self.peek_at(1).text == "=";
-                // The removed inline output-binding form. A bare ident is only
-                // that when it is NOT filling a positional config slot; a
-                // `name: type` ident always is, even in a slot, since a config
-                // value is never type-annotated (`on CustomEvent("dmg", amount:
-                // int)` — the deprecated spelling always put the channel name
-                // first, so its data params sit past the slot regardless).
+                // The unsupported inline output-binding form: a bare ident
+                // outside a positional config slot, or a `name: type` anywhere,
+                // since a config value is never type-annotated.
                 let is_inline_output_bind = at_ident
                     && !is_named
                     && (positional_seen >= positional_config_slots
@@ -292,7 +276,7 @@ impl<'a> Parser<'a> {
                     config.push(HandlerConfigArg::Named { name, value });
                 } else if is_inline_output_bind {
                     // A bare ident or `name: type` here would bind the
-                    // event's data outputs inline; that form is removed —
+                    // event's data outputs inline, which is not supported;
                     // steer to the `->` capture instead.
                     let tok = self.expect(TokenKind::Ident, None);
                     let mut end = tok.end;
@@ -318,9 +302,8 @@ impl<'a> Parser<'a> {
         }
 
         // Optional `-> <pattern>` output capture: binds the event's data
-        // outputs from a trailing tuple/record pattern. `->` is already a
-        // lexer token (mod/chip outputs use it) — this is grammar extension
-        // only. It is the ONLY way to bind handler params.
+        // outputs from a trailing tuple/record pattern. It is the ONLY way to
+        // bind handler params.
         if self.match_tok(TokenKind::Arrow, None).is_some() {
             self.parse_handler_arrow_pattern(&trigger, &mut params);
         }
@@ -346,35 +329,29 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parses `(a: int, b)` (tuple — positional, for ANY event; per-slot type
-    /// optional, inferred for custom events, catalog-typed for named events) or
-    /// `{ name, name: alias }` (record — by field name, named-data events only;
-    /// subset + rename) after `on <EventCall> ->`, replacing `params` with the
-    /// capture's bindings. `trigger` is the already-parsed handler trigger (used
-    /// to reject records on custom events and, for records, to resolve field
-    /// names against `catalog::events::find_event`'s data order).
+    /// Parses the capture after `on <EventCall> ->`, replacing `params` with its
+    /// bindings: `(a: int, b)` binds positionally for any event (types
+    /// optional), `{ name, name: alias }` by field name for named-data events
+    /// only. `trigger` rejects records on custom events and resolves record
+    /// field names against `catalog::events::find_event`'s data order.
     pub(super) fn parse_handler_arrow_pattern(
         &mut self,
         trigger: &Trigger,
         params: &mut Vec<HandlerParam>,
     ) {
-        // `params` is always empty on entry: the trigger-args loop above
-        // never produces params (there is no inline data-param parsing), so
-        // there is nothing here to guard against.
+        // `params` is always empty on entry: `parse_handler`'s trigger-args
+        // loop never produces params.
         let trigger_name = match trigger {
             Trigger::Ident { name, .. } => Some(name.as_str()),
             _ => None,
         };
-        let is_custom = matches!(
-            trigger_name,
-            Some("CustomEvent") | Some("GlobalCustomEvent")
-        );
-        let event_spec = trigger_name.and_then(crate::catalog::events::find_event);
+        let is_custom = matches!(trigger_name, Some("CustomEvent" | "GlobalCustomEvent"));
+        let event_spec = trigger_name.and_then(find_event);
 
         if self.check(TokenKind::LParen, None) {
-            self.advance(); // consume `(` — tuple capture binds positionally for
-            // any event (named events are catalog-typed, custom events typed or
-            // inferred); no per-event restriction.
+            // A tuple capture binds positionally for any event (named events
+            // are catalog-typed, custom events typed or inferred).
+            self.advance();
             let mut new_params = Vec::new();
             self.eat_newlines();
             while !self.check(TokenKind::RParen, None) && self.peek().kind != TokenKind::Eof {
@@ -402,7 +379,7 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Bare single capture: `-> p` is shorthand for `-> (p)` — one untyped
+        // Bare single capture: `-> p` is shorthand for `-> (p)`, one untyped
         // positional binding. A type needs the parenthesized form (`-> (p: T)`);
         // a `:` here is reported and swallowed so the handler body still parses.
         if self.check(TokenKind::Ident, None) {
@@ -441,8 +418,8 @@ impl<'a> Parser<'a> {
             self.eat_newlines();
             while !self.check(TokenKind::RBrace, None) && self.peek().kind != TokenKind::Eof {
                 if self.check(TokenKind::Op, Some("...")) {
-                    // There is no record value to spread here — only a parse
-                    // error, not a silently-accepted no-op.
+                    // There is no record value to spread here, so `...` is a
+                    // parse error.
                     let spread_start = self.advance().start;
                     let rest_tok = self.expect(TokenKind::Ident, None);
                     self.error(
@@ -467,16 +444,10 @@ impl<'a> Parser<'a> {
                 (Some(spec), Some(event_name)) => {
                     self.resolve_arrow_record_capture(event_name, spec, &fields, &fill_range)
                 }
-                // Non-catalog trigger (a general expression — mod/chip call):
-                // the field ORDER/shape isn't known at parse time (mod/chip
-                // signatures aren't tracked by the parser — forward decls,
-                // imports), so resolution by name happens at LOWERING time
-                // against the call's actual result record (see the general-expr
-                // trigger case in `lower/handler.rs`). `name` carries the local
-                // bound name (the alias when given); `source_field` preserves the
-                // ORIGINAL field name to look up when it differs — set
-                // unconditionally here so lowering always has it, even when no
-                // alias was written (`name == source_field` then).
+                // Non-catalog trigger (a mod/chip call): its result shape is
+                // unknown here, so `lower/handler.rs` resolves fields by name.
+                // `name` is the local binding (the alias when given);
+                // `source_field` is always set to the field to look up.
                 _ => fields
                     .into_iter()
                     .filter_map(|f| match f {
@@ -493,9 +464,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Resolves a `-> { name, name: alias, … }` record capture's fields
+    /// Resolves a `-> { name, name: alias, ... }` record capture's fields
     /// against `spec.data`'s binding names into a POSITIONAL `HandlerParam`
-    /// list — built-in event params bind by slot index, not by name. Each
+    /// list, since built-in event params bind by slot index. Each
     /// matched field lands at its event data-slot index; any leading gap
     /// (an uncaptured slot before the highest captured index) is filled with
     /// a fresh unused name so the positional shape stays intact. An unknown
@@ -544,7 +515,7 @@ impl<'a> Parser<'a> {
             Some(max_idx) => (0..=max_idx)
                 .map(|i| {
                     resolved[i].take().unwrap_or_else(|| HandlerParam {
-                        name: format!("_arrow_unused_{}", i),
+                        name: format!("_arrow_unused_{i}"),
                         ty: None,
                         range: fill_range.clone(),
                         source_field: None,
@@ -556,9 +527,9 @@ impl<'a> Parser<'a> {
     }
 
     /// The trigger and config args of the `let name = on <trigger>` alias the
-    /// handler head names (`on name {`, `on name -> (..)`, `on name()`),
-    /// consuming the name, its ranges moved to where it is written: the name
-    /// and where it is, the trigger and the config args.
+    /// handler head names (`on name {`, `on name -> (..)`, `on name()`).
+    /// Consumes the name; returns it with its range, the trigger and the
+    /// config args.
     fn event_alias_at_head(
         &mut self,
     ) -> Option<((String, SourceRange), Trigger, Vec<HandlerConfigArg>)> {
@@ -611,15 +582,15 @@ impl<'a> Parser<'a> {
         config
     }
 
-    /// An event trigger is a CALL — `on RoundStart()` / `let x = on
-    /// RoundStart()`, never the bare `on RoundStart`. If `trigger` is a plain
+    /// An event trigger is a CALL (`on RoundStart()`, `let x = on
+    /// RoundStart()`), never the bare `on RoundStart`. If `trigger` is a plain
     /// event-name `Ident` not immediately followed by `(`, emit the "must be
     /// called" error. Only built-in event idents are affected; non-event idents
     /// (`on someVar`), `Field`/`Not`/`Union`, and desugared expr triggers are
     /// left alone. The caller recovers as if `()` were present.
     pub(super) fn require_event_call_parens(&mut self, trigger: &Trigger) {
         if let Trigger::Ident { name, range } = trigger
-            && crate::catalog::events::find_event(name).is_some()
+            && find_event(name).is_some()
             && !self.check(TokenKind::LParen, None)
         {
             self.error(
@@ -631,19 +602,16 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_trigger(&mut self) -> Trigger {
-        let mut first = self.parse_trigger_atom();
+        let first = self.parse_trigger_atom();
         // Optional `|`-separated union.
         let mut parts: Vec<Trigger> = Vec::new();
         while self.check(TokenKind::Op, Some("|")) {
-            // Only treat `|` as a trigger-union if followed by another atom.
-            let save = self.pos;
             self.advance();
             let nxt = self.parse_trigger_atom();
             if parts.is_empty() {
                 parts.push(first.clone());
             }
             parts.push(nxt);
-            let _ = save;
         }
         if parts.is_empty() {
             first
@@ -660,8 +628,6 @@ impl<'a> Parser<'a> {
                 | Trigger::Not { range, .. }
                 | Trigger::Union { range, .. } => range.end,
             };
-            // Drop `first` from capture when empty; use `parts[0]` as the new first.
-            let _ = &mut first;
             Trigger::Union {
                 parts,
                 range: self.make_range(start, end),

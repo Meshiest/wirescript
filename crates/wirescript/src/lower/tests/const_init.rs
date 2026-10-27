@@ -2,7 +2,7 @@
 //!
 //! An initializer is baked into the gate at compile time, so it may name a
 //! top-level `let` constant and do arithmetic on it rather than restating a
-//! magic number. Anything that is not a compile-time constant still errors —
+//! magic number. Anything that is not a compile-time constant still errors;
 //! these tests pin both directions.
 
 use super::*;
@@ -87,7 +87,7 @@ fn a_constant_initializer_bakes_into_the_array() {
         (
             "a destructured constant chain",
             "const p = { x: 111, y: 222 }\nconst { x, y } = p\nconst SUM = x * 1000 + y\nvar m: int[] = [x, y, SUM]",
-            vec![Int(111), Int(222), Int(111222)],
+            vec![Int(111), Int(222), Int(111_222)],
         ),
         // A `const mod` with one named output (`-> (r: int)`) is typed as the
         // bare output type, so const evaluation gives the bare value, not a
@@ -153,17 +153,16 @@ fn a_constant_initializer_bakes_into_the_array() {
             "chip {\n  const mod dbl(n: const int) -> int { return n * 2 }\n}\nconst t = dbl(6)\nvar m: int[] = [t, 12345]",
             vec![Int(12), Int(12345)],
         ),
-        // A tuple pattern binds POSITIONALLY; a multi-output `const mod` result
-        // types as a NAME-keyed record in declaration order, so `const (a, b) =
-        // pair(..)` reads it as `const { a, b }` does. It was rejected (WS010 in
-        // `bind_let`, then WS046 from `const_eval`'s stub arm).
+        // A tuple pattern binds POSITIONALLY; a multi-output `const mod` result types
+        // as a NAME-keyed record in declaration order, so `const (a, b) = pair(..)`
+        // reads it as `const { a, b }` does.
         (
             "a tuple destructure of a multi-output const mod",
             "const mod trio(n: const int) -> (a: int, b: int, c: int) {\nout a = n\n  out b = n + 1\n  out c = n + 2\n}\n\
              const (x, y, z) = trio(41)\nvar m: int[] = [x, y, z, 12345]",
             vec![Int(41), Int(42), Int(43), Int(12345)],
         ),
-        // A tuple LITERAL evaluates to an index-keyed record; it reported WS046.
+        // A tuple LITERAL evaluates to an index-keyed record and destructures the same.
         (
             "a tuple destructure of a tuple literal",
             "const (a, b) = (7, 8)\nvar m: int[] = [a, b, 12345]",
@@ -205,11 +204,9 @@ fn a_forward_reference_between_top_level_lets_is_reported() {
 #[test]
 fn operator_folding_does_not_leak_outside_initializers() {
     // `expr_to_literal` (no constant environment) decides bake-vs-wire in many
-    // places besides initializers. It must NOT fold operators, or a call whose
-    // args are arithmetic would collapse into a literal and delete the gate it
-    // should have emitted — `Rotation(0.0 + 0.0, ...)` losing its MakeRotation
-    // is the case that caught this. Guards `fold::make_rotation_does_not_fold`
-    // from the other direction: here at the source, not at the fold pass.
+    // places besides initializers. It does NOT fold operators, or a call with
+    // arithmetic args (`Rotation(0.0 + 0.0, ...)`) would collapse into a literal and
+    // lose its MakeRotation gate. `fold::make_rotation_does_not_fold` guards the pass.
     let r = compile("out r: rotator = Rotation(0.0 + 0.0, 90.0 + 0.0, 45.5 + 0.0)");
     assert_eq!(
         count_class(&r.module, crate::ir::gate_class::MAKE_ROTATION),
@@ -220,9 +217,8 @@ fn operator_folding_does_not_leak_outside_initializers() {
 
 #[test]
 fn constant_named_in_an_initializer_counts_as_used() {
-    // A constant reached only from an array initializer must register as a use,
-    // or the import that supplies it is reported unused — and Organize Imports
-    // deletes it, silently breaking the table.
+    // A constant reached only from an array initializer registers as a use, or the
+    // import that supplies it is reported unused and Organize Imports deletes it.
     use crate::resolve::resolve;
     struct Loader;
     impl crate::resolve::FileLoader for Loader {
@@ -247,9 +243,9 @@ fn constant_named_in_an_initializer_counts_as_used() {
 
 #[test]
 fn constants_travel_with_an_imported_array() {
-    // Importing only the accessor mod must still drag in the array AND the
-    // constants its initializer names — otherwise the merged program has the
-    // array but not the values it is built from (WS002 at the initializer).
+    // Importing only the accessor mod drags in the array AND the constants its
+    // initializer names; without them the merged program lacks the values it is
+    // built from (WS002 at the initializer).
     use crate::resolve::resolve;
     struct Loader;
     impl crate::resolve::FileLoader for Loader {
@@ -322,32 +318,28 @@ fn a_non_constant_initializer_is_ws003() {
     crate::test_support::report_failures(&failures, rows.len());
 }
 
-// `lower::expr::wire_type_of_literal`'s `Literal::Object` arm returns `None`
-// (the same "no wire form" shape as its sibling Array/Map/Record/Asset arms),
-// so a violated invariant surfaces as a diagnosable gap rather than a process
-// abort. This pins the invariant itself: `Literal::Object` is constructed
-// ONLY by `default_literal_for_var_type` — an object-family `Var` gate's
-// placeholder initial value — which never touches `const_eval`, so no
-// `const`/`let` expression can ever fold to one.
+// `lower::expr::wire_type_of_literal`'s `Literal::Object` arm returns `None`, so
+// a violated invariant surfaces as a diagnosable gap, not an abort. The invariant:
+// `Literal::Object` is built ONLY by `default_literal_for_var_type` (an
+// object-family `Var` gate's placeholder), never by `const_eval`.
 #[test]
 fn literal_object_is_never_produced_by_const_eval() {
     // Where `Literal::Object` DOES come from: a `Var` gate's own default.
     assert_eq!(
-        crate::lower::default_literal_for_var_type(&crate::ir::Type::Entity),
+        crate::const_eval::default_literal_for_var_type(&crate::ir::Type::Entity),
         Some(Literal::Object),
         "Object is default_literal_for_var_type's placeholder for object-family types"
     );
-    // No source syntax folds to an entity/controller/character value — the
-    // only way to name one is a runtime call, which `const_eval` must
-    // therefore always reject as non-constant, so `wire_type_of_literal`'s
-    // `const_lookup()` caller can never hand it an `Object` literal.
+    // No source syntax folds to an entity/controller/character value: the only way
+    // to name one is a runtime call, which `const_eval` rejects as non-constant, so
+    // `wire_type_of_literal`'s `const_lookup()` caller never sees an `Object` literal.
     assert!(
         errs("const e = FindPlayer(\"x\")").contains(&"WS046".to_string()),
         "an entity-typed initializer must never be accepted as a compile-time constant"
     );
 }
 
-// ---------- `const` inside an anonymous `chip { }` ----------
+// `const` inside an anonymous `chip { }`
 
 /// Both stages must agree about an anonymous chip's constants, not just the
 /// baked value: a `const` condition inside one has to tree-shake exactly as it
@@ -371,17 +363,10 @@ fn a_const_if_inside_an_anonymous_chip_elides_like_a_top_level_one() {
     );
 }
 
-/// The post-binding assertion (`typecheck::let_binding::check_const_recorded`)
-/// fires when a `const` whose initializer EVALUATED is then not retrievable as
-/// a constant in its own scope — without it, the failure surfaces later, at a
-/// use, blamed on a different binding, rather than at the declaration.
-///
-/// It is a NET: no shape enumerated here reaches it, and that is the point of
-/// the test — the realistic failure mode for an assertion like this is a FALSE
-/// positive, so every scope a `const` can be declared in is listed and must
-/// stay silent. (That it genuinely bites is verified by mutation: disabling
-/// `scope_lets`' `AnonChip` descent makes the first case below report WS046 at
-/// the declaration instead of at the next line.)
+/// `typecheck::let_binding::check_const_recorded` fires when a `const` whose
+/// initializer EVALUATED is not retrievable as a constant in its own scope. Its
+/// realistic failure is a FALSE positive, so every scope a `const` can be
+/// declared in is listed here and must stay silent.
 #[test]
 fn a_const_that_is_recorded_never_reports_at_its_binding() {
     for src in [
@@ -411,12 +396,10 @@ fn a_const_that_is_recorded_never_reports_at_its_binding() {
     }
 }
 
-// ---------- compile-time tuple destructuring ----------
+// Compile-time tuple destructuring
 
-/// A width mismatch stays an error, and names BOTH counts — the value is
-/// perfectly constant and perfectly positional, so "expected tuple[2], got
-/// Record(...)" was describing the compiler's internals rather than the
-/// program's mistake.
+/// A width mismatch stays an error and names BOTH counts, in the program's
+/// terms rather than the compiler's ("expected tuple[2], got Record(...)").
 #[test]
 fn a_tuple_destructure_of_the_wrong_width_reports_both_counts() {
     let diags = errs(
@@ -483,7 +466,7 @@ fn a_var_initializer_naming_a_constant_bakes_the_constant() {
             "h",
             L::Float(6.0),
         ),
-        // a record FIELD initializer, the second path with the same gap
+        // a record FIELD initializer, the second path that bakes a constant
         (
             "type P = { x: float }\nconst K: float = 9.5\nvar p: P = { x: K }\nout v: float = p.x\n",
             "p.x",

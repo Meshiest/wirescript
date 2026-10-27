@@ -1,5 +1,20 @@
 # Wirescript Changelog
 
+## 2.3.1
+
+### Fixes
+
+- An enum discriminant written in hex, binary or octal (`A = 0x10`) read as 0. One out of range for a 64-bit int is now an error.
+- A top-level `let` annotated `float` whose value was an `if` or `match` of integer constants divided as an integer (`L / 2` gave 6, not 6.5).
+- Reading an event's data from an event used as a value (`CharacterSpawned().character`) did not compile.
+- Hovering a `static var` read did not say whether it reads in exec or pure context.
+- Completion could pick the wrong declaration of a shadowed name when non-ASCII text came before it on the cursor's line.
+- The WS005 cycle error named an EdgeDetector as a barrier; only a Buffer or Queue breaks a cycle.
+- A reference that could not be baked into the save gave a garbled "has no placement" error, and an out-of-range reference target could bake a reference to the wrong gate.
+- A handler `var` of an array or map initialized from a call or another variable (`var r: int[] = build(2)`) dropped the value with a warning; it now copies it in.
+- Spreading a bound tuple or record into a builtin (`SendGlobalCustomEvent("e", ...pair)`) typed each data port as the whole tuple instead of its element.
+- An enum-valued map field of a record with a literal initializer (`{ m: { "a": Hue.Blue } }`) started empty.
+
 ## 2.3.0
 
 - `continue` in a `for` body skips the rest of that iteration and goes on to the next one. It adds no gate. Outside a loop it is WS078, and a statement after it in the same block is the WS081 warning, as after `break`.

@@ -61,10 +61,9 @@ fn body_local_exec_signal_emit_await_connects() {
 
 #[test]
 fn await_continuation_reads_a_fresh_var_get() {
-    // A var can change while an exec is suspended on `await`, so the resumed
-    // chain must re-read from a fresh Var_Get rather than reuse the
-    // pre-await gate — the same invalidation `lower_if` already does at its
-    // branch boundaries.
+    // A var can change while an exec is suspended on `await`, so the resumed chain
+    // re-reads from a fresh Var_Get rather than reusing the pre-await gate, as
+    // `lower_if` does at its branch boundaries.
     let src = "static var n: int = 0\n\
                in go: exec\n\
                let done: exec\n\
@@ -129,7 +128,7 @@ fn buffered_emit_inserts_buffer_and_breaks_cycle() {
 }
 
 /// A buffered emit's duration picks its buffer: bare `buffer` is one tick, an
-/// `s` unit selects BufferSeconds, and a runtime delay wires `TicksToWait`
+/// `s` unit selects `BufferSeconds`, and a runtime delay wires `TicksToWait`
 /// instead of baking a property.
 #[test]
 fn buffered_emit_duration_selects_its_buffer() {
@@ -178,9 +177,8 @@ fn buffered_emit_duration_selects_its_buffer() {
 
 #[test]
 fn scalar_payload_ferries_through_local_signal() {
-    // `emit sig = 7` on a local signal must write a hidden payload store
-    // (Var_Set), and `let x = await sig` must read it back (Var_Get) — the
-    // value rides the signal instead of being dropped.
+    // `emit sig = 7` on a local signal writes a hidden payload store (Var_Set), and
+    // `let x = await sig` reads it back (Var_Get): the value rides the signal.
     let src = "in run: exec\n\
                on run {\n\
                  let sig: exec\n\
@@ -232,10 +230,9 @@ fn sum_loop_compiles_with_buffered_payload() {
 
 #[test]
 fn same_signal_name_in_two_mods_stays_separate() {
-    // Two mods each declaring `let loop: exec` must get *separate* signals —
-    // previously the second mod reused the first's hub (keyed by bare name),
-    // its await lowered to _Unsupported, and its emits cross-wired into the
-    // first mod's loop.
+    // Two mods each declaring `let loop: exec` get *separate* signals: a hub keyed
+    // by bare name would leave the second mod's await `_Unsupported` and cross-wire
+    // its emits into the first mod's loop.
     let src = "in run: exec\n\
       mod first(arr: int[]) {\n\
         var i = 0\n\
@@ -287,10 +284,9 @@ fn same_signal_name_in_two_mods_stays_separate() {
 
 #[test]
 fn loop_mod_continuation_waits_for_return() {
-    // The caller's continuation must fire only on `return`, not once per
-    // iteration: previously the back-edge branch (`buffer emit loop` last in
-    // the then-block) fell through the if-join into the mod's end exec, so
-    // the caller printed per iteration ("Sum: 0" three times, then "Sum: 6").
+    // The caller's continuation fires only on `return`, not once per iteration:
+    // the back-edge branch (`buffer emit loop` last in the then-block) must not fall
+    // through the if-join into the mod's end exec.
     let src = "in run: exec\n\
       mod sumItems(arr: int[]) -> int {\n\
         var sum = 0\n\
@@ -323,7 +319,7 @@ fn loop_mod_continuation_waits_for_return() {
             .map(|n| (n.gate_class, n.note))
             .collect::<Vec<_>>()
     );
-    // The caller's chat message has exactly one exec source — the return path.
+    // The caller's chat message has exactly one exec source: the return path.
     let chat = find_gate(&r, gc::GAMEMODE_BROADCAST_CHAT);
     let exec_ins: Vec<_> = r
         .module

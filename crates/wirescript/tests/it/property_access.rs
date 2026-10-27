@@ -406,11 +406,8 @@ fn a_component_reference_has_no_remove() {
 #[test]
 fn compound_assignment_reads_then_writes_a_property() {
     let m = common::lowered(
-        &format!(
-            "{}",
-            on_hit(
-                "    Environment.Sky.TimeOfDay += 1.0\n    let light = r.HitBrick.GetComponent($Component/PointLight)\n    light.Brightness *= 2.0"
-            )
+        &on_hit(
+            "    Environment.Sky.TimeOfDay += 1.0\n    let light = r.HitBrick.GetComponent($Component/PointLight)\n    light.Brightness *= 2.0",
         ),
         "property_access.ws",
     );

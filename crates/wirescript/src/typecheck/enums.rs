@@ -4,25 +4,38 @@
 //! lowering) via `ctx.enum_defs`; this module only builds the table.
 
 use super::*;
+use crate::analysis::types::type_str;
+
+/// The field of an enum value that holds its discriminant.
+pub(crate) const DISC_FIELD: &str = "__disc";
+
+/// The field a program reads an enum value's discriminant through (`e.Discriminant`).
+pub(crate) const DISCRIMINANT_FIELD: &str = "Discriminant";
+
+/// [`DISC_FIELD`], interned.
+pub(crate) static DISC: std::sync::LazyLock<crate::intern::Sym> =
+    std::sync::LazyLock::new(|| crate::intern::intern_static(DISC_FIELD));
+
+/// The field of an enum value that holds `variant`'s payload slot `slot` (a
+/// field name, or a position for a positional payload).
+pub(crate) fn slot_name(variant: &str, slot: impl std::fmt::Display) -> String {
+    format!("__{variant}_{slot}")
+}
 
 /// The program's enums by name: the prelude's, the game's and every
-/// `TopDecl::Enum`.
-///
-/// A lookup takes a resolved type ([`of`](Self::of)): a type written in the
-/// source names an enum only through the alias-aware resolvers
-/// (`typecheck::resolve::resolve_type_expr`, `const_eval::DeclaredTypes`),
-/// which read an alias, a type parameter or another file's declaration before
-/// they read an enum's name. The lookup by written name is theirs alone
-/// ([`type_named`](Self::type_named)); there is no other, so a place holding a
-/// written name has to resolve it first (`alias_conversion.rs` guards that
-/// no other file calls it).
+/// `TopDecl::Enum`. A lookup takes a resolved type ([`of`](Self::of)). A type
+/// written in the source names an enum only through the alias-aware resolvers
+/// (`typecheck::resolve::resolve_type_expr`, `const_eval::DeclaredTypes`), which
+/// read an alias, a type parameter or another file's declaration first; the
+/// lookup by written name ([`type_named`](Self::type_named)) is theirs alone
+/// (`alias_conversion.rs` guards that).
 #[derive(Clone, Debug, Default)]
 pub struct EnumRegistry {
-    defs: crate::collections::HashMap<String, EnumDef>,
+    defs: HashMap<String, EnumDef>,
     /// The enums each `import * as` module declares, by the importing file
     /// and the namespace's name. Such an enum is registered under its own
     /// name, which its module writes; the importer writes `ns.Name`.
-    namespaced: crate::collections::HashMap<(std::sync::Arc<str>, String), Vec<String>>,
+    namespaced: HashMap<(std::sync::Arc<str>, String), Vec<String>>,
 }
 
 impl EnumRegistry {
@@ -78,7 +91,7 @@ impl EnumRegistry {
     pub fn namespaced(&self, file: &std::sync::Arc<str>, ns: &str, name: &str) -> Option<&EnumDef> {
         let declares = self
             .namespaced
-            .get(&(file.clone(), ns.to_string()))?
+            .get(&(std::sync::Arc::clone(file), ns.to_string()))?
             .iter()
             .any(|n| n == name);
         declares.then(|| self.defs.get(name)).flatten()
@@ -87,7 +100,7 @@ impl EnumRegistry {
     /// Note that the `import * as ns` written in `file` declares enum `name`.
     fn note_namespaced(&mut self, file: &std::sync::Arc<str>, ns: &str, name: &str) {
         self.namespaced
-            .entry((file.clone(), ns.to_string()))
+            .entry((std::sync::Arc::clone(file), ns.to_string()))
             .or_default()
             .push(name.to_string());
     }
@@ -174,6 +187,17 @@ pub struct EnumDef {
     pub variants: Vec<VariantDef>,
 }
 
+impl EnumDef {
+    /// The registered form of `decl`, with its variants already numbered.
+    pub fn from_decl(decl: &EnumDecl, variants: Vec<VariantDef>) -> Self {
+        Self {
+            name: decl.name.clone(),
+            type_params: decl.type_params.clone(),
+            variants,
+        }
+    }
+}
+
 /// One variant of a registered enum, with its final (auto-numbered or
 /// explicit) discriminant.
 #[derive(Clone, Debug)]
@@ -207,17 +231,13 @@ fn lower_payload(p: &EnumPayloadDecl) -> Payload {
     }
 }
 
-/// Assign every variant's discriminant in declaration order: the running
-/// value starts at 0; an explicit `= N` sets it to `N`; the next implicit
-/// value is always `previous + 1` (so `A = 2, B, C` numbers `B` as 3, not
-/// 1).
-///
-/// The SINGLE implementation of enum discriminant numbering: typecheck reaches
-/// it through [`assign_discriminants`] (which layers `WS064` on top), and
-/// lowering reaches it through [`build_registry`]. Neither re-derives the tag,
-/// so the two layers can never disagree on a value the compiled circuit's
-/// correctness depends on. Diagnostic-free by construction.
-pub fn variant_defs(decl: &EnumDecl) -> Vec<VariantDef> {
+/// Assign every variant's discriminant in declaration order: the running value
+/// starts at 0, an explicit `= N` sets it, and the next implicit one is the
+/// previous plus one (`A = 2, B, C` numbers `B` as 3). The one numbering: typecheck
+/// reaches it through [`assign_discriminants`] (adding WS064) and lowering
+/// through [`build_registry`], so the two never disagree on a tag. It reports
+/// nothing itself.
+pub(crate) fn variant_defs(decl: &EnumDecl) -> Vec<VariantDef> {
     let mut next: i64 = 0;
     let mut out = Vec::with_capacity(decl.variants.len());
     for v in &decl.variants {
@@ -236,9 +256,9 @@ pub fn variant_defs(decl: &EnumDecl) -> Vec<VariantDef> {
 /// resolve to the same integer are a collision, and `WS064` fires on the
 /// SECOND one, naming the variant that already claimed it. The numbering
 /// itself is not repeated here.
-pub fn assign_discriminants(decl: &EnumDecl, ctx: &mut TypeCheckCtx) -> Vec<VariantDef> {
+pub(crate) fn assign_discriminants(decl: &EnumDecl, ctx: &mut TypeCheckCtx<'_>) -> Vec<VariantDef> {
     let out = variant_defs(decl);
-    let mut seen: crate::collections::HashMap<i64, String> = Default::default();
+    let mut seen: HashMap<i64, String> = HashMap::default();
     for (v, vdecl) in out.iter().zip(&decl.variants) {
         if let Some(prev) = seen.insert(v.discriminant, v.name.clone()) {
             ctx.emit(
@@ -310,24 +330,17 @@ pub(super) fn instantiation_stores_container(def: &EnumDef, args: &[Type]) -> Op
     None
 }
 
-/// Reject an enum payload field that would need container storage (`WS069`).
+/// Reject an enum payload field needing container storage (WS069). A payload
+/// slot is one storage gate filled by the construction, and no construction
+/// fills a container: a declaration bakes an `InitialValue` (an array has none),
+/// and a runtime `E.B { xs: [1, 2, 3] }` copies from an empty temporary, so the
+/// slot's `ArrayVar`/`MapVar` would always read back empty. Rejecting the
+/// declaration covers every use at once.
 ///
-/// A payload slot is one storage gate, filled by the variant's CONSTRUCTION,
-/// and no construction path can fill a container: a declaration initializer
-/// bakes an `InitialValue` (there is none for an array), and a runtime
-/// `E.B { xs: [1, 2, 3] }` lowers the literal to a placeholder and copies from
-/// an empty temporary. The slot still allocates an `ArrayVar`/`MapVar`, so a
-/// captured `xs.push(..)` emits a real gate against storage that construction
-/// never fills - the value silently reads back empty. Rejecting the
-/// declaration kills every downstream use at once, instead of leaving each
-/// construction site to warn (or not).
-///
-/// Runs AFTER top-level registration so a field naming a record alias
-/// (`type R = { xs: int[] }`) resolves. Resolution diagnostics are discarded:
-/// a payload's declared type is not otherwise a checked position (an unknown
-/// type there is silent today), and this pass must test storage shape without
-/// becoming a new emit site for everything else.
-pub fn check_payload_storage(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+/// Runs after top-level registration, so a field naming a record alias
+/// (`type R = { xs: int[] }`) resolves. Resolution diagnostics are discarded: a
+/// payload's declared type is not otherwise a checked position.
+pub(crate) fn check_payload_storage(ctx: &mut TypeCheckCtx<'_>, decls: &[TopDecl]) {
     for d in decls {
         let TopDecl::Enum(e) = d else { continue };
         for v in &e.variants {
@@ -342,9 +355,7 @@ pub fn check_payload_storage(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
                     .collect(),
             };
             for (name, te, range) in fields {
-                let before = ctx.diagnostics.len();
-                let ty = resolve_type_expr(ctx, te);
-                ctx.diagnostics.truncate(before);
+                let ty = ctx.discarding_diagnostics(|ctx| resolve_type_expr(ctx, te));
                 if !needs_container_storage(&ty) {
                     continue;
                 }
@@ -357,7 +368,7 @@ pub fn check_payload_storage(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
                     format!(
                         "{what} in enum `{}` is `{}`, and an enum payload cannot hold an array or a map. A payload slot is filled by constructing the variant, and there is no way to construct a container into one, so the value would read back empty. Store the container in a `var` beside the enum and keep an index, a key, or a length in the payload instead",
                         e.name,
-                        crate::analysis::types::type_str(&ty)
+                        type_str(&ty)
                     ),
                     range.clone(),
                 );
@@ -366,17 +377,14 @@ pub fn check_payload_storage(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
     }
 }
 
-/// The built-in `Option<T>`/`Result<T, E>` prelude, in the exact `EnumDef`
-/// shape `variant_defs`/`collect_enum_defs` produce for a user-declared enum -
-/// same discriminant convention (declaration order, auto-numbered from 0), so
-/// a use of either can't tell the difference from a hand-written `enum
-/// Option<T> { Some(T), None }`. Seeded into every registry that resolves an
-/// enum by name: `register::register_builtin_enums` (typecheck's
-/// `ctx.enum_defs` + the `Option`/`Result` type-name scope symbols) and
-/// [`build_registry`] (the single lowering/const-eval seed), so `Option`/
-/// `Result` and their bare variants (`Some`/`None`/`Ok`/`Err`) work with no
-/// `enum` declaration anywhere in the program.
-pub fn prelude_enum_defs() -> Vec<EnumDef> {
+/// The built-in `Option<T>`/`Result<T, E>` prelude, in the `EnumDef` shape
+/// `variant_defs`/`collect_enum_defs` give a user enum (declaration-order
+/// discriminants from 0), so it behaves as a written `enum Option<T> { Some(T),
+/// None }`. Seeded into every registry that resolves enums by name
+/// (`register::register_builtin_enums` for typecheck, [`build_registry`] for
+/// lowering and const evaluation), so `Option`, `Result` and their bare
+/// variants work with no declaration.
+pub(crate) fn prelude_enum_defs() -> Vec<EnumDef> {
     let range = SourceRange::default();
     let type_param = |name: &str| TypeParam {
         name: name.to_string(),
@@ -423,18 +431,13 @@ pub fn prelude_enum_defs() -> Vec<EnumDef> {
     ]
 }
 
-/// The built-in game enums (`catalog::builtin_game_enums`), in the same
-/// `EnumDef` shape [`prelude_enum_defs`] produces - except the discriminant is
-/// NOT auto-numbered: it is the real schema integer
-/// (`GameEnumVariant::disc`), since these values round-trip through saved
-/// component data and a renumbered tag would silently write the wrong enum
-/// value to the game. Every variant is `Payload::Unit` - the game's schema
-/// enums carry no per-variant payload. Seeded into every registry that
-/// resolves an enum by name, same as the prelude: `register::
-/// register_builtin_enums` (typecheck's `ctx.enum_defs` + each enum's
-/// type-name scope symbol) and [`build_registry`] (the single lowering/
-/// const-eval seed).
-pub fn game_enum_defs() -> Vec<EnumDef> {
+/// The built-in game enums (`catalog::builtin_game_enums`) in the shape of
+/// [`prelude_enum_defs`], except that each discriminant is the schema's integer
+/// (`GameEnumVariant::disc`): these values round-trip through saved component
+/// data, so a renumbered tag would write the wrong value to the game. Every
+/// variant is `Payload::Unit`. Seeded like the prelude
+/// (`register::register_builtin_enums`, [`build_registry`]).
+pub(crate) fn game_enum_defs() -> Vec<EnumDef> {
     crate::catalog::builtin_game_enums()
         .into_iter()
         .map(|e| EnumDef {
@@ -453,20 +456,13 @@ pub fn game_enum_defs() -> Vec<EnumDef> {
         .collect()
 }
 
-/// Build the `name -> EnumDef` registry from the built-in prelude
-/// ([`prelude_enum_defs`]), the built-in game enums ([`game_enum_defs`]), plus
-/// every top-level `enum` in `decls`, numbering each user enum via the shared
-/// [`variant_defs`]. A user enum that redeclares a prelude or game-enum name
-/// (`enum Option { ... }`) overwrites the earlier entry here -
-/// `register_decl`'s `declare_or_dup` still reports the redeclaration as
-/// `WS013` (the type-name scope symbol collides), so this is "the user's own
-/// definition wins the registry, but the redeclaration is still flagged", not
-/// silent shadowing. Diagnostic-free - the lowering-side registry seed
-/// (`lower::lower`) calls this, and typecheck has already reported any
-/// `WS064` through its own `collect_enum_defs` pass, so re-emitting here would
-/// duplicate it. This is the one place lowering reads the tag from, so it can
-/// never diverge from typecheck's.
-pub fn build_registry(decls: &[TopDecl]) -> EnumRegistry {
+/// The `name -> EnumDef` registry: the prelude ([`prelude_enum_defs`]), the game
+/// enums ([`game_enum_defs`]) and every top-level `enum` in `decls`, numbered by
+/// [`variant_defs`]. A user enum redeclaring a prelude or game name overwrites it
+/// here, while `register_decl`'s `declare_or_dup` still reports WS013. Reports
+/// nothing: lowering (`lower::lower`) calls this after typecheck reported any
+/// WS064, and it is the one place lowering reads tags from.
+pub(crate) fn build_registry(decls: &[TopDecl]) -> EnumRegistry {
     let mut m = EnumRegistry::default();
     for def in prelude_enum_defs() {
         m.insert(def);
@@ -476,11 +472,7 @@ pub fn build_registry(decls: &[TopDecl]) -> EnumRegistry {
     }
     for d in decls {
         if let TopDecl::Enum(e) = d {
-            m.insert(EnumDef {
-                name: e.name.clone(),
-                type_params: e.type_params.clone(),
-                variants: variant_defs(e),
-            });
+            m.insert(EnumDef::from_decl(e, variant_defs(e)));
         }
     }
     for (ns, e) in namespaced_enums(decls) {
@@ -488,11 +480,7 @@ pub fn build_registry(decls: &[TopDecl]) -> EnumRegistry {
         if m.defs.contains_key(&e.name) {
             continue;
         }
-        m.insert(EnumDef {
-            name: e.name.clone(),
-            type_params: e.type_params.clone(),
-            variants: variant_defs(e),
-        });
+        m.insert(EnumDef::from_decl(e, variant_defs(e)));
     }
     m
 }
@@ -511,35 +499,22 @@ fn namespaced_enums(decls: &[TopDecl]) -> Vec<(&NamespaceDecl, &EnumDecl)> {
     out
 }
 
-/// Resolve a BARE variant name (`Some`/`None`/`Ok`/`Err`, unqualified) to the
-/// enum that uniquely declares it - the single source of truth all three
-/// stages (typecheck, lowering, const-eval) share for bare-variant lookup, so
-/// the "which enum does a bare name mean" rule cannot drift between the stage
-/// that type-checks a program and the stages that lower/fold it. Each stage
-/// wraps this with its OWN `is_shadowed` closure (its scope has a different
-/// shape); the lookup + uniqueness rule itself lives here, once.
+/// The enum that uniquely declares the bare variant name (`Some`, `None`, `Ok`,
+/// `Err`): the one lookup typecheck, lowering and const evaluation share, each
+/// with its own `is_shadowed` predicate (their scopes differ).
 ///
-/// `is_shadowed(name)` is the caller's shadow predicate: a user binding of the
-/// same name wins outright, so a shadowed name is NOT a bare variant here and
-/// the caller falls back to its ordinary resolution. Every enum - prelude OR
-/// user - registers a scope/type symbol under its OWN name (see
-/// `register_builtin_enums` and `TopDecl::Enum` registration), so a caller
-/// whose scope can't see type-only symbols may add an `enum_defs.contains_key`
-/// term to its predicate to still shadow a user enum named after a variant
-/// (`enum Some { .. }`): that term is always a SUBSET of typecheck's
-/// full-scope shadow set, so lowering/const-eval can never RESOLVE a bare name
-/// typecheck would have shadowed - the invariant that keeps the circuit and
-/// the type checker agreeing on what a bare name means.
+/// A shadowed name is not a bare variant, so the caller resolves it normally.
+/// Every enum registers a type symbol under its own name, so a caller whose
+/// scope cannot see type symbols may add `enum_defs.contains_key` to its
+/// predicate to still shadow a user enum named like a variant (`enum Some`);
+/// that term is a subset of typecheck's shadow set, so lowering never resolves
+/// a name typecheck shadowed.
 ///
-/// Returns the owning enum's name only on a UNIQUE match; no match, or more
-/// than one (two enums sharing a variant name), yields `None` - an ambiguous
-/// bare name never auto-resolves.
-///
-/// A builtin call name is never a bare variant either. Game enums are derived
-/// from the catalog, so a new game build can add a member that spells a
-/// builtin: `EBRBrickProperty::Color` turned `Color(1.0, 0.5, 0.0)` into the
-/// integer 1.
-pub fn resolve_bare_variant_enum<'d>(
+/// `None` for no match or several (two enums sharing a variant name). A builtin
+/// call name is never a bare variant either: a game build can add an enum
+/// member that spells a builtin (`EBRBrickProperty::Color` would turn
+/// `Color(1.0, 0.5, 0.0)` into the integer 1).
+pub(crate) fn resolve_bare_variant_enum<'d>(
     enum_defs: &'d EnumRegistry,
     name: &str,
     is_shadowed: impl Fn(&str) -> bool,
@@ -555,7 +530,7 @@ pub fn resolve_bare_variant_enum<'d>(
 /// the way. Run this BEFORE decl registration/checking, same as
 /// `collect_generic_aliases`, so a use of the enum name sees a fully built
 /// `EnumDef` regardless of where in the file the enum itself is declared.
-pub fn collect_enum_defs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+pub(crate) fn collect_enum_defs(ctx: &mut TypeCheckCtx<'_>, decls: &[TopDecl]) {
     for d in decls {
         if let TopDecl::Enum(e) = d {
             ctx.enum_decls
@@ -563,11 +538,7 @@ pub fn collect_enum_defs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
                 .or_default()
                 .push(e.range.clone());
             let variants = assign_discriminants(e, ctx);
-            Arc::make_mut(&mut ctx.enum_defs).insert(EnumDef {
-                name: e.name.clone(),
-                type_params: e.type_params.clone(),
-                variants,
-            });
+            Arc::make_mut(&mut ctx.enum_defs).insert(EnumDef::from_decl(e, variants));
         }
     }
     // An enum of an `import * as` module is registered under its own name, as
@@ -603,11 +574,7 @@ pub fn collect_enum_defs(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
                     .or_default()
                     .push(e.range.clone());
                 let variants = assign_discriminants(e, ctx);
-                Arc::make_mut(&mut ctx.enum_defs).insert(EnumDef {
-                    name: e.name.clone(),
-                    type_params: e.type_params.clone(),
-                    variants,
-                });
+                Arc::make_mut(&mut ctx.enum_defs).insert(EnumDef::from_decl(e, variants));
             }
         }
     }
@@ -670,13 +637,10 @@ mod tests {
         );
     }
 
-    // The alignment guard for the single-sourced helper: lowering's and
-    // const-eval's `enum_defs.contains_key(n)` shadow term must block a bare
-    // `Some` when a user enum is NAMED `Some`, matching typecheck (which shadows
-    // via that enum's own registered type-name scope symbol). If a future edit
-    // ever dropped that term from one stage's predicate, that stage would
-    // resolve `Some` to the prelude while typecheck did not - the exact silent
-    // typecheck/lower disagreement this test forbids.
+    // Lowering's and const evaluation's `enum_defs.contains_key(n)` shadow term
+    // must block a bare `Some` when a user enum is named `Some`, as typecheck
+    // does through that enum's type symbol; without it, those stages would
+    // resolve `Some` to the prelude while typecheck did not.
     #[test]
     fn enum_name_collision_is_shadowed_by_the_registry_predicate() {
         let reg = registry_with_user_enum_named_some();

@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::*;
 use crate::ir::gate_class as gc;
 
@@ -207,8 +209,8 @@ fn deref_in_exec_produces_var_get() {
     );
 }
 
-/// `null` compares with an object, a brick or a ref through CompareEqual /
-/// CompareNotEqual on either side, and an annotated `null` let or const is its
+/// `null` compares with an object, a brick or a ref through `CompareEqual` /
+/// `CompareNotEqual` on either side, and an annotated `null` let or const is its
 /// annotated type. Each row lists `.wsir` lines by the needles one line must
 /// all contain.
 #[test]
@@ -263,13 +265,10 @@ fn null_compares_with_objects_bricks_and_refs() {
     crate::test_support::report_failures(&failures, rows.len());
 }
 
-/// Lowering's type resolution (`resolve_local_type`) must include `zone`/`teleport` in its
-/// primitive-name match — omitting them lets a `zone`/`teleport`-annotated
-/// `in` port silently degrade to `Type::Any` on this path even though
-/// typecheck already resolved it correctly. `pre_declare_input`
-/// (predeclare.rs) feeds the resolved type straight into the
-/// `MicrochipInput` node's output port, so an `Any` drift is directly
-/// observable there.
+/// Lowering's type resolution (`resolve_local_type`) keeps a `zone`/`teleport`
+/// annotation on an `in` port rather than degrading it to `Type::Any`.
+/// `pre_declare_input` feeds that type straight into the `MicrochipInput` node's
+/// output port, so an `Any` drift is observable there.
 #[test]
 fn zone_and_teleport_annotations_keep_their_type_through_lowering() {
     let r = compile_ok("in z: zone\nin p: teleport");
@@ -296,14 +295,10 @@ fn zone_and_teleport_annotations_keep_their_type_through_lowering() {
     );
 }
 
-/// A self-referential record alias used as STORAGE must terminate. Typecheck
-/// reports `WS002 recursive type alias` and hands lowering a program it has
-/// already rejected, but lowering decomposes a record var into one gate per
-/// field by following aliases at every level, so the alias's own field
-/// re-expands forever unless the recursion is bounded.
-///
-/// Runs the compile on its own thread with a deadline: a regression here is a
-/// HANG, and a plain assertion would wedge the whole suite instead of failing.
+/// A self-referential record alias used as STORAGE terminates: typecheck reports
+/// `WS002 recursive type alias`, and lowering's per-field decomposition of the
+/// record var must bound its recursion. The compile runs on its own thread with
+/// a deadline, so a hang fails the test instead of wedging the suite.
 #[test]
 fn a_self_referential_record_alias_used_as_storage_terminates() {
     for src in [
@@ -469,10 +464,14 @@ fn an_unannotated_empty_container_is_ws098() {
     }
     // A whole compile reports the declaration alone: a hundred of them give a
     // hundred WS098, and an enum read from one is not lowering's `any` WS003.
-    let many: String = (0..100).map(|i| format!("var a{i} = []\n")).collect();
-    let uses: String = (0..100)
-        .map(|i| format!(" a{i}.push(k)\n fl = a{i}[0] + fl\n"))
-        .collect();
+    let many = (0..100).fold(String::new(), |mut many, i| {
+        let _ = writeln!(many, "var a{i} = []");
+        many
+    });
+    let uses = (0..100).fold(String::new(), |mut uses, i| {
+        let _ = writeln!(uses, " a{i}.push(k)\n fl = a{i}[0] + fl");
+        uses
+    });
     let r = compile(&format!("{head}{many}on go {{\n{uses}}}"));
     let codes: Vec<&str> = r
         .diagnostics

@@ -9,7 +9,7 @@ use super::*;
 pub(super) struct ParsedAnnotations {
     pub(super) side: Option<(PortSide, SourceRange)>,
     pub(super) label: Option<(String, SourceRange)>,
-    /// `@label(expr)` — the general-expression form (anything besides a bare
+    /// `@label(expr)`, the general-expression form (anything besides a bare
     /// string literal). Const-folded at lowering; at most one of `label` /
     /// `label_expr` is ever set.
     pub(super) label_expr: Option<(Expr, SourceRange)>,
@@ -51,13 +51,13 @@ pub(super) fn set_style(decl: &mut TopDecl, color: Option<Expr>, material: Optio
     *m = material;
 }
 
-/// Result of [`Parser::collect_module_annotations`] — which module-level
+/// Result of [`Parser::collect_module_annotations`]: which module-level
 /// fold annotations (if any) opened the file.
 #[derive(Default)]
 pub(super) struct ModuleAnnotations {
     pub(super) no_fold: bool,
     pub(super) fold: bool,
-    pub(super) layout: Option<crate::ast::LayoutName>,
+    pub(super) layout: Option<LayoutName>,
     pub(super) flat: bool,
     pub(super) invisible: bool,
 }
@@ -66,7 +66,7 @@ pub(super) struct ModuleAnnotations {
 enum ModuleAnnKind {
     Fold,
     NoFold,
-    Layout(crate::ast::LayoutName),
+    Layout(LayoutName),
     Flat,
     Invisible,
 }
@@ -86,16 +86,16 @@ fn is_module_ann_word(word: &str) -> bool {
 /// [`crate::ast::LayoutName::ALL`] so a new engine cannot be added without the
 /// error message learning about it.
 fn layout_choices() -> String {
-    crate::ast::LayoutName::ALL
+    LayoutName::ALL
         .iter()
         .map(|(name, _)| format!("@layout(\"{name}\")"))
         .collect::<Vec<_>>()
         .join(" or ")
 }
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     /// Non-advancing look-ahead: is the token at `idx` an expression annotation
-    /// ([`MODULE_EXPR_ANN_WORDS`]) written `@word` `(` … `)` with balanced
+    /// ([`MODULE_EXPR_ANN_WORDS`]) written `@word` `(` ... `)` with balanced
     /// parens? Returns the index of its closing `)`.
     fn expr_ann_end(&self, idx: usize) -> Option<usize> {
         let t = self.peek_at(idx);
@@ -117,7 +117,7 @@ impl<'a> Parser<'a> {
                         return Some(c);
                     }
                 }
-                TokenKind::Eof => return None, // unbalanced — leave for normal parse
+                TokenKind::Eof => return None, // unbalanced: leave for normal parse
                 _ => {}
             }
             c += 1;
@@ -125,8 +125,8 @@ impl<'a> Parser<'a> {
     }
 
     /// Non-advancing look-ahead: does a module-level run of expression
-    /// annotations start at `idx`? That is one or more `@label(…)`,
-    /// `@color(…)` and `@material(…)`, sharing a line or one per line, with a
+    /// annotations start at `idx`? That is one or more `@label(...)`,
+    /// `@color(...)` and `@material(...)`, sharing a line or one per line, with a
     /// blank line (or EOF) after the last. Shared by
     /// [`Self::collect_module_label`] and the module-annotation run so the two
     /// passes compose (a run of `@invisible` etc. may hand off to a `@label`
@@ -165,14 +165,12 @@ impl<'a> Parser<'a> {
     /// label and style. A run directly above a declaration (no blank line) is
     /// left untouched for `parse_annotations` to attach to that declaration.
     ///
-    /// The look-ahead finds the matching `)` and checks the blank-line
-    /// separator BEFORE committing, so a decl-level annotation never gets its
-    /// expression parsed here (which would otherwise emit stray diagnostics
-    /// before the roll-back).
+    /// The look-ahead checks the blank-line separator BEFORE committing, so a
+    /// decl-level annotation's expression is never parsed (and diagnosed) here.
     pub(super) fn collect_module_label(&mut self) -> ModuleExprAnnotations {
         let mut out = ModuleExprAnnotations::default();
         if !self.module_label_follows(0) {
-            return out; // not present, or decl-level — leave for parse_annotations
+            return out; // not present, or decl-level: leave for parse_annotations
         }
         loop {
             // Commit: advance past `@word` `(`, parse the expression, eat `)`.
@@ -207,19 +205,11 @@ impl<'a> Parser<'a> {
     }
 
     /// If the file opens (after any module doc) with a run of module-level
-    /// annotations ([`MODULE_ANN_WORDS`]) — one per line or several
-    /// sharing a line — separated from the first declaration by a blank
-    /// line, consume them and mark the whole module accordingly — same
-    /// blank-line rule as module doc comments. A `@nofold`/`@fold` directly
-    /// above a declaration (no blank line separating it from the rest of
-    /// the file) is left alone: for `@nofold` that's the pre-existing
-    /// decl-scoped mechanism; `@fold` has no decl-scoped meaning and falls
-    /// through to `parse_annotations`'s "unknown annotation" error. If both
-    /// `@fold` and `@nofold` are present, `@nofold` wins and a warning notes
-    /// the conflict. `@layout("code")` participates in the same run under
-    /// the same placement rules; a bad layout argument is reported here
-    /// (once) when the run is module-level, with the malformed tokens
-    /// consumed along with it.
+    /// annotations ([`MODULE_ANN_WORDS`]) separated from the first declaration
+    /// by a blank line, consume them and mark the whole module. A run directly
+    /// above a declaration is left for `parse_annotations` (decl-scoped
+    /// `@nofold`; `@fold` there is an unknown annotation). `@nofold` beats
+    /// `@fold` with a warning; a bad `@layout` argument is reported once here.
     pub(super) fn collect_module_annotations(&mut self) -> ModuleAnnotations {
         let mut spans: Vec<(ModuleAnnKind, Pos, Pos)> = Vec::new();
         // Errors found while scanning a `@layout` argument are held here and
@@ -241,7 +231,7 @@ impl<'a> Parser<'a> {
                 "flat" => Some(ModuleAnnKind::Flat),
                 "invisible" => Some(ModuleAnnKind::Invisible),
                 _ => {
-                    // @layout("<name>") — the `(` Str `)` tokens follow directly.
+                    // @layout("<name>"): the `(` Str `)` tokens follow directly.
                     if self.peek_at(cursor + 1).kind == TokenKind::LParen
                         && self.peek_at(cursor + 2).kind == TokenKind::Str
                         && self.peek_at(cursor + 3).kind == TokenKind::RParen
@@ -253,7 +243,7 @@ impl<'a> Parser<'a> {
                         };
                         t_end = self.peek_at(cursor + 3).end;
                         cursor += 3;
-                        if let Some(choice) = crate::ast::LayoutName::parse(&name) {
+                        if let Some(choice) = LayoutName::parse(&name) {
                             Some(ModuleAnnKind::Layout(choice))
                         } else {
                             errors.push((
@@ -261,11 +251,11 @@ impl<'a> Parser<'a> {
                                 t_start,
                                 t_end,
                             ));
-                            None // consumed but invalid — keeps later decls parsing clean
+                            None // consumed but invalid, so later decls parse cleanly
                         }
                     } else {
-                        // Missing or malformed argument. Swallow any `( … )`
-                        // (or an unclosed `( …` cut off by the line end) so
+                        // Missing or malformed argument. Swallow any `( ... )`
+                        // (or an unclosed `( ...` cut off by the line end) so
                         // the run keeps scanning and the argument tokens are
                         // consumed along with it.
                         if self.peek_at(cursor + 1).kind == TokenKind::LParen {
@@ -311,35 +301,34 @@ impl<'a> Parser<'a> {
                 after == TokenKind::Annotation && is_module_ann_word(after_tok.text.as_str());
             if after != TokenKind::Newline && !same_line_next {
                 // Not alone on its own line, and not continued by another
-                // module annotation on the same line — decl-scoped, leave
-                // the whole run untouched (nothing consumed).
+                // module annotation on the same line: decl-scoped, so the
+                // whole run is left untouched.
                 return ModuleAnnotations::default();
             }
             if let Some(k) = kind {
                 spans.push((k, t_start, t_end));
             }
             if same_line_next {
-                // Another module annotation follows directly on the same
-                // line — keep scanning (the next loop iteration checks it).
+                // Another module annotation follows on the same line; the
+                // next iteration checks it.
                 cursor += 1;
                 continue;
             }
             let after2 = self.peek_at(cursor + 2).kind;
             if after2 == TokenKind::Newline || after2 == TokenKind::Eof {
-                // Blank line (or EOF) follows this annotation's line — the
-                // run ends here and is module-level.
+                // A blank line (or EOF) follows this annotation's line, so
+                // the run ends here and is module-level.
                 return self.finish_module_annotations(spans, errors, cursor + 2);
             }
-            // Otherwise another annotation may follow directly on the next
-            // line — keep scanning (the next loop iteration checks it).
+            // Otherwise another annotation may follow on the next line; the
+            // next iteration checks it.
             cursor += 2;
         }
         // The run stopped at a token that isn't a module-annotation word. If it
         // opens a blank-line-separated `@label` / `@color` / `@material` run
-        // (its own later pass) and we already collected module annotations,
-        // finish the run here — consuming those annotations and leaving the
-        // `@label` for `collect_module_label` — so e.g. `@invisible` directly
-        // above a module `@label` isn't lost.
+        // (its own later pass) and module annotations were collected, finish
+        // the run here and leave the `@label` for `collect_module_label`, so
+        // an `@invisible` directly above a module `@label` is kept.
         if !spans.is_empty() && self.module_label_follows(cursor) {
             return self.finish_module_annotations(spans, errors, cursor);
         }
@@ -414,13 +403,13 @@ impl<'a> Parser<'a> {
             lines.push(self.peek().text.clone());
             self.advance();
             if self.peek().kind != TokenKind::Newline {
-                // Doc line at EOF / not newline-terminated — treat as module doc.
+                // A doc line at EOF (not newline-terminated) is module doc.
                 return Some(lines.join("\n"));
             }
             self.advance(); // the doc line's terminating newline
             match self.peek().kind {
                 // Another doc line continues this block.
-                TokenKind::DocComment => continue,
+                TokenKind::DocComment => {}
                 // A blank line (or a discarded `//` comment, which leaves only
                 // its newline) separates the block from the first decl -> module doc.
                 TokenKind::Newline => {
@@ -447,7 +436,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Consume a run of leading annotations (`@left`-style sides,
-    /// `@label("…")`, `@closed`). Newlines after each annotation are eaten so
+    /// `@label("...")`, `@closed`). Newlines after each annotation are eaten so
     /// annotations may sit on their own lines above the declaration.
     pub(super) fn parse_annotations(&mut self) -> ParsedAnnotations {
         let mut anns = ParsedAnnotations::default();
@@ -455,9 +444,9 @@ impl<'a> Parser<'a> {
             let tok = self.advance();
             match tok.text.as_str() {
                 "label" => {
-                    // Fast path: a single string literal — `@label("text")`.
+                    // Fast path: a single string literal, `@label("text")`.
                     // Anything else inside the parens (a named constant,
-                    // arithmetic, …) parses as a general expression and is
+                    // arithmetic, ...) parses as a general expression and is
                     // const-folded to display text at lowering (typecheck
                     // rejects a non-constant one).
                     let mut text: Option<(String, Pos)> = None;
@@ -611,8 +600,7 @@ impl<'a> Parser<'a> {
                             )
                         } else {
                             format!(
-                                "unknown annotation '@{}'; expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, or @sliced",
-                                w
+                                "unknown annotation '@{w}'; expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, or @sliced"
                             )
                         };
                         self.error(msg, tok.start, tok.end);

@@ -1,6 +1,6 @@
 //! Emit configuration and result types.
 
-use super::*;
+use brdb::Position;
 
 /// Grid-space position of a single IR node inside its containing chip
 /// (or on the global grid for the outer microchip brick).
@@ -13,7 +13,7 @@ pub struct Placement {
 
 impl From<Placement> for Position {
     fn from(p: Placement) -> Self {
-        Position {
+        Self {
             x: p.x,
             y: p.y,
             z: p.z,
@@ -33,7 +33,7 @@ pub struct PrefabResolver(
 
 impl PrefabResolver {
     pub fn new(f: impl Fn(&str) -> Result<Vec<u8>, String> + Send + Sync + 'static) -> Self {
-        PrefabResolver(std::sync::Arc::new(f))
+        Self(std::sync::Arc::new(f))
     }
     pub(super) fn resolve(&self, path: &str) -> Result<Vec<u8>, String> {
         (self.0)(path)
@@ -57,7 +57,7 @@ pub struct NestedCompiler(
 
 impl NestedCompiler {
     pub fn new(f: impl Fn(&str, usize) -> Result<Vec<u8>, String> + Send + Sync + 'static) -> Self {
-        NestedCompiler(std::sync::Arc::new(f))
+        Self(std::sync::Arc::new(f))
     }
     pub(super) fn compile(&self, src: &str, depth: usize) -> Result<Vec<u8>, String> {
         (self.0)(src, depth)
@@ -105,6 +105,10 @@ impl Default for EmitOptions {
 pub enum EmitError {
     #[error("node {0} has no placement")]
     MissingPlacement(String),
+    /// A baked reference (a fn handle, a ref-initialized container, or
+    /// `GetMicrochipBrick()`) whose holder or target cannot be found in the save.
+    #[error("cannot bake {0}")]
+    RefBake(String),
     #[error("wire references unknown node: {0}")]
     UnknownWireNode(String),
     #[error("brdb error: {0}")]
@@ -113,44 +117,38 @@ pub enum EmitError {
     PrefabResolve(String, String),
     /// A gutter-bus wire whose endpoint could not be resolved to a brick port.
     ///
-    /// Fatal, unlike the module-wire equivalent: the bus SUPPRESSED the module
-    /// wire this one replaces, so there is no second path to the consumer. A
-    /// dropped bus wire means the value never arrives, and nothing downstream
-    /// can tell — the save loads, pastes, and reads zero.
+    /// Fatal, unlike the module-wire equivalent: the bus suppressed the module wire this one
+    /// replaces, so there is no second path to the consumer. The value never arrives and nothing
+    /// downstream can tell: the save loads, pastes and reads zero.
     #[error("bus wire {from} -> {to} could not be drawn: {cause}")]
     BusWireUnresolved {
         from: String,
         to: String,
         cause: String,
     },
-    /// A module wire (pass 3) or a runtime-`@label` wire (pass 3.5) whose
-    /// endpoint could not be resolved to a brick port.
+    /// A module wire (pass 3) or a runtime-`@label` wire (pass 3.5) whose endpoint could not be
+    /// resolved to a brick port.
     ///
-    /// Fatal. A wire that can't be drawn is not a cosmetic gap — it is the
-    /// signature of a lowering miscompile (a stranded `return`/`emit` fan-in, a
-    /// template-cache mixup, a phantom node) that would otherwise slip into a
-    /// format-valid `.brz` and silently misbehave in-game. (The gutter-bus
-    /// equivalent is `BusWireUnresolved`.)
+    /// Fatal: an undrawable wire signals a lowering miscompile (a stranded `return`/`emit`
+    /// fan-in, a template-cache mixup, a phantom node) that would otherwise slip into a
+    /// format-valid `.brz` and misbehave in game. The gutter-bus equivalent is
+    /// `BusWireUnresolved`.
     #[error("dropped wire: {0}")]
     DroppedWire(String),
-    /// A `Literal` reached component-data encoding with no wire or native
-    /// representation for the field it was inlined into (e.g. a `const`
-    /// record, which typecheck's validators are supposed to keep out of a
-    /// wire-variant/native-typed field entirely). Erroring here means a
-    /// future gap in those validators is a diagnosable compile failure
-    /// instead of a process abort.
+    /// A `Literal` reached component-data encoding with no wire or native representation for
+    /// the field it was inlined into (e.g. a `const` record, which typecheck's validators should
+    /// keep out of a wire-variant/native-typed field). Reported as a compile failure rather than
+    /// a process abort.
     #[error("field '{field}' has no wire representation for {literal:?}")]
     UnrepresentableLiteral {
         field: String,
         literal: crate::ir::Literal,
     },
-    /// Two DISTINCT sources drive the same input port (a fan-in). A real wire
-    /// input takes exactly one source; a save with two serializes as format-valid
-    /// but the game rejects the WHOLE save at load ("Failed to connect wire").
-    /// Fatal, and always a lowering bug (a stranded return/emit fan-in, a
-    /// duplicated `out`, a chip called from both top level and a handler) rather
-    /// than user error — catching it here turns a load-failing `.brz` into a
-    /// diagnosable compile failure.
+    /// Two distinct sources drive the same input port (a fan-in). A real wire input takes
+    /// exactly one source; a save with two is format-valid but the game rejects the whole save
+    /// at load ("Failed to connect wire"). Fatal, and always a lowering bug (a stranded
+    /// return/emit fan-in, a duplicated `out`, a chip called from both top level and a handler);
+    /// catching it here turns a load-failing `.brz` into a compile failure.
     #[error("fan-in: {0}")]
     FanIn(String),
     /// Two bricks in one grid intersect. The game DROPS one of them at load,

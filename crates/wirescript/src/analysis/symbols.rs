@@ -8,7 +8,7 @@ use crate::ir::Type;
 /// The display type string of a handler param's annotation (`a: int` -> "int"),
 /// if it has one.
 fn handler_param_type_str(p: &HandlerParam) -> Option<String> {
-    p.ty.as_ref().map(|t| type_expr_str(t))
+    p.ty.as_ref().map(type_expr_str)
 }
 
 #[derive(Clone)]
@@ -18,23 +18,51 @@ pub struct SymbolDef {
     pub range: SourceRange,
     pub ty: Option<String>,
     pub exec: bool,
-    /// `const x = …` / a `const mod`'s declaration / a `const`-marked
-    /// parameter — as opposed to a plain `let`/`mod`/param. Drives hover's
-    /// `const` keyword and, for a `let`, whether hover attempts to show the
-    /// binding's compile-time VALUE (see `hover::render_decl_hover`).
+    /// A `const x = ...`, a `const mod` or a `const` parameter, as opposed to a
+    /// plain `let`, `mod` or parameter. Drives hover's `const` keyword and, for a
+    /// `let`, whether hover shows the computed value (`hover::render_decl_hover`).
     pub is_const: bool,
 }
 
-/// Resolve which declaration of `name` is visible at a cursor position. The same
-/// name can be declared in several scopes with different types (a file-scope
-/// `var players: string`, a handler-local `var players: character[]`); a flat
-/// name lookup would pick an arbitrary one and mis-type completion / hover.
-/// Approximate lexical scope by the nearest declaration at or before the cursor
-/// (shadowing — the innermost / most-recent declaration wins, and hovering a
-/// declaration resolves to itself), falling back to the first declaration for a
-/// use-before-declaration reference. `line`/`col` are 0-based (LSP cursor)
-/// with `col` a CHAR column; symbol ranges are 1-based with a BYTE column
-/// (parser `Pos`), so `source` is needed to compare the two at all.
+impl SymbolDef {
+    /// An untyped, pure, non-const symbol.
+    pub fn new(name: impl Into<String>, kind: &'static str, range: SourceRange) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            range,
+            ty: None,
+            exec: false,
+            is_const: false,
+        }
+    }
+
+    #[must_use]
+    pub fn ty(mut self, ty: impl Into<Option<String>>) -> Self {
+        self.ty = ty.into();
+        self
+    }
+
+    #[must_use]
+    pub fn exec(mut self, exec: bool) -> Self {
+        self.exec = exec;
+        self
+    }
+
+    #[must_use]
+    pub fn konst(mut self, is_const: bool) -> Self {
+        self.is_const = is_const;
+        self
+    }
+}
+
+/// Which declaration of `name` is visible at a cursor. A name can be declared in
+/// several scopes with different types (a file-scope `var players: string`, a
+/// handler-local `var players: character[]`), so this approximates lexical
+/// scope: the nearest declaration at or before the cursor wins (a declaration
+/// resolves to itself), else the first declaration. `line`/`col` are 0-based
+/// with a char column; symbol ranges are 1-based with a byte column, so `source`
+/// is needed to compare them.
 pub fn resolve_symbol<'a>(
     symbols: &'a [SymbolDef],
     source: &str,
@@ -63,16 +91,12 @@ pub fn block_has_exec(block: &Block) -> bool {
 
 fn expr_has_exec(e: &Expr) -> bool {
     match e {
-        // Array index read compiles to Exec_ArrayVar_Get — requires exec.
-        Expr::IndexAccess { obj, index, .. } => {
-            // Conservatively flags all IndexAccess as exec-requiring, not just
-            // ones where the object looks like an array.
-            let _ = (obj, index);
-            true
-        }
+        // An array index read compiles to `Exec_ArrayVar_Get`, which needs exec.
+        // Every `IndexAccess` counts, whatever its object looks like.
+        Expr::IndexAccess { .. } => true,
         Expr::Call { callee, args, .. } => {
-            // Array method calls all lower to ArrayVar exec gates, so they
-            // require exec context — except `length`, which is a pure read.
+            // Array method calls lower to `ArrayVar` exec gates and need exec, except
+            // `length`, a pure read.
             if let Expr::FieldAccess { field, .. } = callee.as_ref()
                 && crate::catalog::arrays::is_array_method(field)
                 && field != "length"
@@ -107,14 +131,13 @@ fn stmt_has_exec(s: &Stmt) -> bool {
         Stmt::Assign(_) | Stmt::Handler(_) => true,
         Stmt::Emit(e) => e.value.is_none(),
         Stmt::If(_) => true,
-        // Expr statements — check for exec-requiring expressions (e.g. array methods).
+        // An expression statement needs exec if its expression does (array methods).
         Stmt::ExprStmt(es) => expr_has_exec(&es.expr),
-        // Let/var/buffer/array bindings — check the initialiser expression.
+        // A let, var, buffer or array binding needs exec if its initializer does.
         Stmt::Let(l) => expr_has_exec(&l.value),
         Stmt::Var(v) => v.init.as_ref().is_some_and(expr_has_exec),
-        // `return <expr>` in a single-output mod is that mod's output value, so
-        // it only needs exec if its expression does (e.g. an array read). A bare
-        // `return` is an early exit from an exec chain — exec control flow.
+        // `return <expr>` in a single-output mod is the mod's output, so it needs exec
+        // only if its expression does; a bare `return` exits an exec chain.
         Stmt::Return { value, .. } => match value {
             Some(v) => expr_has_exec(v),
             None => true,
@@ -128,7 +151,7 @@ fn collect_param_symbols(syms: &mut Vec<SymbolDef>, params: &[Param], script: &S
     for p in params {
         if let Some(ref pattern) = p.pattern {
             match pattern {
-                crate::ast::ParamPattern::Record { fields, .. } => {
+                ParamPattern::Record { fields, .. } => {
                     for field in fields {
                         let field_name = match field {
                             RecordDestructField::Named { name, alias, .. } => {
@@ -141,39 +164,30 @@ fn collect_param_symbols(syms: &mut Vec<SymbolDef>, params: &[Param], script: &S
                             RecordDestructField::Rest { name, .. } => name.as_str(),
                         };
                         let ty = resolve_record_param_field_type(script, &p.typ, orig_name);
-                        syms.push(SymbolDef {
-                            name: field_name,
-                            kind: "param",
-                            range: p.range.clone(),
-                            ty,
-                            exec: false,
-                            is_const: p.is_const,
-                        });
+                        syms.push(
+                            SymbolDef::new(field_name, "param", p.range.clone())
+                                .ty(ty)
+                                .konst(p.is_const),
+                        );
                     }
                 }
-                crate::ast::ParamPattern::Tuple { names, .. } => {
+                ParamPattern::Tuple { names, .. } => {
                     for (i, name) in names.iter().enumerate() {
                         let ty = resolve_record_param_field_type(script, &p.typ, &i.to_string());
-                        syms.push(SymbolDef {
-                            name: name.clone(),
-                            kind: "param",
-                            range: p.range.clone(),
-                            ty,
-                            exec: false,
-                            is_const: p.is_const,
-                        });
+                        syms.push(
+                            SymbolDef::new(name.clone(), "param", p.range.clone())
+                                .ty(ty)
+                                .konst(p.is_const),
+                        );
                     }
                 }
             }
         } else {
-            syms.push(SymbolDef {
-                name: p.name.clone(),
-                kind: "param",
-                range: p.range.clone(),
-                ty: Some(type_expr_str(&p.typ)),
-                exec: false,
-                is_const: p.is_const,
-            });
+            syms.push(
+                SymbolDef::new(p.name.clone(), "param", p.range.clone())
+                    .ty(type_expr_str(&p.typ))
+                    .konst(p.is_const),
+            );
         }
     }
 }
@@ -199,8 +213,8 @@ pub fn collect_symbols_for_file(
 /// sit, typed as typecheck bound them. A bare name typecheck read as a unit
 /// variant binds nothing and has no type there, so it is no symbol.
 fn collect_pattern_symbols(syms: &mut Vec<SymbolDef>, script: &Script, tmap: &TypeMap) {
-    fn visit(node: crate::ast::walk::Node<'_>, syms: &mut Vec<SymbolDef>, tmap: &TypeMap) {
-        use crate::ast::walk::Node;
+    use walk::Node;
+    fn visit(node: Node<'_>, syms: &mut Vec<SymbolDef>, tmap: &TypeMap) {
         match node {
             Node::Expr(Expr::MatchExpr { arms, .. }) => {
                 for arm in arms {
@@ -211,23 +225,16 @@ fn collect_pattern_symbols(syms: &mut Vec<SymbolDef>, script: &Script, tmap: &Ty
             Node::Stmt(Stmt::LetElse(l)) => pattern_symbols(syms, &l.pattern, tmap),
             _ => {}
         }
-        crate::ast::walk::children(node, &mut |child, _| visit(child, syms, tmap));
+        walk::children(node, &mut |child, _| visit(child, syms, tmap));
     }
-    crate::ast::walk::script_children(script, &mut |node, _| visit(node, syms, tmap));
+    walk::script_children(script, &mut |node, _| visit(node, syms, tmap));
 }
 
 fn pattern_symbols(syms: &mut Vec<SymbolDef>, pattern: &Pattern, tmap: &TypeMap) {
     match pattern {
         Pattern::Binding { name, range } => {
-            if let Some(t) = tmap.get(&(range.file.clone(), range.start.offset, range.end.offset)) {
-                syms.push(SymbolDef {
-                    name: name.clone(),
-                    kind: "let",
-                    range: range.clone(),
-                    ty: Some(type_str(t)),
-                    exec: false,
-                    is_const: false,
-                });
+            if let Some(t) = tmap.get(&range.key()) {
+                syms.push(SymbolDef::new(name.clone(), "let", range.clone()).ty(type_str(t)));
             }
         }
         Pattern::Variant { sub, .. } => match sub {
@@ -272,60 +279,19 @@ pub fn collect_decl(
                 .map(type_expr_str)
                 .or_else(|| v.init.as_ref().and_then(|e| infer_expr_type(e, tmap)));
             let kind = if v.is_static { "static var" } else { "var" };
-            syms.push(SymbolDef {
-                name: v.name.clone(),
-                kind,
-                range: v.range.clone(),
-                ty,
-                exec: false,
-                is_const: false,
-            });
+            syms.push(SymbolDef::new(v.name.clone(), kind, v.range.clone()).ty(ty));
         }
-        TopDecl::Array(a) => syms.push(SymbolDef {
-            name: a.name.clone(),
-            kind: "array",
-            range: a.range.clone(),
-            ty: Some(format!("{}[]", type_expr_str(&a.element_type))),
-            exec: false,
-            is_const: false,
-        }),
+        TopDecl::Array(a) => syms.push(
+            SymbolDef::new(a.name.clone(), "array", a.range.clone())
+                .ty(format!("{}[]", type_expr_str(&a.element_type))),
+        ),
         TopDecl::Buffer(b) => {
             let ty = b
                 .typ
                 .as_ref()
                 .map(type_expr_str)
                 .or_else(|| infer_expr_type(&b.init, tmap));
-            syms.push(SymbolDef {
-                name: b.name.clone(),
-                kind: "buffer",
-                range: b.range.clone(),
-                ty,
-                exec: false,
-                is_const: false,
-            });
-        }
-        TopDecl::Fn(f) => {
-            let ret = f
-                .return_type
-                .as_ref()
-                .map(type_expr_str)
-                .unwrap_or_else(|| "auto".into());
-            let params: Vec<String> = f
-                .params
-                .iter()
-                .map(|p| format!("{}: {}", p.name, type_expr_str(&p.typ)))
-                .collect();
-            syms.push(SymbolDef {
-                name: f.name.clone(),
-                kind: "fn",
-                range: f.range.clone(),
-                ty: Some(format!("({}) -> {}", params.join(", "), ret)),
-                exec: false,
-                is_const: false,
-            });
-            if is_local(&f.range) {
-                collect_param_symbols(syms, &f.params, script);
-            }
+            syms.push(SymbolDef::new(b.name.clone(), "buffer", b.range.clone()).ty(ty));
         }
         TopDecl::Chip(c) => {
             // A `const mod`'s parameters are ALL const (the parser sets
@@ -371,24 +337,18 @@ pub fn collect_decl(
                     .collect();
                 format!("<{}>", ps.join(", "))
             };
-            syms.push(SymbolDef {
-                name: c.name.clone(),
-                kind: label,
-                range: c.range.clone(),
-                ty: Some(format!("{}({}){}", generics, params.join(", "), ret_suffix)),
-                exec: block_has_exec(&c.body),
-                is_const: c.is_const,
-            });
+            syms.push(
+                SymbolDef::new(c.name.clone(), label, c.range.clone())
+                    .ty(format!("{}({}){}", generics, params.join(", "), ret_suffix))
+                    .exec(block_has_exec(&c.body))
+                    .konst(c.is_const),
+            );
             if is_local(&c.range) {
                 for tp in &c.type_params {
-                    syms.push(SymbolDef {
-                        name: tp.name.clone(),
-                        kind: "typeparam",
-                        range: tp.range.clone(),
-                        ty: tp.bound.as_ref().map(|b| type_expr_str(b)),
-                        exec: false,
-                        is_const: false,
-                    });
+                    syms.push(
+                        SymbolDef::new(tp.name.clone(), "typeparam", tp.range.clone())
+                            .ty(tp.bound.as_ref().map(type_expr_str)),
+                    );
                 }
                 collect_param_symbols(syms, &c.inputs, script);
                 for s in &c.body.stmts {
@@ -396,52 +356,25 @@ pub fn collect_decl(
                 }
             }
         }
-        TopDecl::In(i) => syms.push(SymbolDef {
-            name: i.name.clone(),
-            kind: "in",
-            range: i.range.clone(),
-            ty: Some(type_expr_str(&i.typ)),
-            exec: false,
-            is_const: false,
-        }),
+        TopDecl::In(i) => syms
+            .push(SymbolDef::new(i.name.clone(), "in", i.range.clone()).ty(type_expr_str(&i.typ))),
         TopDecl::Let(l) => {
             collect_let_symbols(syms, l, tmap);
         }
-        TopDecl::Event(e) => syms.push(SymbolDef {
-            name: e.name.clone(),
-            kind: "event",
-            range: e.range.clone(),
-            ty: None,
-            exec: false,
-            is_const: false,
-        }),
+        TopDecl::Event(e) => syms.push(SymbolDef::new(e.name.clone(), "event", e.range.clone())),
         TopDecl::Out(o) => {
             let ty = o
                 .value
                 .as_ref()
                 .and_then(|v| infer_expr_type(v, tmap))
                 .or_else(|| o.typ.as_ref().map(type_expr_str));
-            syms.push(SymbolDef {
-                name: o.name.clone(),
-                kind: "out",
-                range: o.range.clone(),
-                ty,
-                exec: false,
-                is_const: false,
-            });
+            syms.push(SymbolDef::new(o.name.clone(), "out", o.range.clone()).ty(ty));
         }
         TopDecl::Handler(h) => {
             collect_stmt(syms, &Stmt::Handler(h.clone()), tmap, file, script);
         }
         TopDecl::AnonChip(ac) => {
-            syms.push(SymbolDef {
-                name: String::new(),
-                kind: "chip",
-                range: ac.range.clone(),
-                ty: None,
-                exec: block_has_exec(&ac.body),
-                is_const: false,
-            });
+            syms.push(SymbolDef::new("", "chip", ac.range.clone()).exec(block_has_exec(&ac.body)));
             for s in &ac.body.stmts {
                 collect_stmt(syms, s, tmap, file, script);
             }
@@ -457,37 +390,25 @@ pub fn collect_decl(
             }
         }
         TopDecl::TypeAlias(t) => {
-            syms.push(SymbolDef {
-                name: t.name.clone(),
-                kind: "type",
-                range: t.range.clone(),
-                ty: Some(type_expr_str(&t.typ)),
-                exec: false,
-                is_const: false,
-            });
+            syms.push(
+                SymbolDef::new(t.name.clone(), "type", t.range.clone()).ty(type_expr_str(&t.typ)),
+            );
         }
         TopDecl::Namespace(ns) => {
-            // `import * as u from "…"` — the alias itself, plus its importable
-            // members as qualified `u.member` symbols. The `.` in the name keeps
-            // them out of the global identifier list (filtered there); member
-            // completion after `u.` reads them back by prefix.
-            syms.push(SymbolDef {
-                name: ns.name.clone(),
-                kind: "namespace",
-                range: ns.range.clone(),
-                ty: None,
-                exec: false,
-                is_const: false,
-            });
+            // `import * as u from "..."`: the alias, plus its importable members as
+            // qualified `u.member` symbols. The `.` keeps them out of the global identifier
+            // list; member completion after `u.` reads them back by prefix.
+            syms.push(SymbolDef::new(
+                ns.name.clone(),
+                "namespace",
+                ns.range.clone(),
+            ));
             for d in &ns.decls {
                 if let Some((mname, mkind)) = namespace_member_decl(d) {
-                    // Compute the member's real signature + exec-ness (and
-                    // constness) by running the normal decl collection into a
-                    // scratch buffer, then re-key it under the qualified
-                    // `ns.member` name. The member decl lives in the imported
-                    // file (not local), so this yields just its one signature
-                    // symbol; any extras are discarded here. Without a `ty`,
-                    // hover on `ns.member` shows nothing.
+                    // The member's signature, exec-ness and const-ness come from the normal
+                    // declaration collection run into a scratch buffer, re-keyed under
+                    // `ns.member`. Its declaration is in the imported file, so that yields one
+                    // signature symbol; anything else is dropped.
                     let mut scratch = Vec::new();
                     collect_decl(&mut scratch, d, tmap, file, script);
                     let (ty, exec, is_const) = scratch
@@ -495,14 +416,12 @@ pub fn collect_decl(
                         .find(|s| s.name == mname && s.kind == mkind)
                         .map(|s| (s.ty.clone(), s.exec, s.is_const))
                         .unwrap_or((None, false, false));
-                    syms.push(SymbolDef {
-                        name: format!("{}.{}", ns.name, mname),
-                        kind: mkind,
-                        range: ns.range.clone(),
-                        ty,
-                        exec,
-                        is_const,
-                    });
+                    syms.push(
+                        SymbolDef::new(format!("{}.{}", ns.name, mname), mkind, ns.range.clone())
+                            .ty(ty)
+                            .exec(exec)
+                            .konst(is_const),
+                    );
                 }
             }
         }
@@ -512,11 +431,10 @@ pub fn collect_decl(
 
 /// The importable name + symbol kind a namespace member exposes, or `None` for a
 /// non-importable decl (`var`/`array`/`in`/`out`/handlers). Mirrors the set the
-/// resolver allows through `import { … }` / `import * as`.
+/// resolver allows through `import { ... }` / `import * as`.
 fn namespace_member_decl(d: &TopDecl) -> Option<(String, &'static str)> {
     match d {
         TopDecl::Chip(c) => Some((c.name.clone(), c.kind_label())),
-        TopDecl::Fn(f) => Some((f.name.clone(), "fn")),
         TopDecl::Let(l) => match &l.binding {
             LetBinding::Ident { name, .. } => Some((name.clone(), "let")),
             _ => None,
@@ -557,25 +475,16 @@ pub fn collect_stmt(
                         // over the event's declared data type.
                         let ty = handler_param_type_str(pname)
                             .or_else(|| evt.data.get(i).map(|d| type_str(&d.ty)));
-                        syms.push(SymbolDef {
-                            name: pname.name.clone(),
-                            kind: "param",
-                            range: h.range.clone(),
-                            ty,
-                            exec: false,
-                            is_const: false,
-                        });
+                        syms.push(
+                            SymbolDef::new(pname.name.clone(), "param", h.range.clone()).ty(ty),
+                        );
                     }
                 } else {
                     for pname in &h.params {
-                        syms.push(SymbolDef {
-                            name: pname.name.clone(),
-                            kind: "param",
-                            range: h.range.clone(),
-                            ty: handler_param_type_str(pname).or_else(|| Some("any".into())),
-                            exec: false,
-                            is_const: false,
-                        });
+                        syms.push(
+                            SymbolDef::new(pname.name.clone(), "param", h.range.clone())
+                                .ty(handler_param_type_str(pname).or_else(|| Some("any".into()))),
+                        );
                     }
                 }
             }
@@ -584,14 +493,7 @@ pub fn collect_stmt(
             }
         }
         Stmt::AnonChip(ac) => {
-            syms.push(SymbolDef {
-                name: String::new(),
-                kind: "chip",
-                range: ac.range.clone(),
-                ty: None,
-                exec: block_has_exec(&ac.body),
-                is_const: false,
-            });
+            syms.push(SymbolDef::new("", "chip", ac.range.clone()).exec(block_has_exec(&ac.body)));
             for s in &ac.body.stmts {
                 collect_stmt(syms, s, tmap, file, script);
             }
@@ -645,14 +547,9 @@ pub fn collect_stmt(
                         .map(|(field, _port, t)| (field.to_string(), t))
                         .collect(),
                 );
-                syms.push(SymbolDef {
-                    name: name.clone(),
-                    kind: "let",
-                    range: name_range.clone(),
-                    ty: Some(type_str(&ty)),
-                    exec: false,
-                    is_const: false,
-                });
+                syms.push(
+                    SymbolDef::new(name.clone(), "let", name_range.clone()).ty(type_str(&ty)),
+                );
             }
         }
         _ => {}
@@ -669,7 +566,7 @@ fn collect_for_bindings(syms: &mut Vec<SymbolDef>, f: &ForStmt, tmap: &TypeMap) 
         ForSource::Range(_) => (LoopKind::CountFor, Vec::new()),
         ForSource::Collection { expr, .. } => {
             let r = expr.range();
-            match tmap.get(&(r.file.clone(), r.start.offset, r.end.offset)) {
+            match tmap.get(&r.key()) {
                 Some(Type::Array(elem)) => (LoopKind::ForEachArray, vec![(**elem).clone()]),
                 Some(Type::Map(k, v)) => (LoopKind::ForEachMap, vec![(**k).clone(), (**v).clone()]),
                 // Source type not resolved (e.g. WS075 already fired for this
@@ -699,14 +596,14 @@ fn collect_for_bindings(syms: &mut Vec<SymbolDef>, f: &ForStmt, tmap: &TypeMap) 
                     let Some(idx) = spec.slot_labels.iter().position(|l| l == name) else {
                         continue;
                     };
-                    syms.push(SymbolDef {
-                        name: alias.clone().unwrap_or_else(|| name.clone()),
-                        kind: "let",
-                        range: range.clone(),
-                        ty: Some(type_str(&slot_tys[idx])),
-                        exec: false,
-                        is_const: false,
-                    });
+                    syms.push(
+                        SymbolDef::new(
+                            alias.clone().unwrap_or_else(|| name.clone()),
+                            "let",
+                            range.clone(),
+                        )
+                        .ty(type_str(&slot_tys[idx])),
+                    );
                 }
             }
             ForSlot::Slot(i) => push_for_pat_symbol(syms, pat, &slot_tys[*i]),
@@ -720,14 +617,9 @@ fn collect_for_bindings(syms: &mut Vec<SymbolDef>, f: &ForStmt, tmap: &TypeMap) 
 fn push_for_pat_symbol(syms: &mut Vec<SymbolDef>, pat: &ForPat, ty: &Type) {
     match pat {
         ForPat::Ignore(_) => {}
-        ForPat::Name(name, range) => syms.push(SymbolDef {
-            name: name.clone(),
-            kind: "let",
-            range: range.clone(),
-            ty: Some(type_str(ty)),
-            exec: false,
-            is_const: false,
-        }),
+        ForPat::Name(name, range) => {
+            syms.push(SymbolDef::new(name.clone(), "let", range.clone()).ty(type_str(ty)));
+        }
         ForPat::Record { fields, .. } => {
             // An already-erroneous slot (the source type didn't resolve to a
             // record): bind every name with no type rather than guessing one.
@@ -748,14 +640,7 @@ fn push_for_pat_symbol(syms: &mut Vec<SymbolDef>, pat: &ForPat, ty: &Type) {
                         (name.clone(), range.clone(), None)
                     }
                 };
-                syms.push(SymbolDef {
-                    name,
-                    kind: "let",
-                    range,
-                    ty: fty,
-                    exec: false,
-                    is_const: false,
-                });
+                syms.push(SymbolDef::new(name, "let", range).ty(fty));
             }
         }
     }
@@ -769,29 +654,23 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                 .as_ref()
                 .map(type_expr_str)
                 .or_else(|| infer_expr_type(&l.value, tmap));
-            syms.push(SymbolDef {
-                name: name.clone(),
-                kind: "let",
-                range: l.range.clone(),
-                ty,
-                exec: false,
-                is_const: l.is_const,
-            });
+            syms.push(
+                SymbolDef::new(name.clone(), "let", l.range.clone())
+                    .ty(ty)
+                    .konst(l.is_const),
+            );
         }
-        LetBinding::Tuple { names, .. } | LetBinding::Record { names, .. } => {
+        LetBinding::Tuple { names, .. } => {
             for (i, name) in names.iter().enumerate() {
                 // Positional destructure: the i-th field/element of the
                 // initializer's record/tuple type, falling back to a
                 // same-named record field.
                 let ty = value_field_type(&l.value, tmap, Some(i), name);
-                syms.push(SymbolDef {
-                    name: name.clone(),
-                    kind: "let",
-                    range: l.range.clone(),
-                    ty,
-                    exec: false,
-                    is_const: l.is_const,
-                });
+                syms.push(
+                    SymbolDef::new(name.clone(), "let", l.range.clone())
+                        .ty(ty)
+                        .konst(l.is_const),
+                );
             }
         }
         LetBinding::RecordDestruct { fields, .. } => {
@@ -804,14 +683,11 @@ fn collect_let_symbols(syms: &mut Vec<SymbolDef>, l: &LetDecl, tmap: &TypeMap) {
                     ),
                     RecordDestructField::Rest { name, .. } => (name.clone(), None),
                 };
-                syms.push(SymbolDef {
-                    name,
-                    kind: "let",
-                    range: l.range.clone(),
-                    ty,
-                    exec: false,
-                    is_const: l.is_const,
-                });
+                syms.push(
+                    SymbolDef::new(name, "let", l.range.clone())
+                        .ty(ty)
+                        .konst(l.is_const),
+                );
             }
         }
     }
@@ -826,9 +702,8 @@ fn value_field_type(
     index: Option<usize>,
     field: &str,
 ) -> Option<String> {
-    use crate::ir::Type;
     let r = value.range();
-    let ty = tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))?;
+    let ty = tmap.get(&r.key())?;
     match ty {
         Type::Record(fs) | Type::Outputs(fs) => fs
             .iter()

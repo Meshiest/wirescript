@@ -18,7 +18,7 @@ fn hover_value(source: &str, line: u32, col: u32) -> Option<String> {
     parsed
         .get("value")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 fn parse_items(json: &str) -> Vec<serde_json::Value> {
@@ -168,13 +168,13 @@ struct Landing {
     end: Option<u64>,
 }
 
-fn landing(file: Option<&str>, line: u64, start: u64, end: Option<u64>) -> Option<Landing> {
-    Some(Landing {
+fn landing(file: Option<&str>, line: u64, start: u64, end: Option<u64>) -> Landing {
+    Landing {
         file: file.map(String::from),
         line,
         start,
         end,
-    })
+    }
 }
 
 /// Go-to-definition from each row's editor position; `want` is where it
@@ -189,7 +189,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
     const EMOJI_DECL: &str =
         "/* \u{1F389} */ var abc: int = 0\non RoundStart() {\n  /* \u{e9}\u{1F389} */ abc = 1\n}";
     let emoji_use = editor_col(EMOJI_DECL, 2, "abc", 0);
-    let emoji_decl = editor_col(EMOJI_DECL, 0, "abc", 0) as u64;
+    let emoji_decl = u64::from(editor_col(EMOJI_DECL, 0, "abc", 0));
     let nx = |needle: &str| editor_col(NON_ASCII, 4, needle, 0);
     let rows: Vec<(&str, &str, &str, u32, u32, Option<Landing>)> = vec![
         (
@@ -198,7 +198,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             1,
             18,
-            landing(None, 0, 4, Some(5)),
+            Some(landing(None, 0, 4, Some(5))),
         ),
         (
             "a let",
@@ -206,7 +206,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             2,
             8,
-            landing(None, 1, 4, Some(5)),
+            Some(landing(None, 1, 4, Some(5))),
         ),
         (
             "a buffer",
@@ -214,7 +214,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             2,
             8,
-            landing(None, 1, 7, Some(11)),
+            Some(landing(None, 1, 7, Some(11))),
         ),
         (
             "an in port",
@@ -222,7 +222,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             1,
             3,
-            landing(None, 0, 3, Some(10)),
+            Some(landing(None, 0, 3, Some(10))),
         ),
         (
             "a mod",
@@ -230,7 +230,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             1,
             18,
-            landing(None, 0, 4, Some(7)),
+            Some(landing(None, 0, 4, Some(7))),
         ),
         (
             "a chip",
@@ -238,7 +238,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             3,
             8,
-            landing(None, 0, 5, Some(8)),
+            Some(landing(None, 0, 5, Some(8))),
         ),
         (
             "a fn",
@@ -246,7 +246,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             1,
             8,
-            landing(None, 0, 3, Some(9)),
+            Some(landing(None, 0, 3, Some(9))),
         ),
         (
             "an array",
@@ -254,7 +254,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             1,
             18,
-            landing(None, 0, 4, Some(9)),
+            Some(landing(None, 0, 4, Some(9))),
         ),
         (
             "a mod param",
@@ -262,7 +262,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             0,
             19,
-            landing(None, 0, 8, Some(9)),
+            Some(landing(None, 0, 8, Some(9))),
         ),
         (
             "a builtin has no source definition",
@@ -278,7 +278,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             LIB,
             2,
             18,
-            landing(Some("lib.ws"), 0, 4, None),
+            Some(landing(Some("lib.ws"), 0, 4, None)),
         ),
         (
             "an import path jumps to the file's top",
@@ -286,7 +286,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             LIB,
             0,
             8,
-            landing(Some("lib.ws"), 0, 0, None),
+            Some(landing(Some("lib.ws"), 0, 0, None)),
         ),
         (
             "a named import specifier jumps to the symbol",
@@ -294,7 +294,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             ADD_LIB,
             0,
             10,
-            landing(Some("lib.ws"), 0, 5, None),
+            Some(landing(Some("lib.ws"), 0, 5, None)),
         ),
         (
             "an imported use jumps across files",
@@ -302,7 +302,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             MATH_LIB,
             1,
             9,
-            landing(Some("math.ws"), 0, 5, None),
+            Some(landing(Some("math.ws"), 0, 5, None)),
         ),
         // Both the cursor and the landing are on lines whose UTF-16,
         // char and byte columns all differ.
@@ -312,7 +312,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             2,
             emoji_use + 1,
-            landing(None, 0, emoji_decl, Some(emoji_decl + 3)),
+            Some(landing(None, 0, emoji_decl, Some(emoji_decl + 3))),
         ),
         (
             "the second of two names after emoji",
@@ -320,7 +320,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             4,
             nx("xyz") + 1,
-            landing(None, 1, 4, Some(7)),
+            Some(landing(None, 1, 4, Some(7))),
         ),
         (
             "the first of two names after emoji",
@@ -328,7 +328,7 @@ fn definition_lands_on_the_name_in_editor_columns() {
             "{}",
             4,
             nx("abc"),
-            landing(None, 0, 4, Some(7)),
+            Some(landing(None, 0, 4, Some(7))),
         ),
     ];
     let mut failures = Vec::new();
@@ -375,7 +375,7 @@ fn refs(source: &str, line: u32, col: u32) -> Vec<(u64, u64, u64)> {
             )
         })
         .collect();
-    out.sort();
+    out.sort_unstable();
     out
 }
 
@@ -384,8 +384,8 @@ fn refs(source: &str, line: u32, col: u32) -> Vec<(u64, u64, u64)> {
 #[test]
 fn references_are_the_name_tokens_in_editor_columns() {
     let capture = "in target: character\n// character comment\non CharacterSpawned() -> (character) {\n  character.DisplayText(\"hi\")\n}";
-    let abc = editor_col(NON_ASCII, 4, "abc", 0) as u64;
-    let xyz = editor_col(NON_ASCII, 4, "xyz", 0) as u64;
+    let abc = u64::from(editor_col(NON_ASCII, 4, "abc", 0));
+    let xyz = u64::from(editor_col(NON_ASCII, 4, "xyz", 0));
     let rows: &[(&str, &str, u32, u32, Vec<(u64, u64, u64)>)] = &[
         (
             "a var: the decl and both uses",

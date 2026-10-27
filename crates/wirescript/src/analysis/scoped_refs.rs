@@ -1,71 +1,40 @@
-//! Pure, scope-aware name resolver behind find-references / rename.
+//! Scope-aware name resolution behind find-references and rename.
 //!
-//! Replaces the old textual find-and-replace with an AST walk that tracks a
-//! two-namespace (value / type) lexical scope stack: every binding site
-//! (`var`, `let`, params, handler captures, chip/mod/fn/type/event decls, …)
-//! registers a [`Binding`] with a scope extent, and every identifier use
-//! resolves to the nearest enclosing binding in its namespace. That makes
-//! rename precise — it only ever touches sites that resolve to the same
-//! declaration, never comments, strings, type-position names, other-scope
-//! identifiers, or unrelated files.
+//! An AST walk tracks a lexical scope stack with two namespaces, values and
+//! types. Every binding site (`var`, `let`, parameters, handler captures, chip,
+//! mod, type and event declarations, and so on) registers a [`Binding`] with
+//! its scope extent, and every identifier use resolves to the nearest enclosing
+//! binding in its namespace. Rename therefore touches only sites that resolve
+//! to the same declaration: never comments, strings, type-position names,
+//! other scopes or unrelated files.
 //!
-//! Structure:
-//! - The binding inventory — [`build_scope_model`] walks the whole AST and
-//!   registers every VALUE binding with its scope extent.
-//! - VALUE-position use collection (`Expr::Ident`, a call's callee,
-//!   record-shorthand, every sub-expression) plus [`references_at`] —
-//!   resolve the binding under a cursor and return every same-file site
-//!   bound to it. `cross_file` only distinguishes `Local` / `Exported` here;
-//!   `Imported` and type-namespace targets are handled separately below.
-//! - The TYPE namespace — `type` alias bindings and per-decl `TypeParam`
-//!   bindings, plus TYPE-position use collection over every `TypeExpr`
-//!   reachable from an annotation (`var`/`in`/`out`/`buffer`/`param`/`let`/
-//!   handler-capture/fn-return/chip-output types, `type X = …`'s RHS, a
-//!   `TypeParam`'s bound, and `Call.type_args`). Value and type uses share
-//!   one resolution pass ([`resolve_uses`]) that already matches
-//!   `Binding.ns == Use.ns`, so the two namespaces stay separate for
-//!   free — a value binding named `character` is invisible to a
-//!   `TypeExpr::Name { name: "character", .. }` use and vice versa.
-//! - [`prepare_rename_at`] — the rename entry point. Finalizes cursor
-//!   dispatch with the refusals `references_at` alone doesn't cover: a
-//!   lexer keyword, and a record FIELD name (`Expr::FieldAccess.field`,
-//!   `RecordLitField::Named.name`, a record TYPE field's name). The
-//!   builtin-type/unresolved-global refusal is already implicit in
-//!   `references_at` (an unresolved `Use` makes it return `None`), so no
-//!   extra check is needed for that case.
-//! - Cross-file resolution. `register_import` fills in `TopDecl::Import(_)`
-//!   (otherwise left a no-op by the binding walk): a NAMED import specifier
-//!   (`import { name }` / `import { orig as name }`) registers a binding in
-//!   BOTH namespaces under its local name, tagged with the ORIGINAL exported
-//!   name via `Binding::import_export`. `references_at` checks that tag
-//!   first, so a use of an imported name classifies as `CrossFile::Imported`
-//!   rather than `Local`/`Exported`. [`references_to_export`] is the reverse
-//!   direction — given another file's AST plus an exported name, return
-//!   every site (import specifier + uses) in THAT file that traces back to
-//!   it; a local shadow excludes itself for free via the existing
-//!   innermost-scope resolution rule. Namespace-member rename (`u.foo`)
-//!   stays deferred — `foo` is already refused via `field_name_spans`; only
-//!   the alias `u` itself is renameable, and only once `ImportKind::Namespace`
-//!   grows its own binding.
-//!
-//! See `docs/superpowers/plans/2026-08-12-scoped-rename-name-resolution.md`
-//! for the LSP/WASM wiring layered on top of this module.
+//! - [`build_scope_model`] registers every binding and every value- and
+//!   type-position use; [`resolve_uses`] resolves them, matching namespaces.
+//! - [`references_at`] returns every same-file site bound to the binding under
+//!   a cursor. [`prepare_rename_at`] adds the refusals it does not cover: a
+//!   lexer keyword and a record field name.
+//! - A named import specifier registers a binding in both namespaces under its
+//!   local name, tagged with the exported name (`Binding::import_export`), so a
+//!   use of it classifies as `CrossFile::Imported`. [`references_to_export`]
+//!   goes the other way: every site in another file's AST that traces back to
+//!   an exported name. Namespace members (`u.foo`) are not renamed.
 
+use super::text::{char_col_to_byte, line_text, word_at};
 use crate::ast::walk;
 use crate::ast::*;
 use crate::collections::{HashMap, HashSet};
 use crate::diagnostic::{Pos, SourceRange};
 use crate::ir::plane::{ForSlot, LoopKind, for_slots, plane_spec};
+use crate::scope::top::{Home, ReadAt, TopNames, within};
 use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
 
 /// Which lexical namespace a name lives in. Value names (`var`, `let`,
-/// params, …) and type names (`type`, type params, …) are separate — a
-/// value binding named `character` is invisible to a
-/// `TypeExpr::Name { name: "character", .. }` and vice versa (this
-/// separation is what makes a capture named after a type safe to rename).
+/// parameters) and type names (`type`, type parameters) are separate, so a value
+/// named `character` is invisible to a `TypeExpr::Name` `character` and the
+/// other way round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RefNs {
     Value,
@@ -80,15 +49,11 @@ pub enum RefNs {
 pub struct RefSite {
     pub range: SourceRange,
     pub is_shorthand: bool,
-    /// True when `range` is a whole-declaration span rather than a precise
-    /// name token — the decl sites of container-ranged kinds (`var`, `chip`,
-    /// `mod`, `type`, tuple/record `let`, `emit NAME = …`, …) and any use
-    /// that could only be given a coarse range (`Emit.name`'s statement span;
-    /// a `TypeExpr::Generic` head, whose range covers the whole `Name<Args>`
-    /// with no name-only sub-span). The wiring layer (Tasks 6/7) narrows
-    /// these to the name span via `references::find_name_range`; precise
-    /// sites (`Expr::Ident`, record shorthand, `HandlerParam`/
-    /// `RecordDestructField` decls, `TypeExpr::Name`) are left alone.
+    /// True when `range` is a whole-declaration span rather than a name token: the
+    /// declaration sites of container-ranged kinds (`var`, `chip`, `mod`, `type`,
+    /// tuple or record `let`, `emit NAME = ...`) and uses with only a coarse range
+    /// (`Emit.name`'s statement, a `TypeExpr::Generic` head). The LSP narrows these
+    /// to the name with `references::find_name_range`.
     pub coarse: bool,
 }
 
@@ -115,57 +80,43 @@ pub struct RefTarget {
     pub cross_file: CrossFile,
 }
 
-/// A single name-binding site: a declaration that introduces `name` into
-/// scope. Namespace-separated from [`Use`] — a `Binding` never itself
-/// represents a reference to another binding.
+/// A name-binding site: a declaration that introduces `name` into scope. A
+/// `Binding` never itself refers to another binding (that is a [`Use`]).
 #[derive(Clone, Debug)]
 pub(crate) struct Binding {
     pub(crate) id: usize,
     pub(crate) name: String,
     pub(crate) ns: RefNs,
-    /// The declaration's own name span. Precise (name-token-only) where the
-    /// AST carries a dedicated range for it (`LetBinding::Ident`,
-    /// `HandlerParam`, `RecordDestructField::Named`, …); falls back to the
-    /// whole declaration's range for constructs the parser doesn't give a
-    /// narrower span (`VarDecl`, `ChipDecl`, `InDecl`, …). Narrowing those
-    /// is follow-up work.
+    /// The declaration's name span: the name token where the AST has a range for
+    /// it (`LetBinding::Ident`, `HandlerParam`, `RecordDestructField::Named`),
+    /// else the whole declaration (`VarDecl`, `ChipDecl`, `InDecl`, and so on).
     pub(crate) name_range: SourceRange,
     /// `None` = visible for the whole file (file-scope decl); `Some(r)` =
     /// visible only within lexical extent `r` (the owning block/handler/
     /// chip-or-mod body's range).
     pub(crate) scope: Option<SourceRange>,
-    /// A short tag identifying the binding's source construct — "var",
-    /// "let", "param", "capture", "chip", "mod", "fn", "event", "in", "out",
-    /// "buffer", "array", "map", "namespace", "type", "typeparam", … — for
-    /// diagnostics/tests; callers outside this module should not match on it.
+    /// A tag for the binding's source construct ("var", "let", "param",
+    /// "capture", "chip", "mod", "event", "type", "typeparam", and so on) for
+    /// diagnostics and tests; code outside this module does not match on it.
     pub(crate) kind: &'static str,
-    /// True only for file-scope chip/mod/fn/let/type/event bindings — the
-    /// only names importable from another file (Global Constraints). Every
-    /// other binding (var/buffer/array/map/in/out at file scope, and every
-    /// local/param/capture) is `false`, even when `scope` is `None`.
+    /// True only for file-scope chip, mod, let, type and event bindings, the names
+    /// another file can import. Every other binding is `false`, even with `scope`
+    /// `None`.
     pub(crate) importable: bool,
-    /// True when `name_range` is a whole-declaration span, not a precise name
-    /// token — the wiring layer narrows those via `find_name_range`. False
-    /// only for the genuinely name-token-precise kinds: handler captures
-    /// (`HandlerParam.range`) and `LetBinding::Ident`. Two coarse bindings
-    /// can share ONE container range (tuple/record `let`, tuple param,
-    /// `await` destructure), which is why cursor dispatch needs the
-    /// identifier-under-cursor tie-break. NB `RecordDestructField` ranges are
-    /// coarse too — they span `src: bound` / `x ` (trailing), not the bound
-    /// name alone (verified in `parser.rs`).
+    /// True when `name_range` is a whole-declaration span (the LSP narrows it with
+    /// `find_name_range`); false only for handler captures and `LetBinding::Ident`.
+    /// Several coarse bindings can share one range (a tuple or record `let`, a tuple
+    /// parameter, an `await` destructure), which is why cursor dispatch breaks ties
+    /// on the identifier under the cursor. `RecordDestructField` ranges are coarse
+    /// too (they span `src: bound`).
     pub(crate) coarse: bool,
-    /// True for a record-destructure shorthand decl site (`let { x } = p` /
-    /// `mod f({ x }: P)`) — renaming its local must expand to `{ x: new }`
-    /// (the field name `x` stays), the same shorthand rule record literals
-    /// use, so the decl `RefSite` carries this onto `rename_edit_text`. False
-    /// everywhere else, including an aliased `{ src: bound }` (that narrows to
-    /// the `bound` token and plain-replaces -> `{ src: new }`).
+    /// True for a record-destructure shorthand site (`let { x } = p`,
+    /// `mod f({ x }: P)`): renaming its local expands to `{ x: new }`, as record
+    /// literal shorthand does. An aliased `{ src: bound }` is plain-replaced.
     pub(crate) is_shorthand: bool,
-    /// `Some(original_export_name)` for a binding registered from a NAMED
-    /// import specifier (`import { name }` / `import { orig as name }`) — the
-    /// name to look up among the SOURCE file's exports. `None` for every
-    /// other binding, including a `TopDecl::Namespace` alias (a different,
-    /// already-resolved construct — see `walk_top_decl`).
+    /// The exported name for a binding from a named import specifier
+    /// (`import { name }`, `import { orig as name }`), looked up among the source
+    /// file's exports. `None` for every other binding, a namespace alias included.
     pub(crate) import_export: Option<String>,
     /// For a statement's `var` or `let`: the byte offset its name is visible
     /// from, the end of the declaration. A read before it, the initializer's
@@ -187,12 +138,9 @@ pub(crate) struct Use {
     pub(crate) ns: RefNs,
     pub(crate) resolved: Option<usize>,
     pub(crate) is_shorthand: bool,
-    /// True for a use whose `range` is a whole-statement/whole-type-expr span
-    /// rather than a precise identifier token — `Emit.name` (`emit NAME =
-    /// expr`, where the AST carries no name-only span) and a
-    /// `TypeExpr::Generic` head (`Name<Args>`'s `range` covers the whole
-    /// generic application, not just `Name`). Ordinary `Expr::Ident` / record
-    /// shorthand / `TypeExpr::Name` uses are precise (`false`).
+    /// True for a use whose `range` is a whole statement or type expression rather
+    /// than the identifier: `Emit.name` (`emit NAME = expr`) and a
+    /// `TypeExpr::Generic` head (its range covers `Name<Args>`).
     pub(crate) coarse: bool,
 }
 
@@ -202,58 +150,44 @@ pub(crate) struct Use {
 pub(crate) struct ScopeModel {
     pub(crate) bindings: Vec<Binding>,
     pub(crate) uses: Vec<Use>,
-    /// Spans of record FIELD names — never a rename target (deferred per
-    /// the plan's Global Constraints). Covers `Expr::FieldAccess.field` (the
-    /// part of `obj.field` after the last `.`), the KEY half of
-    /// `RecordLitField::Named` (`name: value`), and a `RecordTypeField`'s
-    /// `name` (`name: Type` in a record type). None of these AST nodes carry
-    /// a name-only sub-range of their own (`field` is a bare `String`; the
-    /// containing node's own `range` spans the name AND the value/type), so
-    /// [`Walker`] computes each span by position arithmetic —
-    /// [`field_suffix_span`]/[`name_prefix_span`] — as it visits these nodes
-    /// during the AST walk, rather than re-walking the tree.
-    /// [`prepare_rename_at`] checks this FIRST, before dispatching through
-    /// [`references_at`]'s own cursor match: a coarser declaration's
-    /// `name_range` can otherwise swallow a field cursor that falls inside
-    /// its own initializer/body (e.g. `var x: int = p.field`, whose `var`
-    /// binding's coarse range spans the whole statement, `field` included).
+    /// Spans of record field names, which are never renamed: the `field` of
+    /// `obj.field`, the key of `name: value` in a record literal, and a record
+    /// type field's name. None of those nodes has a name-only range, so [`Walker`]
+    /// computes each one ([`field_suffix_span`], [`name_prefix_span`]) as it visits.
+    /// [`prepare_rename_at`] checks these first, since a coarse declaration range
+    /// (`var x: int = p.field`) can contain a field cursor.
     pub(crate) field_name_spans: Vec<SourceRange>,
     /// What each free name means at the top level (see `scope::top`).
-    pub(crate) top: crate::scope::top::TopNames,
+    pub(crate) top: TopNames,
     /// Each top-level declaration, as the top level is read from it: a
     /// `mod` or `chip` as a body, anything else as code.
-    pub(crate) top_reads: Vec<crate::scope::top::ReadAt>,
+    pub(crate) top_reads: Vec<ReadAt>,
 }
 
-/// The [`SourceRange`] of the `field`-length identifier token that ends
-/// exactly at `range.end` — for `Expr::FieldAccess`, whose own `range`
-/// covers the whole `obj.field` expression but whose `end` the parser sets
-/// to the field token's own end (the postfix-access arm in `parser.rs`).
-/// Wirescript identifiers are ASCII-only (`lexer::is_ident_start`), so byte
-/// length == char count == column width and no source text is needed to
-/// locate the field name within `range`.
+/// The span of the `field`-length identifier that ends exactly at `range.end`,
+/// for `Expr::FieldAccess`, whose range ends at the field token. Identifiers are
+/// ASCII (`lexer::is_ident_start`), so byte length equals column width.
 fn field_suffix_span(field: &str, range: &SourceRange) -> SourceRange {
     let len = field.len() as u32;
     SourceRange {
-        file: range.file.clone(),
+        file: std::sync::Arc::clone(&range.file),
         start: Pos {
             offset: range.end.offset.saturating_sub(field.len()),
             line: range.end.line,
             col: range.end.col.saturating_sub(len),
         },
-        end: range.end.clone(),
+        end: range.end,
     }
 }
 
-/// The [`SourceRange`] of the `name`-length identifier token that starts
-/// exactly at `range.start` — for `RecordLitField::Named` (`range` covers
-/// `name: value`) and `RecordTypeField` (`range` covers `name: Type`), both
-/// anchored by the parser at the name token's own start (`parser.rs`).
+/// The span of the `name`-length identifier that starts exactly at
+/// `range.start`, for `RecordLitField::Named` (`name: value`) and
+/// `RecordTypeField` (`name: Type`), both of which start at the name token.
 fn name_prefix_span(name: &str, range: &SourceRange) -> SourceRange {
     let len = name.len() as u32;
     SourceRange {
-        file: range.file.clone(),
-        start: range.start.clone(),
+        file: std::sync::Arc::clone(&range.file),
+        start: range.start,
         end: Pos {
             offset: range.start.offset + name.len(),
             line: range.start.line,
@@ -262,11 +196,10 @@ fn name_prefix_span(name: &str, range: &SourceRange) -> SourceRange {
     }
 }
 
-/// The type-namespace globals — primitive/builtin type names plus the
-/// generic heads the parser desugars specially (`Array<V>`/`Ref<V>` fold
-/// into `TypeExpr::Array`/`Ref` at parse time; `Map` stays a `Generic`).
-/// None of these ever resolve to a user [`Binding`], so a `TypeExpr::Name`
-/// matching one is refused for rename rather than left dangling.
+/// The type-namespace globals: builtin type names and the generic heads the
+/// parser desugars (`Array<V>` and `Ref<V>` become `TypeExpr::Array`/`Ref`;
+/// `Map` stays a `Generic`). They never resolve to a user [`Binding`], so a
+/// `TypeExpr::Name` naming one is refused for rename.
 pub(crate) fn builtin_type_names() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| {
@@ -278,24 +211,22 @@ pub(crate) fn builtin_type_names() -> &'static HashSet<&'static str> {
     })
 }
 
-/// Walk `script`'s whole AST, registering every value AND type binding
-/// (Tasks 1/3) and every value- and type-position use (Tasks 2/3), then
-/// resolve each use to the binding that (lexically) owns it IN ITS OWN
-/// NAMESPACE. Uses are resolved in a pass AFTER the walk completes so a use
-/// can bind to a file-scope decl or a block-local that appears later in the
-/// source (forward references) — see [`resolve_uses`].
+/// Walk `script`, registering every value and type binding and every value- and
+/// type-position use, then resolve each use to the binding that owns it in its
+/// own namespace. Resolution runs after the walk so a use can bind to a
+/// declaration later in the source (see [`resolve_uses`]).
 pub(crate) fn build_scope_model(script: &Script) -> ScopeModel {
-    let top = crate::scope::top::TopNames::of(&script.decls);
+    let top = TopNames::of(&script.decls);
     let top_reads = script
         .decls
         .iter()
         .map(|d| match d {
-            TopDecl::Chip(_) | TopDecl::Fn(_) => crate::scope::top::ReadAt::body(d.range()),
+            TopDecl::Chip(_) => ReadAt::body(d.range()),
             // A `var` initializer reads the declaration before the `var`.
             TopDecl::Var(v) => top
                 .initializer_read(&v.name, &v.range)
-                .unwrap_or_else(|| crate::scope::top::ReadAt::code(d.range())),
-            _ => crate::scope::top::ReadAt::code(d.range()),
+                .unwrap_or_else(|| ReadAt::code(d.range())),
+            _ => ReadAt::code(d.range()),
         })
         .collect();
     let mut model = ScopeModel {
@@ -310,27 +241,18 @@ pub(crate) fn build_scope_model(script: &Script) -> ScopeModel {
     model
 }
 
-/// An `out` written inside a top-level handler body, a captured event's body,
-/// or an anon chip's body is a real boundary port, not a block-local binding.
-/// `walk_stmt`'s `Stmt::OutBinding` arm registers every one with the enclosing
-/// block as its `scope`, because that arm also serves the block-local form (an
-/// `out` nested inside a named chip or mod, which stays local per WS073).
-/// Widen exactly the hoisted ones to the frame the port lands in, using the
-/// same site sets `typecheck::register::register_handler_outputs` /
-/// `register_anon_chip_outputs` and `lower::predeclare::
-/// pre_declare_handler_outputs` / `pre_declare_anon_chip` claim, so a read
-/// from outside the declaring block finds the binding a rename moves.
+/// An `out` written in a top-level handler body, a captured event body or an
+/// anonymous chip body is a boundary port, not a block-local binding. The walk
+/// registers every `Stmt::OutBinding` with its block as `scope` (an `out` inside
+/// a named chip or mod stays local, WS073), so this widens the hoisted ones to
+/// the frame the port lands in, using the same sites typecheck
+/// (`register_handler_outputs`, `register_anon_chip_outputs`) and lowering
+/// (`pre_declare_handler_outputs`, `pre_declare_anon_chip`) claim.
 ///
-/// The frame is `None` (file-wide) for a top-level handler body, a captured
-/// event body, and a file-scope anon chip. A statement-level `chip { }` is
-/// registered by `typecheck::stmt::check_anon_chip_stmts` into whichever frame
-/// is already open, which is the block holding the `chip { }` statement, so its
-/// ports widen to that block instead. An anon chip pushes no frame of its own,
-/// so one nested in another widens to the same frame as its parent.
-///
-/// Matched by `name_range` (a `SourceRange` is unique per source occurrence):
-/// the ordinary walk already pushed exactly one `Binding` per
-/// `Stmt::OutBinding`, and this only widens its `scope` field in place.
+/// The frame is `None` (file-wide) for a top-level handler, a captured event and
+/// a file-scope anonymous chip; a statement-level `chip { }` widens to the block
+/// holding it, and a nested one to its parent's frame. Matched by `name_range`,
+/// which is unique per occurrence.
 fn widen_hoisted_out_bindings(script: &Script, model: &mut ScopeModel) {
     let mut hoisted: Vec<(SourceRange, Option<SourceRange>)> = Vec::new();
     for d in &script.decls {
@@ -346,10 +268,10 @@ fn widen_hoisted_out_bindings(script: &Script, model: &mut ScopeModel) {
                 }
             }
             TopDecl::AnonChip(ac) => {
-                collect_anon_chip_body_outs(&ac.body.stmts, None, &mut hoisted)
+                collect_anon_chip_body_outs(&ac.body.stmts, None, &mut hoisted);
             }
             TopDecl::Chip(c) => {
-                collect_anon_chip_outs(&c.body.stmts, Some(&c.body.range), &mut hoisted)
+                collect_anon_chip_outs(&c.body.stmts, Some(&c.body.range), &mut hoisted);
             }
             _ => {}
         }
@@ -357,7 +279,7 @@ fn widen_hoisted_out_bindings(script: &Script, model: &mut ScopeModel) {
     if hoisted.is_empty() {
         return;
     }
-    for b in model.bindings.iter_mut() {
+    for b in &mut model.bindings {
         if b.kind == "out"
             && let Some((_, frame)) = hoisted.iter().find(|(r, _)| *r == b.name_range)
         {
@@ -409,7 +331,7 @@ fn collect_anon_chip_outs(
                 }
             }
             Stmt::LetElse(l) => {
-                collect_anon_chip_outs(&l.else_block.stmts, Some(&l.else_block.range), out)
+                collect_anon_chip_outs(&l.else_block.stmts, Some(&l.else_block.range), out);
             }
             Stmt::Handler(h) => collect_anon_chip_outs(&h.body.stmts, Some(&h.body.range), out),
             Stmt::ChipDecl(c) => collect_anon_chip_outs(&c.body.stmts, Some(&c.body.range), out),
@@ -433,8 +355,11 @@ struct Walker<'a> {
     model: &'a mut ScopeModel,
 }
 
-impl<'a> Walker<'a> {
-    #[allow(clippy::too_many_arguments)]
+impl Walker<'_> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is one field of the recorded binding"
+    )]
     fn push(
         &mut self,
         name: String,
@@ -470,33 +395,27 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// Mark the just-`push`ed binding as a record-destructure shorthand decl
-    /// site. Safe because `push` appends exactly one binding immediately
-    /// before this is called; only the two `RecordDestructField::Named`
-    /// registration paths (let + param) ever need a non-default value, so it
-    /// isn't worth threading through every `push` call.
+    /// Mark the binding `push` just appended as a record-destructure shorthand
+    /// site. Only the two `RecordDestructField::Named` paths (let and parameter)
+    /// set it.
     fn mark_last_shorthand(&mut self, is_shorthand: bool) {
         if let Some(b) = self.model.bindings.last_mut() {
             b.is_shorthand = is_shorthand;
         }
     }
 
-    /// Mark the just-`push`ed binding as a named-import local, recording the
-    /// ORIGINAL exported name it was imported under so `references_at` /
-    /// `references_to_export` can classify and find it. Safe for the same
-    /// reason as `mark_last_shorthand`: `push` appends exactly one binding
-    /// immediately before this is called.
+    /// Mark the binding `push` just appended as a named-import local, recording
+    /// the exported name it was imported under for `references_at` and
+    /// `references_to_export`.
     fn mark_last_import_export(&mut self, export_name: String) {
         if let Some(b) = self.model.bindings.last_mut() {
             b.import_export = Some(export_name);
         }
     }
 
-    /// Record a value-position identifier occurrence (`Expr::Ident`, a call
-    /// callee, a record-literal shorthand field). Resolved to a binding in a
-    /// pass over the whole model after the walk completes (see
-    /// [`resolve_uses`]) — not here, since a use may point at a file-scope
-    /// decl or block-local that hasn't been walked yet.
+    /// Record a value-position identifier (`Expr::Ident`, a call's callee, a
+    /// record-literal shorthand field). It is resolved after the walk (see
+    /// [`resolve_uses`]), since it may name a declaration not walked yet.
     fn push_use(&mut self, name: String, range: SourceRange, is_shorthand: bool, coarse: bool) {
         self.model.uses.push(Use {
             range,
@@ -508,12 +427,10 @@ impl<'a> Walker<'a> {
         });
     }
 
-    /// Record a type-position identifier occurrence (`TypeExpr::Name`, or a
-    /// `TypeExpr::Generic`'s head name). Resolved against TYPE-namespace
-    /// bindings only in the same post-walk pass as value uses ([`resolve_uses`]) —
-    /// a builtin name (`character`, `int`, `Map`, …) simply never matches a
-    /// user [`Binding`] and stays `resolved: None`, which is exactly the
-    /// "not a rename target" outcome cursor dispatch needs.
+    /// Record a type-position identifier (`TypeExpr::Name`, or a `Generic`'s head),
+    /// resolved against type bindings after the walk. A builtin name (`character`,
+    /// `int`, `Map`) never matches a user [`Binding`], so it stays unresolved and is
+    /// not a rename target.
     fn push_type_use(&mut self, name: String, range: SourceRange, coarse: bool) {
         self.model.uses.push(Use {
             range,
@@ -525,19 +442,16 @@ impl<'a> Walker<'a> {
         });
     }
 
-    /// Descend a type annotation, pushing a TYPE-namespace [`Use`] for every
-    /// named type reachable from it — `TypeExpr::Name` precisely (the AST
-    /// gives a name-only span), a `Generic`'s head coarsely (`range` covers
-    /// the whole `Name<Args>`, no name-only sub-span exists to narrow to).
-    /// `Ref`/`Array`/`Tuple`/`Union`/`Record` carry no name of their own —
-    /// only their nested `TypeExpr`s do — so they just recurse.
+    /// Descend a type annotation, recording a type-namespace [`Use`] for every
+    /// named type in it: a `TypeExpr::Name` precisely, a `Generic` head coarsely.
+    /// `Ref`, `Array`, `Tuple`, `Union` and `Record` carry no name and just recurse.
     fn walk_type_expr(&mut self, t: &TypeExpr) {
         match t {
             TypeExpr::Name { name, range } => {
-                self.push_type_use(name.clone(), range.clone(), false)
+                self.push_type_use(name.clone(), range.clone(), false);
             }
             TypeExpr::Ref { inner, .. } | TypeExpr::Array { inner, .. } => {
-                self.walk_type_expr(inner)
+                self.walk_type_expr(inner);
             }
             TypeExpr::Tuple { fields, .. } => {
                 for f in fields {
@@ -668,7 +582,6 @@ impl<'a> Walker<'a> {
                 }
                 self.walk_expr(&b.init);
             }
-            TopDecl::Fn(f) => self.register_fn(f),
             TopDecl::Chip(c) => self.register_chip(c, None, true),
             TopDecl::AnonChip(ac) => self.walk_anon_chip(ac, None, None),
             TopDecl::Event(e) => {
@@ -744,9 +657,14 @@ impl<'a> Walker<'a> {
                 self.walk_expr(&a.target);
                 self.walk_expr(&a.value);
             }
-            TopDecl::If(i) => self.walk_if(&i.cond, &i.then_block, &i.else_block),
+            TopDecl::If(i) => self.walk_if(&i.cond, &i.then_block, i.else_block.as_ref()),
             TopDecl::IfLet(i) => {
-                self.walk_if_let(&i.pattern, &i.scrutinee, &i.then_block, &i.else_block)
+                self.walk_if_let(
+                    &i.pattern,
+                    &i.scrutinee,
+                    &i.then_block,
+                    i.else_block.as_ref(),
+                );
             }
             TopDecl::ExprStmt(es) => self.walk_expr(&es.expr),
             TopDecl::TypeAlias(t) => self.register_type_alias(t),
@@ -755,20 +673,12 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// `import { name }` / `import { orig as name }` bindings. Each named
-    /// binding registers a file-scope binding under its LOCAL name (`alias`
-    /// if present, else `name`) at the import specifier's own span —
-    /// `ImportBinding.range` is the effective-identifier span per `ast.rs`,
-    /// so this is precise (`coarse: false`), not a whole-decl span. This
-    /// module never resolves the source file (no filesystem — see the module
-    /// doc), so whether the imported name denotes a value or a type isn't
-    /// knowable locally: register it in BOTH namespaces (two bindings, same
-    /// local name/range/export), so a value use binds the value copy and a
-    /// type use binds the type copy. Not importable itself (bringing a name
-    /// IN doesn't re-export it back out). `ImportKind::All`/`Namespace`
-    /// bring in no individually-named bindings and are handled separately —
-    /// the namespace alias itself, once resolved, is a value binding via
-    /// `TopDecl::Namespace` above.
+    /// `import { name }` and `import { orig as name }` bindings: each registers a
+    /// file-scope binding under its local name at the specifier's precise span
+    /// (`ImportBinding.range`). The source file is not read here, so whether the
+    /// name is a value or a type is unknown: it is registered in both namespaces.
+    /// It is not importable itself. `ImportKind::All` and `Namespace` bring in no
+    /// named bindings (a resolved namespace alias is a `TopDecl::Namespace`).
     fn register_import(&mut self, imp: &ImportDecl) {
         let ImportKind::Named(bindings) = &imp.kind else {
             return;
@@ -796,26 +706,6 @@ impl<'a> Walker<'a> {
             );
             self.mark_last_import_export(b.name.clone());
         }
-    }
-
-    fn register_fn(&mut self, f: &FnDecl) {
-        self.push(
-            f.name.clone(),
-            RefNs::Value,
-            f.range.clone(),
-            None,
-            "fn",
-            true,
-            true,
-        );
-        let scope = f.body.range().clone();
-        for p in &f.params {
-            self.register_param(p, scope.clone());
-        }
-        if let Some(rt) = &f.return_type {
-            self.walk_type_expr(rt);
-        }
-        self.walk_expr(&f.body);
     }
 
     /// Shared by a file-scope `chip`/`mod` (`TopDecl::Chip`, `scope = None`,
@@ -854,12 +744,12 @@ impl<'a> Walker<'a> {
         self.walk_block(&c.body);
     }
 
-    /// `type Name<T, U: Bound> = …` (file scope, importable, `kind = "type"`)
+    /// `type Name<T, U: Bound> = ...` (file scope, importable, `kind = "type"`)
     /// plus each of its type params, scoped to the whole alias `range` (RHS
     /// type positions and a later param's bound can both reference an
     /// earlier one).
     fn register_type_alias(&mut self, t: &TypeAliasDecl) {
-        // `TypeAliasDecl.range` spans the whole `type X = …` decl (no
+        // `TypeAliasDecl.range` spans the whole `type X = ...` decl (no
         // name-only span) -> coarse.
         self.push(
             t.name.clone(),
@@ -897,12 +787,10 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// A plain param binds its own name; a destructured param binds each
-    /// field's name (alias if present) or tuple-pattern name, plus an
-    /// optional `...rest` binder. All bound names share the param's own
-    /// `scope` (the owning fn/chip body's range). `p.typ` is always present
-    /// (even for a destructured pattern — it types the whole destructured
-    /// value) and is walked once regardless of pattern shape.
+    /// A plain parameter binds its name; a destructured one binds each field's name
+    /// (or alias) or tuple name, plus an optional `...rest`. All of them share the
+    /// parameter's `scope` (the owning body). `p.typ` types the whole value and is
+    /// walked once.
     fn register_param(&mut self, p: &Param, scope: SourceRange) {
         self.walk_type_expr(&p.typ);
         match &p.pattern {
@@ -992,32 +880,22 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// Descend a handler's trigger (`on go`, `on MyEvent()`, `on
-    /// split.Forward`, `on !a`, `on a | b`) so the trigger token itself is a
-    /// value-position use — without this, renaming an `in` exec port or a
-    /// user `event` would leave every handler that triggers on it dangling,
-    /// and the trigger token itself wouldn't be a valid rename start point.
-    /// A builtin event name (`CharacterSpawned`, `Clock`, `ChatCommand`, …)
-    /// or a synthesized expr-trigger name (`_on_expr_N`) simply never
-    /// matches a user [`Binding`], so it resolves to `None` — the same safe
-    /// no-op as an unresolved builtin call.
+    /// Descend a handler's trigger (`on go`, `on MyEvent()`, `on split.Forward`,
+    /// `on !a`, `on a | b`) so the trigger name is a value use: renaming an `in`
+    /// exec port or a user `event` must also rename the handlers it triggers. A
+    /// builtin event name or a synthesized `_on_expr_N` never matches a user
+    /// [`Binding`] and stays unresolved.
     fn walk_trigger(&mut self, t: &Trigger) {
         match t {
-            // `on go` / `on MyEvent` — the whole trigger IS the name token
-            // (`parser.rs`'s `parse_trigger_atom` gives it a name-only span),
-            // so this is a precise use, exactly like `Expr::Ident`.
+            // `on go` or `on MyEvent`: the trigger is the name token (`parse_trigger_atom`
+            // gives it a name-only span), so this is a precise use.
             Trigger::Ident { name, range } => {
-                self.push_use(name.clone(), range.clone(), false, false)
+                self.push_use(name.clone(), range.clone(), false, false);
             }
-            // `on split.Forward` — `range` spans `obj.field` exactly like
-            // `Expr::FieldAccess` (`parse_trigger_atom` builds it the same
-            // way: `name_tok.start` to `field_tok.end`), so `field_suffix_span`
-            // isolates the field token the same way `Expr::FieldAccess`'s
-            // handling does. `obj` has no name-only sub-span of its own on
-            // `Trigger::Field`, so its use is coarse (the wiring layer narrows
-            // it to the object token downstream); `field` is a member
-            // reference — never a rename target — so it goes into
-            // `field_name_spans`, not a `Use`.
+            // `on split.Forward`: `range` spans `obj.field` as `Expr::FieldAccess` does,
+            // so `field_suffix_span` isolates the field token. `obj` has no name-only span
+            // here, so its use is coarse; `field` is a member reference, never renamed,
+            // so it goes into `field_name_spans`.
             Trigger::Field { obj, field, range } => {
                 self.push_use(obj.clone(), range.clone(), false, true);
                 self.model
@@ -1033,9 +911,8 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// Shared by a file-scope `on ...` handler and a nested `Stmt::Handler`
-    /// — captures are always scoped to `handler.body.range` regardless of
-    /// nesting.
+    /// Shared by a file-scope `on ...` handler and a nested `Stmt::Handler`:
+    /// captures are scoped to `handler.body.range` either way.
     fn register_handler(&mut self, h: &Handler) {
         let scope = h.body.range.clone();
         match &h.alias {
@@ -1060,12 +937,12 @@ impl<'a> Walker<'a> {
                 self.walk_type_expr(t);
             }
         }
-        // Trigger config args (`on ChatCommand("greet", Description = expr)`)
-        // can host a `BlockExpr` with locals — walk them for nested bindings.
+        // Trigger config arguments (`on ChatCommand("greet", Description = expr)`)
+        // can hold a `BlockExpr` with locals, so walk them for bindings.
         for cfg in &h.config {
             match cfg {
                 HandlerConfigArg::Positional(e) | HandlerConfigArg::Named { value: e, .. } => {
-                    self.walk_expr(e)
+                    self.walk_expr(e);
                 }
             }
         }
@@ -1078,13 +955,13 @@ impl<'a> Walker<'a> {
     /// forms. `binding` gets the coarse stmt `range` as its `name_range`
     /// (there's no name-token span on `AwaitStmt`); each `destructure`
     /// `(field, local)` pair binds the LOCAL name, same coarse range.
-    fn register_await(&mut self, a: &AwaitStmt, scope: Option<SourceRange>) {
+    fn register_await(&mut self, a: &AwaitStmt, scope: Option<&SourceRange>) {
         if let Some(name) = &a.binding {
             self.push(
                 name.clone(),
                 RefNs::Value,
                 a.range.clone(),
-                scope.clone(),
+                scope.cloned(),
                 "await",
                 false,
                 true,
@@ -1098,7 +975,7 @@ impl<'a> Walker<'a> {
                     local.clone(),
                     RefNs::Value,
                     a.range.clone(),
-                    scope.clone(),
+                    scope.cloned(),
                     "await",
                     false,
                     true,
@@ -1155,19 +1032,6 @@ impl<'a> Walker<'a> {
                     );
                 }
             }
-            LetBinding::Record { names, range } => {
-                for n in names {
-                    self.push(
-                        n.clone(),
-                        RefNs::Value,
-                        range.clone(),
-                        scope.clone(),
-                        "let",
-                        importable,
-                        true,
-                    );
-                }
-            }
             // `RecordDestructField::Named.range` spans `src: bound` / `x `
             // (trailing), not the bound name alone -> coarse (narrowed to the
             // bound name downstream). A non-alias `{ x }` is shorthand: rename
@@ -1206,7 +1070,7 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_block(&mut self, block: &Block) {
-        self.walk_stmts(&block.stmts, block.range.clone());
+        self.walk_stmts(&block.stmts, &block.range);
     }
 
     /// An anonymous `chip { }` body: its storage is declared in the scope the
@@ -1216,7 +1080,7 @@ impl<'a> Walker<'a> {
     fn walk_anon_chip(
         &mut self,
         ac: &AnonChipDecl,
-        scope: Option<SourceRange>,
+        scope: Option<&SourceRange>,
         visible_from: Option<usize>,
     ) {
         for e in [&ac.label_expr, &ac.color_expr, &ac.material_expr]
@@ -1228,7 +1092,7 @@ impl<'a> Walker<'a> {
         for s in &ac.body.stmts {
             // A chip nested in a top-level one shares the top level too: its
             // storage is named from the nested chip on, past the outer chip.
-            if let (None, Stmt::AnonChip(nested)) = (&scope, s) {
+            if let (None, Stmt::AnonChip(nested)) = (scope, s) {
                 self.walk_anon_chip(nested, None, Some(nested.range.start.offset));
                 continue;
             }
@@ -1240,12 +1104,12 @@ impl<'a> Walker<'a> {
             ) && let Some(b) = self.model.bindings.get_mut(from)
             {
                 b.home = scope.is_none().then(|| ac.range.clone());
-                b.scope = scope.clone();
+                b.scope = scope.cloned();
                 b.visible_from = visible_from;
             }
             // A `let`/`const` of a top-level chip is its declaration too,
             // named from where it is written.
-            if let (None, Stmt::Let(l)) = (&scope, s) {
+            if let (None, Stmt::Let(l)) = (scope, s) {
                 let names = crate::const_eval::bound_names(&l.binding);
                 for b in &mut self.model.bindings[from..] {
                     if b.ns == RefNs::Value
@@ -1262,7 +1126,7 @@ impl<'a> Walker<'a> {
 
     /// Walk each direct child of `node`; a statement child belongs to
     /// `scope`.
-    fn walk_children(&mut self, node: walk::Node, scope: &SourceRange) {
+    fn walk_children(&mut self, node: walk::Node<'_>, scope: &SourceRange) {
         walk::children(node, &mut |child, _| match child {
             walk::Node::Expr(e) => self.walk_expr(e),
             walk::Node::Block(b) => self.walk_block(b),
@@ -1271,9 +1135,9 @@ impl<'a> Walker<'a> {
         });
     }
 
-    fn walk_stmts(&mut self, stmts: &[Stmt], scope: SourceRange) {
+    fn walk_stmts(&mut self, stmts: &[Stmt], scope: &SourceRange) {
         for s in stmts {
-            self.walk_stmt(s, &scope);
+            self.walk_stmt(s, scope);
         }
     }
 
@@ -1398,21 +1262,25 @@ impl<'a> Walker<'a> {
             }
             Stmt::Handler(h) => self.register_handler(h),
             Stmt::AnonChip(ac) => {
-                self.walk_anon_chip(ac, Some(scope.clone()), Some(ac.range.start.offset))
+                self.walk_anon_chip(ac, Some(scope), Some(ac.range.start.offset));
             }
             Stmt::ChipDecl(c) => self.register_chip(c, Some(scope.clone()), false),
             Stmt::IfLet(i) => {
-                self.walk_if_let(&i.pattern, &i.scrutinee, &i.then_block, &i.else_block)
+                self.walk_if_let(
+                    &i.pattern,
+                    &i.scrutinee,
+                    &i.then_block,
+                    i.else_block.as_ref(),
+                );
             }
             Stmt::Emit(e) => {
-                // `emit NAME = expr` writes the `out`/`var` named NAME — a
-                // value use of that binding. The AST has no name-only span on
-                // `Emit`, so the whole-stmt range stands in (coarse: true);
-                // the wiring layer narrows it to NAME via `find_name_range`.
+                // `emit NAME = expr` writes the `out` or `var` named NAME, a value use. `Emit`
+                // has no name-only span, so the statement range stands in (coarse); the LSP
+                // narrows it to NAME with `find_name_range`.
                 self.push_use(e.name.clone(), e.range.clone(), false, true);
                 self.walk_children(walk::Node::Stmt(s), scope);
             }
-            Stmt::Await(a) => self.register_await(a, Some(scope.clone())),
+            Stmt::Await(a) => self.register_await(a, Some(scope)),
             Stmt::For(f) => {
                 match &f.source {
                     ForSource::Range(r) => {
@@ -1445,7 +1313,7 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn walk_if(&mut self, cond: &Expr, then_block: &Block, else_block: &Option<Block>) {
+    fn walk_if(&mut self, cond: &Expr, then_block: &Block, else_block: Option<&Block>) {
         self.walk_expr(cond);
         self.walk_block(then_block);
         if let Some(eb) = else_block {
@@ -1511,7 +1379,7 @@ impl<'a> Walker<'a> {
             // scoping `run` to the whole enclosing block would let a body
             // reference resolve to it. Start the scope at the loop's own closing brace instead.
             let after_loop = outer_scope.map(|s| SourceRange {
-                file: s.file.clone(),
+                file: std::sync::Arc::clone(&s.file),
                 start: f.range.end,
                 end: s.end,
             });
@@ -1584,7 +1452,7 @@ impl<'a> Walker<'a> {
         pattern: &Pattern,
         scrutinee: &Expr,
         then_block: &Block,
-        else_block: &Option<Block>,
+        else_block: Option<&Block>,
     ) {
         self.walk_expr(scrutinee);
         self.walk_pattern_bindings(pattern, Some(then_block.range.clone()));
@@ -1636,7 +1504,7 @@ impl<'a> Walker<'a> {
                 value,
                 range,
             } => {
-                self.walk_stmts(stmts, range.clone());
+                self.walk_stmts(stmts, range);
                 self.walk_expr(value);
             }
             Expr::RecordLit { fields, .. } => {
@@ -1651,8 +1519,8 @@ impl<'a> Walker<'a> {
                             self.walk_expr(value);
                         }
                         RecordLitField::Spread { value, .. } => self.walk_expr(value),
-                        // `{ name }` is shorthand for `{ name: name }` — the
-                        // bare field name IS the value use.
+                        // `{ name }` is shorthand for `{ name: name }`: the bare field name is the
+                        // value use.
                         RecordLitField::Shorthand { name, range } => {
                             self.push_use(name.clone(), range.clone(), true, false);
                         }
@@ -1707,22 +1575,16 @@ impl<'a> Walker<'a> {
                     }
                 }
             }
-            // The callee of a call is walked generically above (`Call`'s
-            // arm calls `self.walk_expr(callee)`), so a call like `helper(1)`
-            // already reaches this arm for `helper` — no separate handling
-            // needed for "callee position" vs. any other value position.
+            // A call's callee is walked like any value position (`Call`'s arm walks
+            // `callee`), so `helper(1)` reaches this arm for `helper`.
             Expr::Ident { name, range } => self.push_use(name.clone(), range.clone(), false, false),
             _ => self.walk_children(walk::Node::Expr(e), e.range()),
         }
     }
 
-    /// Registers every `Pattern::Binding` reachable from a match arm's /
-    /// if-let's / let-else's pattern as a captured value binding under
-    /// `scope` (`None` for file-scope, matching `TopDecl::Let`; `Some(range)`
-    /// for a block-local capture, matching `Stmt::Let`). Minimal walk for
-    /// Task 9 (match, parser-only) / Task 18 (if-let/let-else, parser-only);
-    /// Task 11/19 give them real typecheck/lowering behavior, including
-    /// reclassifying a unit-variant-named binding.
+    /// Registers every `Pattern::Binding` in a match arm's, `if let`'s or
+    /// `let else`'s pattern as a captured value binding under `scope` (`None` at
+    /// file scope, as for `TopDecl::Let`; the block for a local capture).
     fn walk_pattern_bindings(&mut self, pattern: &Pattern, scope: Option<SourceRange>) {
         match pattern {
             Pattern::Wildcard(_) | Pattern::Literal { .. } | Pattern::Range { .. } => {}
@@ -1759,14 +1621,9 @@ impl<'a> Walker<'a> {
     }
 }
 
-/// `(line, col)` as a comparison key. Both fields are populated by the
-/// lexer as it advances byte-by-byte through the file (see
-/// `lexer::Lexer::advance`), so they increase monotonically through a
-/// single file and a tuple comparison is a valid "earlier/later in the
-/// source" ordering — the same trick `definition.rs` uses for import-range
-/// containment. Cursor queries arrive as bare `line`/`col` (no byte offset
-/// to compare against), so this — not `Pos::offset` — is what containment
-/// checks use throughout this module.
+/// `(line, col)` as a comparison key. The lexer fills both as it advances
+/// through a file, so tuple order is source order. Cursor queries carry
+/// `line`/`col` and no byte offset, so containment in this module compares these.
 fn pos_key(p: &Pos) -> (u32, u32) {
     (p.line, p.col)
 }
@@ -1776,9 +1633,8 @@ fn scope_contains(scope: &SourceRange, r: &SourceRange) -> bool {
     pos_key(&scope.start) <= pos_key(&r.start) && pos_key(&r.end) <= pos_key(&scope.end)
 }
 
-/// True if the 1-based `(line, col)` cursor falls within `[r.start, r.end)`
-/// — half-open, matching the lexer's snapshot-before/snapshot-after token
-/// convention (`end` is one past the last consumed char).
+/// True if the 1-based `(line, col)` cursor lies in `[r.start, r.end)`, half-open
+/// like the lexer's token ranges (`end` is one past the last char).
 fn range_contains_cursor(r: &SourceRange, line: u32, col: u32) -> bool {
     let p = (line, col);
     pos_key(&r.start) <= p && p < pos_key(&r.end)
@@ -1791,27 +1647,21 @@ fn range_contains_cursor(r: &SourceRange, line: u32, col: u32) -> bool {
 /// earlier on the line slides the cursor left onto a different identifier,
 /// and rename rewrites that one instead.
 fn cursor_key(source: &str, line: usize, col: usize) -> (u32, u32) {
-    let byte_col = super::text::char_col_to_byte(super::text::line_text(source, line), col);
+    let byte_col = char_col_to_byte(line_text(source, line), col);
     ((line + 1) as u32, (byte_col + 1) as u32)
 }
 
-/// A range's span in source bytes — used only to compare two AST-derived
-/// ranges' sizes (never a cursor, which has no byte offset), so
-/// `Pos::offset` is fine here even though containment checks above use
-/// `(line, col)`.
+/// A range's length in bytes, used only to compare the sizes of two AST ranges
+/// (a cursor has no byte offset, so containment uses `(line, col)`).
 fn range_len(r: &SourceRange) -> usize {
     r.end.offset.saturating_sub(r.start.offset)
 }
 
-/// Resolve every [`Use`] (value AND type) in `model` to the [`Binding`] that
-/// (lexically) owns it: among same-name, SAME-NAMESPACE bindings (`b.ns ==
-/// u.ns` below is what keeps the value and type namespaces separate — a
-/// value binding never matches a type use or vice versa), keep those whose
-/// `scope` is `None` (file scope) or contains the use, and pick the one with
-/// the smallest (innermost) containing scope — that's the shadowing rule. A
-/// `None`-scope binding only wins when no local scope contains the use. A
-/// use whose name matches nothing in its namespace (a builtin type name, an
-/// undefined global) is left `resolved: None` — not a rename target.
+/// Resolve every [`Use`] in `model` to the [`Binding`] that owns it: among
+/// same-name bindings in the same namespace (`b.ns == u.ns`), keep those whose
+/// `scope` is `None` (file scope) or contains the use, and pick the innermost.
+/// A use matching nothing (a builtin type, an undefined global) stays
+/// unresolved, so it is not a rename target.
 fn resolve_uses(model: &mut ScopeModel) {
     let ScopeModel {
         bindings,
@@ -1833,11 +1683,7 @@ fn resolve_uses(model: &mut ScopeModel) {
         .windows(2)
         .all(|w| w[0].range.start.offset <= w[1].range.start.offset);
     let read_around = |r: &SourceRange| {
-        let linear = || {
-            top_reads
-                .iter()
-                .find(|t| crate::scope::top::within(&t.range, r))
-        };
+        let linear = || top_reads.iter().find(|t| within(&t.range, r));
         if !in_order {
             return linear();
         }
@@ -1846,7 +1692,7 @@ fn resolve_uses(model: &mut ScopeModel) {
             .into_iter()
             .flatten()
             .map(|k| &top_reads[k])
-            .find(|t| crate::scope::top::within(&t.range, r));
+            .find(|t| within(&t.range, r));
         debug_assert_eq!(
             found.map(|t| &t.range),
             linear().map(|t| &t.range),
@@ -1855,12 +1701,10 @@ fn resolve_uses(model: &mut ScopeModel) {
         found
     };
     for u in uses.iter_mut() {
-        // A type use naming a builtin (`character`, `int`, `Map`, …) never
-        // resolves to a user binding, even if one happens to share the name
-        // (these are plain identifiers, not lexer keywords, so `type
-        // character = …` parses — but it must not let a builtin type
-        // position get renamed as a side effect of that shadowing). Skip the
-        // match entirely rather than relying on it just not finding one.
+        // A type use naming a builtin (`character`, `int`, `Map`) never resolves to a
+        // user binding, even one of the same name (`type character = ...` parses,
+        // since these are identifiers, not keywords): renaming that alias must not
+        // rename the builtin's uses.
         if u.ns == RefNs::Type && builtin_type_names().contains(u.name.as_str()) {
             u.resolved = None;
             continue;
@@ -1873,8 +1717,8 @@ fn resolve_uses(model: &mut ScopeModel) {
         // the top level's, else a chip's.
         let home = top.resolve_name(&u.name, &u.range);
         let home_rank = |b: &Binding| match (&b.home, home) {
-            (Some(h), crate::scope::top::Home::Chip(c)) if *h == c.range => 0,
-            (None, crate::scope::top::Home::Top) => 0,
+            (Some(h), Home::Chip(c)) if *h == c.range => 0,
+            (None, Home::Top) => 0,
             (None, _) => 1,
             (Some(_), _) => 2,
         };
@@ -1883,7 +1727,7 @@ fn resolve_uses(model: &mut ScopeModel) {
         // `let` declared below it, anything else as code.
         let read = read_around(&u.range)
             .cloned()
-            .unwrap_or_else(|| crate::scope::top::ReadAt::code(&u.range));
+            .unwrap_or_else(|| ReadAt::code(&u.range));
         let same_name = named
             .get(&(u.ns, u.name.as_str()))
             .map(Vec::as_slice)
@@ -1924,9 +1768,7 @@ fn resolve_uses(model: &mut ScopeModel) {
             && u.ns == RefNs::Value
             && let Some(Some(seen)) = top.visible_decl(&u.name, &read)
             && let Some(b) = same_name.iter().map(|&i| &bindings[i]).find(|b| {
-                b.scope.is_none()
-                    && b.home.is_none()
-                    && crate::scope::top::within(&seen.range, &b.name_range)
+                b.scope.is_none() && b.home.is_none() && within(&seen.range, &b.name_range)
             })
         {
             current = Some((b.id, None));
@@ -1935,36 +1777,23 @@ fn resolve_uses(model: &mut ScopeModel) {
     }
 }
 
-/// Resolve the binding under the cursor and return every same-file site
-/// bound to it (including the declaration name). `line`/`col` are 0-based
-/// with `col` a CHAR column, the convention every `analysis` entry point
-/// takes; `source` is the same file's text, needed both to convert that
-/// column to the byte one AST ranges carry and to break a same-range tie
-/// (below).
+/// Resolve the binding under the cursor and return every same-file site bound to
+/// it, the declaration included. `line`/`col` are 0-based with `col` a char
+/// column; `source` is the file's text, for the byte-column conversion and the
+/// tie-break below. `_file` is unused: `script` is one file's AST.
 ///
-/// Cursor dispatch: among every [`Use`] and every [`Binding::name_range`]
-/// whose range contains the cursor, the innermost (smallest) one wins — so a
-/// precise use inside a coarser whole-declaration `name_range` takes
-/// priority. When several candidates share that same smallest range — the
-/// tuple/record `let`, tuple param, and `await` destructure bindings all
-/// carry ONE container span (e.g. both `aa` and `bb` in `let (aa, bb) = …`)
-/// — the tie is broken by the identifier actually under the cursor
-/// (`word_at`), so clicking `bb` resolves to `bb`, not the first-registered
-/// `aa`. If that node is a use that didn't resolve to any binding
-/// (builtin/global), this returns `None` — [`prepare_rename_at`] turns that
-/// into an explicit refusal path.
+/// Among every [`Use`] and [`Binding::name_range`] containing the cursor, the
+/// smallest wins, so a precise use beats a coarse declaration range. When
+/// several share that range (a tuple or record `let`, a tuple parameter, an
+/// `await` destructure), the identifier under the cursor (`word_at`) decides. An
+/// unresolved use gives `None`, which [`prepare_rename_at`] refuses.
 pub fn references_at(
     script: &Script,
     source: &str,
-    file: &str,
+    _file: &str,
     line: usize,
     col: usize,
 ) -> Option<(RefTarget, Vec<RefSite>)> {
-    // `script`/`source` are always a single parsed file (this module does no
-    // filesystem I/O — see the module doc), so `file` isn't needed to
-    // disambiguate anything. It's kept in the signature per the plan, for
-    // parity with `references_to_export`'s cross-file callers.
-    let _ = file;
     let model = build_scope_model(script);
     let (cursor_line, cursor_col) = cursor_key(source, line, col);
 
@@ -1993,7 +1822,7 @@ pub fn references_at(
     // ranged sibling bindings), prefer the one whose name matches the word
     // literally under the cursor; else fall back to the first registered.
     let chosen = if cands.len() > 1 {
-        let word = super::text::word_at(source, line, col);
+        let word = word_at(source, line, col);
         cands
             .iter()
             .find(|(_, name, _)| word.as_deref() == Some(name))
@@ -2027,15 +1856,11 @@ pub fn references_at(
 
     let cross_file = if let Some(export_name) = &binding.import_export {
         if &binding.name != export_name {
-            // ALIASED import (`import { orig as local }`): the alias is a
-            // purely file-local name. Renaming it must touch only THIS file's
-            // alias specifier token + its uses — never the defining file,
-            // whose declaration still spells `orig`, nor a sibling importer
-            // that chose a different alias. Classifying it `Local` keeps the
-            // whole rename in-file (no cross-file scan, no defining-file
-            // resolution — treating it as cross-file would corrupt
-            // `mod orig(){…}` by narrowing its decl range against the local
-            // alias name).
+            // An aliased import (`import { orig as local }`): the alias is file-local, so
+            // renaming it edits only this file's specifier token and uses, never the
+            // defining file (which spells `orig`) or another importer. As a cross-file
+            // target, narrowing `mod orig(){...}` against the alias would replace the
+            // whole declaration.
             CrossFile::Local
         } else {
             // NON-aliased import: the local name IS the export name, so
@@ -2063,24 +1888,16 @@ pub fn references_at(
     Some((target, sites))
 }
 
-/// The precise renameable NAME span under the cursor plus the current name
-/// as a rename placeholder, or `None` when the position is not a renameable
-/// binding/use: a builtin type / unresolved global (a `Use` [`references_at`]
-/// couldn't resolve to any binding — a builtin call or event name), a lexer
-/// keyword, or a record field name (`Expr::FieldAccess.field`,
-/// `RecordLitField::Named.name`, or a record TYPE field's name — deferred
-/// per the plan's Global Constraints, not renamed by this plan).
+/// The renameable name span under the cursor and the current name (the rename
+/// placeholder), or `None` for a position that is not renameable: an unresolved
+/// use (a builtin call or event name), a lexer keyword, or a record field name
+/// (`Expr::FieldAccess.field`, `RecordLitField::Named.name`, a record type
+/// field).
 ///
-/// Builds on [`references_at`]'s own cursor dispatch, which already refuses
-/// the builtin/unresolved-global case for free (an unresolved `Use` makes it
-/// return `None`). The keyword and field-name refusals run FIRST and
-/// independently of that dispatch, because a coarser declaration's
-/// `name_range` can span far enough to swallow either: `var`/`buffer`/
-/// `array`/`map`/`in`/`out`/`chip`/`mod`/`type` bindings all carry a coarse
-/// `name_range` running from their leading KEYWORD through their whole
-/// initializer/body (see `parser.rs`'s `parse_var_decl` etc.), so e.g. the
-/// cursor sitting on the `var` keyword itself, or on `field` inside
-/// `var x: int = p.field`, would otherwise resolve as if it were on `x`.
+/// The keyword and field refusals run before [`references_at`]'s dispatch: a
+/// coarse declaration range (`var`, `buffer`, `array`, `map`, `in`, `out`,
+/// `chip`, `mod`, `type`) runs from its keyword through its body, so a cursor on
+/// `var`, or on `field` in `var x: int = p.field`, would otherwise resolve to `x`.
 pub fn prepare_rename_at(
     script: &Script,
     source: &str,
@@ -2088,10 +1905,10 @@ pub fn prepare_rename_at(
     line: usize,
     col: usize,
 ) -> Option<(SourceRange, String)> {
-    if let Some(word) = super::text::word_at(source, line, col) {
-        if crate::lexer::KEYWORDS.contains(&word.as_str()) {
-            return None;
-        }
+    if let Some(word) = word_at(source, line, col)
+        && crate::lexer::KEYWORDS.contains(&word.as_str())
+    {
+        return None;
     }
 
     let (cursor_line, cursor_col) = cursor_key(source, line, col);
@@ -2106,13 +1923,9 @@ pub fn prepare_rename_at(
 
     let (target, sites) = references_at(script, source, file, line, col)?;
 
-    // Among this target's own sites (decl + every resolved use), the one
-    // whose range actually contains the cursor is the exact span to rename —
-    // `decl_name_range` when the cursor sat on the decl, a specific use's
-    // range otherwise. Smallest containing range wins (mirrors
-    // `references_at`'s own dispatch) so a precise self-referential use
-    // inside a coarse decl's own range (e.g. `var x: int = x + 1`) still
-    // resolves to itself rather than the whole declaration.
+    // The rename span is the target's site (declaration or use) containing the
+    // cursor, the smallest one winning as in `references_at`, so a use inside its
+    // own coarse declaration (`var x: int = x + 1`) resolves to itself.
     let chosen = sites
         .iter()
         .filter(|s| range_contains_cursor(&s.range, cursor_line, cursor_col))
@@ -2127,15 +1940,11 @@ pub fn prepare_rename_at(
     Some((span, target.name))
 }
 
-/// True if the 0-based `(line, char col)` cursor sits on a record FIELD name — a
-/// `FieldAccess.field` (`obj.field`), a `RecordLitField::Named` KEY
-/// (`{ name: value }`), or a record-TYPE field's own name — exactly the
-/// positions [`prepare_rename_at`] refuses (field rename is deferred per the
-/// plan's Global Constraints). The LSP uses this to route a field click to
-/// its type-directed goto-definition path instead of the scope-aware
-/// reference set (a coarse enclosing `type X = {…}` binding would otherwise
-/// swallow the field cursor and surface the whole type's references).
-/// `source` is the same file's text, used only for the column conversion.
+/// True if the 0-based `(line, char col)` cursor is on a record field name (a
+/// `FieldAccess.field`, a `RecordLitField::Named` key, a record type field), the
+/// positions [`prepare_rename_at`] refuses. The LSP routes such a click to its
+/// type-directed goto-definition, since an enclosing coarse `type X = {...}`
+/// range would otherwise surface the whole type's references.
 pub fn field_name_at(script: &Script, source: &str, line: usize, col: usize) -> bool {
     let (cursor_line, cursor_col) = cursor_key(source, line, col);
     let model = build_scope_model(script);
@@ -2145,9 +1954,8 @@ pub fn field_name_at(script: &Script, source: &str, line: usize, col: usize) -> 
         .any(|r| range_contains_cursor(r, cursor_line, cursor_col))
 }
 
-/// A token classification for [`semantic_tokens`] — the LSP-facing category
-/// `crates/lsp` maps onto its `SemanticTokensLegend` (index assignment is the
-/// LSP wiring's job, not this module's).
+/// A token class for [`semantic_tokens`], which `crates/lsp` maps onto its
+/// `SemanticTokensLegend`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SemTokenKind {
     Type,
@@ -2157,32 +1965,26 @@ pub enum SemTokenKind {
     Namespace,
 }
 
-/// One semantic-token override. The TextMate grammar
-/// (`editors/vscode/syntaxes/wirescript.tmLanguage.json`) colors as
-/// `support.type` every occurrence of a builtin type keyword AND every
-/// capitalized identifier (`[A-Z][A-Za-z0-9_]*`) — position-blind, so a
-/// capitalized VALUE binding (a `character` handler capture, a capitalized
-/// `var`) shows as a type even though it isn't one. [`semantic_tokens`] only
-/// emits a span where it disagrees with what the grammar would already
-/// color, so a client that layers these atop the grammar (VS Code does) sees
-/// a correction only where one is needed.
+/// One semantic-token override. The `TextMate` grammar
+/// (`editors/vscode/syntaxes/wirescript.tmLanguage.json`) colors every builtin
+/// type keyword and every capitalized identifier as `support.type` regardless
+/// of position, so a capitalized value (a `character` capture, a capitalized
+/// `var`) shows as a type. [`semantic_tokens`] emits a span only where it
+/// disagrees with the grammar, and VS Code layers these over it.
 #[derive(Clone, Debug)]
 pub struct SemSpan {
     pub range: SourceRange,
     pub name: String,
     pub kind: SemTokenKind,
-    /// Same meaning as [`Use::coarse`]/[`Binding::coarse`] — the LSP wiring
-    /// narrows a coarse span to the precise name token via
-    /// [`super::references::find_name_range`] before emitting a token, and
-    /// skips the span entirely when narrowing fails (never tokenizes a whole
-    /// coarse container).
+    /// As [`Use::coarse`] and [`Binding::coarse`]: the LSP narrows a coarse span to
+    /// its name token with [`super::references::find_name_range`] first and skips
+    /// it when that fails.
     pub coarse: bool,
 }
 
-/// Record one [`SemSpan`], deduped by `(start line, start col)` — several
-/// candidate sites (a use and its own declaration, or several coarse
-/// container-sharing bindings) can legitimately share one span, and the LSP
-/// wiring only wants one token per position. First write wins.
+/// Record one [`SemSpan`], deduplicated by `(start line, start col)`: several
+/// sites (a use and its declaration, coarse bindings sharing a container) can
+/// share a span, and the LSP wants one token per position. The first wins.
 fn record_sem_span(
     spans: &mut Vec<SemSpan>,
     seen: &mut HashSet<(u32, u32)>,
@@ -2201,54 +2003,38 @@ fn record_sem_span(
     }
 }
 
-/// Semantic-token overrides for the TextMate grammar's position-blind type
-/// coloring (see [`SemSpan`]): every use/decl [`build_scope_model`]'s scope
-/// resolver classifies differently from what the grammar would guess from
-/// spelling alone.
-///
-/// - A TYPE-namespace [`Use`] always emits a `Type` token — this is what
-///   gives a user `type` ALIAS the type color the grammar's fixed builtin
-///   list doesn't know about (the grammar only recognizes the builtin type
-///   keywords by name, not a `type Foo = …` alias).
-/// - A VALUE-namespace `Use` whose name the grammar would mis-color as a
-///   type ([`grammar_would_type`]) emits a token in the binding's own
-///   category ([`kind_token`]) ONLY when it resolved to a user [`Binding`] —
-///   an unresolved value use (a builtin/global call like `DisplayText`) is
-///   left alone, so the grammar's own (correct, for a builtin) coloring
-///   stands.
-/// - Every [`Binding`] gets the matching treatment: a TYPE binding emits
-///   `Type`; a VALUE binding whose name the grammar would mis-color emits
-///   its [`kind_token`]. Import bindings (`b.kind == "import"`) are skipped
-///   entirely — they're dual value/type-registered, so classifying them
-///   here would be a guess, not a fact the resolver actually knows; the
-///   grammar's own coloring stands instead.
-///
-/// A compiler-synthesized identifier that stands in for real user source (its
-/// range overlaps user code, so coloring it would mis-paint that code). The
-/// general-expression handler trigger `on <call>()` desugars to a synthetic
-/// `let _on_expr_N = <call>` + `on _on_expr_N`, whose binding + trigger use
-/// both span the whole `<call>` — semantic tokens must skip it so the call
-/// keeps its own coloring.
+/// A compiler-synthesized identifier standing in for user source. The handler
+/// trigger `on <call>()` desugars to `let _on_expr_N = <call>` and
+/// `on _on_expr_N`, both spanning the whole `<call>`, so semantic tokens skip
+/// them and the call keeps its own coloring.
 fn is_synthetic_ident(name: &str) -> bool {
     name.starts_with("_on_expr_")
 }
 
-/// The result is unsorted and safe to contain no duplicate-position spans
-/// (deduped by [`record_sem_span`]) — the LSP wiring sorts before
-/// delta-encoding into the protocol's token stream.
+/// Semantic-token overrides for the grammar's position-blind type coloring (see
+/// [`SemSpan`]): every use and declaration the scope resolver classifies
+/// differently from the grammar's guess.
+///
+/// - A type-namespace [`Use`] is a `Type` token, which gives a user `type`
+///   alias the type color.
+/// - A value [`Use`] the grammar would color as a type ([`grammar_would_type`])
+///   gets its binding's category ([`kind_token`]) when it resolves to a user
+///   [`Binding`]; an unresolved one (a builtin call) keeps the grammar's color.
+/// - A [`Binding`] gets the same treatment. Import bindings are skipped: they
+///   are registered in both namespaces, so their kind is unknown here.
+///
+/// The result is unsorted with no duplicate positions (see [`record_sem_span`]);
+/// the LSP sorts it before delta-encoding.
 pub fn semantic_tokens(script: &Script) -> Vec<SemSpan> {
     let model = build_scope_model(script);
     let mut spans = Vec::new();
     let mut seen: HashSet<(u32, u32)> = HashSet::default();
 
-    // Type-position names -> Type (incl. user `type` aliases the grammar's
-    // builtin list misses). Every USER value identifier -> one uniform Variable
-    // token, so a value binding whose spelling collides with a type keyword
-    // (`character`), a builtin function (`round`), or the grammar's "any
-    // capitalized word is a type" rule reads as a plain, consistent identifier
-    // rather than being mis-colored. An UNRESOLVED value use is a genuine
-    // builtin/global (a real `round(...)` call, `DisplayText`, …) — left to the
-    // grammar's function coloring.
+    // Type-position names become Type tokens (user `type` aliases included); every
+    // resolved user value becomes a Variable token, so a value spelled like a type
+    // keyword (`character`), a builtin (`round`) or any capitalized word reads as
+    // an identifier. An unresolved value use is a real builtin (`round(...)`,
+    // `DisplayText`) and keeps the grammar's function color.
     for u in &model.uses {
         if is_synthetic_ident(&u.name) {
             continue;
@@ -2298,48 +2084,22 @@ pub fn semantic_tokens(script: &Script) -> Vec<SemSpan> {
     spans
 }
 
-/// Every site in `script` that an EXPORT rename of `export_name` (namespace
-/// `ns`, defined in another file) must edit here — safe whether this file
-/// imports the name plainly or under an alias:
+/// Every site in `script` that renaming the export `export_name` (namespace
+/// `ns`, defined in another file) must edit, whether this file imports it
+/// plainly or under an alias:
 ///
-/// - A NON-aliased specifier (`import { orig }`) uses `ImportBinding.range`
-///   directly — per `ast.rs` that range IS the name token (there's no alias
-///   to prefer), so it's already precise (`coarse: false`) and needs no
-///   downstream narrowing.
-/// - An ALIASED specifier (`import { orig as x }`) has no precise range for
-///   `orig` on its own — `ImportBinding.range` covers the ALIAS token `x`
-///   instead (`ast.rs`: "Range of the effective identifier (alias if
-///   present, otherwise name)") — so this falls back to a COARSE site
-///   spanning the whole `import { … } from "…"` declaration (`ImportDecl.range`).
-///   The wiring layer narrows it via `references::find_name_range` against
-///   `export_name`, which lands on the `orig` token in the specifier list,
-///   leaving the alias `x` untouched.
-/// - The import's resolved USE sites are returned ONLY for a NON-aliased
-///   import (`alias.is_none()`), because only then do the uses spell the
-///   export name. An aliased import's uses spell the local alias, which an
-///   export rename must NOT change — so those sites are deliberately omitted.
+/// - a plain specifier (`import { orig }`): `ImportBinding.range` is the name
+///   token, a precise site;
+/// - an aliased one (`import { orig as x }`): `ImportBinding.range` covers the
+///   alias `x`, so the whole `ImportDecl.range` is a coarse site, which the LSP
+///   narrows to `orig` with `find_name_range`, leaving `x` alone;
+/// - the uses, only for a plain import: an aliased import's uses spell the
+///   alias, which an export rename keeps.
 ///
-/// A same-named LOCAL binding that shadows the import resolves to its own
-/// binding via `resolve_uses`'s innermost-scope rule, so it never appears in
-/// an import binding's use set — no extra filtering needed. Like the rest of
-/// this module, this only ever walks AST sites, never comments/string text.
-///
-/// `script`/`file` are always a single parsed file (this module does no
-/// filesystem I/O — see the module doc); `file` isn't needed to disambiguate
-/// anything since callers already picked which file's AST to pass in. Kept
-/// in the signature per the plan, matching `references_at`'s same unused
-/// `file` parameter.
-///
-/// Returns an empty `Vec` when `script` has no `import { export_name }` (or
-/// `import { export_name as … }`) specifier — e.g. when called speculatively
-/// against a sibling file that doesn't import the renamed symbol at all.
-pub fn references_to_export(
-    script: &Script,
-    file: &str,
-    export_name: &str,
-    ns: RefNs,
-) -> Vec<RefSite> {
-    let _ = file;
+/// A local binding shadowing the import resolves to itself (innermost scope
+/// wins), so it never appears among the import's uses. Empty when `script` has
+/// no specifier for `export_name`.
+pub fn references_to_export(script: &Script, export_name: &str, ns: RefNs) -> Vec<RefSite> {
     let model = build_scope_model(script);
     let mut sites = Vec::new();
 
@@ -2355,7 +2115,7 @@ pub fn references_to_export(
             // The specifier: a NON-aliased binding's own `range` IS the
             // precise name token (no narrowing needed); an ALIASED binding's
             // `range` covers the ALIAS instead, so fall back to the coarse
-            // whole-`import …` span narrowed to `orig` downstream.
+            // whole-`import ...` span narrowed to `orig` downstream.
             if b.alias.is_none() {
                 sites.push(RefSite {
                     range: b.range.clone(),
@@ -2369,9 +2129,8 @@ pub fn references_to_export(
                     coarse: true,
                 });
             }
-            // Uses of the imported name — only when NON-aliased, since an
-            // aliased import's uses spell the alias, which an export rename
-            // must leave alone.
+            // The imported name's uses, only for a plain import: an aliased import's uses
+            // spell the alias, which an export rename leaves alone.
             if b.alias.is_none() {
                 // The model binding for this non-aliased specifier (its local
                 // name equals the export name) carries the resolved uses.

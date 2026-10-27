@@ -32,8 +32,7 @@ fn a_lane_is_reused_once_its_range_ends() {
 
 #[test]
 fn touching_ranges_do_not_share_a_lane() {
-    // Ending and starting on the SAME row must not share — both need a
-    // rerouter on that row.
+    // Ending and starting on the SAME row must not share: both need a rerouter on that row.
     let d = vec![demand(&[0, 4], 2, 0), demand(&[4, 8], 2, 1)];
     let lanes = allocate_lanes(&d);
     assert_ne!(

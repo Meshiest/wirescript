@@ -4,6 +4,10 @@
 //! `Region`s whose leaves hold the nodes assigned to that scope in
 //! lowering. Children within a region are sorted by their scope's
 //! `source_range.start` (then `ScopeId`) so the tree is deterministic.
+#![cfg_attr(
+    not(feature = "test-internals"),
+    expect(unreachable_pub, reason = "public only for the test-internals export")
+)]
 
 #[cfg(any(test, feature = "test-internals"))]
 use crate::ir::ScopeInfo;
@@ -13,10 +17,13 @@ use crate::ir::{Node, ScopeId};
 #[derive(Debug)]
 pub struct Region<'a> {
     /// The scope's id. Read by the tests and the cycle-breaking warning only.
-    #[cfg_attr(not(any(test, feature = "test-internals")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(test, feature = "test-internals")),
+        allow(dead_code, reason = "read by the tests and the cycle-breaking warning")
+    )]
     pub id: ScopeId,
     /// The scope this region came from. Only [`build_region_tree`] and its
-    /// tests inspect it — the production layout path builds one flat region.
+    /// tests inspect it; the production layout path builds one flat region.
     #[cfg(any(test, feature = "test-internals"))]
     #[cfg_attr(not(feature = "test-internals"), allow(dead_code))]
     // read by the region tests in `wirescript`
@@ -28,7 +35,7 @@ pub struct Region<'a> {
     /// [`build_region_tree`] nests regions; production layout stays flat.
     #[cfg(any(test, feature = "test-internals"))]
     #[cfg_attr(not(feature = "test-internals"), allow(dead_code))]
-    pub children: Vec<Region<'a>>,
+    pub children: Vec<Self>,
 }
 
 #[cfg(any(test, feature = "test-internals"))]
@@ -38,11 +45,10 @@ use crate::ir::{Module, ROOT_SCOPE_ID};
 
 /// Build the region tree rooted at `ROOT_SCOPE_ID`.
 ///
-/// Scopes referencing an unknown parent, or whose parent chain doesn't
-/// reach root, are silently dropped (layout never panics on a malformed
-/// `Module`). Orphan nodes — whose `scope_id` is missing from
-/// `Module.scopes` — are re-homed onto the root region so nothing is
-/// lost.
+/// Scopes referencing an unknown parent, or whose parent chain doesn't reach root, are
+/// silently dropped (layout never panics on a malformed `Module`). Orphan nodes (whose
+/// `scope_id` is missing from `Module.scopes`) are re-homed onto the root region so nothing
+/// is lost.
 #[cfg(any(test, feature = "test-internals"))]
 pub fn build_region_tree(module: &Module) -> Region<'_> {
     // Bucket nodes by scope.
@@ -71,10 +77,10 @@ pub fn build_region_tree(module: &Module) -> Region<'_> {
         if id == ROOT_SCOPE_ID {
             continue;
         }
-        if let Some(parent) = info.parent {
-            if module.scopes.contains_key(&parent) {
-                children_of.entry(parent).or_default().push(id);
-            }
+        if let Some(parent) = info.parent
+            && module.scopes.contains_key(&parent)
+        {
+            children_of.entry(parent).or_default().push(id);
         }
     }
     for ids in children_of.values_mut() {

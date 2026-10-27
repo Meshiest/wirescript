@@ -1,4 +1,5 @@
-//! Import-shape regressions.
+//! How the shape of an import affects what lowers: namespaces, named imports,
+//! constants across files, and builtin and `self` mod names.
 
 use super::*;
 use crate::collections::HashSet;
@@ -24,12 +25,9 @@ fn orphan_pure_gates(r: &LowerResult) -> Vec<&'static str> {
 }
 
 /// An imported namespace member whose bare name matches a LOCAL exec-input
-/// trigger must not clobber that input. Regression: `import * as C` where the
-/// imported module has `let start: <record>` registered a `Binding::Record`
-/// under the bare name `start`, shadowing the importer's own `in start: exec`.
-/// `on start` then resolved to that record instead of the Input and SILENTLY
-/// dropped the entire handler body (0 gates, no diagnostic). Every other
-/// namespace-member kind was `is_none()`-guarded against this; `let` was not.
+/// trigger does not clobber that input: `import * as C` of a module with
+/// `let start: <record>` leaves the importer's `in start: exec` as the trigger,
+/// so `on start` keeps its whole handler body.
 #[test]
 fn imported_let_does_not_clobber_local_input_trigger() {
     let lib = "let start: { v: int } = { v: 1 }";
@@ -48,9 +46,8 @@ on start { hit = hit + 1 }";
 }
 
 /// A module imported via BOTH a namespace (`import * as x`) AND a named import
-/// materializes its top-level `let`s twice — the namespace copy is unreferenced,
-/// so a constant ships as a gate wired to nothing unless pruned.
-/// `prune_dead_pure_gates` must drop that orphan.
+/// materializes its top-level `let`s twice; the namespace copy is unreferenced,
+/// so `prune_dead_pure_gates` drops it rather than shipping a gate wired to nothing.
 #[test]
 fn namespace_plus_named_import_leaves_no_orphan_constant() {
     let lib = "\
@@ -77,7 +74,7 @@ out g = lib.greet()";
 }
 
 /// A user's connected-but-unused pure computation is NOT a compiler-generated
-/// orphan and must survive (the prune only removes fully-disconnected gates).
+/// orphan and survives (the prune only removes fully-disconnected gates).
 #[test]
 fn unused_let_computation_is_kept() {
     let r = compile_ok(
@@ -92,16 +89,15 @@ on player { let y = x * 2 + 1 }",
     );
 }
 
-/// A namespace import inside an imported module must travel with the
-/// declarations that call through it. `main` imports `useFoo` from `second`,
-/// whose body calls `Foo.blah(...)` from a third file — without the namespace
-/// the call resolved to nothing and silently lowered to an `_Unsupported`
-/// placeholder that does nothing at runtime, with no diagnostic.
+/// A namespace import inside an imported module travels with the declarations
+/// that call through it: `main` imports `useFoo` from `second`, whose body calls
+/// `Foo.blah(...)` from a third file. Without the namespace the call would be a
+/// silent `_Unsupported` placeholder.
 #[test]
 fn namespace_import_travels_two_modules_deep() {
-    // `n` comes from an input so constant folding cannot erase the arithmetic
-    // this asserts on — a folded `useFoo(5)` would collapse to a literal and
-    // stop proving the imported bodies were inlined at all.
+    // `n` comes from an input so constant folding cannot erase the arithmetic this
+    // asserts on: a folded `useFoo(5)` would collapse to a literal and stop proving
+    // the imported bodies were inlined.
     let r = compile_multi(
         "import { useFoo } from \"second\"\nin n: int\nout result = useFoo(n)",
         &[
@@ -125,8 +121,8 @@ fn namespace_import_travels_two_modules_deep() {
             .map(|n| n.gate_class)
             .collect::<Vec<_>>()
     );
-    // `n * 2` from the third module and the `+ 1` from the second must both
-    // survive — a dropped namespace loses the multiply entirely.
+    // `n * 2` from the third module and the `+ 1` from the second both survive; a
+    // dropped namespace loses the multiply.
     assert_eq!(
         count_class(&r.module, "BrickComponentType_Expr_MathMultiply"),
         1,
@@ -139,12 +135,11 @@ fn namespace_import_travels_two_modules_deep() {
     );
 }
 
-// ---------- `const` across files ----------
+// `const` across files
 
 /// The library every `const`-across-files test below imports from. `12345` is
-/// the control literal in each baked array: it proves the array itself really
-/// was baked, so a missing constant reads as a missing ELEMENT rather than as
-/// a whole gate that quietly never appeared.
+/// the control literal in each baked array: it proves the array was baked, so a
+/// missing constant reads as a missing ELEMENT, not a missing gate.
 const CONST_LIB: &str = "\
 const SLOTS = 4
 const CHAN = \"libchan\"
@@ -230,8 +225,8 @@ fn an_imported_constant_bakes_into_an_initializer() {
 }
 
 /// A constant-only slot (a custom-event channel name) fed by an imported
-/// `const`: the shape that silently baked an EMPTY value twice in this
-/// feature's history, so assert the baked string, not just that it compiled.
+/// `const` bakes the string; a missing constant bakes an EMPTY channel and still
+/// compiles, so the baked value is asserted.
 #[test]
 fn an_imported_const_bakes_into_a_constant_only_slot() {
     let r = compile_multi(
@@ -254,9 +249,9 @@ fn an_imported_const_bakes_into_a_constant_only_slot() {
 }
 
 /// Nested imports: `main` imports `mid`, `mid` imports `leaf`. A `const` and a
-/// `const mod` from `leaf` — and a `const` in `mid` DERIVED from a leaf one —
-/// must all still be compile-time two files away, including through the
-/// constant-only slot.
+/// `const mod` from `leaf`, and a `const` in `mid` DERIVED from a leaf one, are
+/// all still compile-time two files away, including through the constant-only
+/// slot.
 #[test]
 fn consts_stay_compile_time_through_a_nested_import() {
     let leaf = "\
@@ -291,8 +286,8 @@ on go { SendCustomEvent(LEAF_CH, 1) }";
 
 /// A namespaced record VALUE folds inside a (record-)array initializer
 /// (`var arr: T[] = [Other.value]`), the multi-file record-value form of the
-/// namespaced-const fold above. This was a false WS003 "elements must be
-/// constant literals" because the namespaced member never reached the env.
+/// namespaced-const fold above, with no WS003: the namespaced member reaches the
+/// constant environment.
 #[test]
 fn a_namespaced_record_value_folds_in_a_record_array_init() {
     let lib = "type DoubleInt = { a: int, b: int }\nlet value = { a: 10, b: 20 }";
@@ -370,11 +365,7 @@ fn a_name_from_two_modules_is_ws013_and_a_diamond_is_not() {
                 .collect(),
         };
         let resolved = resolve(entry, "main", &loader);
-        let tc = typecheck(
-            &resolved.ast,
-            "main",
-            &crate::typecheck::CeSlotMap::default(),
-        );
+        let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
         // A collision reports WS013 at any severity; a diamond has no WS013 error.
         let found = if *collides {
             crate::test_support::codes(&tc.diagnostics)
@@ -552,7 +543,7 @@ fn a_namespace_member_named_like_a_builtin_does_not_replace_it() {
 }
 
 /// A whole-module import names every declaration of the module, so its `abs`
-/// is the one called, as before.
+/// is the one called.
 #[test]
 fn a_whole_module_import_names_its_mod_over_the_builtin() {
     let main = "var k: int = -3\nvar so: string = \"\"\nin go: exec\nimport \"lib\"\non go { var t = abs(k)\n so = t }";
@@ -610,7 +601,7 @@ fn float_sets(r: &LowerResult) -> Vec<f64> {
 /// A `self` mod named like a builtin receiver method of another receiver type
 /// (`Length` is a string method) is the one `vv.Length()` calls on a vector,
 /// and a named import pulls in the `self` mods its body calls by method
-/// syntax: `v.dist2(v)` in an imported body was a placeholder.
+/// syntax, so `v.dist2(v)` in an imported body is a real call.
 #[test]
 fn a_method_call_reaches_its_self_mod_in_every_file() {
     let main = "var vv: vector = Vec(1.0, 2.0, 3.0)\nvar fo: float = 0.0\nin go: exec\n\
@@ -727,11 +718,10 @@ fn a_duplicate_mod_is_one_error_and_an_annotation_uses_its_alias() {
     }
 }
 
-/// The effect analysis decides by the same rule: a library's private
-/// effectful `Length(self: vector)` is not what the importer's `s.Length()`
-/// on a string calls, so the importer's `if` expression stays a pure
-/// `Select` of the string method. It built an `Exec_Branch` around the call
-/// when the private `self` mod counted.
+/// The effect analysis decides by the same rule: a library's private effectful
+/// `Length(self: vector)` is not what the importer's `s.Length()` on a string
+/// calls, so the importer's `if` expression stays a pure `Select` of the string
+/// method, not an `Exec_Branch` around the call.
 #[test]
 fn a_private_self_mod_does_not_make_the_importers_method_call_effectful() {
     let lib = "var cnt: int = 0\nmod Length(self: vector) -> float { cnt = cnt + 1\n return 777.0 }\n\
@@ -752,12 +742,10 @@ fn a_private_self_mod_does_not_make_the_importers_method_call_effectful() {
 }
 
 /// A library body calls only what its own file declares or imports, by method
-/// and by plain call alike: the importer's mods are not visible there, a
-/// sibling module's are not either, and the error is located in the library
-/// and says what to do there. Declared in the library, both calls compile.
-/// A constant computed by a `const mod` its file neither declares nor imports
-/// is one error, the call's `WS002`; it is not also `WS046` saying the mod is
-/// not declared `const mod`.
+/// and by plain call alike: neither the importer's mods nor a sibling module's
+/// are visible there, and the error is located in the library. A constant from
+/// a `const mod` its file cannot name is one error, the call's `WS002`, not also
+/// `WS046`.
 #[test]
 fn a_const_mod_the_file_cannot_name_is_one_error() {
     let lib = "const mod sq(v: int) -> int { return v * v }
@@ -870,8 +858,8 @@ fn a_library_body_does_not_reach_its_importers_mods() {
 /// A library names the top-level values (constants, `let`s, storage, ports)
 /// it declares or imports, as it names types and mods: a library body reading
 /// a name only its importer declares is `WS002`, in a value, a constant-only
-/// slot, a `Sleep` delay or a constant's initializer. It read the importer's
-/// value before. An importer reads a library's value as it did.
+/// slot, a `Sleep` delay or a constant's initializer. An importer reads a
+/// library's value as usual.
 #[test]
 fn a_library_names_the_values_it_declares_or_imports() {
     let codes = |main: &str, deps: &[(&str, &str)]| {
@@ -933,7 +921,7 @@ fn a_library_names_the_values_it_declares_or_imports() {
     assert!(!unnamed.contains(&"WS002".to_string()), "{unnamed:?}");
 }
 
-// ── Named arguments, defaults and `fn` across imports ──
+// Named arguments, defaults and `fn` across imports
 
 /// Lower `main_src` with in-memory imported files, folding off so argument
 /// values stay visible on the gates they reach.
@@ -978,7 +966,7 @@ fn int_inputs(r: &LowerResult, class: &str, port: &str) -> Vec<i64> {
             _ => None,
         })
         .collect();
-    out.sort();
+    out.sort_unstable();
     out
 }
 
@@ -995,8 +983,8 @@ mod scale(v: int, by: int = 2) -> int {
 
 const MUL: &str = "BrickComponentType_Expr_MathMultiply";
 
-/// A named argument binds the `mod` parameter it names. It was dropped, so
-/// `scale(n, by = 3)` multiplied by the default 2.
+/// A named argument binds the `mod` parameter it names: `scale(n, by = 3)`
+/// multiplies by 3, not the default 2.
 #[test]
 fn a_named_mod_argument_binds_its_parameter() {
     let (diags, r) = lower_files(
@@ -1008,7 +996,7 @@ fn a_named_mod_argument_binds_its_parameter() {
 }
 
 /// A namespaced call takes the member's defaults and named arguments, as a
-/// flat call does. `b.add(n)` was WS022 for the omitted defaulted parameter.
+/// flat call does: `b.add(n)` omits the defaulted parameter with no WS022.
 #[test]
 fn a_namespaced_call_takes_defaults_and_named_arguments() {
     let (diags, r) = lower_files(

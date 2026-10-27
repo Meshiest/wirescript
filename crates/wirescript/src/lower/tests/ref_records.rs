@@ -175,10 +175,9 @@ fn a_place_a_call_returns_leaves_as_its_ref() {
 #[test]
 fn a_ref_value_bound_to_a_record_params_field_is_read_through() {
     // `q.p` is a place inside the mod; the caller's ref names which one.
-    let src = format!(
-        "type R = {{ p: *int }}\nvar a: int = 0\nvar n: int = 0\nmod f(q: R) {{ n = q.p + 1 }}\n\
-         in go: exec\non go {{ let rr = {{ p: &a }}\n f(rr) }}"
-    );
+    let src = "type R = { p: *int }\nvar a: int = 0\nvar n: int = 0\nmod f(q: R) { n = q.p + 1 }\n\
+         in go: exec\non go { let rr = { p: &a }\n f(rr) }"
+        .to_string();
     let r = compile_ok(&src);
     let add = gates(&r, MATH_ADD)[0];
     let (get, _) = source_port_of(&r, add, WirePort::InputA).unwrap();

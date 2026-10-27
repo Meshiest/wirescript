@@ -1,9 +1,9 @@
-//! Completeness guard: every builtin's `CallSpec` must expose ALL of its gate's
-//! input and output ports — as a param, a spec output, or a record field. The
+//! Completeness guard: every builtin's `CallSpec` must expose all of its gate's
+//! input and output ports, as a param, a spec output, or a record field. The
 //! exec pins a call chains through (`Exec`/`ExecIn` in, `ExecOut` out) are the
 //! only exemption; any other exec pin (`Sweep.Hit`, a dialog's `OkClicked`) is
-//! a branch the program must be able to reach. Catches a gate that gained ports in a game update but whose builtin
-//! wasn't updated to surface them.
+//! a branch the program must be able to reach. Catches a gate with ports its
+//! builtin does not surface.
 //!
 //! Matching is case-insensitive on the cleaned port name, so vector/color
 //! split gates (`.x`/`.g` swizzle, which lower case-insensitively) count as
@@ -32,7 +32,7 @@ fn clean_lower(s: &str) -> String {
     field_name_ref(s).to_ascii_lowercase()
 }
 
-/// Output-field aliases from lower::access::alias_output_field (InputReader).
+/// Output-field aliases from `lower::access::alias_output_field` (`InputReader`).
 fn alias_lower(f: &str) -> String {
     match f {
         "Forward" => "inputforward",
@@ -79,14 +79,13 @@ fn every_builtin_exposes_all_gate_ports() {
             // A composite input (e.g. the Vector2D `Position` with X/Y sub-ports)
             // is covered when its sub-ports are exposed as per-axis params
             // (`positionX` -> "Position.X"), rather than a single parent param.
-            if let Some(comp) = &p.composite {
-                if comp
+            if let Some(comp) = &p.composite
+                && comp
                     .sub_ports
                     .iter()
                     .all(|s| covered_in.contains(&clean_lower(&format!("{}.{}", p.name, s))))
-                {
-                    continue;
-                }
+            {
+                continue;
             }
             gaps.push(format!("{pair}  (input {:?})", p.ty));
         }

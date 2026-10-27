@@ -2,9 +2,8 @@
 //!
 //! The range-arithmetic twins of the `shell_pin_literal` tests below live in
 //! `lower::for_loop`'s own `mod tests`, which evaluates `normalize_range`'s
-//! `PinExpr` tree with no lowering involved. Same names on purpose: these are
-//! the same behaviours read back off a compiled module, so a formula that is
-//! right in the abstract but mis-lowered fails here and only here.
+//! `PinExpr` tree with no lowering. The names match: these read the same
+//! behaviours back off a compiled module, so a mis-lowered formula fails here.
 
 use super::*;
 use crate::ir::gate_class as gc;
@@ -28,17 +27,11 @@ fn shell(r: &LowerResult) -> &crate::ir::Node {
 }
 
 /// The constant value driving the shell's `port` input, or `None` when a
-/// computed gate drives it.
-///
-/// Two shapes count as constant, because a literal reaches a pin either way:
-/// a `_Literal` gate wired in, or the same value baked onto the shell node as
-/// component data once `inline_bare_scalar_literals` has dropped the wire.
-/// Reading only the wire would call an inlined pin "computed".
-///
-/// Returns `i64`: `Count` and a reversed range's `FirstIndex` fold through
-/// `ceil`/`max`, which are `float` builtins, so the constant can arrive as a
-/// `Literal::Float` even though the pin is `int`. `ceil` never yields a
-/// fraction, so the narrowing is lossless.
+/// computed gate drives it. A constant reaches a pin either as a wired
+/// `_Literal` gate or as component data baked onto the shell once
+/// `inline_bare_scalar_literals` drops the wire; both count. Returns `i64`:
+/// `ceil`/`max` are `float` builtins, so an `int` pin's constant can arrive as a
+/// `Literal::Float`, and `ceil` never yields a fraction.
 fn shell_pin_literal(r: &LowerResult, port: &str) -> Option<i64> {
     let want = WirePort::from_name(port);
     let sh = shell(r);
@@ -623,7 +616,7 @@ fn a_range_brace_binding_takes_its_slots_type() {
 
 #[test]
 fn removed_range_slots_are_ws076() {
-    // CL15948 dropped the CountFor entry's Ordinal/bIsFirst/bIsLast outputs.
+    // The CountFor entry has no Ordinal/bIsFirst/bIsLast outputs.
     for name in ["ordinal", "isFirst", "isLast"] {
         let r = compile(&format!(
             "var t: int = 0\nin go: exec\non go {{ for {{ index, {name} }} in 0..4 {{ t = index }} }}"
@@ -723,10 +716,9 @@ fn a_runtime_rev_still_counts_down_from_the_top() {
 
 #[test]
 fn a_runtime_bound_becomes_real_gates_not_a_placeholder() {
-    // The whole reason `normalize_range` returns `PinExpr` rather than
-    // synthetic `Expr::BinOp`s: a `BinOp` built after typecheck has no
-    // `op_resolutions` entry, so `lower_binop` would substitute an
-    // `_Unsupported` placeholder and the save would load and do nothing.
+    // `normalize_range` returns `PinExpr` rather than synthetic `Expr::BinOp`s: a
+    // `BinOp` built after typecheck has no `op_resolutions` entry, so `lower_binop`
+    // would substitute an `_Unsupported` placeholder and the save would do nothing.
     let r = compile_ok("var n: int = 0\nin go: exec\non go { for i in 0..n { } }");
     assert!(
         !has_gate(&r, gc::UNSUPPORTED),
@@ -748,13 +740,10 @@ fn a_runtime_bound_becomes_real_gates_not_a_placeholder() {
 
 #[test]
 fn a_runtime_step_divides_in_float_before_the_ceiling() {
-    // The `* 1.0` widening has to survive LOWERING, not just
-    // `normalize_range`. `MathDivide` is one gate class for every operand
-    // pair, and only `(Int, Int)` truncates, so the gate class, the presence
-    // of a `Ceil` and the absence of `_Unsupported` are identical either
-    // way. The rule `build_binop` resolved is visible only as the port types
-    // it declared. Assert those, or this test cannot fail for the thing it
-    // is named after.
+    // The `* 1.0` widening survives LOWERING, not just `normalize_range`. Gate class,
+    // a `Ceil` and no `_Unsupported` look the same either way (`MathDivide` is one
+    // class, and only `(Int, Int)` truncates), so the port types `build_binop`
+    // declared are what is asserted.
     let r = compile_ok("var n: int = 0\nin go: exec\non go { for i in (0..n).step(3) { } }");
 
     let ceil = r
@@ -988,12 +977,9 @@ fn a_statement_after_an_if_with_continue_runs_off_the_other_branch() {
     );
 }
 
-/// Every node of `class` anywhere in the chip tree (a loop body lands on the
-/// shell's own grid).
 /// A `for` over an array or map whose elements are enums (with or without a
 /// payload) or tuples binds each element whole: the loop runs off one of the
-/// element's columns and reads every column at the element's index or key,
-/// where the source failed as WS071.
+/// element's columns and reads every column at the element's index or key.
 #[test]
 fn a_for_loop_over_columnar_elements_binds_each_element() {
     let cases = [

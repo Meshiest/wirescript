@@ -536,6 +536,12 @@ added. A spread of that array anywhere else (`work = [0, ...work]`) would read i
 the clear, and is `WS088`. Use `work.insert(0, v)` to put values in front.
 Spreads are only valid here, not in a top-level initializer.
 
+A `var` declared in a handler can also start as a copy of another array, or of
+the array a call returns: `var r: int[] = build(2)` runs the call, then copies
+its result into `r` (a `copyFrom`). A map `var` does the same. Assigning a whole
+array from a non-literal later (`r = build(2)`) is still `WS027`; use
+`r.copyFrom(...)`.
+
 Access elements with bracket notation:
 
 ```wirescript

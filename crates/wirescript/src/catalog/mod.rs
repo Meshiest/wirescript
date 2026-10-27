@@ -1,6 +1,5 @@
-//! Gate catalog — the authoritative registry of every wire-graph brick
-//! the compiler knows about. The inventory JSON is baked into the binary
-//! via `include_str!`.
+//! Gate catalog: the registry of every wire-graph brick the compiler knows
+//! about. The inventory JSON is baked into the binary via `include_str!`.
 
 pub mod arrays;
 pub mod calls;
@@ -14,14 +13,10 @@ pub mod value_fields;
 
 pub use wirescript_ir::catalog::*;
 
-/// The schema enum backing a named-arg `arg` on a builtin call OR event
-/// `callee` — if `arg` is a param whose gate data field is a schema enum.
-/// That includes a wireable param such as DisplayText's `justify`, whose
-/// constant member names bake into the same field. Unifies the call path
-/// (`CallSpec` params -> `config_field_enum_type`) with the event path
-/// (`EventSpec.config_named` -> its gate field), so hover and completion
-/// resolve `SweepSimple(direction = …)` and `on Clock(…)` the same way.
-/// `None` for unknown args or non-enum fields.
+/// The schema enum backing named arg `arg` of builtin call or event `callee`,
+/// when `arg`'s gate data field is a schema enum (wireable params such as
+/// `DisplayText`'s `justify` included). Hover and completion use it for calls
+/// and events alike. `None` for unknown args or non-enum fields.
 pub fn config_enum_for_named_arg(callee: &str, arg: &str) -> Option<&'static str> {
     if let Some(spec) = crate::catalog::calls::calls().get(callee) {
         if let Some(p) = spec.params.iter().find(|p| p.name == arg) {
@@ -45,14 +40,9 @@ pub fn config_enum_for_named_arg(callee: &str, arg: &str) -> Option<&'static str
     None
 }
 
-/// Every schema enum type reachable from a gate or event's config surface
-/// (call-spec params backed by an enum field, every gate's `scalar_config_fields`, and event
-/// `config_positional`/`config_named` fields), resolved through
-/// [`config_field_enum_type`] the same way [`config_enum_for_named_arg`]
-/// resolves a single named arg. This is the single source of truth for which
-/// schema enums become Wirescript built-in enums: nothing is hand-listed,
-/// every entry is derived from the catalog + schema. Sorted and
-/// de-duplicated.
+/// Every schema enum type reachable from a gate's, event's or property's config
+/// surface, resolved as [`config_enum_for_named_arg`] resolves one arg. These
+/// are the schema enums that become built-in enums. Sorted and de-duplicated.
 pub fn config_referenced_enum_types() -> Vec<&'static str> {
     use std::collections::BTreeSet;
 
@@ -115,7 +105,7 @@ pub fn config_referenced_enum_types() -> Vec<&'static str> {
 /// A built-in game enum, derived from a schema enum reachable from the
 /// catalog's config surface (see [`config_referenced_enum_types`]). The
 /// Wirescript-facing name is [`GameEnum::clean_name`]; [`GameEnum::schema_type`]
-/// is the underlying brdb schema enum name used to resolve members/values.
+/// is the brdb schema enum name that resolves its members and values.
 #[derive(Clone, Debug)]
 pub struct GameEnum {
     pub clean_name: String,
@@ -136,11 +126,9 @@ pub struct GameEnumVariant {
 /// Clean a raw schema enum type name (e.g. `EBREasingFunction`) into the
 /// Wirescript-facing type name (`EasingFunction`).
 ///
-/// Rule: strip a leading `E`, then strip a leading `BR` or `Brick` from what
-/// remains, keeping the rest verbatim. Deliberately does NOT also strip
-/// `DisplayText` / `Text` / `Easing`. Those verbose segments are what keep
-/// the cleaned set collision-free (e.g. `EasingDirection` must not collapse
-/// onto `Direction`).
+/// Strips a leading `E`, then a leading `BR` or `Brick`, and keeps the rest.
+/// Longer prefixes (`DisplayText`, `Text`, `Easing`) stay: stripping them
+/// would collide names (`EasingDirection` onto `Direction`).
 pub fn clean_game_enum_type(raw: &str) -> String {
     let s = raw.strip_prefix('E').unwrap_or(raw);
     let s = s
@@ -153,9 +141,8 @@ pub fn clean_game_enum_type(raw: &str) -> String {
 /// Clean a bare schema enum member name (e.g. `X_Positive`) into the
 /// Wirescript-facing variant name (`XPositive`).
 ///
-/// Rule: split on `_`, capitalize each segment's first character, join with
-/// no separator. No reordering, so `X_Positive` stays `XPositive`, not
-/// `PositiveX`.
+/// Splits on `_`, capitalizes each segment's first character and joins them,
+/// without reordering (`X_Positive` is `XPositive`, not `PositiveX`).
 pub fn clean_game_enum_variant(bare: &str) -> String {
     bare.split('_')
         .map(|seg| {
@@ -176,10 +163,11 @@ const ANNOTATION_ENUMS: &[(&str, &str)] = &[("EBrickMaterial", "BrickMaterial")]
 
 /// `Type`, what `GetValueType` and `.getType()` give: the schema's `EWireKind`,
 /// cut to the kinds a wire value can hold (its first 13 members, the save's
-/// `WireValue` variants) and named as Wirescript names its types. Each pair is
-/// the schema member and the Wirescript name. Its members never resolve bare:
-/// `Int`, `String` and `Color` would collide with too much.
+/// `WireValue` variants) and named as Wirescript names its types. Its members
+/// never resolve bare: `Int`, `String` and `Color` would collide with too much.
 const WIRE_KIND_ENUM: &str = "Type";
+/// The members of [`WIRE_KIND_ENUM`]: each pair is the schema member and the
+/// Wirescript name.
 const WIRE_KIND_MEMBERS: &[(&str, &str)] = &[
     ("Bool", "Bool"),
     ("Integer", "Int"),
@@ -205,14 +193,10 @@ pub fn resolves_bare_members(clean_name: &str) -> bool {
     clean_name != WIRE_KIND_ENUM && !ANNOTATION_ENUMS.iter().any(|(_, name)| *name == clean_name)
 }
 
-/// Every built-in game enum, derived from [`config_referenced_enum_types`]
-/// plus the [`ANNOTATION_ENUMS`]:
-/// each schema enum type is cleaned into a [`GameEnum`] whose variants come
-/// from [`enum_member_names`] (already sentinel-filtered), cleaned via
-/// [`clean_game_enum_variant`] and paired with their real schema
-/// discriminant via [`enum_member_value`]. Sorted by `clean_name`. A schema
-/// enum with zero non-sentinel members is skipped rather than panicking.
-/// Memoized in the same table [`game_enum_schema_type`] reads.
+/// Every built-in game enum: [`config_referenced_enum_types`], the
+/// [`ANNOTATION_ENUMS`] and the wire-kind `Type`, with each member's real schema
+/// discriminant. Sorted by `clean_name`; an enum with no non-sentinel members is
+/// skipped.
 pub fn builtin_game_enums() -> Vec<GameEnum> {
     game_enum_table().clone()
 }
@@ -294,10 +278,8 @@ pub const VAR_PSEUDO_FIELDS: [(&str, &str); 2] = [
 
 /// Whether `field` names one of [`VAR_PSEUDO_FIELDS`].
 ///
-/// Case-insensitive, because typecheck accepts every capitalisation and the
-/// docs teach `.Value` capitalised while `.prev` is lowercase. A spelling this
-/// misses does not degrade gracefully: `on v.Prev { … }` matched no arm and
-/// the whole handler was dropped with no diagnostic at all.
+/// Case-insensitive, matching typecheck, which accepts every capitalisation. A
+/// spelling this misses drops an `on v.Prev { ... }` handler with no diagnostic.
 pub fn is_var_pseudo_field(field: &str) -> bool {
     VAR_PSEUDO_FIELDS
         .iter()

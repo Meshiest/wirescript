@@ -33,8 +33,8 @@ fn array_method_param_types_track_element() {
     assert_eq!(sl.params[0].ty, Type::Array(Box::new(Type::Int))); // source: T[]
     let so = array_method("sort").unwrap().signature(&Type::Int);
     assert!(so.params[0].optional); // descending?: bool
-    // The `fillFromZone*` gates take a `zone` rerouter reference ONLY on
-    // their Zone slot — never a plain entity.
+    // The `fillFromZone*` Zone slot takes a `zone` rerouter reference, never a
+    // plain entity.
     let fz = array_method("fillFromZoneEntities")
         .unwrap()
         .signature(&Type::Int);

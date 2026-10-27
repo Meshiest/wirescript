@@ -1,6 +1,6 @@
-//! Regressions for reported lowering bugs: aliases, imported names and
-//! handlers, record-valued expressions, pseudo-field spellings and dropped
-//! handlers.
+//! Lowering of aliases, imported names and handlers, record-valued
+//! expressions, pseudo-field spellings, and handlers whose trigger cannot
+//! resolve.
 
 use super::*;
 use crate::ir::gate_class as gc;
@@ -15,11 +15,10 @@ fn aliases_and_record_valued_expressions_lower_in_every_position() {
         // A `let` aliasing an array var resolves for `x[i]` (and array methods)
         // exactly like the original.
         ("a let alias of an array var", "var a = [0]\nin go: exec\non go { let ar = a\n let v = ar[0] }".into(), &[(gc::ARRAY_GET, 1)]),
-        // ... and a `let` aliasing an INPUT-port array, like a `var` alias.
+        // A `let` aliasing an INPUT-port array resolves like a `var` alias.
         ("a let alias of an input array", "in a: int[]\nin go: exec\non go { let x = a\n let v = x[0] }".into(), &[(gc::ARRAY_GET, 1)]),
-        // A `match` EXPRESSION with record VALUE arms lowers to a per-field Select
-        // tree and writes the target's fields. It dropped the whole statement (no
-        // Select, no Var_Set, no diagnostic) while the statement form lowered.
+        // A `match` EXPRESSION with record VALUE arms lowers to a per-field Select tree
+        // and writes the target's fields, as the statement form does.
         (
             "a match expression with record arms writes the target's fields",
             format!(
@@ -45,9 +44,8 @@ fn aliases_and_record_valued_expressions_lower_in_every_position() {
             ),
             &[(gc::SELECT, 2)],
         ),
-        // `let m = if c then p else q` binds a per-field record as the assignment
-        // form writes one. Only the assignment position resolved, so the `let`
-        // reported WS071 on each branch and read a placeholder.
+        // `let m = if c then p else q` binds a per-field record as the assignment form
+        // writes one, with no WS071 and no placeholder read.
         (
             "a record-valued if expression binds to a let",
             format!(
@@ -71,9 +69,9 @@ fn aliases_and_record_valued_expressions_lower_in_every_position() {
             ),
             &[],
         ),
-        // A `mod` takes a record argument in every form its `chip` twin does: the
-        // container-element and record-valued-conditional spellings reached the
-        // callee as one opaque value port, so each field read was a placeholder.
+        // A `mod` takes a record argument in every form its `chip` twin does, including
+        // container-element and record-valued-conditional spellings: each field read
+        // is a real port, not a placeholder off one opaque value.
         (
             "a mod record argument in every value form",
             format!(
@@ -85,8 +83,8 @@ fn aliases_and_record_valued_expressions_lower_in_every_position() {
             &[],
         ),
         // A `mod` with ONE record-typed output hands back the record itself, not a
-        // wrapper keyed by the output name: lowering bound `{o: {x, y}}`, so
-        // `r = mk(1)` wrote no field and `d.x` was a placeholder. Writes: r.x, r.y, a.
+        // wrapper keyed by the output name (`{o: {x, y}}`), so `r = mk(1)` writes each
+        // field and `d.x` reads one. Writes: r.x, r.y, a.
         (
             "a single record output mod unwraps to its fields",
             format!(
@@ -157,11 +155,9 @@ fn imported_on_handler_generates() {
             "on ReadBrickGrid() { BroadcastChatMessage(\"lib\") }",
         )],
     );
-    // Both files desugar their non-event `on Foo()` to `let _on_expr_0`, and
-    // the counter restarts per file, so the cross-file WS013 fired on a name
-    // the compiler generated. Nothing here asserted on diagnostics, so two
-    // libraries that each used an `on <call>()` handler could not be compiled
-    // together and this test stayed green.
+    // Both files desugar their non-event `on Foo()` to `let _on_expr_0` with a
+    // per-file counter, so the generated names must not raise a cross-file WS013:
+    // two libraries that each use an `on <call>()` handler compile together.
     assert_no_errors(&r);
     assert_eq!(
         count_class(&r.module, gc::GAMEMODE_BROADCAST_CHAT),
@@ -244,10 +240,10 @@ fn chip_record_ref_param_rebinds_per_call_site() {
     }
 }
 
-/// A MULTI-OUTPUT gate result chosen by an `if` picks each port separately.
-/// `m.get(k)` is `{Value, Found}`, but the conditional built ONE Select over
-/// port 0, so `c.Found` read the *value* Select and the gate's `bFound` port
-/// was wired nowhere - typecheck-clean, no placeholder, wrong at runtime.
+/// A MULTI-OUTPUT gate result chosen by an `if` picks each port separately:
+/// `m.get(k)` is `{Value, Found}`, so `c.Found` reads a Select over the
+/// `bFound` ports, not the value Select. One Select over port 0 would be
+/// typecheck-clean, placeholder-free and wrong at runtime.
 #[test]
 fn multi_output_result_through_a_conditional_selects_per_port() {
     let src = "var m: Map<int, int>\n\
@@ -268,8 +264,8 @@ fn multi_output_result_through_a_conditional_selects_per_port() {
         2,
         "one Select per output port (Value, Found)"
     );
-    // BOTH Selects must reach a store: one shared source (what the bug did)
-    // leaves the other Select driving nothing.
+    // BOTH Selects reach a store: with one shared source, the other Select would
+    // drive nothing.
     let selects: Vec<crate::ir::NodeId> = r
         .module
         .nodes
@@ -307,12 +303,9 @@ fn multi_output_result_through_a_conditional_selects_per_port() {
 }
 
 /// A branching-return `mod` called from a pure position reports at the call
-/// site, rather than compiling and failing at emit.
-///
-/// With no output wire and no chain to continue from, the inline call handed
-/// back `NodeId(0)`, the never-allocated node, as if it were a real port. The
-/// program type-checked and lowered clean and then died in emit with
-/// `DroppedWire("n0 -> ...")`, which names nothing the author wrote.
+/// site. With no output wire and no chain to continue from, the call has no
+/// port to hand back; a wire from the never-allocated `NodeId(0)` would die in
+/// emit as `DroppedWire("n0 -> ...")`, naming nothing the author wrote.
 #[test]
 fn a_branching_return_called_purely_reports_at_the_call_site() {
     let src = "mod branchy(c: bool) -> (r: int) {\n\
@@ -325,7 +318,7 @@ fn a_branching_return_called_purely_reports_at_the_call_site() {
         "expected a call-site diagnostic: {:?}",
         r.diagnostics
     );
-    // And no wire references the sentinel, which is what emit choked on.
+    // No wire references the `NodeId(0)` sentinel.
     assert!(
         !r.module.wires.iter().any(|w| {
             w.source.node_id == crate::ir::NodeId(0) || w.target.node_id == crate::ir::NodeId(0)
@@ -366,12 +359,10 @@ fn wired_between(
     })
 }
 
-/// `arr[i].Value` is the capitalisation the docs teach, and the hand-written
-/// field list matched only the lowercase `value`, so it type-checked and then
-/// lowered to an `_Unsupported` placeholder: emit refuses to spawn that gate
-/// and drops every wire touching it, deleting the read with no diagnostic.
-/// Asserts the real gate AND the wire into the consumer, because the whole
-/// suite stayed green while this behaviour changed.
+/// `arr[i].Value` (the capitalisation the docs teach) reads the array get. A
+/// `_Unsupported` placeholder would make emit drop the gate and every wire
+/// touching it with no diagnostic, so both the real gate AND the wire into the
+/// consumer are asserted.
 #[test]
 fn array_index_capital_value_reads_the_array_get() {
     for field in ["value", "Value"] {
@@ -405,8 +396,7 @@ fn array_index_capital_value_reads_the_array_get() {
     }
 }
 
-/// The out-of-bounds flag reached the same hand-written list, so every
-/// capitalisation of it is pinned alongside `Value`.
+/// Every capitalisation of the out-of-bounds flag resolves, as `Value` does.
 #[test]
 fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
     for field in ["bOutOfBounds", "OutOfBounds", "BOutOfBounds", "outOfBounds"] {
@@ -435,9 +425,9 @@ fn array_index_out_of_bounds_flag_accepts_every_capitalisation() {
     }
 }
 
-/// A capitalisation the pseudo-field list missed did not degrade: the trigger
-/// arm matched nothing and returned, deleting the whole handler with no
-/// diagnostic, while the same field in expression position reported WS010.
+/// Every capitalisation of a var field resolves as a trigger. An unmatched
+/// trigger arm would return and delete the whole handler with no diagnostic,
+/// while the same field in expression position reports WS010.
 #[test]
 fn a_var_field_trigger_accepts_every_capitalisation() {
     for field in ["Value", "value", "prev", "Prev", "PREV"] {
@@ -456,9 +446,9 @@ fn a_var_field_trigger_accepts_every_capitalisation() {
     }
 }
 
-/// The map-index found flag reached the same hand-written list, and `.Found`
-/// (the spelling the docs teach) was the one missing name, so it lowered
-/// to an `_Unsupported` placeholder that emit deletes, silently.
+/// Every capitalisation of the map-index found flag resolves, `.Found` (the
+/// spelling the docs teach) included; a miss is an `_Unsupported` placeholder
+/// that emit deletes silently.
 #[test]
 fn map_index_found_flag_accepts_every_capitalisation() {
     for field in ["bFound", "Found", "BFound", "found"] {
@@ -516,9 +506,8 @@ fn value_on_a_gate_without_that_port_stays_unsupported() {
 }
 
 /// `let r = ref someVar` is the documented way to name a reference
-/// (`docs/src/expressions.md`). It type-checked and lowered to an
-/// `_Unsupported` gate, which emit refuses to spawn: the binding and every read
-/// through it were deleted with no error.
+/// (`docs/src/expressions.md`). It binds the variable; an `_Unsupported` gate
+/// would make emit delete the binding and every read through it, silently.
 #[test]
 fn let_of_a_ref_binds_the_variable() {
     for sigil in ["ref ", "&"] {
@@ -572,11 +561,9 @@ fn let_of_a_ref_binds_the_variable() {
 }
 
 /// A handler whose trigger lowering cannot resolve takes nothing with it but
-/// itself. `lower_handler` takes `handler_end_execs` on entry and every exit
-/// puts it back, except the unresolved-trigger one, which dropped the exit
-/// exec of every PRECEDING handler. The statement after the dead handler then
-/// had no chain to attach to, so it was deleted as well, and the only
-/// diagnostic (WS058) pointed at the user's line instead of the dead trigger.
+/// itself: `lower_handler` puts `handler_end_execs` back on every exit, so the
+/// PRECEDING handlers' exit execs survive and the statement after the dead
+/// handler still has a chain to attach to.
 #[test]
 fn an_unresolvable_trigger_does_not_orphan_the_next_statement() {
     let r = compile(
@@ -599,8 +586,8 @@ fn an_unresolvable_trigger_does_not_orphan_the_next_statement() {
 }
 
 /// Typecheck admits ANY `let` binding as a trigger name, so a record-valued
-/// one reaches lowering, resolves to no port, and used to delete the whole
-/// handler with no diagnostic from either stage.
+/// one reaches lowering and resolves to no port; that is reported, not a silent
+/// deletion of the handler.
 #[test]
 fn a_record_valued_let_used_as_a_trigger_is_reported() {
     let r = compile(
@@ -681,10 +668,9 @@ fn a_stranded_wire_is_an_internal_error() {
 }
 
 /// `xs.pop()`, `get`, `min`, `max` and `average` read bare are the element
-/// (`Value`) and `find` is its `Index`, in typecheck as in lowering: an
-/// operator typed `fs.pop() + a` by the `IsEmpty` flag (`bool + int` is an
-/// `int`), so `var v` stored a float sum in an `int` var, and `+ a` with a
-/// `float` `a` was WS004.
+/// (`Value`) and `find` is its `Index`, in typecheck as in lowering: an operator
+/// on `fs.pop() + a` is typed by the element, not the `IsEmpty` flag, so `var v`
+/// stores the float sum and a `float` `a` is no WS004.
 #[test]
 fn a_bare_multi_output_array_read_is_typed_by_the_output_it_reads() {
     for (decl, expr, want) in [
@@ -714,8 +700,8 @@ fn a_bare_multi_output_array_read_is_typed_by_the_output_it_reads() {
 }
 
 /// A container receiver that no array or map method arm takes, calling a
-/// `self` mod of the method's name, is typed once: its diagnostics were
-/// reported twice.
+/// `self` mod of the method's name, is typed once, so its diagnostics are
+/// reported once.
 #[test]
 fn a_self_mod_on_a_container_receiver_types_the_receiver_once() {
     let e = errs(

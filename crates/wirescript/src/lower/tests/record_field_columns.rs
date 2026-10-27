@@ -368,8 +368,8 @@ on go {
     );
 }
 
-/// A record var whose array field holds plain values keeps its one ArrayVar per
-/// field: `h.xs.push(3); o = h.xs[0]` and `h.n` lower exactly as before.
+/// A record var whose array field holds plain values keeps its one `ArrayVar` per
+/// field: `h.xs.push(3); o = h.xs[0]` and `h.n` lower as plain storage does.
 #[test]
 fn record_var_scalar_array_field_is_unchanged() {
     let r = compile_ok(
@@ -382,7 +382,7 @@ on go { h.xs.push(3); o = h.xs[0]; h.n = 2; o = h.n }
     );
     assert!(!has_unsupported(&r.module));
     let mut classes: Vec<&str> = r.module.nodes.values().map(|n| n.gate_class).collect();
-    classes.sort();
+    classes.sort_unstable();
     let mut want = vec![
         gc::ARRAY_VAR,
         gc::VAR,
@@ -395,7 +395,7 @@ on go { h.xs.push(3); o = h.xs[0]; h.n = 2; o = h.n }
         gc::VAR_GET,
         gc::VAR_SET,
     ];
-    want.sort();
+    want.sort_unstable();
     assert_eq!(classes, want);
     assert_eq!(r.module.wires.len(), 14);
     assert_eq!(

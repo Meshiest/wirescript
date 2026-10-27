@@ -2,9 +2,9 @@ use super::TypeMap;
 use crate::ast::TypeExpr;
 use crate::ir::Type;
 
-/// The source-language spelling of a type (`*int`, `int[]`, `Map<string, int>`,
-/// …). A thin alias over the `Display` impl on [`Type`] (in `crate::ir`), kept
-/// as a named helper for the many call sites that read better than `.to_string()`.
+/// The source spelling of a type (`*int`, `int[]`, `Map<string, int>`): the
+/// `Display` of [`Type`] (in `crate::ir`), named for the many call sites that
+/// read better than `.to_string()`.
 pub fn type_str(t: &Type) -> String {
     t.to_string()
 }
@@ -38,8 +38,7 @@ pub fn type_expr_str(t: &TypeExpr) -> String {
 
 pub fn infer_expr_type(expr: &crate::ast::Expr, tmap: &TypeMap) -> Option<String> {
     let r = expr.range();
-    tmap.get(&(r.file.clone(), r.start.offset, r.end.offset))
-        .map(type_str)
+    tmap.get(&r.key()).map(type_str)
 }
 
 /// Map a primitive type name (as produced by [`type_str`]) back to a [`Type`].
@@ -51,23 +50,22 @@ pub fn type_from_name(s: &str) -> Option<Type> {
     crate::types::resolve::primitive(s).filter(|t| !matches!(t, Type::Opaque | Type::Never))
 }
 
-/// Receiver methods applicable to a value of the named primitive type, for `.`
-/// member completion. Returns `(name, "(params)")` pairs. A method applies when
-/// the value's type is accepted by the receiver without a string-format
-/// coercion — so a `string` value shows only string methods, not everything
-/// that happens to format into text. Empty for non-primitive/unknown names.
+/// Receiver methods for a value of the named primitive type, for `.` member
+/// completion, as `(name, "(params)")` pairs. A method applies when the receiver
+/// accepts the value's type without a string-format coercion, so a `string`
+/// shows only string methods. Empty for a non-primitive or unknown name.
 pub fn receiver_methods(type_name: &str) -> Vec<(&'static str, String)> {
     use crate::types::coerce::{CoerceRule, coerce};
     let Some(var_ty) = type_from_name(type_name) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for (name, spec) in crate::catalog::calls::calls().iter() {
+    for (name, spec) in crate::catalog::calls::calls() {
         let Some(recv) = &spec.receiver else { continue };
         if matches!(coerce(&var_ty, recv), CoerceRule::Same | CoerceRule::Coerce) {
             // Hide the receiver-bound param from the displayed signature: the
             // first param normally, or the named `target` param for a
-            // named-target receiver (`entity.SendCustomEvent(…)`).
+            // named-target receiver (`entity.SendCustomEvent(...)`).
             let skip_name = spec.receiver_target_param();
             let params: Vec<String> = spec
                 .params
@@ -91,15 +89,15 @@ pub fn receiver_methods(type_name: &str) -> Vec<(&'static str, String)> {
     out
 }
 
-/// Split a rendered mod/chip signature — `"<G>(p0: T0, p1: T1, …) -> R"` — into
-/// its first parameter's `(name, type)` plus the remaining params rendered back
-/// as a comma-separated string. Depth-aware so record/tuple/generic parameter
-/// types (`{ x: int }`, `(a, b)`, `Map<K, V>`) don't confuse the split.
-/// Returns `None` when there is no parameter list or it is empty.
+/// Split a rendered mod or chip signature (`"<G>(p0: T0, p1: T1) -> R"`) into
+/// its first parameter's `(name, type)` and the remaining parameters as one
+/// comma-separated string. Nesting-aware, so record, tuple and generic types
+/// (`{ x: int }`, `(a, b)`, `Map<K, V>`) split correctly. `None` without
+/// parameters.
 fn split_signature_params(sig: &str) -> Option<(&str, &str, String)> {
     let bytes = sig.as_bytes();
     let mut i = 0;
-    // Skip a leading `<…>` generic prefix.
+    // Skip a leading `<...>` generic prefix.
     if bytes.first() == Some(&b'<') {
         let mut depth = 0i32;
         while i < bytes.len() {
@@ -169,14 +167,13 @@ fn top_level_index(s: &str, needle: u8) -> Option<usize> {
     None
 }
 
-/// In-scope user `self`-mods/chips callable as receiver methods on a value of
-/// the named type, for `.` member completion — the user-defined analog of
-/// [`receiver_methods`]. A mod/chip opts in when its first parameter is named
-/// `self`; it applies when the `self` type equals `type_name` or coerces the
-/// same way a builtin receiver-method would (`Same`/`Coerce`, never a
-/// string-format coercion). A generic `self: T` receiver is not offered here —
-/// its concrete type is unknown at completion time. Returns `(name, "(params)")`
-/// pairs with the `self` parameter dropped from the displayed signature.
+/// The in-scope user `self` mods and chips callable as receiver methods on a
+/// value of the named type, for `.` completion: the user counterpart of
+/// [`receiver_methods`]. One applies when its first parameter is `self` and that
+/// type equals `type_name` or coerces as a builtin receiver would (`Same` or
+/// `Coerce`, never a string-format coercion). A generic `self: T` is not offered,
+/// since its type is unknown at completion time. Pairs are
+/// `(name, "(params)")` with `self` left out.
 pub fn user_receiver_methods(
     type_name: &str,
     symbols: &[crate::analysis::SymbolDef],
@@ -215,23 +212,20 @@ pub fn user_receiver_methods(
     out
 }
 
-/// What kind of collection a receiver's declared type resolves to. Drives
-/// `.method` hover and completion dispatch onto the right method table. The
-/// concrete element types aren't needed for dispatch (both wire to opaque
-/// gates), so no payload — hovers display the receiver's declared type string.
+/// The kind of collection a receiver's declared type is, which picks the method
+/// table for `.method` hover and completion. Element types do not matter there,
+/// so there is no payload; hover shows the declared type string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionKind {
     Array,
     Map,
 }
 
-/// Resolve a receiver's declared type STRING to a [`CollectionKind`], following
-/// `type Name = <body>` aliases recorded as `type` symbols (bounded to guard
-/// against alias cycles). Recognizes both the postfix (`T[]`) and generic
-/// (`Array<T>`/`Map<K, V>`) spellings, and resolves a generic-alias instance
-/// like `Grid<int>` by its BASE name (`Grid`) — only the collection SHAPE
-/// matters here, so the alias body's still-unsubstituted params are irrelevant.
-/// Returns `None` for any non-collection type.
+/// A receiver's declared type string as a [`CollectionKind`], following
+/// `type Name = <body>` aliases from the `type` symbols (bounded, so an alias
+/// cycle ends). Reads both `T[]` and `Array<T>`/`Map<K, V>`, and a generic
+/// alias instance (`Grid<int>`) by its base name, since only the shape matters.
+/// `None` for any other type.
 pub fn collection_kind(ty: &str, symbols: &[crate::analysis::SymbolDef]) -> Option<CollectionKind> {
     let mut cur = ty.trim().to_string();
     for _ in 0..16 {

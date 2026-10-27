@@ -5,14 +5,13 @@ use crate::ir::Literal;
 // prefixed spelling like `BrickComponentType_Unsupported` matches no gate, so
 // a check against it would pass even when a construction fell back to one.
 
-/// The `InitialValue` baked into the `Pseudo_Var` whose `_label` NAME_LABEL is
+/// The `InitialValue` baked into the `Pseudo_Var` whose `_label` `NAME_LABEL` is
 /// exactly `label` (an enum var's `__disc`/slot gates are labelled
 /// `"{var}.__disc"` / `"{var}.__{Variant}_{slot}"` by `declare_enum_container`).
 /// `None` if no such gate exists or it carries no `InitialValue`. This locks in
-/// the actual BAKED tag/payload VALUE, not merely the gate count -- a
-/// regression that baked `__disc = 0` for every variant (the classic tag
-/// silent-miscompile) still emits the right number of `Pseudo_Var`s and would
-/// pass a count-only check.
+/// the actual baked tag/payload value, not merely the gate count: baking
+/// `__disc = 0` for every variant still emits the right number of `Pseudo_Var`s
+/// and would pass a count-only check.
 fn baked_init(r: &LowerResult, label: &str) -> Option<Literal> {
     r.module
         .nodes_deep()
@@ -82,7 +81,7 @@ struct Expect<'a> {
     stores: &'a [(&'a str, usize)],
     /// `(note, n)`: exactly `n` gates carry the note.
     notes: &'a [(&'a str, usize)],
-    /// The sorted labels of every var some Var_Set writes, exactly.
+    /// The sorted labels of every var some `Var_Set` writes, exactly.
     writes: Option<&'a [&'a str]>,
     /// Integers and floats some gate property bakes.
     ints: &'a [i64],
@@ -94,7 +93,7 @@ type EnumRow<'a> = (&'a str, FoldMode, &'a str, Expect<'a>);
 
 /// Every row's failures, a row that panics included, then one report.
 #[track_caller]
-fn check_enum_rows(rows: &[EnumRow]) {
+fn check_enum_rows(rows: &[EnumRow<'_>]) {
     let mut failures = Vec::new();
     for (label, mode, src, want) in rows {
         let row = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -893,19 +892,18 @@ fn dot_value_on_an_enum_is_the_bare_value() {
 
 #[test]
 fn mod_named_after_prelude_variant_lowers_to_the_mod_call() {
-    // A user `mod` named after an ALWAYS-seeded prelude variant (`Ok`/`Err`/
-    // `Some`/`None`) must resolve as a MOD CALL, never be reinterpreted as a
-    // bare `Result.Ok` enum construction - the Option/Result prelude is seeded
-    // for every program, so a stale bare-variant shadow predicate would hit
-    // programs with no enums at all. Lower's predicate ORs `resolve_mod`
-    // alongside `scope.get` (which already carries the mod's `Binding::Chip`),
-    // keeping the mod/chip shadow explicit and parallel to const-eval's
-    // `lookup_mod` and typecheck's full-scope lookup.
+    // A user `mod` named after a prelude variant (`Ok`/`Err`/`Some`/`None`)
+    // resolves as a mod call, not as a bare `Result.Ok` enum construction. The
+    // Option/Result prelude is seeded for every program, so the bare-variant
+    // shadow check applies even to programs with no enums. Lowering's predicate
+    // ORs `resolve_mod` with `scope.get` (which carries the mod's
+    // `Binding::Chip`), parallel to const-eval's `lookup_mod` and typecheck's
+    // full-scope lookup.
     //
-    // `Ok()` here calls the mod, whose body READS the runtime `counter` var; a
-    // `Result.Ok` construction would never read `counter`, so the Var_Get gate
-    // proves the mod call won. The body is deliberately non-constant so
-    // const-eval can't fold the call away and hide which path lowering took.
+    // `Ok()` calls the mod, whose body reads the runtime `counter` var; a
+    // `Result.Ok` construction would never read it, so the Var_Get gate proves
+    // the mod call won. The body is non-constant so const-eval cannot fold the
+    // call away.
     let r = compile_ok(
         "static var counter: int = 5\n\
          mod Ok() -> (r: int) { return counter }\n\
@@ -995,10 +993,9 @@ fn generic_enum_enum_arg_layout_matches_nongeneric() {
 
 #[test]
 fn enum_value_into_out_port_is_a_loud_drop() {
-    // Enum output-port materialization is not implemented yet: an enum value
-    // driving an out-port is dropped (0 wires). That drop must be LOUD (a
-    // WSP001 warning), never silent -- both for a direct construction and for
-    // an enum-returning call.
+    // An enum value driving an out-port is dropped (0 wires; output-port
+    // materialization is unimplemented). The drop warns with WSP001 for a direct
+    // construction and for an enum-returning call.
     for src in [
         "enum Shape { Empty, Circle(float) }\nout e = Shape.Circle(5.0)\n",
         "enum Shape { Empty, Circle(float) }\n\
@@ -1015,19 +1012,17 @@ fn enum_value_into_out_port_is_a_loud_drop() {
     }
 }
 
-// --- `EasingFunction` etc. are registry enums seeded by `enums::build_registry`
-// with NO `enum` declaration anywhere in source. These tests prove `.Discriminant`, stored-var
-// discriminant reads, and exhaustive `match` all lower identically to a
-// hand-written enum's - the built-in seed behaves exactly like a user's own
-// `EnumDef`, not a special-cased path.
+// `EasingFunction` and similar are registry enums seeded by `enums::build_registry`
+// with no `enum` declaration in source. These tests check that `.Discriminant`,
+// stored-var discriminant reads, and exhaustive `match` lower identically to a
+// hand-written enum's, since the built-in seed is an ordinary `EnumDef`.
 
 #[test]
 fn builtin_game_enum_variant_path_discriminant_bakes_schema_int_no_placeholder() {
-    // `EasingFunction.Bounce.Discriminant` must fold to the REAL schema int
-    // (10), not an auto-numbered index, with no unsupported placeholder -
-    // mirrors `variant_path_discriminant_is_a_bare_literal` above, plus the
-    // baked-value check that test doesn't make (a regression that renumbered
-    // the tag would still pass a placeholder-only check).
+    // `EasingFunction.Bounce.Discriminant` folds to the real schema int (10), not
+    // an auto-numbered index, with no unsupported placeholder. Like
+    // `variant_path_discriminant_is_a_bare_literal` above, plus a baked-value
+    // check: renumbering the tag would still pass a placeholder-only check.
     let want = crate::catalog::enum_member_value("EBREasingFunction", "Bounce")
         .expect("EasingFunction.Bounce is a real schema member");
     let r = compile_ok("out d = EasingFunction.Bounce.Discriminant\n");
@@ -1569,6 +1564,36 @@ fn a_constant_container_initializer_is_its_literal_twin() {
         "Int(3)",
     ];
     assert_eq!(pushes(&a), want.map(|w| format!("Some({w})")));
+}
+
+/// An enum-valued map field of a record bakes its literal initializer's tags,
+/// as an enum-element array field does.
+#[test]
+fn a_record_field_enum_map_literal_bakes_its_tags() {
+    let r = compile_ok(
+        "enum Hue { Red, Green, Blue }\ntype R = { m: Map<string, Hue> }\n\
+         var r: R = { m: { \"a\": Hue.Blue, \"b\": Hue.Green } }\n\
+         in go: exec\non go { BroadcastChatMessage(\"${r.m.length()}\") }",
+    );
+    let baked: Vec<Literal> = r
+        .module
+        .nodes
+        .values()
+        .filter(|n| n.gate_class == crate::ir::gate_class::MAP_VAR)
+        .filter_map(|n| {
+            n.properties
+                .get(&crate::intern::sym::INITIAL_VALUE)
+                .cloned()
+        })
+        .collect();
+    let s = |v: &str| Literal::String(v.into());
+    assert_eq!(
+        baked,
+        [Literal::Map(vec![
+            (s("a"), Literal::Int(2)),
+            (s("b"), Literal::Int(1))
+        ])]
+    );
 }
 
 /// A record field initialized from a named constant container (`{ xs: IS }`)

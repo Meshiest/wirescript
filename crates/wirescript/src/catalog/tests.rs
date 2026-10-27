@@ -71,13 +71,13 @@ fn enum_members_exclude_sentinel() {
     assert_eq!(enum_member_value("EBRColorSpace", "Nope"), None);
     assert!(enum_has_value("EBRColorSpace", 3));
     assert!(!enum_has_value("EBRColorSpace", 99));
-    // The `_MAX` sentinel is not a selectable member — by name or by value.
+    // The `_MAX` sentinel is not a selectable member, by name or by value.
     assert_eq!(
         enum_member_value("EBRColorSpace", "EBRColorSpace_MAX"),
         None
     );
     assert!(!enum_has_value("EBRColorSpace", 4)); // 4 == the sentinel value
-    // EBrickDirection spells its sentinel bare `MAX` — also dropped.
+    // EBrickDirection spells its sentinel bare `MAX`, also dropped.
     let dirs = enum_member_names("EBrickDirection");
     assert!(!dirs.iter().any(|d| d == "MAX"));
     assert_eq!(dirs.first().map(String::as_str), Some("X_Positive"));
@@ -88,11 +88,8 @@ fn enum_members_exclude_sentinel() {
 fn config_referenced_enum_types_covers_the_known_config_enums() {
     let types = super::config_referenced_enum_types();
     assert!(!types.is_empty());
-    // The DisplayText enums are named `EBRDisplayTextJustification` /
-    // `EBRTextTypeface` in the bundled schema (verified against
-    // `brdb/crates/brdb/schemas/BRSavedComponentChunkSoA_max.schema`); there
-    // is no `EBRJustification` / `EBRTypeface`, so those exact names are
-    // what this test asserts against.
+    // The bundled schema names the DisplayText enums
+    // `EBRDisplayTextJustification` / `EBRTextTypeface`.
     for want in [
         "EBREasingFunction",
         "EBrickDirection",
@@ -112,8 +109,8 @@ fn config_referenced_enum_types_covers_the_known_config_enums() {
 #[test]
 fn every_gate_builtin_desugars_to_a_real_method_or_assignment() {
     use crate::catalog::{arrays, gate_builtins as gb, maps};
-    // The set builtins carry no expression method (`method_for` returns
-    // None) — they desugar to a statement assignment / variable access.
+    // The set builtins have no expression method (`method_for` returns None):
+    // they desugar to an assignment or a variable access.
     let statement_forms = [
         gb::GET_VARIABLE,
         gb::SET_VARIABLE,
@@ -124,10 +121,9 @@ fn every_gate_builtin_desugars_to_a_real_method_or_assignment() {
     for name in gb::all() {
         match gb::method_for(name) {
             Some(method) => {
-                // The desugared method must be a known array and/or map
-                // method (some names — get/length/clear/remove/copyFrom —
-                // are both), and each gate it lowers to must be a real
-                // catalog gate, never the `_Unsupported` placeholder.
+                // The desugared method must be a known array or map method (some,
+                // such as get/length/clear/remove/copyFrom, are both), and each
+                // gate it lowers to a real catalog gate, never `_Unsupported`.
                 let mut gates = Vec::new();
                 if let Some(m) = arrays::array_method(method) {
                     gates.push(m.gate);
@@ -187,9 +183,8 @@ fn builtin_game_enums_are_well_formed_and_unique() {
         "two schema enums cleaned to the same name"
     );
 
-    // A cleaned name must be a usable Wirescript identifier: non-empty and
-    // starting with a letter (never empty or digit-leading), so a future
-    // schema enum whose cleaning degenerates fails loud here.
+    // A cleaned name must be a usable identifier: non-empty and starting with
+    // a letter.
     fn is_identifier_start(name: &str) -> bool {
         name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
     }
@@ -238,8 +233,8 @@ fn builtin_game_enums_are_well_formed_and_unique() {
 }
 
 /// `Type`, what Get Value Type gives, has the numbers the gate reported in
-/// game for each kind (`wirescript/projects/any-probes/01_value_type.ws`,
-/// ALL 10 PASS), and its members do not resolve bare.
+/// game for each kind (`wirescript/projects/any-probes/01_value_type.ws`), and
+/// its members do not resolve bare.
 #[test]
 fn type_enum_matches_the_game() {
     let enums = super::builtin_game_enums();

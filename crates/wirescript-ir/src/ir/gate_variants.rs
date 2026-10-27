@@ -1,11 +1,10 @@
 //! Size each procedural gate brick (`PB_Gate_*`) to the ports it uses.
 //!
-//! A procedural gate is placed at one of a few fixed sizes, and a longer brick
-//! shows more numbered ports. Every port stays reachable through the omniport
-//! at any size, so the size is chosen for the reader: the smallest variant that
-//! shows every port the node actually uses. This runs once the wire set is
-//! final and records the choice on the node (`sym::GATE_VARIANT`), the one
-//! value layout's cell reservation and emit's brick both read.
+//! A procedural gate is placed at one of a few fixed sizes, and a longer brick shows more
+//! numbered ports. Every port stays reachable through the omniport at any size, so the
+//! smallest variant that shows every port the node uses is chosen. This runs once the wire
+//! set is final and records the choice on the node (`sym::GATE_VARIANT`), which layout's
+//! cell reservation and emit's brick both read.
 
 use crate::catalog::default_catalog;
 use crate::collections::HashMap;
@@ -19,8 +18,8 @@ pub fn select_gate_variants(module: &mut Module) {
     let mut used = UsedPorts::default();
     // A wire into a node of a chip can live in an ancestor module (a scope
     // capture), so the whole tree is gathered before any node is sized.
-    collect_wired(module, &mut used);
-    assign(module, &used);
+    module.walk(&mut |_, m| collect_wired(m, &mut used));
+    module.walk_mut(&mut |_, m| assign(m, &used));
 }
 
 fn collect_wired(module: &Module, used: &mut UsedPorts) {
@@ -41,14 +40,11 @@ fn collect_wired(module: &Module, used: &mut UsedPorts) {
     {
         note(src, true);
     }
-    for child in module.chips.values() {
-        collect_wired(child, used);
-    }
 }
 
 fn assign(module: &mut Module, used: &UsedPorts) {
     let catalog = default_catalog();
-    for (id, node) in module.nodes.iter_mut() {
+    for (id, node) in &mut module.nodes {
         let Some(spec) = catalog.find_by_class(node.gate_class) else {
             continue;
         };
@@ -67,9 +63,6 @@ fn assign(module: &mut Module, used: &UsedPorts) {
         };
         std::sync::Arc::make_mut(&mut node.properties)
             .insert(*sym::GATE_VARIANT, Literal::Int(idx as i64));
-    }
-    for child in module.chips.values_mut() {
-        assign(child, used);
     }
 }
 

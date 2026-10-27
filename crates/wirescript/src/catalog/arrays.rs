@@ -1,12 +1,8 @@
-//! Canonical array-method table — the single source of truth for the methods
-//! callable on an array value (`arr.push(x)`, `arr.find(x)`, ...).
+//! The methods callable on an array value (`arr.push(x)`, `arr.find(x)`, ...).
 //!
-//! Each entry pairs a surface name with the gate it lowers to plus curated
-//! display strings (completion signature + hover docs, which the auto-generated
-//! gate inventory doesn't carry). Everything *derivable* — the return type and
-//! the gate's output shape — is read from the gate catalog via that gate, so it
-//! can't drift from the game's actual ports. The per-method input wiring is
-//! the entry's [`Lowering`], which `lower::access` builds the gate from.
+//! Each entry pairs a surface name with its gate, curated display strings, and
+//! the [`Lowering`] that `lower::access` builds the gate from. The return type
+//! and output shape are read from the gate catalog, so they match the game's ports.
 
 use crate::ir::Type;
 use crate::ir::gate_class as gc;
@@ -27,21 +23,12 @@ pub struct ArrayMethod {
     pub doc: &'static str,
     /// Which argument feeds which gate input and which output the call
     /// returns. Typecheck reads the same arguments as the method's parameters
-    /// ([`ArrayMethod::params`]), so a name, type or optionality has one
-    /// spelling. `array_return_type` is the source of truth for the return
-    /// type; `CallSignature` doesn't carry one.
+    /// ([`ArrayMethod::params`]); the return type comes from `array_return_type`.
     pub lowering: Lowering,
-    /// Does this method CHANGE the receiver's contents?
-    ///
-    /// Stored per-entry as DATA so a method added to `ARRAY_METHODS` must
-    /// state its own answer rather than inherit a default that could be
-    /// silently wrong. Deriving it from the gate class would be a second,
-    /// drift-prone spelling of the same fact.
-    ///
-    /// Read by the `const` container path in `lower::access` — a `const` array
-    /// is a compile-time value AND a runtime container, and the two can only
-    /// stay one source of truth while nothing mutates it. "Read-only" is meant
-    /// with respect to the RECEIVER; no array method writes anywhere else.
+    /// Whether the method changes the receiver's contents (no array method
+    /// writes anywhere else). The `const` container path in `lower::access`
+    /// reads it: a `const` array's compile-time value is only valid while
+    /// nothing mutates the runtime container.
     pub mutates: bool,
 }
 
@@ -275,10 +262,9 @@ pub static ARRAY_METHODS: &[ArrayMethod] = &[
         doc: "Fill this array with the members of a team",
         lowering: generic(&[val("team", P::Team, Entity)], P::ExecOut),
     },
-    // `fillFromZone*` take a `zone` rerouter reference ONLY (`in z: zone` ->
-    // `Type::Zone`). The `Zone` slot never accepts a plain entity, only a
-    // zone; the gate input is declared `entity`, the object wire a `ZoneRef`
-    // connection carries. `TagFilter` is declared `any`.
+    // `fillFromZone*` take only a `zone` rerouter reference, never a plain
+    // entity, although the gate declares the input `entity` (the object wire a
+    // `ZoneRef` connection carries). `TagFilter` is declared `any`.
     ArrayMethod {
         name: "fillFromZoneEntities",
         mutates: true,
@@ -307,10 +293,9 @@ pub static ARRAY_METHODS: &[ArrayMethod] = &[
             port_types: &[(P::TagFilter, Type::Any)],
         },
     },
-    // `sortMultiple` is a true variadic (this array + up to 7 parallel arrays,
-    // then an optional `descending?`) that a fixed argument list can't
-    // express; its empty params opt it out of `check_args`'s arity/type
-    // checking rather than rejecting valid calls against a fake fixed arity.
+    // `sortMultiple` is variadic (up to 7 parallel arrays, then an optional
+    // `descending?`); its empty params opt it out of `check_args`'s arity and
+    // type checks.
     ArrayMethod {
         name: "sortMultiple",
         mutates: true,
@@ -331,7 +316,7 @@ pub fn array_method(name: &str) -> Option<&'static ArrayMethod> {
 }
 
 /// Set of array method names, for O(1) membership tests.
-static ARRAY_METHOD_NAMES: std::sync::LazyLock<std::collections::HashSet<&'static str>> =
+static ARRAY_METHOD_NAMES: std::sync::LazyLock<crate::collections::HashSet<&'static str>> =
     std::sync::LazyLock::new(|| ARRAY_METHODS.iter().map(|m| m.name).collect());
 
 /// Is `name` a method callable on an array value?
@@ -346,13 +331,13 @@ pub fn field_name(port: &str) -> String {
     field_name_ref(port).to_string()
 }
 
-/// Allocation-free view of [`field_name`] — the hot port-resolution paths
-/// only ever compare it against a field string.
+/// Allocation-free [`field_name`], for the port-resolution paths that only
+/// compare it against a field string.
 pub fn field_name_ref(port: &str) -> &str {
-    if let Some(rest) = port.strip_prefix('b') {
-        if rest.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-            return rest;
-        }
+    if let Some(rest) = port.strip_prefix('b')
+        && rest.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+    {
+        return rest;
     }
     port
 }
@@ -362,10 +347,9 @@ pub fn field_name_ref(port: &str) -> &str {
 /// first, the others their element `Value`. Returns `None` for unknown
 /// methods.
 pub fn array_return_type(method: &str, elem: &Type) -> Option<Type> {
-    // A record ELEMENT read (`pop`/`get`) yields the element record directly, so
-    // `p = pts.pop()` / `pts[i].field` type-check like a plain value read - there
-    // is no `IsEmpty`/`OutOfBounds` flag to pair with a record. The record-array
-    // lowering fans these out per field. Mirrors the record-valued map `get`.
+    // A record element read (`pop`/`get`) yields the record itself, with no
+    // `IsEmpty`/`OutOfBounds` flag; lowering fans it out per field, like the
+    // record-valued map `get`.
     if matches!(method, "pop" | "get") && matches!(elem, Type::Record(_)) {
         return Some(Type::call_result(vec![("Value".into(), elem.clone())]));
     }

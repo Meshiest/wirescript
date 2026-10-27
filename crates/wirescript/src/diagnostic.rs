@@ -5,6 +5,8 @@
 
 pub use wirescript_ir::diagnostic::*;
 
+use crate::collections::{HashMap, HashSet};
+
 /// The code of an internal compiler error.
 pub const INTERNAL_ERROR: &str = "WS094";
 
@@ -58,20 +60,12 @@ pub fn drop_internal_errors_beside_errors(diags: &mut Vec<Diagnostic>) {
         .map(|d| d.range.clone())
         .collect();
     if !records.is_empty() {
-        let within = |d: &Diagnostic| {
-            records.iter().any(|r| {
-                r.file == d.range.file
-                    && r.start.offset <= d.range.start.offset
-                    && d.range.end.offset <= r.end.offset
-            })
-        };
+        let within = |d: &Diagnostic| records.iter().any(|r| r.contains(&d.range));
         diags.retain(|d| !(d.code == "WS071" && within(d)));
     }
-    let mut seen: crate::collections::HashSet<(std::sync::Arc<str>, usize)> = Default::default();
-    diags.retain(|d| {
-        !REPORTED_TWICE.contains(&d.code.as_str())
-            || seen.insert((d.range.file.clone(), d.range.start.offset))
-    });
+    let mut seen: HashSet<StartKey> = HashSet::default();
+    diags
+        .retain(|d| !REPORTED_TWICE.contains(&d.code.as_str()) || seen.insert(d.range.start_key()));
 }
 
 /// The warning lowering gives an expression it emitted an `_Unsupported`
@@ -138,33 +132,31 @@ const REPORTED_TWICE: &[&str] = &["WS021", "WS001"];
 ///
 /// A comment token of the form `ws-ignore-line:WS014` drops that code's
 /// diagnostics from the comment's own line; written on its own line it covers
-/// the line below as well, so a long statement can carry the note above it
-/// instead of past its right edge. `ws-ignore-file:WS014` drops the code from
-/// the whole file no matter where it sits, by convention at the top.
+/// the line below as well. `ws-ignore-file:WS014` drops the code from the
+/// whole file no matter where it sits, by convention at the top.
 ///
-/// Both forms take a comma-separated list (`:WS014,WSP001`), suppress
+/// Both forms take a comma-separated list (`:WS014,WSP001`) and suppress
 /// everything on their line or in their file when written bare
-/// (`// ws-ignore-file`), and may be surrounded by prose saying why:
-/// the directive is recognised as any whitespace-delimited token of the
-/// comment, not only the first, so appending one to a line that already ends
-/// in a comment works.
+/// (`// ws-ignore-file`). The directive is recognised as any
+/// whitespace-delimited token of the comment, so prose saying why may
+/// surround it.
 ///
 /// **Errors are never suppressed.** A directive naming one is inert: the
 /// program still does not compile, and hiding the reason would only move the
 /// failure somewhere less legible.
 #[derive(Clone, Debug, Default)]
 pub struct Suppressions {
-    per_file: crate::collections::HashMap<String, FileSuppressions>,
+    per_file: HashMap<String, FileSuppressions>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct FileSuppressions {
     /// `// ws-ignore-file` with no codes: everything in this file.
     file_all: bool,
-    file_codes: crate::collections::HashSet<String>,
+    file_codes: HashSet<String>,
     /// Lines carrying a bare `// ws-ignore-line`.
-    line_all: crate::collections::HashSet<u32>,
-    line_codes: crate::collections::HashMap<u32, crate::collections::HashSet<String>>,
+    line_all: HashSet<u32>,
+    line_codes: HashMap<u32, HashSet<String>>,
 }
 
 /// What one directive covers.
@@ -299,12 +291,7 @@ mod tests {
         // early exit is an internal error beside WS095.
         let src = "enum K { A, B }\nin go: exec\nvar k: K = K.A\nchip {\n  let v = match k { A => { return }, B => 2 }\n  out ov: int = v\n}\n";
         let all = crate::compile::diagnostics_only(
-            crate::CompileInput {
-                source: src,
-                file: "test.ws",
-                module_name: None,
-                fold_mode: crate::FoldMode::Auto,
-            },
+            crate::CompileInput::new(src, "test.ws"),
             &crate::resolve::FsLoader,
         );
         assert!(all.iter().any(|d| d.code == "WS095"), "{all:?}");

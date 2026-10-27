@@ -11,7 +11,7 @@ fn no_enum<'r>(_: &'r EnumRegistry, _: &str) -> Option<&'r EnumDef> {
 
 fn symbols_for(source: &str) -> Vec<SymbolDef> {
     let resolved = resolve(source, "test", &FsLoader);
-    let tc = crate::typecheck::typecheck_with_inference(&resolved.ast, "test").0;
+    let tc = crate::typecheck::typecheck_with_inference(&resolved.ast).0;
     collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"))
 }
 
@@ -177,8 +177,8 @@ fn the_global_list_and_reference_fragments_complete() {
 #[test]
 fn prefab_ref_completes_from_candidate_paths() {
     let prefabs = ["./turret.brz", "./enemies/tank.brz", "./notes.txt"].map(String::from);
-    // `SpawnPrefab(prefab = $./t` offers the `./t…` prefab paths; `./t`
-    // doesn't match `./enemies/…`.
+    // `SpawnPrefab(prefab = $./t` offers the `./t...` prefab paths; `./t`
+    // doesn't match `./enemies/...`.
     check_with_prefabs(
         &[row(
             "`$./t` offers `./t…` paths",
@@ -405,6 +405,22 @@ fn identifier_completion_dedups_shadowed_var_by_scope() {
 }
 
 #[test]
+fn identifier_completion_scopes_by_byte_column_after_multibyte_text() {
+    // The parameter `players` follows 60 two-byte characters on the cursor's
+    // line, so its byte column is past the cursor's char column.
+    let pad = "é".repeat(60);
+    let src = format!(
+        "var players: string = \"\"
+mod f(s: string = \"{pad}\", players: int) -> int {{ return players‸ }}"
+    );
+    let (source, line, col) = at_cursor(&src);
+    let items = completions(&source, &symbols_for(&source), line, col, &[], &no_enum);
+    let players: Vec<&Completion> = items.iter().filter(|i| i.label == "players").collect();
+    assert_eq!(players.len(), 1, "expected one `players`, got: {players:?}");
+    assert_eq!(players[0].detail.as_deref(), Some("int"), "{players:?}");
+}
+
+#[test]
 fn namespace_dot_completes_members() {
     // `import * as u` exposes qualified `u.member` symbols; `u.` lists the
     // members by their bare names, and they never leak into the global list.
@@ -412,7 +428,7 @@ fn namespace_dot_completes_members() {
         SymbolDef {
             name: "u".into(),
             kind: "namespace",
-            range: Default::default(),
+            range: crate::diagnostic::SourceRange::default(),
             ty: None,
             exec: false,
             is_const: false,
@@ -420,7 +436,7 @@ fn namespace_dot_completes_members() {
         SymbolDef {
             name: "u.swap".into(),
             kind: "mod",
-            range: Default::default(),
+            range: crate::diagnostic::SourceRange::default(),
             ty: None,
             exec: false,
             is_const: false,
@@ -428,7 +444,7 @@ fn namespace_dot_completes_members() {
         SymbolDef {
             name: "u.clamp".into(),
             kind: "fn",
-            range: Default::default(),
+            range: crate::diagnostic::SourceRange::default(),
             ty: None,
             exec: false,
             is_const: false,
@@ -460,11 +476,9 @@ fn namespace_dot_completes_members() {
     );
 }
 
-/// The match-arm completion scanner takes the cursor's char column and
-/// slices `source` at it. It used to convert that column with a
-/// byte-indexed helper, so with the cursor just past a multi-byte
-/// character the slice landed mid-character and the completion request
-/// panicked instead of answering.
+/// The match-arm completion scanner slices `source` at the cursor's char
+/// column converted to bytes, so a cursor just past a multi-byte character
+/// answers instead of panicking.
 #[test]
 fn match_arm_scrutinee_scan_survives_a_cursor_after_a_multibyte_char() {
     let src = "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Empty => \"\u{e9}\n}\n";

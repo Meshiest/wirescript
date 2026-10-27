@@ -19,51 +19,48 @@ pub(super) struct ConcatLowered {
 /// The value a `match` tests: an enum's `__disc` + payload-slot record, or for
 /// a scrutinee that is a single value, that value under [`VALUE_ROOT`].
 pub(super) fn match_root(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     scrutinee: &Expr,
     scrut_ty: &Type,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+) -> Option<Fields> {
     match scrut_ty {
         Type::Int | Type::Float | Type::Bool | Type::String => {
             let port = lower_expr(ctx, scrutinee);
             let mut root = HashMap::default();
-            root.insert(
-                crate::intern::intern(VALUE_ROOT),
-                Binding::Local(LocalRecord { port }),
-            );
+            root.insert(intern(VALUE_ROOT), Binding::Local(LocalRecord { port }));
             Some(root)
         }
-        _ => crate::lower::expr::match_scrutinee_record(ctx, scrutinee),
+        _ => match_scrutinee_record(ctx, scrutinee),
     }
 }
 
 /// The value at `path` in the match root, as a port.
 pub(super) fn read_value_at_path(
-    ctx: &mut LowerCtx,
-    root: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    root: &Fields,
     path: &[PathStep],
     range: &SourceRange,
 ) -> Option<PortRef> {
     let Some((last, init)) = path.split_last() else {
-        let value = root.get(&crate::intern::intern(VALUE_ROOT))?.clone();
+        let value = root.get(&intern(VALUE_ROOT))?.clone();
         return binding_to_port(ctx, &value, range);
     };
     let mut cur = root;
     for PathStep::Field(f) in init {
-        match cur.get(&crate::intern::intern(f)) {
+        match cur.get(&intern(f)) {
             Some(Binding::Record(sub)) => cur = sub,
             _ => return None,
         }
     }
     let PathStep::Field(f) = last;
-    let value = cur.get(&crate::intern::intern(f))?.clone();
+    let value = cur.get(&intern(f))?.clone();
     binding_to_port(ctx, &value, range)
 }
 
 /// The condition that every one of `tests` passes, or `None` for no tests.
 pub(super) fn lower_value_checks(
-    ctx: &mut LowerCtx,
-    root: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    root: &Fields,
     tests: &[ValueCheck],
     range: &SourceRange,
 ) -> Option<PortRef> {
@@ -78,7 +75,7 @@ pub(super) fn lower_value_checks(
 
 /// `a && b && ...`, or `None` for no conditions.
 pub(super) fn all_of(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     conds: Vec<PortRef>,
     range: &SourceRange,
 ) -> Option<PortRef> {
@@ -89,7 +86,7 @@ pub(super) fn all_of(
 
 /// Whether `value`, of type `ty`, passes `test`.
 fn lower_value_test(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     value: PortRef,
     ty: &Type,
     test: &ValueTest,
@@ -124,12 +121,12 @@ fn lower_value_test(
 /// The value a capture binds, read off the match root: a payload slot (or the
 /// whole scrutinee), or a hole of a string pattern.
 pub(super) fn bind_capture(
-    ctx: &mut LowerCtx,
-    root: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    root: &Fields,
     capture: &Capture,
     range: &SourceRange,
 ) -> Option<Binding> {
-    let binding = crate::lower::expr::navigate_capture(root, &capture.path)?;
+    let binding = navigate_capture(root, &capture.path)?;
     let Some((parts, k)) = &capture.hole else {
         return Some(binding);
     };
@@ -145,7 +142,7 @@ pub(super) fn bind_capture(
 /// (`Find`). Each hole is the `Substring` between its neighbours. The string
 /// gates are case-sensitive, as `==` is.
 fn lower_concat(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     value: PortRef,
     parts: &[ConcatPart],
     range: &SourceRange,
@@ -274,29 +271,29 @@ enum Offset {
 }
 
 impl Offset {
-    fn plus(self, ctx: &mut LowerCtx, n: i64, range: &SourceRange) -> Offset {
+    fn plus(self, ctx: &mut LowerCtx<'_>, n: i64, range: &SourceRange) -> Self {
         match self {
             _ if n == 0 => self,
-            Offset::Const(k) => Offset::Const(k + n),
-            Offset::Port(p) => {
+            Self::Const(k) => Self::Const(k + n),
+            Self::Port(p) => {
                 let (op, k) = if n < 0 { ("-", -n) } else { ("+", n) };
                 let k = literal_node_range(ctx, range, Type::Int, Literal::Int(k));
-                Offset::Port(emit_op(ctx, op, (p, Type::Int), (k, Type::Int), range))
+                Self::Port(emit_op(ctx, op, (p, Type::Int), (k, Type::Int), range))
             }
         }
     }
 
-    fn port(self, ctx: &mut LowerCtx, range: &SourceRange) -> PortRef {
+    fn port(self, ctx: &mut LowerCtx<'_>, range: &SourceRange) -> PortRef {
         match self {
-            Offset::Const(k) => literal_node_range(ctx, range, Type::Int, Literal::Int(k)),
-            Offset::Port(p) => p,
+            Self::Const(k) => literal_node_range(ctx, range, Type::Int, Literal::Int(k)),
+            Self::Port(p) => p,
         }
     }
 }
 
 /// `value`'s length, built once per string pattern.
 fn string_length(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     value: PortRef,
     cached: &mut Option<PortRef>,
     range: &SourceRange,
@@ -317,7 +314,7 @@ fn string_length(
 
 /// The characters of `value` from `start` up to `end`.
 fn substring(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     value: PortRef,
     start: Offset,
     end: Offset,
@@ -349,7 +346,7 @@ fn substring(
 /// A case-sensitive `StartsWith`/`EndsWith` (a bool) or `Find` (an index from
 /// `start`, `-1` when absent) of the literal `text` in `value`.
 fn string_test(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     class: &'static str,
     text_port: WirePort,
     value: PortRef,
@@ -377,7 +374,7 @@ fn string_test(
 /// One pure gate of `class`, its inputs wired from `inputs`, its `Output` the
 /// result.
 fn emit_gate(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     class: &'static str,
     inputs: &[(WirePort, PortRef, Type)],
     out: Type,
@@ -404,7 +401,7 @@ fn emit_gate(
 /// The gate of the binary operator `op` over two values of the given types, as
 /// the operator catalog resolves it.
 pub(super) fn emit_op(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     op: &str,
     (a, a_ty): (PortRef, Type),
     (b, b_ty): (PortRef, Type),
@@ -413,27 +410,19 @@ pub(super) fn emit_op(
     let Some(rule) = crate::catalog::operators::resolve_op(op, &[a_ty, b_ty]) else {
         return synthesise_unsupported_range(ctx, "a pattern test", range);
     };
-    let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class: rule.gate_class,
-        source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec::new(rule.ports.inputs[0].sym(), rule.operands[0].clone()),
-                PortSpec::new(rule.ports.inputs[1].sym(), rule.operands[1].clone()),
-            ],
-            outputs: vec![PortSpec::new(rule.ports.output.sym(), rule.result.clone())],
-        },
-        note: Some("match pattern test"),
-        ..Default::default()
-    });
-    ctx.connect(a, node_id.port(rule.ports.inputs[0]));
-    ctx.connect(b, node_id.port(rule.ports.inputs[1]));
-    node_id.port(rule.ports.output)
+    rule_gate(
+        ctx,
+        rule,
+        &[Some(a), Some(b)],
+        rule.operands,
+        Some("match pattern test"),
+        range,
+    )
 }
 
 /// `disc` equals one of `keys`.
 pub(super) fn emit_disc_in(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     disc: PortRef,
     keys: &[i64],
     range: &SourceRange,

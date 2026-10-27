@@ -25,34 +25,34 @@ enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 8] = [
-        Kind::FloatWhole,
-        Kind::FloatFraction,
-        Kind::FloatConst,
-        Kind::FloatConstWhole,
-        Kind::FloatArithmetic,
-        Kind::Negated,
-        Kind::IntLiteral,
-        Kind::IntConst,
+    const ALL: [Self; 8] = [
+        Self::FloatWhole,
+        Self::FloatFraction,
+        Self::FloatConst,
+        Self::FloatConstWhole,
+        Self::FloatArithmetic,
+        Self::Negated,
+        Self::IntLiteral,
+        Self::IntConst,
     ];
 
     fn text(self) -> &'static str {
         match self {
-            Kind::FloatWhole => "13.0",
-            Kind::FloatFraction => "13.5",
-            Kind::FloatConst => "F135",
-            Kind::FloatConstWhole => "F13",
-            Kind::FloatArithmetic => "(F12 + 1.5)",
-            Kind::Negated => "-FM135",
-            Kind::IntLiteral => "13",
-            Kind::IntConst => "THIRTEEN",
+            Self::FloatWhole => "13.0",
+            Self::FloatFraction => "13.5",
+            Self::FloatConst => "F135",
+            Self::FloatConstWhole => "F13",
+            Self::FloatArithmetic => "(F12 + 1.5)",
+            Self::Negated => "-FM135",
+            Self::IntLiteral => "13",
+            Self::IntConst => "THIRTEEN",
         }
     }
 
     fn drops_a_fraction(self) -> bool {
         matches!(
             self,
-            Kind::FloatFraction | Kind::FloatConst | Kind::FloatArithmetic | Kind::Negated
+            Self::FloatFraction | Self::FloatConst | Self::FloatArithmetic | Self::Negated
         )
     }
 
@@ -61,7 +61,7 @@ impl Kind {
     /// way a name does.
     fn twin(self) -> &'static str {
         match self {
-            Kind::FloatWhole | Kind::FloatFraction | Kind::IntLiteral => "13",
+            Self::FloatWhole | Self::FloatFraction | Self::IntLiteral => "13",
             _ => "I13",
         }
     }
@@ -458,12 +458,10 @@ fn float_constant_in_an_int_place_matrix(full: bool) {
         // it folds to.
         let values = save_values(&twin, &[], false, false)
             .unwrap_or_else(|c| panic!("{what}: {c:?}\n{twin}"));
-        if values.iter().any(|l| {
-            matches!(
-                l,
-                Literal::Int(13) | Literal::Int(3) | Literal::Int(130) | Literal::Int(14)
-            )
-        }) {
+        if values
+            .iter()
+            .any(|l| matches!(l, Literal::Int(13 | 3 | 130 | 14)))
+        {
             twin_ints += 1;
         } else {
             failures.push(format!(
@@ -639,11 +637,12 @@ fn diagnostic_lines(src: &str, deps: &[(&str, &str)]) -> Vec<String> {
         module_name: None,
         fold_mode: crate::FoldMode::ForceOn,
     };
-    let diags = match crate::compile_with_loader(input, Default::default(), &loader) {
-        Ok(out) => out.diagnostics,
-        Err(crate::CompileError::HasErrors(errors)) => errors,
-        Err(e) => panic!("{e:?}\n{src}"),
-    };
+    let diags =
+        match crate::compile_with_loader(input, crate::emit::EmitOptions::default(), &loader) {
+            Ok(out) => out.diagnostics,
+            Err(crate::CompileError::HasErrors(errors)) => errors,
+            Err(e) => panic!("{e:?}\n{src}"),
+        };
     diags
         .iter()
         .map(|d| format!("{} {}", d.code, d.message))

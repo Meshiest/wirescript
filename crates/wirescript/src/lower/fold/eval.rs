@@ -1,16 +1,15 @@
 //! Certified evaluator: implements exactly the laws the in-game probe
-//! certified (data/gate_semantics.json). `None` = refuse to fold. The replay
-//! test at the bottom locks every table case to this implementation — table
-//! and evaluator cannot drift apart without breaking the build.
+//! certified (data/gate_semantics.json). `None` means refuse to fold. The
+//! replay test in `eval/tests.rs` checks every table case against this code.
+use std::fmt::Write as _;
+
 use crate::ir::Literal;
 use crate::ir::port_registry::WirePort;
 use crate::lower::fold::table::InVariant;
 
-// `pub`: reachable as `wirescript::lower::fold::eval::Value` from the
-// `--fold-diff` fuzz harness (see the visibility note on `pub mod fold` in
-// `lower/mod.rs`). `variant()` stays `pub(crate)` since it returns the
-// crate-private `InVariant` — the harness never needs it (it re-derives
-// coverage indirectly by calling `eval()`, which already gates on it).
+// `pub` for the `--fold-diff` fuzz harness (via the `fold_eval` re-export).
+// `variant()` stays `pub(crate)` because it returns the crate-private
+// `InVariant`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Int(i64),
@@ -33,14 +32,9 @@ pub enum Value {
         z: f64,
         w: f64,
     },
-    /// Linear-space RGBA (0-1 components) — the wire `LinearColor` variant.
-    /// `ColorToHex` converts FROM this at a certified sRGB gamma boundary
-    /// (round-trip-verified — see `color_to_hex`'s doc comment); the
-    /// REVERSE direction used by `MakeColorSRGB`/`MakeColorHex` is the same
-    /// curve's mathematical inverse, never itself independently probed (see
-    /// those two functions' doc comments — both hard-refuse in production
-    /// folding as a result). Every OTHER composite/color op just carries it
-    /// through untouched.
+    /// Linear-space RGBA (0-1 components), the wire `LinearColor` variant.
+    /// `ColorToHex` converts from it at a certified sRGB gamma boundary; the
+    /// inverse curve (`MakeColorSRGB`/`MakeColorHex`) is unprobed and refused.
     Color {
         r: f64,
         g: f64,
@@ -52,93 +46,81 @@ pub enum Value {
 impl Value {
     pub(crate) fn variant(&self) -> InVariant {
         match self {
-            Value::Int(_) => InVariant::Int,
-            Value::Float(_) => InVariant::Float,
-            Value::Bool(_) => InVariant::Bool,
-            Value::Str(_) => InVariant::Str,
-            Value::Vector { .. } => InVariant::Vector,
-            Value::Rotator { .. } => InVariant::Rotator,
-            Value::Quat { .. } => InVariant::Quat,
-            Value::Color { .. } => InVariant::Color,
+            Self::Int(_) => InVariant::Int,
+            Self::Float(_) => InVariant::Float,
+            Self::Bool(_) => InVariant::Bool,
+            Self::Str(_) => InVariant::Str,
+            Self::Vector { .. } => InVariant::Vector,
+            Self::Rotator { .. } => InVariant::Rotator,
+            Self::Quat { .. } => InVariant::Quat,
+            Self::Color { .. } => InVariant::Color,
         }
     }
-    pub fn from_literal(lit: &Literal) -> Option<Value> {
+    pub fn from_literal(lit: &Literal) -> Option<Self> {
         match lit {
-            Literal::Int(n) => Some(Value::Int(*n)),
-            Literal::Float(f) => Some(Value::Float(*f)),
-            Literal::Bool(b) => Some(Value::Bool(*b)),
-            Literal::String(s) => Some(Value::Str(s.clone())),
-            Literal::Vector { x, y, z } => Some(Value::Vector {
+            Literal::Int(n) => Some(Self::Int(*n)),
+            Literal::Float(f) => Some(Self::Float(*f)),
+            Literal::Bool(b) => Some(Self::Bool(*b)),
+            Literal::String(s) => Some(Self::Str(s.clone())),
+            Literal::Vector { x, y, z } => Some(Self::Vector {
                 x: *x,
                 y: *y,
                 z: *z,
             }),
-            Literal::Rotator { pitch, yaw, roll } => Some(Value::Rotator {
+            Literal::Rotator { pitch, yaw, roll } => Some(Self::Rotator {
                 pitch: *pitch,
                 yaw: *yaw,
                 roll: *roll,
             }),
-            Literal::Quat { x, y, z, w } => Some(Value::Quat {
+            Literal::Quat { x, y, z, w } => Some(Self::Quat {
                 x: *x,
                 y: *y,
                 z: *z,
                 w: *w,
             }),
-            // `Literal::LinearColor` IS this fold pass's own composite Color
-            // shape (its doc comment says as much: "produced by folding a
-            // constant Color(r, g, b, a?) call") — pass through untouched.
-            Literal::LinearColor { r, g, b, a } => Some(Value::Color {
+            // `Literal::LinearColor` is the fold pass's own Color shape.
+            Literal::LinearColor { r, g, b, a } => Some(Self::Color {
                 r: *r,
                 g: *g,
                 b: *b,
                 a: *a,
             }),
-            // `Literal::Color` (u8 0-255) is a DIFFERENT, pre-existing
-            // representation (brick-paint literals — see emit.rs's
-            // `Literal::Color -> WireVariant::LinearColor` arm) that
-            // predates this fold pass and already has its own established,
-            // if approximate ("linear-ish", per that arm's own comment)
-            // conversion: a plain `/255.0`, NOT the true sRGB gamma curve
-            // `MakeColorSRGB`/`MakeColorHex` are certified to use below.
-            // Reusing the gamma curve here would make folding a `_Literal`
-            // color produce a VISIBLY DIFFERENT color than leaving it
-            // unfolded — matching emit.rs's existing conversion exactly is
-            // what makes folding semantics-preserving.
-            Literal::Color { r, g, b, a } => Some(Value::Color {
-                r: *r as f64 / 255.0,
-                g: *g as f64 / 255.0,
-                b: *b as f64 / 255.0,
-                a: *a as f64 / 255.0,
+            // `Literal::Color` (u8 brick paint) becomes a wire value by plain
+            // `/255.0` in emit (`wirescript-ir` `emit/variants.rs`), not the
+            // gamma curve; folding must match it or the color would change.
+            Literal::Color { r, g, b, a } => Some(Self::Color {
+                r: f64::from(*r) / 255.0,
+                g: f64::from(*g) / 255.0,
+                b: f64::from(*b) / 255.0,
+                a: f64::from(*a) / 255.0,
             }),
             _ => None, // object/array/asset/prefab: not certified
         }
     }
     pub fn to_literal(&self) -> Literal {
         match self {
-            Value::Int(n) => Literal::Int(*n),
-            Value::Float(f) => Literal::Float(*f),
-            Value::Bool(b) => Literal::Bool(*b),
-            Value::Str(s) => Literal::String(s.clone()),
-            Value::Vector { x, y, z } => Literal::Vector {
+            Self::Int(n) => Literal::Int(*n),
+            Self::Float(f) => Literal::Float(*f),
+            Self::Bool(b) => Literal::Bool(*b),
+            Self::Str(s) => Literal::String(s.clone()),
+            Self::Vector { x, y, z } => Literal::Vector {
                 x: *x,
                 y: *y,
                 z: *z,
             },
-            Value::Rotator { pitch, yaw, roll } => Literal::Rotator {
+            Self::Rotator { pitch, yaw, roll } => Literal::Rotator {
                 pitch: *pitch,
                 yaw: *yaw,
                 roll: *roll,
             },
-            Value::Quat { x, y, z, w } => Literal::Quat {
+            Self::Quat { x, y, z, w } => Literal::Quat {
                 x: *x,
                 y: *y,
                 z: *z,
                 w: *w,
             },
-            // The inverse of `from_literal`'s `LinearColor` arm — always
-            // round-trips through the exact linear representation, never
-            // the lossy u8 `Literal::Color` shape.
-            Value::Color { r, g, b, a } => Literal::LinearColor {
+            // Always the exact linear shape, never the lossy u8 `Literal::Color`.
+            Self::Color { r, g, b, a } => Literal::LinearColor {
                 r: *r,
                 g: *g,
                 b: *b,
@@ -148,16 +130,9 @@ impl Value {
     }
 }
 
-// ============================================================================
-// Gate short-name constants. Every string here is the suffix after the last
-// `_` in a gate's full `BrickComponentType_Expr_...` class name (what
-// `eval()` matches on via `gate_class.rsplit('_').next()`). Defined ONCE and
-// referenced everywhere a short name would otherwise be repeated as a raw
-// string literal — the `eval()` match arms below, the `DEFERRED`/
-// `BLANK_RENDER_REFUSED` refusal lists (also here), the `Math*` suffix
-// checks in `component_op`/`math`, and the test module's mirrored lists — so
-// a rename of one can't silently desync from the others.
-// ============================================================================
+// Gate short names: the suffix after the last `_` of a full
+// `BrickComponentType_Expr_...` class, which `eval()` matches on. Shared by
+// the match arms, the refusal lists and the tests so they cannot desync.
 const G_COMPARE_EQUAL: &str = "CompareEqual";
 const G_COMPARE_NOT_EQUAL: &str = "CompareNotEqual";
 const G_COMPARE_LESS: &str = "CompareLess";
@@ -197,7 +172,7 @@ const G_ROTATE_VECTOR: &str = "RotateVector";
 const G_INVERT_ROTATION: &str = "InvertRotation";
 const G_QUAT_DOT_PRODUCT: &str = "QuatDotProduct";
 
-// Deferred-ops family (probed but never folded — see `DEFERRED` below).
+// Deferred-ops family: probed but never folded (see `DEFERRED`).
 const G_VEC_MAGNITUDE: &str = "VecMagnitude";
 const G_VEC_NORMALIZE: &str = "VecNormalize";
 const G_VEC_DISTANCE: &str = "VecDistance";
@@ -209,23 +184,17 @@ const G_DIRECTION_TO_ROTATION: &str = "DirectionToRotation";
 const G_ROTATION_TO_DIRECTION: &str = "RotationToDirection";
 const G_COLOR_BLEND: &str = "ColorBlend";
 
-// Math* family — matched by SUFFIX (`gate_class.ends_with(...)`) rather than
-// exact short name in `component_op`/`math`, since those two functions
-// receive the FULL gate class string, not the post-`rsplit` short name.
+// Math* family: matched by suffix, since `component_op` and `math` receive
+// the full gate class string.
 const G_MATH_ADD: &str = "MathAdd";
 const G_MATH_SUBTRACT: &str = "MathSubtract";
 const G_MATH_MULTIPLY: &str = "MathMultiply";
 const G_MATH_DIVIDE: &str = "MathDivide";
 const G_MATH_MODULO: &str = "MathModulo";
 
-/// `deferredOps` chapter: probed but NEVER folded — hard refusal regardless
-/// of signature coverage (allowlisted wholesale in the replay test below).
-/// These gates' math is meaningfully harder to get exactly right (slerp,
-/// normalize, arbitrary-axis construction, blend) and are not implemented.
-/// Module-level (not local to `eval()`) so the
-/// test module's `deferred_ops_always_refuse`/`replay_every_certified_case`
-/// assert against the SAME list `eval()` actually refuses against, rather
-/// than a hand-copied mirror that could silently drift.
+/// `deferredOps` chapter: probed but always refused regardless of coverage,
+/// because exact slerp, normalize, axis-angle and blend math is not
+/// implemented. Module-level so the tests assert against this same list.
 const DEFERRED: &[&str] = &[
     G_VEC_MAGNITUDE,
     G_VEC_NORMALIZE,
@@ -239,25 +208,10 @@ const DEFERRED: &[&str] = &[
     G_COLOR_BLEND,
 ];
 
-/// MUST-REFUSE — blank-render-only evidence, ZERO transitive certification:
-/// each of these gates' only table evidence is a case whose output renders
-/// blank (rotator/quat/color never render through FormatText — certified,
-/// see `render_for_format`'s doc comment), and "blank==blank" proves nothing
-/// about the correctness of the actual computed value. Hard-refused
-/// regardless of signature coverage. Output unobservable in-game (composites
-/// render blank); certification pending a probe wave that chains these
-/// through a rendering gate (`ColorToHex` / `RotateVector` / a future
-/// `Split*`).
-///
-/// NOT here — fold-eligible via TRANSITIVE certification through a
-/// different, value-bearing gate (see each function's own doc comment for
-/// the specific evidence): `MakeQuaternion` (certified via `RotateVector`'s
-/// 3 value-bearing cases + `QuatDotProduct`'s 0.707 case) and `MakeColor`'s
-/// 3-arg RGB form (certified via `ColorToHex("FFBC00")`; its 4-arg
-/// alpha-carrying form still hard-refuses, see `make_color`).
-///
-/// Module-level for the same reason as `DEFERRED` — see
-/// `blank_render_gates_always_refuse` in the test module below.
+/// Always refused: each gate's only evidence is a case whose output renders
+/// blank (rotator/quat/color never render through `FormatText`), which proves
+/// nothing about the value. Certifying one needs a probe that chains it
+/// through a rendering gate, as `MakeQuaternion` and 3-arg `MakeColor` are.
 const BLANK_RENDER_REFUSED: &[&str] = &[
     G_MAKE_ROTATION,
     G_MAKE_COLOR_SRGB,
@@ -279,31 +233,21 @@ pub(crate) fn truthy(v: Option<&Value>) -> bool {
         Some(Value::Float(f)) => sanitize(*f) != 0.0,
         Some(Value::Bool(b)) => *b,
         Some(Value::Str(s)) => !matches!(s.as_str(), "" | "0" | "false"),
-        // Never probed (Select/Branch chapters are scalar-only) and no
-        // composite-producing gate ever feeds a condition port in this
-        // table — dead in practice, but `truthy` must stay total.
+        // Unprobed (the Select/Branch chapters are scalar-only) and not a
+        // certified condition signature; present so the match stays total.
         Some(
             Value::Vector { .. } | Value::Rotator { .. } | Value::Quat { .. } | Value::Color { .. },
         ) => false,
     }
 }
 
-// ============================================================================
-// Rendering — TWO certified laws, deliberately kept separate (see the v3
-// probe's own comment on why they differ: `data/gate_semantics.json`'s case
-// outputs for the pre-v3 scalar chapters were recorded through the exact
-// same interpolation path as everything else, but gen_semantics.mjs
-// CANONICALIZES bool-output gates to "true"/"false" text and STRIPS commas
-// from int-classified outputs before persisting them — so the persisted
-// case text and the game's literal on-screen text are not always the same
-// string, even though both trace back to one underlying render law).
-// ============================================================================
+// Rendering: two laws. `render_for_format` is what `FormatText` prints;
+// `render` matches the persisted case text, which `gen_semantics.mjs`
+// canonicalizes (bools to "true"/"false", commas stripped from ints).
 
-/// Round to 3 decimals and split into (sign, integer digits, trimmed
-/// fractional digits) — the core numeric law both renderers share. Ties
-/// round to even (`format!("{:.3}", ..)`'s native behavior, certified
-/// against e.g. `1.0/3.0 -> 0.333`, `VecDotProduct(...) -> -0.312` from
-/// the exact value `-0.3125`, and `1.5e-3 -> 0.002`).
+/// Round to 3 decimals and split into (negative, integer digits, trimmed
+/// fraction), the numeric law both renderers share. Ties round to even, as
+/// certified (`-0.3125 -> -0.312`, `1.5e-3 -> 0.002`).
 fn round3(f: f64) -> (bool, String, String) {
     let f = sanitize(f);
     let fixed = format!("{f:.3}");
@@ -315,13 +259,9 @@ fn round3(f: f64) -> (bool, String, String) {
         .split_once('.')
         .expect("format!(\"{:.3}\", _) always emits a decimal point");
     let trimmed_frac = frac_part.trim_end_matches('0');
-    // A negative value that rounds all the way to zero (exact -0.0, or any
-    // sufficiently small negative magnitude) has no meaningful sign — certified
-    // for the exact -0.0 case (`render` section: "float:-0.0" -> "0"); the
-    // same collapse is applied to a near-zero negative for consistency (not
-    // itself probed, but there is no probed case where a signed near-zero
-    // SCALAR survives to the render step un-collapsed — unlike vector
-    // components, see `fixed3` below, which DO show a preserved sign).
+    // A negative that rounds to zero drops its sign: certified for -0.0
+    // ("float:-0.0" -> "0"), assumed for small negatives. Vector components
+    // keep the sign (see `fixed3`).
     let neg = neg && !(int_part == "0" && trimmed_frac.is_empty());
     (neg, int_part.to_string(), trimmed_frac.to_string())
 }
@@ -331,7 +271,7 @@ fn group_thousands(digits: &str) -> String {
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, b) in bytes.iter().enumerate() {
         let from_end = bytes.len() - i;
-        if i > 0 && from_end % 3 == 0 {
+        if i > 0 && from_end.is_multiple_of(3) {
             out.push(',');
         }
         out.push(*b as char);
@@ -339,41 +279,25 @@ fn group_thousands(digits: &str) -> String {
     out
 }
 
-/// One vector/rotator/quat/color COMPONENT, as printed by Unreal's native
-/// `FVector::ToString`-style formatter: fixed 3 decimals, no grouping, no
-/// trimming — certified directly (`MakeVector(1.5,-2.5,0.75)` renders
-/// `X=1.500 Y=-2.500 Z=0.750`, not `X=1.5 ...`), including a PRESERVED sign
-/// on a signed near-zero result (`RotateVector` case 1 renders `X=-0.000`).
+/// One composite component as Unreal's `FVector::ToString` prints it: fixed
+/// 3 decimals, no grouping or trimming (`X=1.500 Y=-2.500 Z=0.750`), and a
+/// near-zero negative keeps its sign (`X=-0.000`). Certified.
 fn fixed3(f: f64) -> String {
     format!("{:.3}", sanitize(f))
 }
 
-/// The certified PRODUCTION render law (`data/gate_semantics.json`'s
-/// `render` table section, probeVersion 3): reproduces exactly what
-/// FormatText prints for a given wire value. Folding correctness for
-/// `FormatText` template substitution depends on this being exact — every
-/// entry in the certified `render` section is validated against it
-/// (`table::tests` / `eval::tests::render_for_format_matches_certified_table`).
-///
-/// Ints: comma-grouped every 3 digits from 1,000 up, sign outside the
-/// grouping (`-1,000,000`). Floats: rounded to 3 decimals (ties to even),
-/// comma-grouped integer part, trailing fractional zeros (and a bare
-/// trailing `.`) dropped; non-finite and -0.0 render `"0"`. Bools render
-/// `"1"`/`"0"` (certified — NOT `"true"`/`"false"`, see `render` below for
-/// the case where that string DOES appear). Vectors render
-/// `X=%.3f Y=%.3f Z=%.3f` (no grouping, no trimming). Rotator/Color/Quat
-/// NEVER render through FormatText — certified blank (`render` section:
-/// every rotator/color/quat entry maps to `""`, matching every
-/// `MakeRotation`/`MakeQuaternion`/`MakeColor*`/`InvertRotation` case
-/// output too).
+/// What `FormatText` prints for a wire value, certified by the `render`
+/// section of `data/gate_semantics.json`. Ints group thousands with commas
+/// (`-1,000,000`). Floats round to 3 decimals, group the integer part and
+/// drop trailing zeros; non-finite and -0.0 print "0". Bools print "1"/"0".
+/// Vectors print `X=%.3f Y=%.3f Z=%.3f`; rotator, quat and color print blank.
 pub(crate) fn render_for_format(v: &Value) -> String {
     match v {
         Value::Int(n) => {
             let (neg, digits) = match n.checked_abs() {
                 Some(a) => (*n < 0, a.to_string()),
-                // i64::MIN has no positive abs — its digits are already
-                // unsigned-safe via the unsigned formatting below.
-                None => (true, (*n as i128).unsigned_abs().to_string()),
+                // i64::MIN has no positive i64 abs.
+                None => (true, i128::from(*n).unsigned_abs().to_string()),
             };
             let grouped = group_thousands(&digits);
             if neg { format!("-{grouped}") } else { grouped }
@@ -395,27 +319,17 @@ pub(crate) fn render_for_format(v: &Value) -> String {
     }
 }
 
-/// Case-output comparison law — used ONLY by the replay harness below to
-/// compare `eval()`'s result against the certified table's PERSISTED case
-/// text, which is not always the literal in-game text (see the module-level
-/// comment on why this differs from `render_for_format`): a bool-output
-/// gate's case is canonicalized by `gen_semantics.mjs` to `"true"`/`"false"`
-/// regardless of what the console showed, and an int-classified output has
-/// already had its thousands separators stripped for storage. Everything
-/// else (float rounding, vector/rotator/quat/color layout) goes through the
-/// exact same law as `render_for_format` — every probed float-valued case
-/// (including the composite-chapter scalar outputs like `VecDotProduct`)
-/// is itself post-round, post-trim text, and no probed int-valued GATE case
-/// (as opposed to the dedicated `render` section) ever exceeds 999.
-#[allow(dead_code)] // used by the certified-semantics replay tests (this module's #[cfg(test)])
+/// The persisted case text the replay test compares `eval()` against: bools
+/// as "true"/"false" and ints ungrouped (as `gen_semantics.mjs` stores them);
+/// every other value as `render_for_format` prints it.
+#[cfg(test)]
 pub(crate) fn render(v: &Value) -> String {
     match v {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Float(f) => {
-            // Float goes through the SAME law as `render_for_format` (grouped
-            // integer part) — a float case's stored text is the game's verbatim
-            // FormatText output, which groups thousands (`pow(2,10) -> 1,024`).
+            // Stored float text is verbatim `FormatText` output, grouped
+            // (`pow(2,10) -> 1,024`).
             let (neg, int_part, frac) = round3(*f);
             let grouped = group_thousands(&int_part);
             let sign = if neg { "-" } else { "" };
@@ -429,15 +343,10 @@ pub(crate) fn render(v: &Value) -> String {
     }
 }
 
-/// String-concatenation's OWN operand-to-text law — certified to differ from
-/// both renderers above: a bool operand stringifies `"true"`/`"false"`
-/// (`Concatenate(bool:true, str:"!") -> "true!"`, not `"1!"`), matching a
-/// generic Blueprint `ToString` conversion rather than FormatText's
-/// Text-formatting system. No probed Concatenate case exercises a
-/// >3-decimal float or a >999 int, so the int/float half of this law is a
-/// reasoned (not directly probed) extrapolation: plain `Display`-style
-/// (`format!("{f}")`), NOT rounded/grouped, matching the same generic
-/// `ToString` convention the bool case already proves is in play here.
+/// `Concatenate`'s operand-to-text law, certified to differ from both
+/// renderers: a bool prints "true"/"false" (`true .. "!"` is "true!").
+/// Ints and floats print plain and ungrouped, which is assumed: no probe
+/// covered a float over 3 decimals or an int over 999.
 fn concat_display(v: &Value) -> String {
     match v {
         Value::Bool(b) => b.to_string(),
@@ -454,8 +363,8 @@ fn concat_display(v: &Value) -> String {
     }
 }
 
-/// i64 -> f64 is exact only within ±2^53; beyond that, refuse mixed-domain
-/// numeric work (never probed at that magnitude).
+/// i64 -> f64 is exact only within +/-2^53; beyond that, mixed-domain numeric
+/// work refuses (never probed at that magnitude).
 fn int_as_f64(n: i64) -> Option<f64> {
     const LIMIT: i64 = 1 << 53;
     (-LIMIT..=LIMIT).contains(&n).then_some(n as f64)
@@ -468,7 +377,7 @@ fn ord_num(v: Option<&Value>) -> Option<f64> {
         None => 0.0,
         Some(Value::Int(n)) => int_as_f64(*n)?,
         Some(Value::Float(f)) => sanitize(*f),
-        Some(Value::Bool(b)) => *b as i64 as f64,
+        Some(Value::Bool(b)) => i64::from(*b) as f64,
         Some(Value::Str(s)) => s.parse::<f64>().map(sanitize).unwrap_or(0.0),
         Some(
             Value::Vector { .. } | Value::Rotator { .. } | Value::Quat { .. } | Value::Color { .. },
@@ -476,17 +385,14 @@ fn ord_num(v: Option<&Value>) -> Option<f64> {
     })
 }
 
-/// EQ/NE: certified per variant pair. Canonical-string for int-vs-str; exact
-/// for str-str; numeric for int/float/bool mixes; certified exact
-/// component-wise for composite-vs-same-composite (`CompareEqual`'s
-/// `compositeOps` cases). Unprobed pairs return None (the coverage gate
-/// blocks them anyway — this is belt and suspenders).
+/// EQ/NE, certified per variant pair: int vs str compares the int's
+/// canonical text; str-str exact; int/float/bool mixes numerically; same-type
+/// composites component-wise. Unprobed pairs return `None`.
 fn eq(a: Option<&Value>, b: Option<&Value>) -> Option<bool> {
-    use Value::*;
-    // Certified: unwired behaves as the other operand's domain default. No
-    // composite+unwired pair is ever a certified signature (never reached in
-    // practice — the coverage gate blocks it before `eq` runs), so these
-    // defaults are unreachable filler, present only so the match stays total.
+    use Value::{Bool, Color, Float, Int, Quat, Rotator, Str, Vector};
+    // Certified: unwired acts as the other operand's domain default. The
+    // composite defaults are never a certified signature; they keep the
+    // match total.
     let default_for = |other: &Value| -> Value {
         match other {
             Int(_) => Int(0),
@@ -533,7 +439,7 @@ fn eq(a: Option<&Value>, b: Option<&Value>) -> Option<bool> {
         (Int(x), Int(y)) => x == y,
         (Float(x), Float(y)) => sanitize(*x) == sanitize(*y),
         (Int(x), Float(y)) | (Float(y), Int(x)) => int_as_f64(*x)? == sanitize(*y),
-        (Int(x), Bool(y)) | (Bool(y), Int(x)) => *x == *y as i64,
+        (Int(x), Bool(y)) | (Bool(y), Int(x)) => *x == i64::from(*y),
         (Bool(x), Bool(y)) => x == y,
         (Str(x), Str(y)) => x == y,
         // Certified (int:N str:S direction): canonical int rendering compared
@@ -632,7 +538,7 @@ fn math_in(v: Option<&Value>) -> Option<MathIn> {
     Some(match v {
         None => MathIn::I(0),
         Some(Value::Int(n)) => MathIn::I(*n),
-        Some(Value::Bool(b)) => MathIn::I(*b as i64),
+        Some(Value::Bool(b)) => MathIn::I(i64::from(*b)),
         Some(Value::Float(f)) => MathIn::F(sanitize(*f)),
         Some(Value::Str(_)) => return None,
         Some(
@@ -641,26 +547,21 @@ fn math_in(v: Option<&Value>) -> Option<MathIn> {
     })
 }
 
-/// Scalar broadcast partner for a `[Vector, X]`/`[X, Vector]` composite math
-/// op — certified for float/int (`compositeMath`'s `float`/`int` broadcast
-/// cases); bool/unwired are reasoned extrapolations (never probed alongside
-/// a vector operand) mirroring the plain scalar `math_in` promotion rule.
+/// Scalar partner of a `[Vector, X]`/`[X, Vector]` broadcast. Certified for
+/// float and int; bool and unwired follow `math_in`'s promotion, unprobed.
 fn broadcast_scalar(v: Option<&Value>) -> Option<f64> {
     match v {
         None => Some(0.0),
         Some(Value::Int(n)) => int_as_f64(*n).map(sanitize),
         Some(Value::Float(f)) => Some(sanitize(*f)),
-        Some(Value::Bool(b)) => Some(*b as i64 as f64),
+        Some(Value::Bool(b)) => Some(i64::from(*b) as f64),
         _ => None,
     }
 }
 
-/// Certified per-component op (`compositeMath`): `+ - * /` are the plain f64
-/// operator; `%` is Rust's `%` (== C `fmod`, truncated-towards-zero
-/// remainder, dividend's sign) applied UNCONDITIONALLY — certified directly
-/// (`Vec(0.5,0.25,-0.75) % Vec(0.25,0.5,0.75) -> Z=-0.000`, a genuine mixed-
-/// sign case the plain scalar `math()` below would refuse). Composite math
-/// does NOT inherit the scalar path's mixed-sign modulo refusal.
+/// Certified per-component op (`compositeMath`): plain f64 `+ - * /`, and
+/// `%` as C `fmod` (dividend's sign) even for mixed signs, which the scalar
+/// `math()` refuses (`Vec(0.5,0.25,-0.75) % Vec(0.25,0.5,0.75)` is `Z=-0.000`).
 fn component_op(gate: &str, x: f64, y: f64) -> Option<f64> {
     Some(match gate {
         g if g.ends_with(G_MATH_ADD) => x + y,
@@ -672,15 +573,9 @@ fn component_op(gate: &str, x: f64, y: f64) -> Option<f64> {
     })
 }
 
-/// `[Vector,Vector]` (component-wise) / `[Vector,scalar]` / `[scalar,Vector]`
-/// (broadcast) Math* — certified (`compositeMath` chapter, 22 cases, all
-/// five Math* gates). Per-component NaN/inf sanitize happens BEFORE the op
-/// (certified: `Vec(NaN,1,2) + Vec(1,1,1) -> X=1.000`, i.e. NaN sanitizes to
-/// 0 then adds, giving 1 — not a NaN-poisoned/refused result). A non-finite
-/// RESULT component (e.g. a divide-by-zero component — never probed) is
-/// refused rather than baked, mirroring `fold/mod.rs`'s belt-and-suspenders
-/// non-finite guard for the plain scalar path (which only inspects
-/// `Value::Float`, not composite fields, so this is implemented locally).
+/// Vector Math*, component-wise or with a broadcast scalar (certified by the
+/// `compositeMath` chapter). Inputs sanitize before the op (`Vec(NaN,1,2) +
+/// Vec(1,1,1)` is `X=1.000`); a non-finite result component is refused.
 fn composite_math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
     let finite3 = |x: f64, y: f64, z: f64| {
         (x.is_finite() && y.is_finite() && z.is_finite()).then_some(Value::Vector { x, y, z })
@@ -739,11 +634,10 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
                 }
                 // certified: div by zero -> 0
                 else {
-                    // checked_rem first: None on i64::MIN % -1 (the same
-                    // overflow that would make raw `x / y` panic below).
+                    // `checked_rem` refuses i64::MIN % -1, which would panic.
                     let rem = x.checked_rem(y)?;
-                    // Truncation direction unprobed for mixed signs with a
-                    // remainder — refuse rather than guess trunc vs floor.
+                    // Truncation direction is unprobed for mixed signs with a
+                    // remainder, so refuse.
                     if (x < 0) != (y < 0) && rem != 0 {
                         return None;
                     }
@@ -756,8 +650,7 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
                 }
                 // certified: mod by zero -> 0
                 else {
-                    // checked_rem first: None on i64::MIN % -1 refuses before
-                    // any raw `%` can panic (the guard itself must not panic).
+                    // `checked_rem` refuses i64::MIN % -1, which would panic.
                     let rem = x.checked_rem(y)?;
                     if (x < 0 || y < 0) && rem != 0 {
                         return None;
@@ -777,8 +670,8 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
     let (x, y) = (to_f(x)?, to_f(y)?);
     if gate.ends_with(G_MATH_MODULO) {
         let r = x % y;
-        // Mirrors the int-path mixed-sign refusal: truncation direction is
-        // unprobed for mixed signs with a nonzero (finite) remainder.
+        // As on the int path: truncation direction is unprobed for mixed
+        // signs with a nonzero finite remainder.
         if (x < 0.0) != (y < 0.0) && r != 0.0 && r.is_finite() {
             return None;
         }
@@ -793,14 +686,12 @@ fn math(gate: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
     }))
 }
 
-// ── Extended math + bitwise + rounding ─────────────────────────────────────
-// One Rust law per uncertified pure gate. `eval`'s `covers()` gate keeps each
-// inert until the gate's cases land in the certified table (a re-probe), and
-// the replay gate then checks the law against the game's own output. Float
-// laws refuse a non-finite RESULT (`fold/mod.rs` also guards this); the probe
-// is written with clean, finite, in-domain inputs so `covers()` never presents
-// an edge case these laws would mishandle (domain errors, shift-by->=64, the
-// half-rounding tie direction), all of which stay unprobed -> unfolded.
+// Extended math, bitwise and rounding
+// One law per pure gate, inert until the certified table covers the gate's
+// signature; the replay test then checks it against the game. Probes use
+// finite in-domain inputs, so edge cases (domain errors, shifts of 64 or
+// more, rounding ties) stay unprobed and unfolded. Float laws refuse a
+// non-finite result.
 const EXTENDED_MATH: &[&str] = &[
     "MathSin",
     "MathCos",
@@ -935,7 +826,7 @@ fn bitwise(short: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
         "BitwiseNOT" => !as_int(a)?,
         "BitwiseNAND" => !(as_int(a)? & as_int(b)?),
         "BitwiseNOR" => !(as_int(a)? | as_int(b)?),
-        // Shift amounts outside 0..63 are unprobed (UB in Rust) — refuse.
+        // Shift amounts outside 0..63 are unprobed and overflow in Rust.
         "BitwiseShiftLeft" => {
             let s = as_int(b)?;
             if !(0..64).contains(&s) {
@@ -955,23 +846,14 @@ fn bitwise(short: &str, a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
     }))
 }
 
-// ============================================================================
-// String family (v3 `strings` chapter). Every law below refuses non-ASCII
-// operands/results — certified multibyte behavior was only ever probed with
-// BMP characters (`"π≈3"`), which is consistent with EITHER a char-count or
-// a UTF-16-code-unit model (both give the same answer for that string), so
-// there is no way to certify which model the game actually uses; the 4
-// multibyte cases (Length/ToLower/ToUpper/Trim) are allowlisted refusals in
-// the replay test below rather than silently trusting Rust's `char`-based
-// std methods for un-probed non-ASCII input.
-// ============================================================================
+// String family (`strings` chapter). Every law refuses non-ASCII operands and
+// results: the multibyte probe (`"π≈3"`) cannot tell code points from UTF-16
+// units, so those four cases are allowlisted refusals in the replay test.
 
 const MAX_FOLDED_STRING_LEN: usize = 8192;
-/// Certified: FormatText/string folding refuses any float operand whose
-/// magnitude exceeds this — the game cannot print `1e20` (two independent
-/// probe runs silently dropped the console line entirely). `1e15` itself IS
-/// certified to render fine (`render` section: `float:1e15` ->
-/// `"1,000,000,000,000,000"`), so the bound is exclusive.
+/// String folding refuses a float operand above this magnitude: the game
+/// prints nothing for `1e20`, while `1e15` is certified to render
+/// `"1,000,000,000,000,000"`.
 const MAX_ABS_FLOAT_FOR_STRING_FOLD: f64 = 1e15;
 
 fn ascii_str(v: &Value) -> Option<&str> {
@@ -986,7 +868,7 @@ fn ascii_str(v: &Value) -> Option<&str> {
 /// printable magnitude, refuses regardless of signature coverage.
 fn string_operands_foldable(vs: &[Option<&Value>]) -> bool {
     vs.iter().all(|v| match v {
-        None | Some(Value::Int(_)) | Some(Value::Bool(_)) => true,
+        None | Some(Value::Int(_) | Value::Bool(_)) => true,
         Some(Value::Str(s)) => s.is_ascii(),
         Some(Value::Float(f)) => f.abs() <= MAX_ABS_FLOAT_FOR_STRING_FOLD,
         _ => false, // composites never appear in this family
@@ -997,11 +879,9 @@ fn string_result_ok(s: &str) -> Option<Value> {
     (s.is_ascii() && s.len() <= MAX_FOLDED_STRING_LEN).then(|| Value::Str(s.to_string()))
 }
 
-/// `String_Concatenate`: certified `Separator` is always `""` (the compiler
-/// never lowers `..` with a non-empty separator — see `lower/expr.rs`), so
-/// this is a plain two-operand join using Concatenate's OWN stringification
-/// law (`concat_display`, NOT `render`/`render_for_format` — certified to
-/// differ on bools).
+/// `String_Concatenate` with the empty `Separator` that `..` always lowers
+/// with: a two-operand join using `concat_display`, which is certified to
+/// differ from `render_for_format` on bools.
 fn concatenate(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
     if !string_operands_foldable(&[a, b]) {
         return None;
@@ -1029,9 +909,8 @@ fn string_trim(s: Option<&Value>) -> Option<Value> {
     let s = ascii_str(s?)?;
     string_result_ok(s.trim())
 }
-/// Certified: an EMPTY needle is never "contained"/a prefix/a suffix — a
-/// deliberate deviation from Rust's `str::contains("")`/`starts_with("")`/
-/// `ends_with("")`, which default to `true`.
+/// Certified: an empty needle is never contained, a prefix or a suffix,
+/// unlike Rust's `str::contains("")` and friends, which return `true`.
 fn string_contains(s: Option<&Value>, needle: Option<&Value>) -> Option<Value> {
     let (s, needle) = (ascii_str(s?)?, ascii_str(needle?)?);
     Some(Value::Bool(!needle.is_empty() && s.contains(needle)))
@@ -1044,12 +923,9 @@ fn string_ends_with(s: Option<&Value>, suf: Option<&Value>) -> Option<Value> {
     let (s, suf) = (ascii_str(s?)?, ascii_str(suf?)?);
     Some(Value::Bool(!suf.is_empty() && s.ends_with(suf)))
 }
-/// Certified: `start` indexes from the END when negative (`Substring("hello",
-/// -1, 3) -> "o"`, i.e. `actual_start = max(0, len + start)`), and both
-/// `start` and `start+length` clamp to the string's bounds rather than
-/// erroring (`Substring("hello", 10, 3) -> ""`, `Substring("hello", 1, 100)
-/// -> "ello"`). A negative LENGTH is unprobed and explicitly refused rather
-/// than guessed.
+/// Certified: a negative `start` counts from the end (`("hello", -1, 3)` is
+/// "o"), and `start` and `start + length` clamp to the string (`(.., 10, 3)`
+/// is "", `(.., 1, 100)` is "ello"). A negative length is unprobed: refused.
 fn string_substring(
     s: Option<&Value>,
     start: Option<&Value>,
@@ -1061,7 +937,7 @@ fn string_substring(
     };
     if *len < 0 {
         return None;
-    } // unprobed — refuse rather than guess
+    } // unprobed
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len() as i64;
     let actual_start = if *start < 0 {
@@ -1075,9 +951,8 @@ fn string_substring(
     let slice: String = chars[actual_start as usize..end as usize].iter().collect();
     string_result_ok(&slice)
 }
-/// Certified: an EMPTY needle is never found (`Find(s, "") -> -1`, matching
-/// `Contains`'s empty-needle law rather than Rust's `str::find("")` (which
-/// finds index 0)).
+/// Certified: an empty needle is never found (`Find(s, "")` is -1), unlike
+/// Rust's `str::find("")`, which returns 0.
 fn string_find(s: Option<&Value>, needle: Option<&Value>) -> Option<Value> {
     let (s, needle) = (ascii_str(s?)?, ascii_str(needle?)?);
     if needle.is_empty() {
@@ -1085,12 +960,9 @@ fn string_find(s: Option<&Value>, needle: Option<&Value>) -> Option<Value> {
     }
     Some(Value::Int(s.find(needle).map_or(-1, |i| i as i64)))
 }
-/// Certified: an EMPTY search string is a no-op (`Replace(s, "", x) -> s`
-/// unchanged — a deliberate deviation from Rust's `str::replace("", x)`,
-/// which inserts `x` between every character). Replace-first vs
-/// replace-all is unprobed beyond 0/1 occurrences (every probed case has
-/// exactly one or zero matches, where the two strategies agree) — refuse
-/// when the search string appears more than once rather than guess.
+/// Certified: an empty search string leaves `s` unchanged (Rust's
+/// `str::replace("", x)` inserts `x` everywhere). Probes had at most one
+/// match, so replace-first vs replace-all is unknown: two or more refuse.
 fn string_replace(
     s: Option<&Value>,
     search: Option<&Value>,
@@ -1111,18 +983,9 @@ fn string_parse_int(s: Option<&Value>) -> Option<Value> {
     let s = ascii_str(s?)?;
     Some(Value::Int(s.trim().parse::<i64>().unwrap_or(0)))
 }
-/// Certified: ALWAYS parses through f64 first (even a no-dot integer-
-/// looking string loses precision beyond 2^53 —
-/// `"9007199254740993" -> 9007199254740992`, exactly the nearest f64,
-/// proving there's no separate exact-integer fast path). The input text's
-/// own shape (contains `.`/`e`/`E`) then decides whether the WIRE result is
-/// tagged int (cast the parsed double to i64) or float (kept as-is) —
-/// independent of whether the parsed value happens to be whole. `"inf"`/
-/// `"nan"`-shaped text is refused: Rust's `f64::from_str` accepts those
-/// spellings but the game's parser was never probed on them, and blindly
-/// reusing Rust's acceptance here is a real divergence risk (an `as i64`
-/// cast of infinity would silently saturate rather than replicate whatever
-/// the game does).
+/// Certified: always parses through f64 (`"9007199254740993"` gives
+/// 9007199254740992). Text containing `.`/`e`/`E` yields a float, otherwise
+/// the double cast to int. `inf`/`nan` spellings are unprobed and refused.
 fn string_parse_number(s: Option<&Value>) -> Option<Value> {
     let s = ascii_str(s?)?;
     let trimmed = s.trim();
@@ -1135,7 +998,7 @@ fn string_parse_number(s: Option<&Value>) -> Option<Value> {
     let f = trimmed.parse::<f64>().unwrap_or(0.0);
     if !f.is_finite() {
         return None;
-    } // belt-and-suspenders alongside the inf/nan text guard
+    } // overflowing text such as "1e400"
     Some(if has_dot_or_exp {
         Value::Float(sanitize(f))
     } else {
@@ -1143,35 +1006,6 @@ fn string_parse_number(s: Option<&Value>) -> Option<Value> {
     })
 }
 
-/// FormatText's real certified law: substitute `{0}`..`{6}` with
-/// `render_for_format()` of the corresponding input (an unbound slot — out
-/// of range, non-numeric like `{a}`, or wired-but-unwired — renders `"0"`,
-/// certified by the `unwiredslot`/`literalbrace` probe cases), and decode
-/// `{{`/`}}` as escaped literal braces (matching `lower/ops.rs::lower_interp`'s
-/// OWN escaping convention for literal template text — not itself a
-/// probed-case fact, but required for consistency with how a real
-/// `${...}`-interpolated template is actually built).
-///
-/// NOT reachable via the generic per-node `eval()` dispatch above: the
-/// format template lives in the node's `FormatString` PROPERTY
-/// (`lower/ops.rs::build_format_text`), never as a wire input port, and
-/// separately, this gate's only ever-recorded table SIGNATURE is `[Tmpl]`
-/// (one synthetic label per probe case), which no real `Value`-derived
-/// signature can ever match, so `covers()` refuses it unconditionally
-/// regardless. Production folding calls this function directly instead,
-/// after resolving the template property + wired substitution slots itself
-/// (`fold/mod.rs::try_resolve_format_text`). Tested directly here against
-/// the templates+operands recovered from `probes/gate_semantics.ws` (the
-/// PERSISTED table only carries a synthetic label per FormatText case, not
-/// the real template/operands — see `replay_every_certified_case`'s
-/// FormatText allowlist comment).
-///
-/// `pub` (not `pub(crate)`): reachable as `wirescript::lower::fold::eval::format_text`
-/// from the `--fold-diff` fuzz harness's own `predict_format_text`, which
-/// mirrors `try_resolve_format_text`'s template/slot resolution to predict
-/// `${...}`-interpolation the same way `eval`/`Value` are already exposed
-/// for the rest of the predictor — see the visibility note on `pub mod fold`
-/// in `lower/mod.rs`.
 /// `FormatText`'s substitution slots, `InputA..InputG`, in template-index
 /// order (`{0}`..`{6}`).
 pub(crate) const FORMAT_SLOTS: [WirePort; 7] = [
@@ -1205,7 +1039,7 @@ pub(crate) fn interp_groups<T, E>(
                     groups.push((std::mem::take(&mut fmt), std::mem::take(&mut slots)));
                 }
                 let v = value(expr)?;
-                fmt.push_str(&format!("{{{}}}", slots.len()));
+                let _ = write!(fmt, "{{{}}}", slots.len());
                 slots.push(v);
             }
         }
@@ -1214,6 +1048,11 @@ pub(crate) fn interp_groups<T, E>(
     Ok(groups)
 }
 
+/// `FormatText`'s certified law: `{0}`..`{6}` become `render_for_format` of
+/// that input, an unbound, out-of-range or non-numeric slot renders "0", and
+/// `{{`/`}}` are literal braces (the escaping `interp_groups` writes).
+/// `eval()` never reaches it (signature `[Tmpl]`); `try_resolve_format_text`
+/// and the fuzz harness call it directly.
 pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
     if !template.is_ascii() {
         return None;
@@ -1236,9 +1075,7 @@ pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
             continue;
         }
         if bytes[i] == b'{' {
-            let Some(rel) = template[i + 1..].find('}') else {
-                return None;
-            }; // unterminated — unprobed
+            let rel = template[i + 1..].find('}')?; // unterminated: unprobed
             let tag = &template[i + 1..i + 1 + rel];
             // The gate's own syntax, documented by its in-game tooltip but
             // never probed: `{A}`..`{G}` name an input, `:` adds an option
@@ -1261,9 +1098,9 @@ pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
             let rendered = match tag.parse::<usize>() {
                 Ok(slot) if slot < 7 => match inputs.get(slot) {
                     Some(Some(v)) => render_for_format(v),
-                    _ => "0".to_string(), // unwired/out-of-range slot — certified
+                    _ => "0".to_string(), // unwired or out-of-range slot: certified
                 },
-                _ => "0".to_string(), // non-numeric tag (e.g. "{a}") — certified
+                _ => "0".to_string(), // non-numeric tag such as "{a}": certified
             };
             out.push_str(&rendered);
             i += rel + 2;
@@ -1278,13 +1115,10 @@ pub fn format_text(template: &str, inputs: &[Option<Value>]) -> Option<String> {
     Some(out)
 }
 
-// ============================================================================
-// Composite constructors/ops (v3 `compositeOps` chapter).
-// ============================================================================
+// Composite constructors and ops (`compositeOps` chapter).
 
-/// sRGB (gamma-encoded, 0-1) -> linear (0-1) — certified via `ColorToHex`'s
-/// exact inverse (see `linear_to_srgb`'s doc comment for the round-trip
-/// check: linear 0.5 -> sRGB byte 188/0xBC, standard IEC 61966-2-1 sRGB).
+/// sRGB (gamma-encoded, 0-1) -> linear (0-1): the IEC 61966-2-1 inverse of
+/// `linear_to_srgb`. The curve is certified only in that direction.
 fn srgb_to_linear(c: f64) -> f64 {
     let c = c.clamp(0.0, 1.0);
     if c <= 0.04045 {
@@ -1293,25 +1127,20 @@ fn srgb_to_linear(c: f64) -> f64 {
         ((c + 0.055) / 1.055).powf(2.4)
     }
 }
-/// Linear (0-1) -> sRGB (gamma-encoded, 0-1). Certified: `ColorToHex(Color(
-/// 1.0, 0.5, 0.0)) -> "FFBC00"` — linear 0.5 -> 0.7354 -> ×255 -> 187.53 ->
-/// rounds to 188 = 0xBC, exactly the standard sRGB transfer function.
+/// Linear (0-1) -> sRGB (gamma-encoded, 0-1), the standard transfer function.
+/// Certified: `ColorToHex(Color(1.0, 0.5, 0.0))` is "FFBC00" (0.5 encodes to
+/// 0.7354, which is byte 188).
 fn linear_to_srgb(c: f64) -> f64 {
     let c = c.clamp(0.0, 1.0);
-    if c <= 0.0031308 {
+    if c <= 0.003_130_8 {
         c * 12.92
     } else {
         1.055 * c.powf(1.0 / 2.4) - 0.055
     }
 }
 
-/// FOLD-ELIGIBLE — directly certified: unlike the rotator/quat/color
-/// constructors below, `MakeVector`'s own case output is value-bearing
-/// (vectors render `X=.. Y=.. Z=..` through FormatText, never blank — see
-/// `render_for_format`), so the recorded case (`MakeVector(1.5,-2.5,0.75)`
-/// -> `X=1.500 Y=-2.500 Z=0.750`) directly certifies this mapping (plain
-/// field packing, arg order preserved) with no need for a transitive proof
-/// through another gate.
+/// Certified directly, since vectors render through `FormatText`:
+/// `MakeVector(1.5,-2.5,0.75)` prints `X=1.500 Y=-2.500 Z=0.750`.
 fn make_vector(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Option<Value> {
     let f = |v: Option<&Value>| match v {
         Some(Value::Float(f)) => Some(sanitize(*f)),
@@ -1320,17 +1149,9 @@ fn make_vector(a: Option<&Value>, b: Option<&Value>, c: Option<&Value>) -> Optio
     let (x, y, z) = (f(a)?, f(b)?, f(c)?);
     (x.is_finite() && y.is_finite() && z.is_finite()).then_some(Value::Vector { x, y, z })
 }
-/// MUST-REFUSE in production (see `BLANK_RENDER_REFUSED` in `eval()`, which
-/// short-circuits before this function is ever actually called there).
-/// `MakeRotation`'s only table evidence is a single case whose output
-/// renders blank — rotators never render through FormatText (certified —
-/// see `render_for_format`) — so replaying it only proves blank==blank,
-/// regardless of whether this formula (plain field packing) is right. And
-/// unlike `MakeQuaternion` below, no OTHER certified gate consumes a
-/// `Rotator` operand in a way that would verify it transitively either.
-/// Kept implemented (and the `eval()` match arm stays wired to it) so it's
-/// ready the moment a future probe wave chains rotators through a
-/// rendering gate — see `BLANK_RENDER_REFUSED`'s doc comment.
+/// Refused by `BLANK_RENDER_REFUSED`: the only case renders blank and no
+/// certified gate consumes a rotator, so this field packing is unverified.
+/// Implemented for when a probe chains rotators through a rendering gate.
 fn make_rotation(p: Option<&Value>, y: Option<&Value>, r: Option<&Value>) -> Option<Value> {
     let f = |v: Option<&Value>| match v {
         Some(Value::Float(f)) => Some(sanitize(*f)),
@@ -1343,14 +1164,9 @@ fn make_rotation(p: Option<&Value>, y: Option<&Value>, r: Option<&Value>) -> Opt
         roll,
     })
 }
-/// FOLD-ELIGIBLE — certified TRANSITIVELY, not directly: `MakeQuaternion`'s
-/// own case output renders blank (quats never render through FormatText),
-/// but two OTHER certified gates consume a quat operand and produce a
-/// value-bearing (non-blank) result: `RotateVector` (3 cases, including
-/// the non-axis-aligned 45-degree case) and `QuatDotProduct` (the 0.707
-/// case). A wrong arg order or transposed component here would visibly
-/// diverge those gates' certified outputs, so their exact replay certifies
-/// this constructor by proxy even though its own case output can't.
+/// Certified transitively: its own case renders blank, but `RotateVector`'s
+/// three cases and `QuatDotProduct`'s 0.707 case consume its quats, so a
+/// wrong component order would fail their replay.
 fn make_quaternion(
     a: Option<&Value>,
     b: Option<&Value>,
@@ -1369,31 +1185,10 @@ fn make_quaternion(
         w,
     })
 }
-/// FOLD-ELIGIBLE (IN ISOLATION), 3-ARG FORM ONLY — certified TRANSITIVELY
-/// via `ColorToHex(Color(1.0,0.5,0.0)) -> "FFBC00"`: that round-trip
-/// recovers the exact r/g/b channel order and magnitude through a
-/// value-bearing (string) result, even though `MakeColor`'s own case output
-/// renders blank. Alpha has NO such evidence — `ColorToHex` drops it
-/// entirely from its output — so the 4-arg form (alpha explicitly wired)
-/// hard-refuses below rather than folding an unconfirmed channel.
-///
-/// "3-arg form is fold-eligible" does NOT mean a
-/// real, wired 3-arg `Color(r, g, b)` call actually folds in production —
-/// it never does. `catalog/calls.rs`'s `Color` CallSpec declares `a` as an
-/// OPTIONAL 4th param, and `lower/call.rs::lower_builtin_call` always
-/// declares a port for every param regardless of whether an argument was
-/// passed (see `try_resolve_format_text`'s doc comment in `fold/mod.rs` for
-/// the same mechanic on `Fmt`), so a real 3-arg call's MakeColor gate always
-/// presents a FOUR-input signature with the alpha slot `Unwired` —
-/// `[Float, Float, Float, Unwired]`. The certified table's ONLY MakeColor
-/// case is the 4-arg form (`Color(1.0, 0.5, 0.25, 0.75)`, all four wired);
-/// `[Float, Float, Float, Unwired]` was never probed and so is never
-/// `covers()`-eligible, meaning the driver's coverage gate (`fold/mod.rs`'s
-/// `try_resolve`, checked BEFORE `eval()` is ever called) refuses every
-/// real 3-arg `Color(...)` call before this function's own "alpha unwired"
-/// branch is ever reached. Safe over-refusal — not a bug, just dead code in
-/// production until/unless a future probe wave certifies the 3-input
-/// signature directly.
+/// RGB certified transitively by `ColorToHex(Color(1.0,0.5,0.0))` giving
+/// "FFBC00"; alpha has no evidence (`ColorToHex` drops it), so a wired alpha
+/// refuses. A real 3-arg `Color(r, g, b)` still never folds: its signature
+/// `[Float, Float, Float, Unwired]` is unprobed (the only case is 4-arg).
 fn make_color(
     a: Option<&Value>,
     b: Option<&Value>,
@@ -1402,7 +1197,7 @@ fn make_color(
 ) -> Option<Value> {
     if d.is_some() {
         return None;
-    } // 4-arg (explicit alpha): unconfirmed, refuse
+    } // explicit alpha: unconfirmed
     let f = |v: Option<&Value>| match v {
         Some(Value::Float(f)) => Some(sanitize(*f)),
         _ => None,
@@ -1415,16 +1210,9 @@ fn make_color(
         a: 1.0,
     })
 }
-/// MUST-REFUSE in production (see `BLANK_RENDER_REFUSED` in `eval()`, which
-/// short-circuits before this function is ever actually called there).
-/// `MakeColorSRGB`'s only table evidence is a single case whose output
-/// renders blank (colors never render through FormatText). Its formula
-/// (`srgb_to_linear`) is the mathematical inverse of `color_to_hex`'s
-/// certified `linear_to_srgb` curve, but that's a REASONED inverse, not an
-/// independently probed one — no certified case round-trips SRGB bytes IN
-/// through this gate and back OUT through `ColorToHex` the way `MakeColor`
-/// is certified via that exact round-trip. Kept implemented so it's ready
-/// once such a round-trip case exists.
+/// Refused by `BLANK_RENDER_REFUSED`: the only case renders blank, and the
+/// `srgb_to_linear` curve is unprobed in this direction. Implemented for when
+/// a probe round-trips this gate through `ColorToHex`.
 fn make_color_srgb(
     a: Option<&Value>,
     b: Option<&Value>,
@@ -1433,7 +1221,7 @@ fn make_color_srgb(
 ) -> Option<Value> {
     let byte = |v: Option<&Value>| match v {
         Some(Value::Int(n)) if (0..=255).contains(n) => Some(*n as f64 / 255.0),
-        _ => None, // out-of-range byte: unprobed, refuse rather than clamp/guess
+        _ => None, // out-of-range byte: unprobed
     };
     let (r, g, b_, a_) = (byte(a)?, byte(b)?, byte(c)?, byte(d)?);
     Some(Value::Color {
@@ -1443,15 +1231,9 @@ fn make_color_srgb(
         a: a_,
     })
 }
-/// MUST-REFUSE in production (see `BLANK_RENDER_REFUSED` in `eval()`, which
-/// short-circuits before this function is ever actually called there).
-/// `MakeColorHex`'s only table evidence is a single case whose output
-/// renders blank (colors never render through FormatText) — its INPUT
-/// shape (`"#RRGGBB"`, alpha defaulting to opaque) is certified by that
-/// case's operand, but the resulting *Color value* is not, for the same
-/// reason `make_color_srgb` isn't: no certified case round-trips this
-/// gate's output back out through `ColorToHex`. Kept implemented so it's
-/// ready once such a round-trip case exists.
+/// Refused by `BLANK_RENDER_REFUSED`: the case certifies the input shape
+/// (`"#RRGGBB"`, opaque alpha) but its output renders blank, so the color
+/// value is unverified. Implemented for a future `ColorToHex` round-trip.
 fn make_color_hex(s: Option<&Value>) -> Option<Value> {
     let s = ascii_str(s?)?;
     let hex = s.strip_prefix('#').unwrap_or(s);
@@ -1461,7 +1243,7 @@ fn make_color_hex(s: Option<&Value>) -> Option<Value> {
     let byte = |i: usize| {
         u8::from_str_radix(&hex[i..i + 2], 16)
             .ok()
-            .map(|v| v as f64 / 255.0)
+            .map(|v| f64::from(v) / 255.0)
     };
     let (r, g, b) = (byte(0)?, byte(2)?, byte(4)?);
     Some(Value::Color {
@@ -1471,9 +1253,8 @@ fn make_color_hex(s: Option<&Value>) -> Option<Value> {
         a: 1.0,
     })
 }
-/// Certified: `ColorToHex(Color(1.0,0.5,0.0)) -> "FFBC00"` — RGB only
-/// (alpha dropped), uppercase, 2 hex digits per channel, gamma-encoded
-/// (`linear_to_srgb`) and rounded to the nearest byte.
+/// Certified (`ColorToHex(Color(1.0,0.5,0.0))` is "FFBC00"): RGB only,
+/// uppercase, 2 hex digits per channel, gamma-encoded and rounded per byte.
 fn color_to_hex(c: Option<&Value>) -> Option<Value> {
     let Some(Value::Color { r, g, b, .. }) = c else {
         return None;
@@ -1568,20 +1349,10 @@ fn vec_distance_sq(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
     let d = dx * dx + dy * dy + dz * dz;
     d.is_finite().then_some(Value::Float(d))
 }
-/// Quaternion vector rotation, using Unreal's OWN `FQuat::RotateVector`
-/// operation order (`T = 2*cross(u,v); result = v + s*T + cross(u,T)`,
-/// where `u` = the quaternion's `(x,y,z)` and `s` = `w`) rather than the
-/// (algebraically equivalent) textbook `v*(s^2-dot(u,u)) + u*2*dot(u,v) +
-/// cross(u,v)*2*s` form: the two formulas round differently in f64, and
-/// only Unreal's own operand order reproduces the certified 90-degree case
-/// EXACTLY, including its rounding noise (`Vec(1,0,0)` by `Quat(0,0,
-/// 0.7071...,0.7071...)` renders `X=-0.000`, i.e. a tiny negative residual
-/// from cancellation — the textbook form computes a clean `0.0` there
-/// instead, which prints `X=0.000` and fails replay). Certified exact
-/// against all 3 `RotateVector` probe cases: that 90-degree case, a
-/// 180-degree case, AND the non-axis-aligned 45-degree case (`Vec(1,0,0)`
-/// by `Quat(0,0,0.3826...,0.9238...)` -> `X=0.707 Y=0.707 Z=0.000`) — so
-/// this is NOT restricted to axis-aligned rotations.
+/// Unreal's `FQuat::RotateVector` order (`T = 2*cross(u,v); v + w*T +
+/// cross(u,T)`), which reproduces the game's rounding: the 90-degree case
+/// prints `X=-0.000`, where the textbook formula gives `X=0.000`. Certified
+/// against all three cases (90, 180 and 45 degrees).
 fn rotate_vector(v: Option<&Value>, q: Option<&Value>) -> Option<Value> {
     let (
         Some(Value::Vector {
@@ -1609,14 +1380,8 @@ fn rotate_vector(v: Option<&Value>, q: Option<&Value>) -> Option<Value> {
     let z = vz + s * tz + c2z;
     (x.is_finite() && y.is_finite() && z.is_finite()).then_some(Value::Vector { x, y, z })
 }
-/// MUST-REFUSE in production (see `BLANK_RENDER_REFUSED` in `eval()`, which
-/// short-circuits before this function is ever actually called there).
-/// Quaternion inverse: `conjugate / |q|^2` — the mathematically-standard
-/// formula, not a probed law. `InvertRotation`'s case output — like every
-/// rotator/quat case output — renders blank (see `render_for_format`'s doc
-/// comment), and unlike `MakeQuaternion`, no certified case chains this
-/// gate's OUTPUT into a value-bearing gate (e.g. feeding an inverted quat
-/// into `RotateVector`) either, so there is zero transitive evidence.
+/// Quaternion inverse, `conjugate / |q|^2`. Refused by `BLANK_RENDER_REFUSED`:
+/// its case renders blank and no certified case feeds its output onward.
 fn invert_rotation(q: Option<&Value>) -> Option<Value> {
     let Some(Value::Quat { x, y, z, w }) = q else {
         return None;
@@ -1659,17 +1424,11 @@ fn quat_dot(a: Option<&Value>, b: Option<&Value>) -> Option<Value> {
     d.is_finite().then_some(Value::Float(d))
 }
 
-// `pub`: the `--fold-diff` fuzz harness's predictor calls this directly
-// instead of re-implementing the certified value laws — see the visibility
-// note on `pub mod fold` in `lower/mod.rs`.
+/// Evaluate one pure gate on certified inputs; `None` refuses the fold.
+/// `pub` for the `--fold-diff` fuzz harness's predictor.
 pub fn eval(gate_class: &str, inputs: &[Option<Value>]) -> Option<Value> {
-    // Coverage gate: refuse any input-shape the in-game probe never actually
-    // observed for this gate class (unwired operands on unprobed gates, the
-    // un-probed direction of an asymmetric compare, Bool in ordered compares,
-    // NOT on non-bool, ...). This makes eval exactly as permissive as the
-    // certified table, no more — every law below only ever sees a signature
-    // that was actually certified. (The driver has its own coverage check too —
-    // a deliberately redundant second layer, belt and suspenders by design.)
+    // Refuse any input signature the probe never observed for this class, so
+    // every law below sees only certified shapes.
     let sig: Vec<InVariant> = inputs
         .iter()
         .map(|v| v.as_ref().map_or(InVariant::Unwired, Value::variant))
@@ -1678,20 +1437,11 @@ pub fn eval(gate_class: &str, inputs: &[Option<Value>]) -> Option<Value> {
         return None;
     }
 
-    // `deferredOps` chapter: probed but NEVER folded — hard refusal
-    // regardless of signature coverage (allowlisted wholesale in the replay
-    // test below). See `DEFERRED`'s own doc comment above for the rationale
-    // and why the list lives at module scope.
     let short = gate_class.rsplit('_').next().unwrap_or("");
     if DEFERRED.contains(&short) {
         return None;
     }
 
-    // MUST-REFUSE — blank-render-only evidence, ZERO transitive
-    // certification. See `BLANK_RENDER_REFUSED`'s own doc comment above for
-    // the rationale (incl. which gates are transitively fold-eligible
-    // despite ALSO having a blank own-case output: `MakeQuaternion` /
-    // `MakeColor`'s 3-arg form).
     if BLANK_RENDER_REFUSED.contains(&short) {
         return None;
     }
@@ -1728,12 +1478,12 @@ pub fn eval(gate_class: &str, inputs: &[Option<Value>]) -> Option<Value> {
         G_REPLACE => string_replace(a, b, c)?,
         G_PARSE_INT => string_parse_int(a)?,
         G_PARSE_NUMBER => string_parse_number(a)?,
-        G_MAKE_VECTOR => make_vector(a, b, c)?, // fold-eligible: directly certified, see make_vector
-        G_MAKE_ROTATION => make_rotation(a, b, c)?, // unreachable: refused above by BLANK_RENDER_REFUSED
-        G_MAKE_QUATERNION => make_quaternion(a, b, c, d)?, // fold-eligible: transitively certified, see make_quaternion
-        G_MAKE_COLOR => make_color(a, b, c, d)?, // fold-eligible (3-arg only): transitively certified, see make_color
-        G_MAKE_COLOR_SRGB => make_color_srgb(a, b, c, d)?, // unreachable: refused above by BLANK_RENDER_REFUSED
-        G_MAKE_COLOR_HEX => make_color_hex(a)?, // unreachable: refused above by BLANK_RENDER_REFUSED
+        G_MAKE_VECTOR => make_vector(a, b, c)?,
+        G_MAKE_ROTATION => make_rotation(a, b, c)?, // refused above: BLANK_RENDER_REFUSED
+        G_MAKE_QUATERNION => make_quaternion(a, b, c, d)?,
+        G_MAKE_COLOR => make_color(a, b, c, d)?,
+        G_MAKE_COLOR_SRGB => make_color_srgb(a, b, c, d)?, // refused above: BLANK_RENDER_REFUSED
+        G_MAKE_COLOR_HEX => make_color_hex(a)?,            // refused above: BLANK_RENDER_REFUSED
         G_COLOR_TO_HEX => color_to_hex(a)?,
         G_VEC_SCALE => vec_scale(a, b)?,
         G_VEC_DOT_PRODUCT => vec_dot(a, b)?,
@@ -1741,13 +1491,11 @@ pub fn eval(gate_class: &str, inputs: &[Option<Value>]) -> Option<Value> {
         G_VEC_MAGNITUDE_SQUARED => vec_magnitude_sq(a)?,
         G_VEC_DISTANCE_SQUARED => vec_distance_sq(a, b)?,
         G_ROTATE_VECTOR => rotate_vector(a, b)?,
-        G_INVERT_ROTATION => invert_rotation(a)?, // unreachable: refused above by BLANK_RENDER_REFUSED
+        G_INVERT_ROTATION => invert_rotation(a)?, // refused above: BLANK_RENDER_REFUSED
         G_QUAT_DOT_PRODUCT => quat_dot(a, b)?,
-        // FormatText's only recorded signature ([Tmpl]) is never producible
-        // by a real Value, so `covers()` already refused above — this arm
-        // is unreachable, kept only so the match's `_` fallback below stays
-        // honest about what's actually dispatched.
-        _ => return None, // Select/Branch handled by the driver; rest unknown
+        // FormatText (signature `[Tmpl]`) was refused by `covers()` above;
+        // Select/Branch are handled by the driver.
+        _ => return None,
     })
 }
 

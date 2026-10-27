@@ -3,26 +3,26 @@ use super::*;
 fn doc_state(source: &str) -> DocState {
     let pre_resolve = wirescript::parse(source, "test");
     let resolved = resolve(source, "test", &FsLoader);
-    let tc = typecheck_with_inference(&resolved.ast, "test").0;
+    let tc = typecheck_with_inference(&resolved.ast).0;
     DocState {
         source: source.to_string(),
         symbols: Vec::new(),
-        doc_comments: Default::default(),
+        doc_comments: HashMap::default(),
         type_map: tc.type_of_expr,
         if_contexts: tc.if_contexts,
         var_read_contexts: tc.var_read_contexts,
         narrowed_reads: tc.narrowed_reads,
         dropped_ranges: tc.dropped_ranges,
-        resource_estimates: Default::default(),
+        resource_estimates: HashMap::default(),
         pre_resolve_ast: pre_resolve.ast,
-        imported_files: resolved.imported_files.clone(),
+        imported_files: resolved.imported_files,
     }
 }
 
 #[test]
 fn cross_file_references_skip_open_docs_even_with_respelled_uris() {
     // Clients spell file URIs differently from `Url::from_file_path`
-    // (VS Code sends `file:///c%3A/…`); the same-directory disk scan must
+    // (VS Code sends `file:///c%3A/...`); the same-directory disk scan must
     // still recognize an open doc as the same file and not re-collect it,
     // or rename gets two identical edits per site and the client refuses
     // to apply them.
@@ -47,7 +47,7 @@ fn cross_file_references_skip_open_docs_even_with_respelled_uris() {
     docs.insert(client_uri.clone(), doc_state(source));
 
     // Cursor on the `foo` call site (line 3, `on go { foo() }`).
-    let ds = docs.get(&client_uri).unwrap();
+    let ds = &docs[&client_uri];
     let (target, current_sites) =
         references_at(&ds.pre_resolve_ast, &ds.source, "test", 3, 9).expect("target");
     let refs = collect_references_across_files(&docs, &client_uri, &target, &current_sites);
@@ -66,15 +66,15 @@ fn cross_file_references_skip_open_docs_even_with_respelled_uris() {
 
 fn symbols_for(source: &str) -> Vec<SymbolDef> {
     let resolved = resolve(source, "test", &FsLoader);
-    let tc = typecheck_with_inference(&resolved.ast, "test").0;
+    let tc = typecheck_with_inference(&resolved.ast).0;
     collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"))
 }
 
 #[test]
 fn completion_inside_nested_block_isolates_from_outer_context() {
-    // Cursor inside a `$```…``` ` block: the outer SpawnPrefab param names
-    // (`velocity`, `offset`, `lifetime`) must NOT leak in; the block is
-    // completed as its own isolated program.
+    // Cursor inside a `$```...``` ` block: the outer `SpawnPrefab` parameter
+    // names (`velocity`, `offset`, `lifetime`) stay out, since the block is
+    // completed as its own program.
     let src = "on go { let e = SpawnPrefab(lifetime = 0, offset = 1, $```in a: exec\non a { v }```) }\nin go: exec";
     let cursor = src.find("on a { v").unwrap() + "on a { ".len();
     let (line, col) = offset_to_line_col(src, cursor);
@@ -127,51 +127,66 @@ fn labels_at_cursor(src: &str) -> Vec<String> {
 #[test]
 fn the_editor_enum_lookup_completes_variants_and_discriminants() {
     let rows: &[(&str, &str, &[&str], &[&str])] = &[
-            // The arm-head position inside `match s {  }` (s: Shape) offers
-            // the enum's variant names as candidate patterns.
-            (
-                "a match arm head offers the variants",
-                "enum Shape { Empty, Circle(float), Rect(float, float) }\nin s: Shape\nout x = match s { ‸ }\n",
-                &["Circle", "Empty", "Rect"],
-                &[],
-            ),
-            // A block-bodied arm may omit its trailing comma, so the line
-            // after `Empty => { 1 }` is still an arm head.
-            (
-                "a match arm head after a block arm offers the variants",
-                "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Empty => { 1.0 }\n  ‸\n}\n",
-                &["Circle", "Empty"],
-                &[],
-            ),
-            ("an enum-typed value offers .Discriminant", "enum S { A, B }\nin s: S\nout d = s.‸\n", &["Discriminant"], &[]),
-            // `Shape.` (the enum TYPE name, not a value) offers its variant
-            // names, matching the compiler's own `Enum.Variant` construction
-            // syntax rather than a value's `.Discriminant`.
-            (
-                "a bare enum type receiver offers its variants",
-                "enum Shape { Empty, Circle(float) }\nout d = Shape.‸\n",
-                &["Circle", "Empty"],
-                &["Discriminant"],
-            ),
-            // A value binding (`Shape: int` param) whose name equals the
-            // enum's SHADOWS the type, so `Shape.` here is an (invalid) field
-            // access on an int, never variant construction. Mirrors the
-            // compiler's own shadow guard (`resolve_variant_for_construction`).
-            (
-                "a shadowed enum name offers no variants",
-                "enum Shape { Empty, Circle(float) }\nmod useShape(Shape: int) -> int { return Shape.‸ }\n",
-                &[],
-                &["Empty", "Circle"],
-            ),
-            // `EasingFunction.` (no `enum` decl anywhere in the file) offers
-            // its variant names, same as a user-declared enum.
-            ("a bare built-in game enum receiver offers its variants", "out d = EasingFunction.‸\n", &["Bounce"], &[]),
-            // `EasingFunction.Bounce.` offers `.Discriminant`. `member_receiver_at`
-            // only reports the identifier directly before the dot (`Bounce`),
-            // so this only works if a bare variant name resolves to its
-            // uniquely owning enum.
-            ("a qualified built-in game enum variant offers .Discriminant", "out d = EasingFunction.Bounce.‸\n", &["Discriminant"], &[]),
-        ];
+        // The arm-head position inside `match s {  }` (s: Shape) offers
+        // the enum's variant names as candidate patterns.
+        (
+            "a match arm head offers the variants",
+            "enum Shape { Empty, Circle(float), Rect(float, float) }\nin s: Shape\nout x = match s { ‸ }\n",
+            &["Circle", "Empty", "Rect"],
+            &[],
+        ),
+        // A block-bodied arm may omit its trailing comma, so the line
+        // after `Empty => { 1 }` is still an arm head.
+        (
+            "a match arm head after a block arm offers the variants",
+            "enum Shape { Empty, Circle(float) }\nin s: Shape\nout x = match s {\n  Empty => { 1.0 }\n  ‸\n}\n",
+            &["Circle", "Empty"],
+            &[],
+        ),
+        (
+            "an enum-typed value offers .Discriminant",
+            "enum S { A, B }\nin s: S\nout d = s.‸\n",
+            &["Discriminant"],
+            &[],
+        ),
+        // `Shape.` (the enum TYPE name, not a value) offers its variant
+        // names, matching the compiler's own `Enum.Variant` construction
+        // syntax rather than a value's `.Discriminant`.
+        (
+            "a bare enum type receiver offers its variants",
+            "enum Shape { Empty, Circle(float) }\nout d = Shape.‸\n",
+            &["Circle", "Empty"],
+            &["Discriminant"],
+        ),
+        // A value binding (`Shape: int` param) whose name equals the
+        // enum's SHADOWS the type, so `Shape.` here is an (invalid) field
+        // access on an int, never variant construction. Mirrors the
+        // compiler's own shadow guard (`resolve_variant_for_construction`).
+        (
+            "a shadowed enum name offers no variants",
+            "enum Shape { Empty, Circle(float) }\nmod useShape(Shape: int) -> int { return Shape.‸ }\n",
+            &[],
+            &["Empty", "Circle"],
+        ),
+        // `EasingFunction.` (no `enum` decl anywhere in the file) offers
+        // its variant names, same as a user-declared enum.
+        (
+            "a bare built-in game enum receiver offers its variants",
+            "out d = EasingFunction.‸\n",
+            &["Bounce"],
+            &[],
+        ),
+        // `EasingFunction.Bounce.` offers `.Discriminant`. `member_receiver_at`
+        // only reports the identifier directly before the dot (`Bounce`),
+        // so this only works if a bare variant name resolves to its
+        // uniquely owning enum.
+        (
+            "a qualified built-in game enum variant offers .Discriminant",
+            "out d = EasingFunction.Bounce.‸\n",
+            &["Discriminant"],
+            &[],
+        ),
+    ];
     let mut failures = Vec::new();
     for (label, src, has, lacks) in rows {
         let got = labels_at_cursor(src);
@@ -200,13 +215,9 @@ fn the_editor_enum_lookup_completes_variants_and_discriminants() {
 
 // ---------- end-to-end LSP rename / references (scoped resolver) ----------
 
-/// A rename's edits as document-change OPERATIONS.
-///
-/// The server always answers in the `Operations` form, never the flat
-/// `Edits` one: only `Operations` carries a per-file version, which is what
-/// lets an editor refuse a stale multi-file rename instead of applying half
-/// of it. A test that accepted either form would stop noticing a regression
-/// to the flat shape.
+/// A rename's edits as document-change operations. The server always answers
+/// in the `Operations` form, which carries a per-file version so an editor can
+/// refuse a stale multi-file rename instead of applying half of it.
 fn rename_operations(edit: WorkspaceEdit) -> Vec<DocumentChangeOperation> {
     match edit.document_changes.expect("document_changes present") {
         DocumentChanges::Operations(ops) => ops,
@@ -214,12 +225,10 @@ fn rename_operations(edit: WorkspaceEdit) -> Vec<DocumentChangeOperation> {
     }
 }
 
-/// A fresh `Backend` wired through the real `LanguageServer` trait (so its
-/// `rename`/`references`/`prepare_rename` handlers run exactly as the
-/// editor would call them), with no documents open yet. The returned
-/// `LspService` owns the `Backend`; `.inner()` gives `&Backend`, which is
-/// enough to call the trait methods directly — no transport / socket is
-/// needed since we drive the handlers in-process.
+/// A fresh `Backend` behind the real `LanguageServer` trait, so its rename,
+/// references and prepare-rename handlers run as the editor calls them, with no
+/// documents open. `.inner()` on the returned service gives `&Backend`; the
+/// handlers are driven in-process with no transport.
 fn build_backend() -> LspService<Backend> {
     LspService::new(Backend::new).0
 }
@@ -238,7 +247,7 @@ async fn rename_at(
         .rename(RenameParams {
             text_document_position: text_document_position(uri, line, col),
             new_name: new_name.to_string(),
-            work_done_progress_params: Default::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
         })
         .await
         .unwrap()
@@ -257,8 +266,8 @@ async fn references_req(
         .inner()
         .references(ReferenceParams {
             text_document_position: text_document_position(uri, line, col),
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
             context: ReferenceContext {
                 include_declaration: true,
             },
@@ -278,9 +287,8 @@ fn open_doc(service: &LspService<Backend>, uri: &Url, source: &str) {
         .insert(uri.clone(), doc_state(source));
 }
 
-/// Like `doc_state`, but with the symbol table populated — `goto_definition`
-/// reads `doc.symbols` (its `in_type_def` heuristic and `definition_at`
-/// both consult it), which `doc_state` leaves empty.
+/// [`doc_state`] with the symbol table filled in: `goto_definition` reads
+/// `doc.symbols` (its `in_type_def` check and `definition_at` both do).
 fn doc_state_with_symbols(source: &str) -> DocState {
     let mut ds = doc_state(source);
     ds.symbols = symbols_for(source);
@@ -320,8 +328,8 @@ async fn code_action_at(
                 only: None,
                 trigger_kind: None,
             },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
         })
         .await
         .unwrap()
@@ -367,8 +375,8 @@ async fn code_action_with_diagnostic(
                 only: None,
                 trigger_kind: None,
             },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
         })
         .await
         .unwrap()
@@ -426,8 +434,8 @@ async fn completion_reads_the_undebounced_keystroke() {
                 .inner()
                 .completion(CompletionParams {
                     text_document_position: text_document_position(&uri, 2, col),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
                     context: None,
                 })
                 .await
@@ -458,12 +466,11 @@ async fn completion_reads_the_undebounced_keystroke() {
 
 #[tokio::test]
 async fn rename_capture_does_not_touch_comments_types_or_other_files() {
-    // main.ws: a `character` capture (a LOCAL binding, scoped to its own
-    // handler body), a `: character` TYPE-position annotation, and a
-    // `// character` comment. other.ws: an unrelated `character`-typed
-    // `in` in a sibling file. None of the three may be touched by
-    // renaming the capture — types are a separate namespace, comments/
-    // strings are never AST sites, and captures never cross files.
+    // main.ws: a `character` capture (local to its handler body), a
+    // `: character` type annotation and a `// character` comment; other.ws: an
+    // unrelated `character`-typed `in`. Renaming the capture touches none of the
+    // three: types are a separate namespace, comments are never AST sites, and
+    // captures never cross files.
     let dir = scratch_dir("rename-capture");
     let main_path = dir.join("main.ws");
     let main_source = "in go: exec\n\
@@ -526,11 +533,10 @@ on CharacterSpawned() -> (character) {\n\
 
 #[tokio::test]
 async fn rename_exported_mod_updates_import_specifier_and_call_across_files() {
-    // lib.ws defines an exported `mod`; main.ws imports and calls it.
-    // Renaming from the CALL SITE in main.ws (an `Imported` target) must
-    // edit BOTH files: lib.ws's declaration, and main.ws's import
-    // specifier plus its call — even though lib.ws is never opened in
-    // the editor (it's resolved from disk via the import path).
+    // lib.ws defines an exported `mod`; main.ws imports and calls it. Renaming
+    // from the call site (an `Imported` target) edits both files: lib.ws's
+    // declaration, and main.ws's import specifier and call, although lib.ws is
+    // not open (it is read from disk through the import).
     let dir = scratch_dir("rename-import");
     let lib_path = dir.join("lib.ws");
     std::fs::write(&lib_path, "mod helper() {\n}\n").unwrap();
@@ -573,12 +579,11 @@ async fn rename_exported_mod_updates_import_specifier_and_call_across_files() {
 
 #[tokio::test]
 async fn find_references_is_scoped_not_a_name_string_search() {
-    // Same fixture shape as the capture-rename test: `textDocument/
-    // references` on the `character` capture must return ONLY its
-    // handler-body occurrences (decl + one use) — never the `:
-    // character` type annotation, the `// character` comment, or
-    // other.ws. `references()` and `rename()` share `references_at`, so
-    // this guards both from becoming a naive same-name string search.
+    // The capture-rename fixture again: references on the `character` capture
+    // return only its handler-body occurrences (the declaration and one use),
+    // never the `: character` annotation, the comment or other.ws. `references()`
+    // and `rename()` share `references_at`, so this guards both against a
+    // same-name text search.
     let dir = scratch_dir("find-refs-scoped");
     let main_path = dir.join("main.ws");
     let main_source = "in go: exec\n\
@@ -650,14 +655,10 @@ async fn find_references_on_field_name_is_refused() {
 
 #[tokio::test]
 async fn rename_export_updates_multiline_aliased_import_specifier_not_whole_decl() {
-    // Regression: `find_name_range` used to search only the coarse
-    // site's FIRST line via a plain substring match — a multi-line
-    // `import { … }` specifier (only ALIASED specifiers stay coarse)
-    // would fail to find the name on that first line and fall back to
-    // replacing the WHOLE `import { … } from "…"` span. This fixture
-    // also plants a decoy (`helperX`) on an earlier line whose name is
-    // a PREFIX of the real target, to catch a non-word-boundary match
-    // landing inside it.
+    // A multi-line `import { ... }` specifier (an aliased one stays coarse) is
+    // narrowed by a word-boundary search over every line of the site, not just
+    // its first: a miss would replace the whole `import { ... } from "..."` span.
+    // The decoy `helperX` on an earlier line starts with the target's name.
     let dir = scratch_dir("rename-multiline-import");
     let lib_path = dir.join("lib.ws");
     let lib_source = "mod helper() {\n}\n";
@@ -718,11 +719,9 @@ async fn rename_export_updates_multiline_aliased_import_specifier_not_whole_decl
 
 #[tokio::test]
 async fn rename_aliased_import_alias_is_file_local() {
-    // `import { helper as assist } from "lib"` + `assist()`: the alias is
-    // a FILE-LOCAL name. Renaming `assist` must edit ONLY main.ws — the
-    // alias specifier token and the call — and must NOT touch lib.ws
-    // (whose decl still spells `helper`) nor the `helper` half of the
-    // specifier.
+    // `import { helper as assist } from "lib"` and `assist()`: the alias is a
+    // file-local name, so renaming `assist` edits only main.ws (the alias token
+    // and the call), never lib.ws's `helper` or the `helper` half of the specifier.
     let dir = scratch_dir("rename-alias-local");
     let lib_path = dir.join("lib.ws");
     std::fs::write(&lib_path, "mod helper() {\n}\n").unwrap();
@@ -777,10 +776,9 @@ async fn rename_aliased_import_alias_is_file_local() {
 
 #[tokio::test]
 async fn rename_export_updates_aliased_importer_original_name() {
-    // lib.ws `mod helper(){}`; other.ws `import { helper as x }` + `x()`.
-    // Renaming `helper` from lib.ws's decl must rename lib.ws's decl AND
-    // the `helper` half of other.ws's specifier — but leave the alias `x`
-    // and its call `x()` untouched.
+    // lib.ws `mod helper(){}`; other.ws `import { helper as x }` and `x()`.
+    // Renaming `helper` from lib.ws renames its declaration and the `helper` half
+    // of other.ws's specifier, and leaves the alias `x` and `x()` alone.
     let dir = scratch_dir("rename-export-aliased-importer");
     let lib_path = dir.join("lib.ws");
     let lib_source = "mod helper() {\n}\n";
@@ -826,10 +824,10 @@ async fn rename_export_updates_aliased_importer_original_name() {
 
     let other_edits = by_file.get(&other_uri).expect("other.ws must be edited");
     assert_eq!(
-            other_edits.len(),
-            1,
-            "other.ws: only the `helper` half of the specifier, never the alias or its call: {other_edits:?}"
-        );
+        other_edits.len(),
+        1,
+        "other.ws: only the `helper` half of the specifier, never the alias or its call: {other_edits:?}"
+    );
     let e = &other_edits[0];
     assert_eq!(e.new_text, "assist");
     assert_eq!(
@@ -850,12 +848,10 @@ async fn rename_export_updates_aliased_importer_original_name() {
 
 #[tokio::test]
 async fn goto_definition_on_record_type_field_routes_through_definition_at() {
-    // A cursor on a record-TYPE field name inside a `type` decl must NOT
-    // resolve to the enclosing type's reference set; it falls through to
-    // `definition_at`. Field rename/resolution is deferred, so
-    // `definition_at` yields no target here — the load-bearing assertion
-    // is that the response is NOT the type's references (which is what
-    // the un-guarded `references_at` branch would return).
+    // A cursor on a record field name inside a `type` declaration does not
+    // resolve to the type's reference set; it falls through to `definition_at`,
+    // which has no target for a field. The assertion that matters is that the
+    // response is not the type's references.
     let source = "type P = { field: int }\n";
     let uri = Url::from_file_path(std::env::temp_dir().join("ws-lsp-goto-field.ws")).unwrap();
     let service = build_backend();
@@ -872,8 +868,8 @@ async fn goto_definition_on_record_type_field_routes_through_definition_at() {
         .inner()
         .goto_definition(GotoDefinitionParams {
             text_document_position_params: text_document_position(&uri, 0, col),
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
         })
         .await
         .unwrap();
@@ -886,10 +882,9 @@ async fn goto_definition_on_record_type_field_routes_through_definition_at() {
 
 #[tokio::test]
 async fn semantic_tokens_tag_capture_as_variable_and_annotation_as_type() {
-    // Corrective semantic tokens for the position-blind grammar: a
-    // `character` handler capture (and its use) must NOT show as the
-    // `character` TYPE — the resolver reclassifies it as a plain Variable
-    // token, while the actual `: character` TYPE annotation keeps Type.
+    // Semantic tokens over the position-blind grammar: a `character` handler
+    // capture and its use are plain Variable tokens, while the `: character`
+    // annotation stays a Type.
     let source = "\
 in go: exec
 in foo: character
@@ -904,8 +899,8 @@ on CharacterSpawned() -> (character) {
         .inner()
         .semantic_tokens_full(SemanticTokensParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
         })
         .await
         .unwrap()
@@ -947,10 +942,8 @@ on CharacterSpawned() -> (character) {
     );
 }
 
-/// An import must resolve against an OPEN EDITOR BUFFER, not the last bytes
-/// saved to disk. Otherwise a file importing something you are currently
-/// editing reports diagnostics for a version you can no longer see, until
-/// you hit save.
+/// An import resolves against the open editor buffer, not the file saved on
+/// disk, so an importer's diagnostics follow unsaved edits.
 #[test]
 fn open_buffer_shadows_disk_for_imports() {
     let dir = std::env::temp_dir().join(format!("ws-lsp-openimp-{}", std::process::id()));
@@ -1004,12 +997,8 @@ fn unopened_import_still_loads_from_disk() {
     );
 }
 
-/// A mod added since the last save must get a gate estimate immediately.
-///
-/// `did_change` used to carry the previous estimate map forward instead of
-/// recomputing, and estimates are looked up by NAME — so a newly typed mod
-/// had no entry and hovered with no gate count while its neighbours showed
-/// one, which reads as the feature being broken rather than stale.
+/// A mod added since the last save gets a gate estimate immediately:
+/// estimates are recomputed on every change, since they are looked up by name.
 #[tokio::test]
 async fn a_mod_added_since_the_last_save_still_gets_a_gate_estimate() {
     let dir = scratch_dir("estimate-freshness");
@@ -1031,7 +1020,7 @@ async fn a_mod_added_since_the_last_save_still_gets_a_gate_estimate() {
         })
         .await;
 
-    // Type a second mod — a change only, never saved to disk.
+    // Type a second mod, as a change only, never saved to disk.
     let edited = "mod alpha(v: *int) { v = v + 1 }\nmod beta(v: *int) { v = v * 3 + 2 }\n";
     service
         .inner()
@@ -1153,7 +1142,7 @@ async fn hovering_dropped_code_says_it_was_removed_at_compile_time() {
         .inner()
         .hover(HoverParams {
             text_document_position_params: text_document_position(&uri, 4, col),
-            work_done_progress_params: Default::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
         })
         .await
         .unwrap()
@@ -1220,10 +1209,8 @@ async fn exhaustive_match_offers_no_fill_action() {
     );
 }
 
-/// A diagnostic raised inside an imported file must be published against
-/// THAT file. The importer's analysis used to keep only the entry file's
-/// share, so these reached no buffer at all and the editor showed a clean
-/// file for a program the compiler rejects.
+/// A diagnostic raised inside an imported file is published against that
+/// file, not dropped from the importer's analysis.
 #[tokio::test]
 async fn imported_file_diagnostics_go_to_the_imported_file() {
     let dir = scratch_dir("import-diags");
@@ -1246,13 +1233,15 @@ async fn imported_file_diagnostics_go_to_the_imported_file() {
         .analyze(&Url::from_file_path(&main).unwrap(), main_source);
     let util_uri = Url::from_file_path(&util).unwrap();
     let for_util = split.foreign.get(&util_uri).cloned().unwrap_or_default();
-    let own = split.own.clone();
+    let own = split.own;
     std::fs::remove_dir_all(&dir).ok();
 
     assert!(
-            for_util.iter().any(|d| d.message.contains("undefinedThing")),
-            "the unknown-identifier error must be published against util.ws, got {for_util:?} / own {own:?}"
-        );
+        for_util
+            .iter()
+            .any(|d| d.message.contains("undefinedThing")),
+        "the unknown-identifier error must be published against util.ws, got {for_util:?} / own {own:?}"
+    );
     assert!(
         own.iter().all(|d| !d.message.contains("undefinedThing")),
         "and must not also be reported against main.ws: {own:?}"
@@ -1313,10 +1302,9 @@ async fn lowering_diagnostics_survive_a_type_error_and_reach_the_import() {
     );
 }
 
-/// The Compile command is the only diagnostic channel that used to hand
-/// the editor `Pos::col` unconverted, so its squiggle sat right of the
-/// token on any line containing non-ASCII text, and disagreed with the
-/// live diagnostics for the same file.
+/// The Compile command converts `Pos::col` (a byte column) for the editor, so
+/// its squiggle on a line with non-ASCII text lands on the token and matches
+/// the live diagnostics for the same file.
 #[test]
 fn compile_command_diagnostics_carry_utf16_columns() {
     let source = "let s = \"h\u{e9}llo\" .. undefined\n";
@@ -1369,7 +1357,7 @@ async fn formatting_edit_ends_at_the_document_end() {
                 insert_spaces: true,
                 ..Default::default()
             },
-            work_done_progress_params: Default::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
         })
         .await
         .unwrap()
@@ -1402,13 +1390,13 @@ out r: int = 1
     let line_fix = actions
         .iter()
         .find(|a| a.title == "Ignore WS014 on this line")
-        .expect(&format!("expected a line-ignore action: {actions:?}"));
+        .unwrap_or_else(|| panic!("expected a line-ignore action: {actions:?}"));
     assert_eq!(first_edit_text(line_fix), " // ws-ignore-line:WS014");
 
     let file_fix = actions
         .iter()
         .find(|a| a.title == "Ignore WS014 in this file")
-        .expect(&format!("expected a file-ignore action: {actions:?}"));
+        .unwrap_or_else(|| panic!("expected a file-ignore action: {actions:?}"));
     assert_eq!(
         first_edit_text(file_fix),
         "// ws-ignore-file:WS014
@@ -1508,8 +1496,8 @@ async fn typing_into_an_empty_file_never_panics_a_request() {
         backend
             .completion(CompletionParams {
                 text_document_position: at(),
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
                 context: None,
             })
             .await
@@ -1518,23 +1506,23 @@ async fn typing_into_an_empty_file_never_panics_a_request() {
         backend
             .hover(HoverParams {
                 text_document_position_params: at(),
-                work_done_progress_params: Default::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
             })
             .await
             .expect(&ctx);
         backend
             .goto_definition(GotoDefinitionParams {
                 text_document_position_params: at(),
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
             })
             .await
             .expect(&ctx);
         backend
             .references(ReferenceParams {
                 text_document_position: at(),
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
                 context: ReferenceContext {
                     include_declaration: true,
                 },
@@ -1545,8 +1533,8 @@ async fn typing_into_an_empty_file_never_panics_a_request() {
         backend
             .semantic_tokens_full(SemanticTokensParams {
                 text_document: doc(),
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
             })
             .await
             .expect(&ctx);
@@ -1563,7 +1551,7 @@ async fn typing_into_an_empty_file_never_panics_a_request() {
                         character: col,
                     },
                 },
-                work_done_progress_params: Default::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
             })
             .await
             .expect(&ctx);
@@ -1575,15 +1563,15 @@ async fn typing_into_an_empty_file_never_panics_a_request() {
                     insert_spaces: true,
                     ..Default::default()
                 },
-                work_done_progress_params: Default::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
             })
             .await
             .expect(&ctx);
         backend
             .document_link(DocumentLinkParams {
                 text_document: doc(),
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
             })
             .await
             .expect(&ctx);

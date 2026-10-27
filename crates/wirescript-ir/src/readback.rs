@@ -12,7 +12,7 @@ pub struct Save {
 
 impl Save {
     /// Open the save `brz` holds. Panics when it is not one.
-    pub fn read(brz: &[u8]) -> Save {
+    pub fn read(brz: &[u8]) -> Self {
         let brz = Brz::read_slice(brz).expect("read brz");
         let folders = &brz.index_data.folder_names;
         let mut grids: Vec<usize> = folders
@@ -28,7 +28,7 @@ impl Save {
             })
             .collect();
         grids.sort_unstable();
-        Save {
+        Self {
             reader: brz.into_reader(),
             grids,
         }

@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Sleep (pure, delayed pass-through) ------------------------------
+    // Sleep (pure, delayed pass-through)
     m.insert(
         "Sleep",
         CallSpec {
@@ -37,7 +37,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Stateful exec value gates -------------------------
+    // Stateful exec value gates
     // Advance per exec pulse: Cycle returns 0..Count-1, Toggle flips a bool.
     m.insert(
         "Cycle",
@@ -62,7 +62,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Random number ------------------------------------------------
+    // Random number
     m.insert(
         "Random",
         CallSpec {
@@ -78,7 +78,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Select / Swap --------------------------------------------------
+    // Select / Swap
     m.insert(
         "Select",
         CallSpec {
@@ -119,7 +119,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Edge detector ---------------------------------------------------
+    // Edge detector
     m.insert(
         "Edge",
         vec_expr_record(
@@ -147,7 +147,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Misc value / exec gates -----------------------------------------
+    // Misc value / exec gates
     m.insert(
         "PrintToConsole",
         CallSpec {
@@ -159,10 +159,9 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: None,
         },
     );
-    // Opaque — identity rerouter. Blocks constant folding: its output is
-    // permanently Unknown to the (future) fold pass, and typecheck treats
-    // the result as `any`, so probe circuits can drive real gates with
-    // known values (`Opaque(2) + 3` emits a real MathAdd).
+    // Opaque: an identity rerouter that constant folding never sees through,
+    // so probe circuits drive real gates with known values (`Opaque(2) + 3`
+    // emits a real MathAdd).
     m.insert(
         "Opaque",
         CallSpec {
@@ -196,15 +195,9 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: None,
         },
     );
-    // Exec-flow gates callable directly. `Union(a, b)` merges two exec signals
-    // into one (fires when EITHER fires) — the callable form of the gate the
-    // compiler auto-inserts to rejoin exec paths. `Branch(cond, exec)` routes an
-    // exec to `.A` or `.B` on `cond` (the gate an `if` lowers to). Both are pure
-    // (no surrounding exec chain): their inputs ARE the exec signals they act on.
-    //
-    // `Union` also takes an exec receiver, so `a.Union(b)` == `Union(a, b)` and a
-    // wide fan-in reads as a left-associative chain
-    // (`a.Union(b).Union(c)`) instead of nested `Union(Union(a, b), c)`.
+    // Exec-flow gates as calls. `Union(a, b)` fires when either exec fires;
+    // `Branch(cond, exec)` routes an exec to `.A` or `.B`. Both are pure: their
+    // inputs are the exec signals they act on. `a.Union(b).Union(c)` chains.
     m.insert("Union", {
         let mut union = vec_expr(
             "Union",
@@ -234,7 +227,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
         ),
     );
-    // Read Brick Grid — the brick grid this gate's microchip is placed on.
+    // Read Brick Grid: the brick grid this gate's microchip is placed on.
     m.insert(
         "ReadBrickGrid",
         CallSpec {
@@ -342,11 +335,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Change detectors ----------------------------------------
-    // `Change` pulses its input value through when it changes — that's the
-    // "Change Detector (Exec)" gate (its OnChanged output moved there when
-    // the game split the detectors into exec and bool variants). The plain "Change Detector"
-    // emits a bool pulse instead, exposed as `Changed`.
+    // Change detectors
+    // `Change` is the "Change Detector (Exec)" gate: an exec pulse carrying the
+    // new value when its input changes. The plain "Change Detector" emits a bool
+    // pulse instead, exposed as `Changed`.
     m.insert(
         "Change",
         vec_expr(
@@ -385,26 +377,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Pure expression gates --------------------------------------------
-    // `EnumToInt`/`IntToEnum` are the gate-backed twins of the record
-    // enum surface `value.ToInt()` (= `.Discriminant`) and `Enum.FromInt(n)`.
-    // The CallSpec below describes the raw game gate (both wire ports are
-    // untyped `any` in-game; the numeric side is an int), but the surface
-    // typing and lowering are special-cased so the enum contract holds:
-    //   - `EnumToInt(value)` REQUIRES an enum argument (typecheck, not the
-    //     bare `Type::Any` port), yields `int`, folds a compile-time-known enum
-    //     to its discriminant literal, and otherwise emits this gate fed by the
-    //     value's `__disc` port. See `lower::expr::try_lower_enum_to_integer`
-    //     and the `EnumToInt` arm in `typecheck::infer`.
-    //   - `IntToEnum(value, wrap?)` takes an `int` (+ optional `bool` wrap)
-    //     and produces an enum whose concrete type is pinned by the use site's
-    //     expected type (like `Enum.FromInt`), not the bare `Int` port below.
-    //     See `lower::expr::try_lower_integer_to_enum` and the `IntToEnum`
-    //     arm in `typecheck::infer`.
-    // For Wirescript's record enums the runtime `EnumToInt` gate is
-    // effectively reading the tag, but it is emitted per the design so that
-    // game/native enums route through the real gate; the fold path keeps
-    // compile-time-known enums gate-free.
+    // Pure expression gates
+
     // Which kind of value is on the wire, as the built-in enum `Type`
     // (`catalog::WIRE_KIND_MEMBERS`). `v.getType()` is the same gate as a method
     // of every value.
@@ -434,6 +408,11 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: Some(Type::Any),
         },
     );
+    // `EnumToInt`/`IntToEnum` are the gate forms of `value.ToInt()` and
+    // `Enum.FromInt(n)`. These specs describe the raw gates; typecheck requires
+    // an enum argument for `EnumToInt` and types `IntToEnum` from the use site,
+    // and lowering folds a compile-time-known enum (`lower::expr`'s
+    // `try_lower_enum_to_integer` / `try_lower_integer_to_enum`).
     m.insert(
         "EnumToInt",
         CallSpec {
@@ -456,13 +435,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             ],
             exec: false,
             // The raw gate output is the numeric discriminant; the surface
-            // result is the context-typed enum (see the note above).
+            // result is the context-typed enum.
             outputs: vec![CallOutput::plain(WirePort::Output, Type::Int)],
             receiver: None,
         },
     );
 
-    // ---- Date / time -----------------------------------------------------
+    // Date / time
     m.insert(
         "GetUnixTime",
         CallSpec {

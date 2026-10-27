@@ -16,11 +16,7 @@ fn namespace_import_collects_qualified_members() {
         .collect(),
     };
     let resolved = resolve("import * as u from \"lib\"", "main", &loader);
-    let tc = typecheck(
-        &resolved.ast,
-        "main",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let syms = collect_symbols(&resolved.ast, &tc.type_of_expr);
     assert!(
         syms.iter().any(|s| s.name == "u" && s.kind == "namespace"),
@@ -38,11 +34,7 @@ fn namespace_import_collects_qualified_members() {
 /// The `exec` flag the LSP hover shows for the mod/chip named `name`.
 fn mod_exec(source: &str, name: &str) -> bool {
     let resolved = resolve(source, "test", &FsLoader);
-    let tc = typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     collect_symbols(&resolved.ast, &tc.type_of_expr)
         .into_iter()
         .find(|s| s.name == name && (s.kind == "mod" || s.kind == "chip"))
@@ -108,11 +100,7 @@ fn a_hoisted_port_is_collected_as_a_symbol() {
     let mut failures = Vec::new();
     for (label, src, name) in rows {
         let resolved = resolve(src, "test", &FsLoader);
-        let tc = typecheck(
-            &resolved.ast,
-            "test",
-            &crate::typecheck::CeSlotMap::default(),
-        );
+        let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
         let syms = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
         if !syms.iter().any(|s| s.name == name && s.kind == "out") {
             failures.push(format!(
@@ -138,11 +126,7 @@ on go {
   /* \u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9} */ let v: int = 1
 }";
     let resolved = crate::resolve::resolve(src, "test", &crate::resolve::FsLoader);
-    let tc = crate::typecheck::typecheck(
-        &resolved.ast,
-        "test",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let tc = crate::typecheck::typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     let syms = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some("test"));
     let l = src.lines().nth(3).unwrap();
     let col = l[..l.rfind('v').unwrap()].chars().count();

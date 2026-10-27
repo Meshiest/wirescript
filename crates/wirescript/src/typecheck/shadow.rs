@@ -6,7 +6,7 @@
 use super::*;
 
 /// A declaration key: the source position of a `mod`/`chip`.
-pub(crate) type DeclKey = (Arc<str>, usize);
+pub(crate) type DeclKey = StartKey;
 
 /// A call of a user `mod`/`chip` by bare name, noted for [`report`]: each name
 /// its body mentions that the call site binds, with that binding.
@@ -21,15 +21,9 @@ fn display_file(file: &str) -> &str {
     file.rsplit(['/', '\\']).next().unwrap_or(file)
 }
 
-fn within(outer: &SourceRange, inner: &SourceRange) -> bool {
-    outer.file == inner.file
-        && outer.start.offset <= inner.start.offset
-        && inner.end.offset <= outer.end.offset
-}
-
 /// Start checking `decl`'s body: log the storage and calls it resolves.
-pub(super) fn open_body(ctx: &mut TypeCheckCtx, decl: &ChipDecl) {
-    let key: DeclKey = (decl.range.file.clone(), decl.range.start.offset);
+pub(super) fn open_body(ctx: &mut TypeCheckCtx<'_>, decl: &ChipDecl) {
+    let key: DeclKey = decl.range.start_key();
     ctx.body_ranges.insert(key.clone(), decl.range.clone());
     ctx.open_bodies.push(key);
     ctx.scope.open_storage_log();
@@ -37,15 +31,12 @@ pub(super) fn open_body(ctx: &mut TypeCheckCtx, decl: &ChipDecl) {
 
 /// Close the storage log `decl`'s body check opened: the storage it resolved
 /// that is declared outside the body is the storage the body uses.
-pub(super) fn close_body(ctx: &mut TypeCheckCtx, decl: &ChipDecl) {
+pub(super) fn close_body(ctx: &mut TypeCheckCtx<'_>, decl: &ChipDecl) {
     ctx.open_bodies.pop();
     let seen = ctx.scope.close_storage_log();
-    let uses = ctx
-        .storage_uses
-        .entry((decl.range.file.clone(), decl.range.start.offset))
-        .or_default();
+    let uses = ctx.storage_uses.entry(decl.range.start_key()).or_default();
     for (name, at) in seen {
-        if !within(&decl.range, &at) {
+        if !decl.range.contains(&at) {
             add_use(uses.entry(name).or_default(), at);
         }
     }
@@ -70,7 +61,7 @@ fn add_use(decls: &mut Vec<SourceRange>, at: SourceRange) -> bool {
 /// declaration in the WS091 message) is that of sweeping every call per pass.
 /// A pass visits only the calls whose callee gained a use in the pass before:
 /// any other found everything it could then.
-fn propagate_uses(ctx: &mut TypeCheckCtx) {
+fn propagate_uses(ctx: &mut TypeCheckCtx<'_>) {
     #[cfg(debug_assertions)]
     let swept = {
         let mut uses = ctx.storage_uses.clone();
@@ -104,7 +95,7 @@ fn propagate_uses(ctx: &mut TypeCheckCtx) {
             };
             for (name, decls) in uses {
                 for at in decls {
-                    if !within(range, at)
+                    if !range.contains(at)
                         && !own
                             .and_then(|o| o.get(name))
                             .is_some_and(|d| d.contains(at))
@@ -114,7 +105,7 @@ fn propagate_uses(ctx: &mut TypeCheckCtx) {
                 }
             }
         }
-        let mut grew: crate::collections::HashSet<DeclKey> = crate::collections::HashSet::default();
+        let mut grew: HashSet<DeclKey> = HashSet::default();
         for (caller, name, at) in added {
             if add_use(
                 ctx.storage_uses
@@ -147,7 +138,7 @@ fn propagate_uses(ctx: &mut TypeCheckCtx) {
 /// match exactly, order included.
 #[cfg(debug_assertions)]
 fn propagate_by_sweeping(
-    ctx: &TypeCheckCtx,
+    ctx: &TypeCheckCtx<'_>,
     all: &mut HashMap<DeclKey, HashMap<String, Vec<SourceRange>>>,
 ) {
     loop {
@@ -163,7 +154,7 @@ fn propagate_by_sweeping(
                 };
                 for (name, decls) in uses {
                     for at in decls {
-                        if !within(range, at)
+                        if !range.contains(at)
                             && !own
                                 .and_then(|o| o.get(name))
                                 .is_some_and(|d| d.contains(at))
@@ -186,15 +177,15 @@ fn propagate_by_sweeping(
 /// Every name `decl`'s body mentions, less its params, and those of each
 /// `mod`/`chip` it names that is visible here, through any number of calls.
 fn reachable_idents(
-    ctx: &TypeCheckCtx,
+    ctx: &TypeCheckCtx<'_>,
     decl: &ChipDecl,
-    visited: &mut crate::collections::HashSet<DeclKey>,
-    out: &mut crate::collections::HashSet<String>,
+    visited: &mut HashSet<DeclKey>,
+    out: &mut HashSet<String>,
 ) {
-    if !visited.insert((decl.range.file.clone(), decl.range.start.offset)) {
+    if !visited.insert(decl.range.start_key()) {
         return;
     }
-    let mut names = crate::collections::HashSet::default();
+    let mut names = HashSet::default();
     crate::resolve::collect_idents(
         crate::ast::walk::Node::Block(&decl.body),
         crate::resolve::Uses::All,
@@ -222,12 +213,12 @@ pub(crate) struct TopCalls {
     own: HashMap<DeclKey, Vec<String>>,
     callers: HashMap<DeclKey, Vec<DeclKey>>,
     mentioned_by: HashMap<String, Vec<DeclKey>>,
-    reaching: HashMap<String, Arc<crate::collections::HashSet<DeclKey>>>,
+    reaching: HashMap<String, Arc<HashSet<DeclKey>>>,
     callees: HashMap<DeclKey, Vec<DeclKey>>,
 }
 
 /// What a bare `name` calls as resolved at the top level.
-fn resolve_mod_at_top(ctx: &TypeCheckCtx, name: &str) -> Option<Arc<ChipDecl>> {
+fn resolve_mod_at_top(ctx: &TypeCheckCtx<'_>, name: &str) -> Option<Arc<ChipDecl>> {
     match ctx.scope.stack().get_in(0, crate::intern::intern(name)) {
         Some(info) if info.kind == SymbolKind::Chip => ctx.mod_decls.first()?.get(name).cloned(),
         _ => None,
@@ -237,7 +228,7 @@ fn resolve_mod_at_top(ctx: &TypeCheckCtx, name: &str) -> Option<Arc<ChipDecl>> {
 /// Whether every name resolves to the same `mod`/`chip` here as at the top
 /// level: no `mod` is declared above the top level, and no local binding is a
 /// `mod` or shares a top-level one's name.
-fn resolves_at_top(ctx: &TypeCheckCtx) -> bool {
+fn resolves_at_top(ctx: &TypeCheckCtx<'_>) -> bool {
     let stack = ctx.scope.stack();
     let Some(top) = ctx.mod_decls.first() else {
         return false;
@@ -252,14 +243,14 @@ fn resolves_at_top(ctx: &TypeCheckCtx) -> bool {
 }
 
 impl TopCalls {
-    fn of(ctx: &TypeCheckCtx) -> Self {
+    fn of(ctx: &TypeCheckCtx<'_>) -> Self {
         let mut out = Self {
             decls: ctx.mod_decls.first().map_or(0, HashMap::len),
             ..Default::default()
         };
         for decl in ctx.mod_decls.first().into_iter().flat_map(HashMap::values) {
-            let key: DeclKey = (decl.range.file.clone(), decl.range.start.offset);
-            let mut names = crate::collections::HashSet::default();
+            let key: DeclKey = decl.range.start_key();
+            let mut names = HashSet::default();
             crate::resolve::collect_idents(
                 crate::ast::walk::Node::Block(&decl.body),
                 crate::resolve::Uses::All,
@@ -275,7 +266,7 @@ impl TopCalls {
                     .or_default()
                     .push(key.clone());
                 if let Some(callee) = resolve_mod_at_top(ctx, n) {
-                    let to: DeclKey = (callee.range.file.clone(), callee.range.start.offset);
+                    let to: DeclKey = callee.range.start_key();
                     out.callers.entry(to.clone()).or_default().push(key.clone());
                     callees.push(to);
                 }
@@ -287,11 +278,11 @@ impl TopCalls {
     }
 
     /// The declarations whose walk reaches a body mentioning `name`.
-    fn reaching(&mut self, name: &str) -> Arc<crate::collections::HashSet<DeclKey>> {
+    fn reaching(&mut self, name: &str) -> Arc<HashSet<DeclKey>> {
         if let Some(r) = self.reaching.get(name) {
-            return r.clone();
+            return std::sync::Arc::clone(r);
         }
-        let mut found: crate::collections::HashSet<DeclKey> = self
+        let mut found: HashSet<DeclKey> = self
             .mentioned_by
             .get(name)
             .into_iter()
@@ -307,16 +298,15 @@ impl TopCalls {
             }
         }
         let found = Arc::new(found);
-        self.reaching.insert(name.to_string(), found.clone());
+        self.reaching
+            .insert(name.to_string(), std::sync::Arc::clone(&found));
         found
     }
 
     /// [`reachable_idents`] from `key`, sorted.
     fn idents(&self, key: &DeclKey) -> Vec<String> {
-        let mut visited: crate::collections::HashSet<&DeclKey> =
-            crate::collections::HashSet::default();
-        let mut names: crate::collections::HashSet<&String> =
-            crate::collections::HashSet::default();
+        let mut visited: HashSet<&DeclKey> = HashSet::default();
+        let mut names: HashSet<&String> = HashSet::default();
         let mut stack = vec![key];
         while let Some(k) = stack.pop() {
             if !visited.insert(k) {
@@ -349,11 +339,11 @@ fn top_calls<'c>(ctx: &'c mut TypeCheckCtx<'_>) -> &'c mut TopCalls {
 /// the call site binds, and its full walk is made on its next call, with the
 /// top-level resolution it had: a chain of calls then costs one walk, not one
 /// per link.
-pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
+pub(super) fn note_call(ctx: &mut TypeCheckCtx<'_>, name: &str, decl: &ChipDecl) {
     // What the call site binds, and the names the callee mentions, are no use
     // of the body the call sits in.
     ctx.scope.pause_storage_log();
-    let key: DeclKey = (decl.range.file.clone(), decl.range.start.offset);
+    let key: DeclKey = decl.range.start_key();
     for body in &ctx.open_bodies {
         if *body != key {
             ctx.body_calls
@@ -364,7 +354,7 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
     }
     // Only a local shadows: a top-level declaration is no local, and what a
     // body names at the top level is decided where the body is written.
-    let local = |ctx: &TypeCheckCtx, n: &str| {
+    let local = |ctx: &TypeCheckCtx<'_>, n: &str| {
         let (_, s) = ctx.scope.binding_frame(n).filter(|(i, _)| *i > 0)?;
         Some((n.to_string(), s.decl_range.clone()))
     };
@@ -390,13 +380,8 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
             debug_assert_eq!(
                 names,
                 {
-                    let mut all = crate::collections::HashSet::default();
-                    reachable_idents(
-                        ctx,
-                        decl,
-                        &mut crate::collections::HashSet::default(),
-                        &mut all,
-                    );
+                    let mut all = HashSet::default();
+                    reachable_idents(ctx, decl, &mut HashSet::default(), &mut all);
                     let mut all: Vec<String> = all.into_iter().collect();
                     all.sort_unstable();
                     all.iter().filter_map(|n| local(ctx, n)).collect::<Vec<_>>()
@@ -412,15 +397,16 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
                     let names = if ctx.first_called_at_top.contains(&key) {
                         top_calls(ctx).idents(&key)
                     } else {
-                        let mut names = crate::collections::HashSet::default();
-                        let mut visited = crate::collections::HashSet::default();
+                        let mut names = HashSet::default();
+                        let mut visited = HashSet::default();
                         reachable_idents(ctx, decl, &mut visited, &mut names);
                         let mut names: Vec<String> = names.into_iter().collect();
                         names.sort_unstable();
                         names
                     };
                     let names = Arc::new(names);
-                    ctx.body_idents.insert(key.clone(), names.clone());
+                    ctx.body_idents
+                        .insert(key.clone(), std::sync::Arc::clone(&names));
                     names
                 }
             };
@@ -440,10 +426,9 @@ pub(super) fn note_call(ctx: &mut TypeCheckCtx, name: &str, decl: &ChipDecl) {
 /// WS091 for every call whose body uses a storage declaration that the call
 /// site binds, under the same name, to something else. Reported once per
 /// shadowing declaration and name, at the declaration.
-pub(super) fn report(ctx: &mut TypeCheckCtx) {
+pub(super) fn report(ctx: &mut TypeCheckCtx<'_>) {
     propagate_uses(ctx);
-    let mut seen: crate::collections::HashSet<(SourceRange, String)> =
-        crate::collections::HashSet::default();
+    let mut seen: HashSet<(SourceRange, String)> = HashSet::default();
     let mut found: Vec<(SourceRange, String)> = Vec::new();
     for site in &ctx.call_sites {
         let Some(uses) = ctx.storage_uses.get(&site.callee) else {

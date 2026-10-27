@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Entity getters -------------------------------------------------
+    // Entity getters
     m.insert(
         "GetLocation",
         entity_exec(
@@ -13,8 +13,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![CallOutput::plain(WirePort::Vector, Type::Vector)],
         ),
     );
-    // Entity_IsFrozen: pure query — `entity.IsFrozen()` returns the frozen state
-    // on ExecOut (non-physics and global grids read frozen). Empty data struct.
+    // `entity.IsFrozen()` returns the frozen state on ExecOut; non-physics and
+    // global grids read frozen.
     m.insert(
         "IsFrozen",
         entity_exec(
@@ -82,7 +82,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Entity manipulation (exec) -------------------------------------
+    // Entity manipulation (exec)
     m.insert(
         "SetLocation",
         CallSpec {
@@ -240,7 +240,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Entity (additional) ---------------------------------------------
+    // Entity (additional)
     m.insert(
         "SetFrozen",
         entity_exec(
@@ -284,7 +284,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Entity tags --------------------------------------------
+    // Entity tags
     m.insert(
         "GetTag",
         entity_exec(
@@ -306,9 +306,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![],
         ),
     );
-    // ---- Entity custom properties ----------------------------------------
+    // Entity custom properties
     // A key/value store on an entity, player or dynamic grid: 256 keys per
-    // holder, keys up to 64 characters (measured in game; longer keys are not stored). The gates save `Key` as a string.
+    // holder, keys up to 64 characters (longer keys are not stored, measured in
+    // game). The gates save `Key` as a string.
     m.insert(
         "SetCustomProperty",
         entity_exec(
@@ -366,7 +367,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Newer entity getters / setters ----------------------------------
+    // Entity getters / setters
     m.insert(
         "DestroySpawned",
         entity_exec(
@@ -406,8 +407,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![CallOutput::plain(WirePort::Speed, Type::Float)],
         ),
     );
-    // Entity-scoped team access. Named distinctly from the character/player
-    // `GetTeam`/`SetTeam` builtins — these operate on any entity (grid, prefab).
+    // Team access on any entity (grid, prefab), separate from the
+    // character/player `GetTeam`/`SetTeam` builtins.
     m.insert(
         "GetEntityTeam",
         entity_exec(
@@ -430,7 +431,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Self transform + simple sweep -----------------------------------
+    // Self transform + simple sweep
     m.insert(
         "GetOwnTransform",
         CallSpec {
@@ -449,7 +450,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
     // The program's own microchip brick: a var holding a brick reference,
-    // baked at emit (`emit/handles.rs`), so it has no gate of its own.
+    // baked at emit (`wirescript_ir::emit::handles`), so it has no gate of its own.
     m.insert(
         "GetMicrochipBrick",
         CallSpec {
@@ -461,13 +462,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: None,
         },
     );
-    // ---- Brick properties ----------------------------------------------
-    // Read or write one setting of a referenced brick. `property` is a
-    // constant `BrickProperty` member baked into the gate; the value's type
-    // follows it (`bool` for Visible and the collision flags, `color` for
-    // Color). Typecheck types the read and checks the write from the member
-    // (`typecheck::sig::brick_property_type`), and lowering pins the read's
-    // `T` from that result.
+    // Brick properties
+    // Read or write one setting of a referenced brick. `property` is a constant
+    // `BrickProperty` member baked into the gate, and the value's type follows
+    // it (`typecheck::sig::brick_property_type`).
     m.insert(
         "GetBrickProperty",
         CallSpec {
@@ -497,7 +495,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: Some(Type::Brick),
         },
     );
-    // ---- Components ----------------------------------------------------
+    // Components
     // `brick.GetComponent($Component/PointLight)` gives a reference typed by
     // the component type it names (`Component<PointLight>`, typed in
     // `typecheck::call`); `AddComponent` adds one first if the brick has none.

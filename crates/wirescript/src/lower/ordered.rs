@@ -15,7 +15,6 @@
 
 use super::*;
 use crate::catalog::storage::{Access, Kind};
-use crate::intern::Sym;
 use crate::lower::context::{reset_var_get_caches, restore_var_caches, snapshot_var_caches};
 use crate::lower::record_assign::named_field;
 use crate::lower::stmt::{branch_record_fields, set_scalar_var, value_record_fields};
@@ -49,7 +48,7 @@ impl Reads {
         self.vars.is_empty() && self.containers.is_empty() && !self.unknown && !self.outer
     }
 
-    pub(super) fn add(&mut self, o: Reads) {
+    pub(super) fn add(&mut self, o: Self) {
         self.vars.extend(o.vars);
         self.containers.extend(o.containers);
         self.unknown |= o.unknown;
@@ -76,15 +75,15 @@ impl Writes {
     }
 
     fn all() -> Self {
-        Writes {
+        Self {
             any: [Kind::Var, Kind::Array, Kind::Map].into_iter().collect(),
             outer: true,
-            ..Writes::default()
+            ..Self::default()
         }
     }
 
     /// `b`'s storage is written.
-    pub(super) fn add(&mut self, ctx: &LowerCtx, b: &Binding) {
+    pub(super) fn add(&mut self, ctx: &LowerCtx<'_>, b: &Binding) {
         match b {
             Binding::Var(v) => match kind(v.storage) {
                 Some(Kind::Var) => {
@@ -133,7 +132,7 @@ pub(super) struct ConeIndex {
     /// source, in wire order.
     feeds: HashMap<NodeId, Vec<(WirePort, PortRef)>>,
     indexed: usize,
-    last: Option<crate::ir::Wire>,
+    last: Option<Wire>,
     /// Each chip reached, at every depth, by its node count, wire count and
     /// chip count when it was indexed.
     chips: HashMap<NodeId, (usize, usize, usize)>,
@@ -143,14 +142,14 @@ pub(super) struct ConeIndex {
 }
 
 impl ConeIndex {
-    fn sync(&mut self, m: &crate::ir::Module) {
+    fn sync(&mut self, m: &Module) {
         self.sync_wires(m);
         self.add_chips(m, &mut Vec::new());
     }
 
     /// Index the module's wires added since the last sync, starting over when
     /// the indexed ones were rewritten. Its chips are left to `add_chips`.
-    fn sync_wires(&mut self, m: &crate::ir::Module) {
+    fn sync_wires(&mut self, m: &Module) {
         let wires = &m.wires;
         let valid = self.indexed <= wires.len()
             && (self.indexed == 0 || Some(wires[self.indexed - 1]) == self.last);
@@ -173,7 +172,7 @@ impl ConeIndex {
 
     /// Index every chip under `m` that is new or has changed since, with the
     /// chips inside it.
-    fn add_chips(&mut self, m: &crate::ir::Module, path: &mut Vec<NodeId>) {
+    fn add_chips(&mut self, m: &Module, path: &mut Vec<NodeId>) {
         for (id, chip) in &m.chips {
             let shape = (chip.nodes.len(), chip.wires.len(), chip.chips.len());
             if self.chips.insert(*id, shape) == Some(shape) {
@@ -196,11 +195,7 @@ impl ConeIndex {
 
     /// The node `id` in `m` or one of its chips, and whether it is `m`'s own,
     /// as of the last [`sync`](Self::sync).
-    fn find<'m>(
-        &self,
-        m: &'m crate::ir::Module,
-        id: NodeId,
-    ) -> Option<(&'m crate::ir::Node, bool)> {
+    fn find<'m>(&self, m: &'m Module, id: NodeId) -> Option<(&'m Node, bool)> {
         if let Some(n) = m.nodes.get(&id) {
             return Some((n, true));
         }
@@ -211,8 +206,9 @@ impl ConeIndex {
         at.nodes.get(&id).map(|n| (n, false))
     }
 
-    /// Wire `i` of the module now comes from `src` instead of `old`.
-    fn moved(&mut self, i: usize, w: crate::ir::Wire, old: PortRef) {
+    /// Updates the index after wire `i` (now `w`) was redirected away from the
+    /// source `old`.
+    fn moved(&mut self, i: usize, w: Wire, old: PortRef) {
         if i >= self.indexed {
             return;
         }
@@ -236,14 +232,14 @@ impl ConeIndex {
 
 /// The sources of the module's own wires into `id`, each with the port it
 /// feeds.
-pub(super) fn feeds_of(ctx: &LowerCtx, id: NodeId) -> Vec<(WirePort, PortRef)> {
+pub(super) fn feeds_of(ctx: &LowerCtx<'_>, id: NodeId) -> Vec<(WirePort, PortRef)> {
     let mut index = ctx.cone_index.borrow_mut();
     index.sync_wires(&ctx.builder.module);
     index.feeds.get(&id).cloned().unwrap_or_default()
 }
 
 /// Whether the node `id` is in this module or one of its chips.
-fn exists(ctx: &LowerCtx, id: NodeId) -> bool {
+fn exists(ctx: &LowerCtx<'_>, id: NodeId) -> bool {
     let m = &ctx.builder.module;
     if m.nodes.contains_key(&id) {
         return true;
@@ -255,7 +251,7 @@ fn exists(ctx: &LowerCtx, id: NodeId) -> bool {
 
 /// What the pure cone of `port` reads live, through gates with no exec input
 /// and into the chips whose outputs it reaches.
-pub(super) fn live_reads(ctx: &LowerCtx, port: PortRef) -> Reads {
+pub(super) fn live_reads(ctx: &LowerCtx<'_>, port: PortRef) -> Reads {
     let module = &ctx.builder.module;
     let chip_body = matches!(
         module.scopes.get(&ROOT_SCOPE_ID).map(|s| &s.kind),
@@ -303,7 +299,7 @@ pub(super) fn live_reads(ctx: &LowerCtx, port: PortRef) -> Reads {
 /// The storage reading `b` reads: a stored var, every leaf of a record, what a
 /// pure value or a port reads live. A container is a reference, read when it
 /// is used.
-pub(super) fn binding_reads(ctx: &LowerCtx, b: &Binding) -> Reads {
+pub(super) fn binding_reads(ctx: &LowerCtx<'_>, b: &Binding) -> Reads {
     let mut r = Reads::default();
     match b {
         Binding::Var(v) if v.storage == VarStorage::Var => {
@@ -352,7 +348,7 @@ pub(super) fn storage_leaves(b: &Binding, out: &mut HashSet<NodeId>) {
 
 /// The storage gate a writer's storage input names: the source itself when it
 /// is a storage gate's ref port, or the one wired into a chip parameter pin.
-fn storage_behind(ctx: &LowerCtx, mut p: PortRef) -> Option<NodeId> {
+fn storage_behind(ctx: &LowerCtx<'_>, mut p: PortRef) -> Option<NodeId> {
     let root = &ctx.builder.module;
     let mut index = ctx.cone_index.borrow_mut();
     index.sync(root);
@@ -376,7 +372,7 @@ fn storage_behind(ctx: &LowerCtx, mut p: PortRef) -> Option<NodeId> {
     None
 }
 
-fn note_write(ctx: &LowerCtx, m: &crate::ir::Module, wire: &crate::ir::Wire, w: &mut Writes) {
+fn note_write(ctx: &LowerCtx<'_>, m: &Module, wire: &Wire, w: &mut Writes) {
     let Some(class) = m.nodes.get(&wire.target.node_id).map(|n| n.gate_class) else {
         return;
     };
@@ -400,7 +396,7 @@ fn note_write(ctx: &LowerCtx, m: &crate::ir::Module, wire: &crate::ir::Wire, w: 
     }
 }
 
-fn chip_writes(ctx: &LowerCtx, m: &crate::ir::Module, w: &mut Writes) {
+fn chip_writes(ctx: &LowerCtx<'_>, m: &Module, w: &mut Writes) {
     for wire in &m.wires {
         note_write(ctx, m, wire, w);
     }
@@ -413,13 +409,13 @@ pub(super) struct Mark {
     exec: Option<PortRef>,
     node: NodeId,
     wires: usize,
-    last: Option<crate::ir::Wire>,
+    last: Option<Wire>,
     chips: usize,
     signal_emits: u32,
     emits: usize,
 }
 
-pub(super) fn mark(ctx: &LowerCtx) -> Mark {
+pub(super) fn mark(ctx: &LowerCtx<'_>) -> Mark {
     let module = &ctx.builder.module;
     Mark {
         exec: ctx.current_exec,
@@ -436,7 +432,7 @@ pub(super) fn mark(ctx: &LowerCtx) -> Mark {
 /// every chip added since. A wire list rewritten before `m`, or an `emit` of a
 /// local signal (whose handlers run off this chain), counts as writing
 /// anything.
-fn writes_since(ctx: &LowerCtx, m: &Mark) -> Writes {
+fn writes_since(ctx: &LowerCtx<'_>, m: &Mark) -> Writes {
     let module = &ctx.builder.module;
     let wires = &module.wires;
     if wires.len() < m.wires
@@ -461,10 +457,9 @@ fn writes_since(ctx: &LowerCtx, m: &Mark) -> Writes {
 
 /// Run `f` where the chain stood at `m`: the exec gates it adds are spliced in
 /// ahead of whatever the chain ran after `m` (an `emit` queued there since `m`
-/// too),
-/// which then continues from them. Var reads cached since `m` are not reused,
-/// and those `f` makes are dropped.
-fn at_mark<R>(ctx: &mut LowerCtx, m: &Mark, f: impl FnOnce(&mut LowerCtx) -> R) -> R {
+/// too), which then continues from them. Var reads cached since `m` are not
+/// reused, and those `f` makes are dropped.
+fn at_mark<R>(ctx: &mut LowerCtx<'_>, m: &Mark, f: impl FnOnce(&mut LowerCtx<'_>) -> R) -> R {
     let Some(cursor) = m.exec else {
         return f(ctx);
     };
@@ -516,7 +511,7 @@ pub(super) type Held = HashMap<PortRef, Binding>;
 /// `t` is the target it will be written to, for the held value's type. A
 /// container is a reference and stays one.
 pub(super) fn hold(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     b: &Binding,
     t: Option<&Binding>,
     label: &str,
@@ -526,7 +521,7 @@ pub(super) fn hold(
     let key = match b {
         Binding::Record(f) => {
             let mut keys: Vec<Sym> = f.keys().copied().collect();
-            keys.sort_by_key(|k| crate::intern::resolve(*k));
+            keys.sort_by_key(|k| resolve(*k));
             let mut out = HashMap::default();
             for k in keys {
                 let sub_t = match t {
@@ -534,8 +529,8 @@ pub(super) fn hold(
                     _ => None,
                 };
                 let sub_label = match label {
-                    "" => crate::intern::resolve(k).to_string(),
-                    _ => format!("{label}.{}", crate::intern::resolve(k)),
+                    "" => resolve(k).to_string(),
+                    _ => format!("{label}.{}", resolve(k)),
                 };
                 out.insert(k, hold(ctx, &f[&k], sub_t, &sub_label, range, held));
             }
@@ -557,22 +552,20 @@ pub(super) fn hold(
             None => return b.clone(),
         },
         Binding::DynRef(d) => Binding::Local(LocalRecord {
-            port: crate::lower::expr::read_dyn_ref(ctx, d, range),
+            port: read_dyn_ref(ctx, d, range),
         }),
         _ if ctx.current_exec.is_some() && !binding_reads(ctx, b).is_empty() => {
             let Some(port) = binding_to_port(ctx, b, range) else {
                 return b.clone();
             };
             let ty = match t {
-                Some(Binding::Var(v)) if v.storage == VarStorage::Map => {
-                    crate::lower::access::map_kv(v).1
-                }
+                Some(Binding::Var(v)) if v.storage == VarStorage::Map => map_kv(v).1,
                 Some(Binding::Var(v)) => v.inner_type.clone(),
-                _ => crate::lower::call::arg_port_type(ctx, port).unwrap_or(Type::Any),
+                _ => arg_port_type(ctx, port).unwrap_or(Type::Any),
             };
             let mut props = HashMap::default();
             props.insert(*sym::NAME_LABEL, Literal::String(format!("_{label}")));
-            let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range, None);
+            let node = make_scalar_var_gate(ctx, &ty, props, range, None);
             let var = VarRecord::new(node, ty, VarStorage::Var);
             set_scalar_var(ctx, &var, port, range);
             Binding::Local(LocalRecord {
@@ -598,11 +591,11 @@ pub(super) enum Later<'e> {
     Key(&'e Expr),
     /// A record-literal field or spread, lowered as the literal lowers it,
     /// and what its slot holds.
-    Field(&'e RecordLitField, crate::lower::decl::Slots<'static>),
+    Field(&'e RecordLitField, Slots<'static>),
 }
 
 impl Later<'_> {
-    pub(super) fn lower(self, ctx: &mut LowerCtx) -> Option<Binding> {
+    pub(super) fn lower(self, ctx: &mut LowerCtx<'_>) -> Option<Binding> {
         match self {
             Later::Elem(e, true) => value_record_fields(ctx, e).map(Binding::Record),
             Later::Elem(e, false) | Later::Key(e) => Some(Binding::Local(LocalRecord {
@@ -611,7 +604,7 @@ impl Later<'_> {
             Later::Field(RecordLitField::Spread { value, .. }, _) => {
                 branch_record_fields(ctx, value).map(Binding::Record)
             }
-            Later::Field(f, slots) => Some(Binding::Record(crate::lower::decl::lower_record_lit(
+            Later::Field(f, slots) => Some(Binding::Record(lower_record_lit(
                 ctx,
                 std::slice::from_ref(f),
                 slots,
@@ -621,7 +614,7 @@ impl Later<'_> {
 
     /// The storage a field or spread names, known without lowering it: its
     /// record, holding just the fields that name storage.
-    pub(super) fn named(self, ctx: &LowerCtx) -> Option<HashMap<Sym, Binding>> {
+    pub(super) fn named(self, ctx: &LowerCtx<'_>) -> Option<Fields> {
         let Later::Field(f, slots) = self else {
             return None;
         };
@@ -639,7 +632,7 @@ impl Later<'_> {
                     }
                     _ => b,
                 };
-                Some(std::iter::once((crate::intern::intern(name), b)).collect())
+                Some(std::iter::once((intern(name), b)).collect())
             }
         }
     }
@@ -718,11 +711,11 @@ impl<'e> Ordered<'e> {
     /// the target it will be written to if any.
     pub(super) fn source(
         &mut self,
-        ctx: &mut LowerCtx,
+        ctx: &mut LowerCtx<'_>,
         label: &str,
         target: Option<&Binding>,
         range: &SourceRange,
-        f: impl FnOnce(&mut LowerCtx) -> Option<Binding>,
+        f: impl FnOnce(&mut LowerCtx<'_>) -> Option<Binding>,
     ) -> Option<usize> {
         let m = mark(ctx);
         let b = f(ctx);
@@ -731,7 +724,7 @@ impl<'e> Ordered<'e> {
     }
 
     /// [`source`](Self::source) for a value lowered to one port.
-    pub(super) fn port(&mut self, ctx: &mut LowerCtx, e: &Expr) -> usize {
+    pub(super) fn port(&mut self, ctx: &mut LowerCtx<'_>, e: &Expr) -> usize {
         let m = mark(ctx);
         let port = lower_expr(ctx, e);
         self.settle(ctx, &m);
@@ -739,7 +732,7 @@ impl<'e> Ordered<'e> {
     }
 
     /// The binding in `slot`, lowering it now if it waited.
-    pub(super) fn value(&mut self, ctx: &mut LowerCtx, slot: usize) -> Option<Binding> {
+    pub(super) fn value(&mut self, ctx: &mut LowerCtx<'_>, slot: usize) -> Option<Binding> {
         if let State::Later(l) = self.slots[slot].state {
             self.slots[slot].state = l.lower(ctx).map_or(State::Missing, State::Live);
         }
@@ -750,7 +743,7 @@ impl<'e> Ordered<'e> {
     }
 
     /// The port in `slot`, as [`port`](Self::port) left it.
-    pub(super) fn port_of(&mut self, ctx: &mut LowerCtx, slot: usize) -> PortRef {
+    pub(super) fn port_of(&mut self, ctx: &mut LowerCtx<'_>, slot: usize) -> PortRef {
         match self.value(ctx, slot) {
             Some(Binding::Local(l)) => l.port,
             _ => unreachable!("a port slot holds a port"),
@@ -784,7 +777,7 @@ impl<'e> Ordered<'e> {
             .then(|| self.add(State::Copied, path, None, range, Some(copies)))
     }
 
-    fn reads(&mut self, ctx: &LowerCtx, i: usize) -> &Reads {
+    fn reads(&mut self, ctx: &LowerCtx<'_>, i: usize) -> &Reads {
         let slot = &mut self.slots[i];
         if slot.reads.is_none() {
             let r = match &slot.state {
@@ -803,7 +796,7 @@ impl<'e> Ordered<'e> {
     }
 
     /// Hold `slot` at its value here, lowering it first if it waited.
-    pub(super) fn fix(&mut self, ctx: &mut LowerCtx, i: usize, held: &mut Held) {
+    pub(super) fn fix(&mut self, ctx: &mut LowerCtx<'_>, i: usize, held: &mut Held) {
         let b = match std::mem::replace(&mut self.slots[i].state, State::Gone) {
             State::Live(b) => b,
             State::Later(l) => match l.lower(ctx) {
@@ -839,7 +832,7 @@ impl<'e> Ordered<'e> {
     /// After the source lowered since `m`: hold, just before it, each earlier
     /// source whose reads its writes may change, and report a container one
     /// of them copies later that they may change (WS089).
-    pub(super) fn settle(&mut self, ctx: &mut LowerCtx, m: &Mark) {
+    pub(super) fn settle(&mut self, ctx: &mut LowerCtx<'_>, m: &Mark) {
         if m.exec.is_none() || !self.waiting() {
             return;
         }
@@ -865,13 +858,15 @@ impl<'e> Ordered<'e> {
         if !hit.is_empty() {
             let mut held = Held::default();
             at_mark(ctx, m, |ctx| {
-                hit.into_iter().for_each(|i| self.fix(ctx, i, &mut held))
+                for i in hit {
+                    self.fix(ctx, i, &mut held);
+                }
             });
         }
     }
 
     /// Hold here each source whose reads `w` may change.
-    pub(super) fn fix_changed(&mut self, ctx: &mut LowerCtx, w: &Writes) {
+    pub(super) fn fix_changed(&mut self, ctx: &mut LowerCtx<'_>, w: &Writes) {
         let mut held = Held::default();
         for i in 0..self.slots.len() {
             if matches!(self.slots[i].state, State::Live(_) | State::Later(_))
@@ -883,7 +878,7 @@ impl<'e> Ordered<'e> {
     }
 }
 
-fn report_changed_copy(ctx: &mut LowerCtx, path: &str, range: &SourceRange) {
+fn report_changed_copy(ctx: &mut LowerCtx<'_>, path: &str, range: &SourceRange) {
     ctx.error(
         "WS089",
         format!(
@@ -898,7 +893,7 @@ fn report_changed_copy(ctx: &mut LowerCtx, path: &str, range: &SourceRange) {
 
 /// Lower `exprs` in order to one port each, every one held before a later one
 /// runs code that may change what it reads.
-pub(super) fn lower_in_order(ctx: &mut LowerCtx, exprs: &[&Expr]) -> Vec<PortRef> {
+pub(super) fn lower_in_order(ctx: &mut LowerCtx<'_>, exprs: &[&Expr]) -> Vec<PortRef> {
     // With no exec chain nothing runs, so nothing can be held.
     if exprs.len() < 2 || ctx.current_exec.is_none() {
         return exprs.iter().map(|e| lower_expr(ctx, e)).collect();
@@ -922,7 +917,7 @@ pub(super) struct ArgOrder {
 impl ArgOrder {
     /// Settle the argument lowered since the last call, then mark the chain
     /// for the next one.
-    pub(super) fn next(&mut self, ctx: &mut LowerCtx) {
+    pub(super) fn next(&mut self, ctx: &mut LowerCtx<'_>) {
         if let Some(m) = self.at.take() {
             self.ord.settle(ctx, &m);
         }
@@ -949,7 +944,7 @@ impl ArgOrder {
     }
 
     /// Each bound argument as it was held, a wired one's pins rewired.
-    pub(super) fn finish(mut self, ctx: &mut LowerCtx) -> Vec<Option<Binding>> {
+    pub(super) fn finish(mut self, ctx: &mut LowerCtx<'_>) -> Vec<Option<Binding>> {
         self.next(ctx);
         let mut out = Vec::with_capacity(self.slots.len());
         for (slot, before, wired) in std::mem::take(&mut self.slots) {
@@ -966,7 +961,12 @@ impl ArgOrder {
 /// Point each wire in `wires` that carried a port of `before` at the matching
 /// port of `after`, the same value held. `before` is what was wired: the
 /// ports a record or value argument lowered to.
-fn rewire(ctx: &mut LowerCtx, before: &Binding, after: &Binding, wires: std::ops::Range<usize>) {
+fn rewire(
+    ctx: &mut LowerCtx<'_>,
+    before: &Binding,
+    after: &Binding,
+    wires: std::ops::Range<usize>,
+) {
     fn pairs(before: &Binding, after: &Binding, out: &mut HashMap<PortRef, PortRef>) {
         match (before, after) {
             (Binding::Record(a), Binding::Record(b)) => {

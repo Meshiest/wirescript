@@ -1,10 +1,12 @@
-//! Grammar-based Wirescript program fuzzer hunting SILENT MISCOMPILES:
-//! programs with no error diagnostics that still lower to `_Unsupported`
-//! placeholder gates, invalid wires (dangling endpoints / fan-in duplicates),
-//! stage panics, emit failures, or (multi-file mode) storage-identity bugs.
+//! Grammar-based Wirescript program fuzzer hunting silent miscompiles: programs
+//! with no error diagnostics that still lower to `_Unsupported` placeholder
+//! gates, invalid wires (dangling endpoints, fan-in duplicates), stage panics,
+//! emit failures, or (multi-file mode) storage-identity bugs.
 //!
-//!   cargo run --release -p wirescript --example fuzz_programs -- \
-//!       --count 5000 --seed 1 --out fuzz_findings
+//! ```text
+//! cargo run --release -p wirescript --example fuzz_programs -- \
+//!     --count 5000 --seed 1 --out fuzz_findings
+//! ```
 //!
 //! Multi-file programs are represented as a single "bundle" string: sections
 //! delimited by `//!ws-file <name>` markers (the `main` section is the entry;
@@ -12,21 +14,20 @@
 //! of generated programs are bundles exercising `import "m"`,
 //! `import * as N from "m"`, and `import { x } from "m"` with deliberate
 //! name collisions (same state name in two modules, local decl vs import)
-//! plus nested-scope shadowing. Bundles get an extra STORAGE oracle: the
+//! plus nested-scope shadowing. Bundles get an extra storage oracle: the
 //! declared module state (top-level `var` / `array` / map-`var` / `buffer`,
 //! derived syntactically from the bundle itself) must lower to that many
 //! distinct storage gates (`Pseudo_Var` / `Pseudo_ArrayVar` / `Pseudo_MapVar`
-//! / buffer gates) - fewer is a `storage-collapse` finding (two names merged
-//! into one gate). Each syntactic write to that state must produce a
-//! Set/Increment/Push/... gate wired to a matching storage gate - a missing
-//! one is a `dropped-write` finding (the write silently vanished).
+//! / buffer gates); fewer is a `storage-collapse` finding (two names sharing
+//! one gate). Each syntactic write to that state must produce a
+//! Set/Increment/Push gate wired to a matching storage gate; a missing
+//! one is a `dropped-write` finding.
 //!
 //! Extra modes:
-//!   --calibrate <dir>   run the oracle over every .ws file in <dir> (should
-//!                       be silent on known-good programs; used to tune the
-//!                       wire-validity checks)
+//!   --calibrate <dir>   run the oracle over every .ws file in <dir>; it
+//!                       should be silent on known-good programs
 //!   --selftest-only     run the oracle plumbing sanity checks and exit
-//!   --fold-diff <iters> differential fuzz mode hunting fold-pass WIRING bugs
+//!   --fold-diff <iters> differential fuzz mode hunting fold-pass wiring bugs
 //!                       (wrong rewire, dropped wire, folded-through-barrier):
 //!                       generates constant-heavy programs, lowers each with
 //!                       `FoldMode::ForceOff`/`ForceOn`, independently predicts the
@@ -39,7 +40,7 @@ use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use wirescript::analyze::analyze_cycles;
+use wirescript::analyze_cycles;
 use wirescript::diagnostic::Severity;
 use wirescript::intern::{intern, intern_static, resolve as sym_resolve, sym};
 use wirescript::ir::port_registry::WirePort;
@@ -47,26 +48,23 @@ use wirescript::ir::{
     Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire, gate_class as gc,
 };
 use wirescript::layout::layout;
-// `fold::eval` is the `#[doc(hidden)] pub` surface opened up specifically
-// for this harness (see the visibility note on `pub mod fold`
-// in `src/lower/mod.rs`) — the differential predictor calls the crate's own
-// certified evaluator instead of re-implementing the value laws. NOTE:
-// `eval::eval` is a pure lookup against a probed truth table (a match over
-// gate-class strings), NOT a dynamic/JS-style code-execution `eval` — no
-// user input, code, or expression string ever reaches it.
-use wirescript::lower::FoldMode;
-use wirescript::lower::fold::eval::{self, Value as FoldValue};
+// `fold_eval` is a `#[doc(hidden)] pub` surface for this harness: the
+// differential predictor calls the crate's own certified evaluator so it shares
+// the value laws. `eval::eval` is a lookup against a probed truth table keyed
+// by gate class, not code execution.
+use wirescript::FoldMode;
+use wirescript::fold_eval::{self as eval, Value as FoldValue};
 use wirescript::resolve::{FsLoader, MemLoader};
 use wirescript::{EmitOptions, FrontEnd, FrontEndStage, build_world, front_end_staged};
 
-// ─────────────────────────── PRNG (xorshift64*) ───────────────────────────
+// PRNG (xorshift64*)
 
 #[derive(Clone)]
 struct Rng(u64);
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1)
+        Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
     fn next(&mut self) -> u64 {
         let mut x = self.0;
@@ -74,7 +72,7 @@ impl Rng {
         x ^= x << 25;
         x ^= x >> 27;
         self.0 = x;
-        x.wrapping_mul(0x2545F4914F6CDD1D)
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
     fn below(&mut self, n: usize) -> usize {
         if n == 0 {
@@ -88,14 +86,14 @@ impl Rng {
         lo + self.below(hi.saturating_sub(lo) + 1)
     }
     fn chance(&mut self, num: u32, den: u32) -> bool {
-        (self.next() % den as u64) < num as u64
+        (self.next() % u64::from(den)) < u64::from(num)
     }
     fn pick<'a, T>(&mut self, v: &'a [T]) -> &'a T {
         &v[self.below(v.len())]
     }
 }
 
-// ─────────────────────────── panic capture ───────────────────────────
+// Panic capture
 
 thread_local! {
     static LAST_PANIC_LOC: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -111,7 +109,7 @@ fn install_panic_hook() {
     }));
 }
 
-fn panic_msg(p: Box<dyn std::any::Any + Send>) -> String {
+fn panic_msg(p: &(dyn std::any::Any + Send)) -> String {
     let msg = if let Some(s) = p.downcast_ref::<&str>() {
         s.to_string()
     } else if let Some(s) = p.downcast_ref::<String>() {
@@ -141,7 +139,7 @@ fn norm_msg(s: &str) -> String {
     out
 }
 
-// ─────────────────────────── pipeline + oracle ───────────────────────────
+// Pipeline and oracle
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Kind {
@@ -152,24 +150,24 @@ enum Kind {
     WireDup,
     EmitErr,
     /// Fewer distinct storage gates than syntactically-distinct declared
-    /// state (two same-named module states merged into ONE gate).
+    /// state (two same-named module states share one gate).
     StorageCollapse,
     /// A syntactic write to declared state produced no Set/mutation gate
-    /// wired to any matching storage gate - the write silently vanished.
+    /// wired to any matching storage gate: the write silently vanished.
     DroppedWrite,
 }
 
 impl Kind {
     fn name(self) -> &'static str {
         match self {
-            Kind::Crash => "crash",
-            Kind::Unsupported => "unsupported-gate",
-            Kind::WireDangling => "wire-dangling",
-            Kind::WireFanIn => "wire-fanin",
-            Kind::WireDup => "wire-duplicate",
-            Kind::EmitErr => "emit-error",
-            Kind::StorageCollapse => "storage-collapse",
-            Kind::DroppedWrite => "dropped-write",
+            Self::Crash => "crash",
+            Self::Unsupported => "unsupported-gate",
+            Self::WireDangling => "wire-dangling",
+            Self::WireFanIn => "wire-fanin",
+            Self::WireDup => "wire-duplicate",
+            Self::EmitErr => "emit-error",
+            Self::StorageCollapse => "storage-collapse",
+            Self::DroppedWrite => "dropped-write",
         }
     }
 }
@@ -184,7 +182,7 @@ struct Outcome {
     wire_issues: Vec<(Kind, String)>,
     /// verbose per-issue details (src classes, counts) for metadata
     wire_detail: Vec<String>,
-    /// storage-oracle findings (StorageCollapse / DroppedWrite) + details
+    /// storage-oracle findings (`StorageCollapse` / `DroppedWrite`) + details
     storage_issues: Vec<(Kind, String)>,
     storage_detail: Vec<String>,
     emit_err: Option<String>,
@@ -265,9 +263,9 @@ fn check_wires(root: &Module, out: &mut Outcome) {
         if !src_known || !tgt_known {
             // Bucket by which end is missing, whether the missing id is the
             // null NodeId(0) (a never-filled placeholder) or a real id that
-            // vanished (orphan), and the missing side's port. The OTHER
-            // endpoint's class goes in the detail only — it fragments one
-            // root cause into dozens of buckets otherwise.
+            // vanished (orphan), and the missing side's port. The other
+            // endpoint's class goes in the detail only, since keying on it
+            // splits one root cause into dozens of buckets.
             let (kind_end, missing_id, missing_port, other_cls, other_port) = if !src_known {
                 (
                     "src",
@@ -339,11 +337,11 @@ fn check_wires(root: &Module, out: &mut Outcome) {
         if srcs.len() >= 2 {
             let tc = short_class(classes[tgt]);
             let mut src_cls: Vec<&str> = srcs.iter().map(|s| short_class(classes[s])).collect();
-            src_cls.sort();
+            src_cls.sort_unstable();
             src_cls.dedup();
-            // Coarse bucket key: target class + port only. Source-class
-            // combos fragment one root cause into dozens of buckets — the
-            // detail keeps them for metadata.
+            // Coarse bucket key: target class + port only, because source-class
+            // combos split one root cause into dozens of buckets. The detail
+            // keeps them for metadata.
             out.wire_detail.push(format!(
                 "fanin {}.{} <- [{}] x{}",
                 tc,
@@ -352,16 +350,16 @@ fn check_wires(root: &Module, out: &mut Outcome) {
                 srcs.len()
             ));
             out.wire_issues
-                .push((Kind::WireFanIn, format!("fanin {}.{}", tc, port)));
+                .push((Kind::WireFanIn, format!("fanin {tc}.{port}")));
         }
     }
 }
 
-// --------------------------- multi-file bundles + storage oracle ---------------------------
+// Multi-file bundles and storage oracle
 
-/// Section delimiter for multi-file programs packed into one string (so the
-/// existing single-string plumbing - minimizer, bucket exemplars, findings
-/// files - carries multi-file programs unchanged). The `main` section is the
+/// Section delimiter for multi-file programs packed into one string, so the
+/// single-string plumbing (minimizer, bucket exemplars, findings files)
+/// carries multi-file programs unchanged. The `main` section is the
 /// entry; every other section resolves as `<name>.ws` via `MemLoader`.
 const FILE_MARKER: &str = "//!ws-file ";
 
@@ -415,10 +413,10 @@ enum StoreKind {
 impl StoreKind {
     fn name(self) -> &'static str {
         match self {
-            StoreKind::Var => "var",
-            StoreKind::Array => "array",
-            StoreKind::Map => "map",
-            StoreKind::Buffer => "buffer",
+            Self::Var => "var",
+            Self::Array => "array",
+            Self::Map => "map",
+            Self::Buffer => "buffer",
         }
     }
 }
@@ -449,11 +447,9 @@ fn ident_at(s: &str) -> &str {
 }
 
 /// Column-0 `type Name = { f1: T1, f2: T2, .. }` declarations of one file, by
-/// type name -> ordered field names. Record types are file-private (an
-/// importer never spells the type name, only field/method access on the
-/// container it declares), so this is scoped per-file exactly like
-/// `scan_state_decls` below - and is in fact only ever consulted against the
-/// SAME file's own `var` lines.
+/// type name -> ordered field names. Record types are file-private, so this is
+/// scoped per-file like `scan_state_decls` and consulted only against the same
+/// file's `var` lines.
 fn scan_record_types(src: &str) -> StdMap<String, Vec<String>> {
     let mut out = StdMap::new();
     for line in src.lines() {
@@ -490,11 +486,9 @@ fn scan_record_types(src: &str) -> StdMap<String, Vec<String>> {
     out
 }
 
-/// Split `s` on commas that sit at bracket depth 0 - one level of `(...)` /
-/// `{...}` nesting is enough for an `enum` body, whose own variant-level
-/// commas (between variants) must NOT be confused with a payload's internal
-/// field-list commas (`B(int, float)`, `C { f: int, g: float }`). Also reused
-/// to split one payload's own field list, at depth 0 relative to ITS content.
+/// Split `s` on commas at bracket depth 0, so an `enum` body splits between
+/// variants and not inside a payload (`B(int, float)`, `C { f: int, g: float }`).
+/// Also splits one payload's own field list.
 fn split_top_level(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0i32;
@@ -520,16 +514,9 @@ fn split_top_level(s: &str) -> Vec<&str> {
 /// Column-0 `enum Name { A, B(int), C { f: int } }` declarations of one file,
 /// by enum name -> ordered (variant name, payload slot keys) pairs. A slot
 /// key is the positional index ("0", "1", ..) for a `(...)` payload or the
-/// field name for a `{ .. }` payload - exactly what `build_enum_fields`
-/// (lower/predeclare.rs) uses to name each `__{Variant}_{key}` backing gate,
-/// so this table lets `scan_state_decls` below derive the SAME superset
-/// storage layout an enum var lowers to (`__disc` + every variant's payload
-/// slots - see the enum var storage layout note in the fuzzer's module doc).
-/// Enum types are file-private exactly like `type` aliases
-/// (`scan_record_types` above), so this is scoped per-file the same way; the
-/// fuzzer only ever declares enums (and enum-typed vars) in an entry file, so
-/// in practice this is only ever consulted against that same file's own
-/// `var` lines.
+/// field name for a `{ .. }` payload, matching the `__{Variant}_{key}` gate
+/// names `build_enum_fields` (lower/predeclare.rs) gives the superset storage
+/// layout. Enum types are file-private, so this is scoped per-file.
 fn scan_enum_types(src: &str) -> StdMap<String, Vec<(String, Vec<String>)>> {
     let mut out = StdMap::new();
     for line in src.lines() {
@@ -586,11 +573,9 @@ fn scan_enum_types(src: &str) -> StdMap<String, Vec<(String, Vec<String>)>> {
 }
 
 /// Classify a `var name<ANN>` annotation (`ANN` is everything after the name,
-/// up to a `=` initializer) as a record CONTAINER shape - `: Rec`, `: Rec[]`,
-/// `: Map<K, Rec>` - returning the storage kind the container's OWN form
-/// implies (not the field's) plus the bare type name. Doesn't check the type
-/// name is actually a known record - that's the caller's job, since a bare
-/// `: int` annotation is syntactically identical to `: SomeRecordAlias` here.
+/// up to a `=` initializer) as a record container shape (`: Rec`, `: Rec[]`,
+/// `: Map<K, Rec>`), returning the storage kind of the container's own form
+/// plus the bare type name. The caller checks the name is a known record.
 fn record_container_kind(ann: &str) -> Option<(StoreKind, String)> {
     let ann = ann.trim().strip_prefix(':')?.trim();
     if let Some(inner) = ann.strip_suffix("[]") {
@@ -602,31 +587,24 @@ fn record_container_kind(ann: &str) -> Option<(StoreKind, String)> {
         let value_ty = rest[..close].split(',').nth(1)?.trim();
         return (!value_ty.is_empty()).then(|| (StoreKind::Map, value_ty.to_string()));
     }
-    // A bare type name. Builtin scalar types are all lowercase
-    // (int/float/bool/string/vector/...), so an uppercase leading letter is
-    // the signal this MIGHT be a `type Name = {..}` alias - the caller
-    // confirms against the file's own record-type table.
+    // A bare type name. Builtin scalar types are all lowercase, so an
+    // uppercase leading letter marks a possible `type Name = {..}` alias,
+    // which the caller confirms against the file's record-type table.
     let starts_upper = ann.chars().next().is_some_and(|c| c.is_ascii_uppercase());
     (!ann.is_empty() && starts_upper).then(|| (StoreKind::Var, ann.to_string()))
 }
 
-/// Top-level (column-0) state declarations of one file. Anything indented -
-/// chip/mod/handler bodies - is deliberately ignored: nested `var`s create
-/// storage gates too, but under names this derivation never claims.
+/// Top-level (column-0) state declarations of one file. Indented lines (chip,
+/// mod and handler bodies) are ignored: nested `var`s create storage gates
+/// under names this derivation never claims.
 ///
-/// A `var` whose annotation names a record type declared in the SAME file
-/// (`type Rec = { a: .., b: .. }`) decomposes into one entry PER FIELD,
-/// labeled `"{name}.{field}"` - exactly the label
-/// `record_field_storage`/`declare_record_container` bakes onto each
-/// per-field backing gate, so the derivation and the compiler agree on
-/// identity without either side telling the other.
+/// A `var` typed as a record declared in the same file decomposes into one
+/// `"{name}.{field}"` entry per field, the label the compiler bakes onto each
+/// per-field backing gate.
 ///
-/// An enum-typed `var` decomposes the same way, but into the SUPERSET layout
-/// `build_enum_fields` (lower/predeclare.rs) bakes: one `"{name}.__disc"`
-/// entry plus one `"{name}.__{Variant}_{slot}"` entry per payload slot of
-/// EVERY variant (not just the one the initializer picks - the storage is
-/// always the full superset, only the live variant's slots get non-default
-/// values).
+/// An enum-typed `var` decomposes into the superset layout `build_enum_fields`
+/// (lower/predeclare.rs) bakes: `"{name}.__disc"` plus one
+/// `"{name}.__{Variant}_{slot}"` entry per payload slot of every variant.
 fn scan_state_decls(src: &str) -> Vec<(StoreKind, String)> {
     let records = scan_record_types(src);
     let enums = scan_enum_types(src);
@@ -713,10 +691,8 @@ fn scan_imports(entry: &str) -> Vec<(String, Option<Vec<String>>)> {
                     if part.is_empty() {
                         return None;
                     }
-                    // `orig as alias` binds (and labels) the alias, but the
-                    // DECL matched in the module is `orig`; the bound name is
-                    // what the gate label carries. Track the bound name and
-                    // match it against the module's decls by the original.
+                    // `orig as alias` labels the gate with the alias, but the
+                    // module's decl is `orig`: track both, joined by `\u{1}`.
                     let mut it = part.split_whitespace();
                     let orig = it.next()?.to_string();
                     match (it.next(), it.next()) {
@@ -737,18 +713,9 @@ fn scan_imports(entry: &str) -> Vec<(String, Option<Vec<String>>)> {
 }
 
 /// (enum var name) -> (variant name -> payload slot keys), for every
-/// top-level enum-typed `var` in `src`. Lets `scan_writes` figure out exactly
-/// which storage slots a whole-var enum RECONSTRUCTION touches: only
-/// `__disc` plus the CONSTRUCTED variant's own slots.
-/// `assign_record_fields` (lower/stmt.rs) only writes a target field the
-/// source record actually provides, and an enum construction's
-/// `Binding::Record` (`lower_enum_ctor`, lower/expr.rs) carries `__disc` plus
-/// ONLY the constructed variant's own slots - never another variant's - so
-/// those are deliberately left untouched by the write. Unlike a plain record
-/// var (whose literal always specifies every field, so `add()`'s generic
-/// "mark every `name.`-prefixed key" fallback is exactly right there), that
-/// same fallback would over-claim writes to every OTHER variant's slots for
-/// an enum var.
+/// top-level enum-typed `var` in `src`. A whole-var enum reconstruction writes
+/// only `__disc` plus the constructed variant's slots, so `scan_writes` must
+/// not apply its "every `name.`-prefixed key" fallback to enum vars.
 fn scan_enum_var_variants(src: &str) -> StdMap<String, StdMap<String, Vec<String>>> {
     let enums = scan_enum_types(src);
     let mut out: StdMap<String, StdMap<String, Vec<String>>> = StdMap::new();
@@ -776,9 +743,9 @@ fn scan_enum_var_variants(src: &str) -> StdMap<String, StdMap<String, Vec<String
 }
 
 /// The variant name off an RHS of the shape `EnumName.Variant`, optionally
-/// followed by `(...)` / `{ .. }` / nothing (a unit variant) - i.e. an enum
+/// followed by `(...)`, `{ .. }` or nothing (a unit variant): an enum
 /// construction expression (see docs/src/enums.md#construction).
-/// `None` for anything else (a plain value, a record literal, ..).
+/// `None` for anything else.
 fn enum_ctor_variant_name(rhs: &str) -> Option<&str> {
     let rhs = rhs.trim_start();
     let tname = ident_at(rhs);
@@ -792,9 +759,9 @@ fn enum_ctor_variant_name(rhs: &str) -> Option<&str> {
 
 /// Write statements: indented lines of the strict shapes the generators emit
 /// (`P = e` / `P += e` / `P[i] = e` / `P.push(..)` and friends / `P.set(..)`
-/// / `refw(P, ..)`), where `P` is `name` or `Ns.name`. Only names that the
-/// derivation already expects as storage count - mod params, chip-internal
-/// vars, and locals never match.
+/// / `refw(P, ..)`), where `P` is `name` or `Ns.name`. Only names the
+/// derivation already expects as storage count; mod params, chip-internal
+/// vars and locals never match.
 fn scan_writes(
     src: &str,
     counts: &BTreeMap<(StoreKind, String), usize>,
@@ -804,13 +771,8 @@ fn scan_writes(
     const ARRAY_METHODS: [&str; 8] = [
         "push", "clear", "insert", "sort", "reverse", "shuffle", "fill", "resize",
     ];
-    // `add(kind, name)` covers the ordinary case (`name` is itself a
-    // declared storage name) AND the record-container case: a WHOLE-container
-    // write (`rv = {..}`, `arr.push(..)`, `arr[i] = {..}`, `m.set(..)`) fans
-    // out to every per-field backing gate the container decomposed into
-    // (`"{name}.{field}"` keys in `counts`), so a plain exact-match miss
-    // falls back to a prefix scan before giving up. Non-record bundles never
-    // have any `"name.field"` keys, so the fallback is a no-op there.
+    // An exact-name miss falls back to every `"{name}.{field}"` key, because a
+    // whole-record-container write fans out to every per-field backing gate.
     let mut add = |kind: StoreKind, name: &str| {
         if counts.contains_key(&(kind, name.to_string())) {
             writes.insert((kind, name.to_string()));
@@ -823,12 +785,10 @@ fn scan_writes(
             }
         }
     };
-    // A write inside a `mod` / named-`chip` DECLARATION body only lowers when
-    // the mod/chip is actually called - an uncalled body legitimately emits
-    // nothing, so its lines must not become write expectations. (Handler
-    // bodies, `chip on`, and anonymous `chip {` blocks always lower and DO
-    // count.) Tracked as: a column-0 `mod ` / `chip Name` header excludes the
-    // indented lines that follow, until the next column-0 line.
+    // A `mod` / named-`chip` declaration body lowers only when called, so its
+    // writes are not expectations: a column-0 `mod ` / `chip Name` header
+    // excludes the indented lines up to the next column-0 line. Handler
+    // bodies, `chip on` and anonymous `chip {` blocks always lower and count.
     let mut in_decl_body = false;
     for line in src.lines() {
         if !line.starts_with(char::is_whitespace) {
@@ -840,11 +800,11 @@ fn scan_writes(
                         l = rest[p + 1..].trim_start();
                         continue;
                     }
-                } else if l.starts_with('@') {
-                    if let Some((_, rest)) = l.split_once(' ') {
-                        l = rest.trim_start();
-                        continue;
-                    }
+                } else if l.starts_with('@')
+                    && let Some((_, rest)) = l.split_once(' ')
+                {
+                    l = rest.trim_start();
+                    continue;
                 }
                 break;
             }
@@ -931,23 +891,15 @@ fn scan_writes(
             || after.starts_with("-=")
             || after.starts_with("*=")
         {
-            // A record VAR field write (`rv.a = e`, or namespaced `N.rv.a =
-            // e`) needs the exact `"container.field"` key, not just `add`'s
-            // container-prefix fan-out (which is for a WHOLE-record write
-            // like `rv = {..}` and would be wrong here - it would mark every
-            // sibling field written too). Try the last two path segments
-            // first (this also transparently drops a leading namespace
-            // segment, since only the trailing pair can ever match a
-            // declared field key); fall back to the plain/whole-container
-            // path otherwise.
+            // A record field write (`rv.a = e`, `N.rv.a = e`) marks only the
+            // exact `"container.field"` key, matched on the last two path
+            // segments; `add`'s prefix fan-out would mark every sibling field.
             let field_key = (segs.len() >= 2)
                 .then(|| format!("{}.{}", segs[segs.len() - 2], segs[segs.len() - 1]))
                 .filter(|k| counts.contains_key(&(StoreKind::Var, k.clone())));
-            // Whole-var enum RECONSTRUCTION (`ev = EnumName.Variant(..)`):
-            // only `__disc` + the constructed variant's own slots are
-            // written (see `scan_enum_var_variants` above) - resolved before
-            // the generic whole-container fallback, which would wrongly
-            // claim every OTHER variant's slots too.
+            // Whole-var enum reconstruction (`ev = EnumName.Variant(..)`)
+            // writes only `__disc` plus the constructed variant's slots, so it
+            // is resolved before the whole-container fallback.
             let enum_hit = if field_key.is_some() {
                 None
             } else {
@@ -980,12 +932,12 @@ fn derive_storage_expect(bundle: &Bundle) -> StorageExpect {
         .map(|(name, src)| (name.as_str(), scan_state_decls(src)))
         .collect();
 
-    // Reachable distinct state: the entry's own decls + each imported file's
-    // (deduped per (file, kind, name) - importing one file twice is still ONE
-    // storage per state, which is the language's intended sharing).
+    // Reachable distinct state: the entry's own decls plus each imported
+    // file's, deduped per (file, kind, name) because importing one file twice
+    // shares one storage per state.
     let mut reachable: BTreeSet<(String, StoreKind, String)> = BTreeSet::new();
     for (kind, name) in scan_state_decls(&bundle.entry) {
-        reachable.insert(("".into(), kind, name));
+        reachable.insert((String::new(), kind, name));
     }
     let mut reached_files: BTreeSet<String> = BTreeSet::new();
     for (module, named) in scan_imports(&bundle.entry) {
@@ -1031,7 +983,7 @@ fn derive_storage_expect(bundle: &Bundle) -> StorageExpect {
     expect
 }
 
-/// Storage-gate mutation classes per storage kind - a write must wire the
+/// Storage-gate mutation classes per storage kind: a write must wire the
 /// storage's ref port into one of these.
 fn is_writer_class(kind: StoreKind, class: &str) -> bool {
     match kind {
@@ -1068,10 +1020,9 @@ fn is_writer_class(kind: StoreKind, class: &str) -> bool {
 
 /// The oracle: every syntactically-distinct declared state must have its own
 /// storage gate, and every syntactic write must have a mutation gate wired to
-/// a matching storage gate. Declared storage gates are identified by class +
-/// the `_label` name property (synthetic pseudo-vars - out-backing, signal
-/// payload stores, await armed flags, ret_val - all carry a `note` and no
-/// label, so they never match).
+/// a matching storage gate. Declared storage gates are identified by class and
+/// the `_label` name property; synthetic pseudo-vars (out-backing, signal
+/// payload stores, await armed flags, `ret_val`) carry a `note` and never match.
 fn check_storage(root: &Module, expect: &StorageExpect, out: &mut Outcome) {
     if expect.counts.is_empty() {
         return;
@@ -1107,7 +1058,9 @@ fn check_storage(root: &Module, expect: &StorageExpect, out: &mut Outcome) {
         if *kind == StoreKind::Buffer {
             continue; // aggregate check below
         }
-        let actual = labeled.get(&(*kind, name.clone())).map_or(0, |v| v.len());
+        let actual = labeled
+            .get(&(*kind, name.clone()))
+            .map_or(0, std::vec::Vec::len);
         if actual < *exp {
             out.storage_detail.push(format!(
                 "collapse {} `{name}`: {exp} declared -> {actual} storage gate(s)",
@@ -1130,7 +1083,7 @@ fn check_storage(root: &Module, expect: &StorageExpect, out: &mut Outcome) {
 
     for (kind, name) in &expect.writes {
         let Some(ids) = labeled.get(&(*kind, name.clone())) else {
-            continue; // storage entirely missing - the collapse check owns it
+            continue; // storage entirely missing: the collapse check reports it
         };
         let ref_port = match kind {
             StoreKind::Var => WirePort::VarRef,
@@ -1158,8 +1111,8 @@ fn check_storage(root: &Module, expect: &StorageExpect, out: &mut Outcome) {
                 written = true;
                 break;
             }
-            let pass_through = n.gate_class == MICROCHIP_INPUT
-                || n.gate_class == MICROCHIP_OUTPUT
+            let pass_through = n.gate_class == gc::MICROCHIP_INPUT
+                || n.gate_class == gc::MICROCHIP_OUTPUT
                 || n.gate_class == gc::REROUTER;
             if pass_through {
                 frontier.extend(
@@ -1188,10 +1141,9 @@ fn run_pipeline(src: &str) -> Outcome {
             .spawn_scoped(s, || run_pipeline_inner(src))
             .expect("spawn worker")
             .join()
-            .unwrap_or_else(|_| {
-                let mut o = Outcome::default();
-                o.panic = Some(("harness".into(), "worker thread panicked".into()));
-                o
+            .unwrap_or_else(|_| Outcome {
+                panic: Some(("harness".into(), "worker thread panicked".into())),
+                ..Default::default()
             })
     })
 }
@@ -1212,13 +1164,11 @@ fn run_pipeline_inner(src: &str) -> Outcome {
         }
     };
 
-    // Single-file programs keep the FsLoader path; bundles resolve their
-    // sections in-memory (the same MemLoader pattern the crate's own
-    // `compile_multi` tests use). Unfolded on purpose: the general fuzz mode
-    // hunts crashes in resolve/typecheck/lower itself; `--fold-diff` below is
-    // the dedicated differential mode that exercises fold on/off agreement.
+    // Single-file programs use FsLoader; bundles resolve their sections
+    // in memory. Folding is off here so lowering faults are not hidden by the
+    // fold pass; `--fold-diff` covers fold on/off agreement.
     let mut loader = MemLoader {
-        files: Default::default(),
+        files: wirescript::collections::HashMap::default(),
     };
     for (name, text) in &bundle.files {
         loader.files.insert(format!("{name}.ws"), text.clone());
@@ -1243,7 +1193,7 @@ fn run_pipeline_inner(src: &str) -> Outcome {
     })) {
         Ok(fe) => fe,
         Err(p) => {
-            out.panic = Some((stage.into(), panic_msg(p)));
+            out.panic = Some((stage.into(), panic_msg(&*p)));
             return out;
         }
     };
@@ -1261,7 +1211,7 @@ fn run_pipeline_inner(src: &str) -> Outcome {
     match catch_unwind(AssertUnwindSafe(|| analyze_cycles(&lowered.module))) {
         Ok(c) => record_diags(&mut out, &c.diagnostics),
         Err(p) => {
-            out.panic = Some(("analyze".into(), panic_msg(p)));
+            out.panic = Some(("analyze".into(), panic_msg(&*p)));
             return out;
         }
     }
@@ -1295,18 +1245,23 @@ fn run_pipeline_inner(src: &str) -> Outcome {
         let lr = match catch_unwind(AssertUnwindSafe(|| layout(&lowered.module))) {
             Ok(l) => l,
             Err(p) => {
-                out.panic = Some(("layout".into(), panic_msg(p)));
+                out.panic = Some(("layout".into(), panic_msg(&*p)));
                 return out;
             }
         };
         let opts = EmitOptions::default();
         match catch_unwind(AssertUnwindSafe(|| {
-            build_world(&lowered.module, &Default::default(), &lr, &opts)
+            build_world(
+                &lowered.module,
+                &wirescript::ir::ProgramSettings::default(),
+                &lr,
+                &opts,
+            )
         })) {
             Ok(Ok(_world)) => {}
             Ok(Err(e)) => out.emit_err = Some(format!("{e:?}")),
             Err(p) => {
-                out.panic = Some(("build_world".into(), panic_msg(p)));
+                out.panic = Some(("build_world".into(), panic_msg(&*p)));
                 return out;
             }
         }
@@ -1315,7 +1270,7 @@ fn run_pipeline_inner(src: &str) -> Outcome {
     out
 }
 
-// ─────────────────────────── snippet normalization ───────────────────────────
+// Snippet normalization
 
 const KEYWORDS: &[&str] = &[
     "if",
@@ -1462,7 +1417,7 @@ fn norm_snippet(s: &str) -> String {
     out.trim().to_string()
 }
 
-// ─────────────────────────── program generator ───────────────────────────
+// Program generator
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Ty {
@@ -1477,11 +1432,11 @@ const SCALAR_TYS: [Ty; 5] = [Ty::Int, Ty::Float, Ty::Bool, Ty::Str, Ty::Vec3];
 impl Ty {
     fn name(self) -> &'static str {
         match self {
-            Ty::Int => "int",
-            Ty::Float => "float",
-            Ty::Bool => "bool",
-            Ty::Str => "string",
-            Ty::Vec3 => "vector",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Bool => "bool",
+            Self::Str => "string",
+            Self::Vec3 => "vector",
         }
     }
 }
@@ -1495,17 +1450,17 @@ enum Obj {
 impl Obj {
     fn name(self) -> &'static str {
         match self {
-            Obj::Entity => "entity",
-            Obj::Character => "character",
-            Obj::Controller => "controller",
+            Self::Entity => "entity",
+            Self::Character => "character",
+            Self::Controller => "controller",
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Acc {
-    Direct, // let / in / buffer / param — read by name in pure context
-    Var,    // var — `.Value` in pure context, bare name in exec context
+    Direct, // let / in / buffer / param: read by name in pure context
+    Var,    // var: `.Value` in pure context, bare name in exec context
 }
 
 #[derive(Clone)]
@@ -1521,10 +1476,9 @@ struct RecordDef {
     fields: Vec<(String, Ty)>,
 }
 
-/// One `enum` variant's payload shape - mirrors `typecheck::enums::Payload`
-/// closely enough for generation purposes (scalar-only fields, per the "keep
-/// generated enums simple" guidance: unit/positional/named payloads of
-/// int/float/bool fields, no nested records/enums/arrays/maps/generics).
+/// One `enum` variant's payload shape, a scalar-only subset of
+/// `typecheck::enums::Payload`: unit, positional or named payloads of scalar
+/// fields, with no nested records, enums, arrays, maps or generics.
 #[derive(Clone)]
 enum EnumPayload {
     Unit,
@@ -1565,10 +1519,10 @@ struct ModSig {
     params: Vec<(String, PTy)>,
     ret: Option<RetTy>,
     pure_call: bool,
-    // true for the generic-identity-mod entries registered by gen_mod's form-6
-    // arm — lets call sites opt into emitting explicit `<Type>` type arguments.
+    // True for the generic identity mods registered by gen_mod's form-6 arm;
+    // call sites may emit explicit `<Type>` type arguments for them.
     generic: bool,
-    // true when the mod has a trailing `...rest` variadic parameter — call sites
+    // True when the mod has a trailing `...rest` variadic parameter; call sites
     // may pass extra trailing args past `params` (captured into `rest`).
     variadic: bool,
 }
@@ -1590,11 +1544,8 @@ struct Scope {
     exec: bool,
     mod_ret: Option<Ty>,
     // (name, index into `Gen::enums`) of top-level enum-typed `var`s reachable
-    // here - match/if-let scrutinees are picked from this list, never from an
-    // `in` port (an enum port doesn't decompose - see docs/src/enums.md
-    // "Scrutinee must be a value, not a port"). Like `rec_binds`, mod/chip
-    // bodies start with this empty (their own `Scope::default()`) - they never
-    // see outer top-level state, only their own params.
+    // here, the only match/if-let scrutinees: an enum `in` port does not
+    // decompose (docs/src/enums.md). Empty in mod/chip bodies, like `rec_binds`.
     enum_binds: Vec<(String, usize)>,
 }
 
@@ -1608,9 +1559,9 @@ struct Gen {
     arrays: Vec<(String, Ty, bool)>,
     records: Vec<RecordDef>,
     rec_binds: Vec<(String, usize)>,
-    // declared `enum` types, and (name, index into `enums`) of the top-level
-    // enum-typed `var`s declared from them - the tables `gen_match_stmt` /
-    // `gen_match_expr_let` / `gen_if_let_stmt` / enum-construction draw from.
+    // Declared `enum` types, and (name, index into `enums`) of the top-level
+    // enum-typed `var`s declared from them, used by the match, if-let and
+    // enum-construction generators.
     enums: Vec<EnumDef>,
     enum_vars: Vec<(String, usize)>,
     objs: Vec<(String, Obj)>,
@@ -1619,10 +1570,9 @@ struct Gen {
     out_execs: Vec<String>,
     typed_val_outs: Vec<(String, Ty)>,
     bool_lets: Vec<String>,
-    // `import * as N` symbols (`N.name` paths). Only reachable from EXEC
-    // scopes: a namespaced var read in a PURE context (`N.g.Value`) lowers to
-    // a WSP001 `_Unsupported` placeholder today, so pure scopes never see
-    // these and the general fuzz mode doesn't drown in that known bucket.
+    // `import * as N` symbols (`N.name` paths), reachable only from exec
+    // scopes: a namespaced var read in pure context (`N.g.Value`) lowers to a
+    // WSP001 `_Unsupported` placeholder, a known bucket kept out of findings.
     ns_scalars: Vec<Sca>,
     ns_arrays: Vec<(String, Ty, bool)>,
     n: u32,
@@ -1631,7 +1581,7 @@ struct Gen {
 
 impl Gen {
     fn new(seed: u64) -> Self {
-        Gen {
+        Self {
             rng: Rng::new(seed),
             blocks: Vec::new(),
             execs: Vec::new(),
@@ -1688,7 +1638,7 @@ impl Gen {
         }
     }
 
-    // ── expressions ──
+    // Expressions
 
     fn lit(&mut self, ty: Ty) -> String {
         match ty {
@@ -1745,10 +1695,10 @@ impl Gen {
     }
 
     fn atom(&mut self, sc: &Scope, ty: Ty) -> String {
-        if self.rng.chance(1, 2) {
-            if let Some(s) = self.sym_read(sc, ty) {
-                return s;
-            }
+        if self.rng.chance(1, 2)
+            && let Some(s) = self.sym_read(sc, ty)
+        {
+            return s;
         }
         // record field access
         if self.rng.chance(1, 5) && !sc.rec_binds.is_empty() {
@@ -1769,7 +1719,7 @@ impl Gen {
         }
         match ty {
             Ty::Int => match self.rng.below(14) {
-                0 | 1 | 2 => {
+                0..=2 => {
                     let a = self.expr(sc, Ty::Int, d - 1);
                     let b = self.expr(sc, Ty::Int, d - 1);
                     let op = *self.rng.pick(&["+", "-", "*"]);
@@ -1837,7 +1787,7 @@ impl Gen {
                 _ => self.atom(sc, ty),
             },
             Ty::Float => match self.rng.below(12) {
-                0 | 1 | 2 => {
+                0..=2 => {
                     let a = self.expr(sc, Ty::Float, d - 1);
                     let b = self.expr(sc, Ty::Float, d - 1);
                     let op = *self.rng.pick(&["+", "-", "*"]);
@@ -1905,9 +1855,8 @@ impl Gen {
                 }
                 6 => self.if_then_else(sc, ty, d),
                 7 => {
-                    // var.prev comparison (docs pattern: c0 != c0.prev) -
-                    // never on a namespaced `N.g` path (`.prev` through a
-                    // namespace hop is unsupported syntax).
+                    // var.prev comparison (docs pattern: c0 != c0.prev), never
+                    // on a namespaced `N.g` path, where `.prev` is unsupported.
                     let vars: Vec<&Sca> = sc
                         .scalars
                         .iter()
@@ -2015,21 +1964,20 @@ impl Gen {
     fn pure_call(&mut self, sc: &Scope, ty: Ty, d: u32) -> Option<String> {
         let mut cands: Vec<(String, Vec<(String, PTy)>)> = Vec::new();
         for m in &self.mods {
-            if m.pure_call {
-                if let Some(RetTy::Val(t)) = &m.ret {
-                    if *t == ty {
-                        cands.push((m.name.clone(), m.params.clone()));
-                    }
-                }
+            if m.pure_call
+                && let Some(RetTy::Val(t)) = &m.ret
+                && *t == ty
+            {
+                cands.push((m.name.clone(), m.params.clone()));
             }
         }
         for c in &self.chips {
-            if c.pure_expr_callable {
-                if let Some((_, Some(t))) = c.outs.first() {
-                    if *t == ty && c.outs.len() == 1 {
-                        cands.push((c.name.clone(), c.params.clone()));
-                    }
-                }
+            if c.pure_expr_callable
+                && let Some((_, Some(t))) = c.outs.first()
+                && *t == ty
+                && c.outs.len() == 1
+            {
+                cands.push((c.name.clone(), c.params.clone()));
             }
         }
         if cands.is_empty() {
@@ -2053,9 +2001,8 @@ impl Gen {
                 _ => return None,
             }
         }
-        // A variadic candidate (`...rest`) accepts extra trailing args past its
-        // fixed params — append a few so the per-call-site rest capture sees real
-        // trailing args (0 also valid: an empty rest).
+        // A variadic candidate (`...rest`) gets 0-3 extra trailing args past its
+        // fixed params, captured per call site into `rest`.
         let is_variadic = self.mods.iter().any(|m| m.name == name && m.variadic);
         if is_variadic {
             for _ in 0..self.rng.range(0, 3) {
@@ -2063,23 +2010,16 @@ impl Gen {
                 args.push(self.expr(sc, t, d.saturating_sub(1)));
             }
         }
-        // Explicit type-argument call syntax `f<int>(...)` on the generic mods
-        // registered by gen_mod's form-6 arm. `ty` is already the concrete
-        // type this candidate was selected for (it's `T`, since every
-        // param/ret of that mod shares one type parameter), so pinning it
-        // explicitly is always a valid, redundant-with-inference annotation
-        // — never a type mismatch.
+        // Explicit type-argument syntax `f<int>(...)` on the generic mods from
+        // gen_mod's form-6 arm. `ty` is the `T` this candidate was selected
+        // for, so the annotation always agrees with inference.
         let is_generic = self.mods.iter().any(|m| m.name == name && m.generic);
         if is_generic && self.rng.chance(1, 3) {
             return Some(format!("{name}<{}>({})", ty.name(), args.join(", ")));
         }
-        // Occasionally forward the arguments as an inline `...tuple` spread
-        // (`f(...(a, b))`), exercising the spread -> positional expansion and the
-        // per-element type check. Only when every param is a plain value and
-        // there are >=2 args (a 1-tuple `(x)` is just a parenthesized expr, and a
-        // record element can't ride a value tuple). Arity and element types line
-        // up by construction, so a valid program stays valid — a `_Unsupported`
-        // or dropped wire out of this is a real spread-lowering bug.
+        // Sometimes pass the arguments as an inline tuple spread `f(...(a, b))`.
+        // Needs plain value params and >=2 args, since `(x)` is a parenthesized
+        // expr and a record cannot ride a value tuple.
         let all_val = params.iter().all(|(_, p)| matches!(p, PTy::Val(_)));
         if all_val && !is_generic && !is_variadic && args.len() >= 2 && self.rng.chance(1, 4) {
             return Some(format!("{name}(...({}))", args.join(", ")));
@@ -2087,7 +2027,7 @@ impl Gen {
         Some(format!("{name}({})", args.join(", ")))
     }
 
-    // ── exec statements ──
+    // Exec statements
 
     fn exec_stmts(
         &mut self,
@@ -2114,11 +2054,9 @@ impl Gen {
 
     fn exec_stmt(&mut self, sc: &mut Scope, d: u32, cur: Option<&str>, indent: usize) -> String {
         match self.rng.below(24) {
-            // shadow an existing in-scope name with a same-typed `let`
-            // (including a `let` shadowing a `var` - the shadowed var's
-            // storage keeps existing but later reads in this scope bind to
-            // the let). Namespaced `N.x` paths can't be shadowed by a bare
-            // let, so they're excluded.
+            // Shadow an in-scope name with a same-typed `let`; a shadowed var
+            // keeps its storage but later reads bind to the let. Namespaced
+            // `N.x` paths cannot be shadowed by a bare let.
             19 => {
                 let cands: Vec<Sca> = sc
                     .scalars
@@ -2138,7 +2076,7 @@ impl Gen {
                 format!("let {} = {e}", target.name)
             }
             // assignment
-            0 | 1 | 2 => {
+            0..=2 => {
                 let vars: Vec<Sca> = sc
                     .scalars
                     .iter()
@@ -2188,7 +2126,7 @@ impl Gen {
                 let mut s = format!("if {c} {{\n{}\n{pad}}}", inner.join("\n"));
                 if self.rng.chance(1, 3) {
                     let els = self.exec_stmts(sc, d, 1, cur, indent + 1);
-                    s.push_str(&format!(" else {{\n{}\n{pad}}}", els.join("\n")));
+                    let _ = write!(s, " else {{\n{}\n{pad}}}", els.join("\n"));
                 }
                 s
             }
@@ -2201,7 +2139,7 @@ impl Gen {
                 }
                 let (a, et, _) = self.rng.pick(&arrs).clone();
                 match self.rng.below(12) {
-                    0 | 1 | 2 => {
+                    0..=2 => {
                         let v = self.expr(sc, et, d.min(1));
                         format!("{a}.push({v})")
                     }
@@ -2518,11 +2456,9 @@ impl Gen {
                 let pad = "  ".repeat(indent);
                 format!("chip {{\n{}\n{pad}}}", inner.join("\n"))
             }
-            // enum var whole-container reassignment - LOOKS like the same
-            // "whole write" shape as `rv = { .. }` on a record var, but is
-            // NOT: only `__disc` + the constructed variant's own slots get
-            // written (see `scan_enum_var_variants`/`enum_ctor_variant_name`
-            // above, which `scan_writes` uses to get this right).
+            // Enum var reassignment. Unlike a whole record write, it writes
+            // only `__disc` plus the constructed variant's slots (see
+            // `scan_enum_var_variants`).
             20 => {
                 if sc.enum_binds.is_empty() {
                     return String::new();
@@ -2531,10 +2467,8 @@ impl Gen {
                 let (_, ctor) = self.enum_ctor_random(eidx);
                 format!("{name} = {ctor}")
             }
-            // match on a declared enum var: statement form (block arms) or
-            // expression form (comma value arms, bound by a `let`) - both
-            // exhaustive over every variant (never a `_` wildcard) so neither
-            // ever emits WS054.
+            // Match on a declared enum var, in statement or `let`-bound
+            // expression form, with one arm per variant so it never emits WS054.
             21 => {
                 if sc.enum_binds.is_empty() || indent > 2 {
                     return String::new();
@@ -2545,8 +2479,8 @@ impl Gen {
                     self.gen_match_expr_let(sc, indent)
                 }
             }
-            // `if let PATTERN = enumVar { .. } else { .. }` - the single-
-            // variant refutable counterpart to `match`.
+            // `if let PATTERN = enumVar { .. } else { .. }`, the single-variant
+            // refutable counterpart to `match`.
             22 => {
                 if sc.enum_binds.is_empty() || indent > 2 {
                     return String::new();
@@ -2571,14 +2505,10 @@ impl Gen {
         }
     }
 
-    /// One pattern for variant `v`, binding its payload (if any) under fresh
-    /// names built from `prefix` - `p0`/`p1`/.. for a positional payload, or
-    /// the declared field names themselves for a named payload (the doc's
-    /// `{ x, y }` shorthand - a field pattern binds a local of the same
-    /// name). Also returns the "read the first bound payload back" fragment
-    /// an arm body can drop in directly (`"0"` for a unit variant, since
-    /// there's nothing to read).
-    fn enum_pattern(&self, v: &EnumVariantDef, prefix: &str) -> (String, String) {
+    /// One pattern for variant `v`: positional payloads bind `{prefix}0`,
+    /// `{prefix}1` and so on, named payloads bind their field names. Also returns
+    /// an expression reading the first bound payload (`"0"` for a unit variant).
+    fn enum_pattern(v: &EnumVariantDef, prefix: &str) -> (String, String) {
         match &v.payload {
             EnumPayload::Unit => (v.name.clone(), "0".to_string()),
             EnumPayload::Positional(tys) => {
@@ -2598,14 +2528,9 @@ impl Gen {
         }
     }
 
-    /// Exhaustive `match` STATEMENT (block arms, compiles to a
-    /// `Branch`/`Union` tree) over a declared enum var. Covers every variant
-    /// in declaration order - never a `_` wildcard, so exhaustiveness never
-    /// depends on the compiler's own variant ordering - and each arm body
-    /// reads its bound payload (or, for a unit variant, a literal) back out
-    /// through a plain `let`, so the payload-extraction wiring is actually
-    /// exercised rather than optimized away as dead code. Caller must ensure
-    /// `sc.enum_binds` is non-empty.
+    /// Exhaustive `match` statement (a `Branch`/`Union` tree) over a declared
+    /// enum var: one arm per variant, no `_`, each reading its payload through a
+    /// `let`. Caller must ensure `sc.enum_binds` is non-empty.
     fn gen_match_stmt(&mut self, sc: &Scope, indent: usize) -> String {
         let (ev_name, eidx) = self.rng.pick(&sc.enum_binds).clone();
         let def = self.enums[eidx].clone();
@@ -2614,7 +2539,7 @@ impl Gen {
         let body_pad = "  ".repeat(indent + 2);
         let mut arms = Vec::new();
         for v in &def.variants {
-            let (pattern, read) = self.enum_pattern(v, "p");
+            let (pattern, read) = Self::enum_pattern(v, "p");
             let h = self.fresh("mh");
             let body = format!("{body_pad}let {h} = {read}");
             arms.push(format!("{inner_pad}{pattern} => {{\n{body}\n{inner_pad}}}"));
@@ -2622,13 +2547,9 @@ impl Gen {
         format!("match {ev_name} {{\n{}\n{pad}}}", arms.join("\n"))
     }
 
-    /// Exhaustive `match` EXPRESSION (comma-separated value arms, compiles to
-    /// a `Select` tree) bound by a top-level `let`. Always produces `int` -
-    /// every arm needs a value of the SAME type regardless of its variant's
-    /// payload shape, so an arm whose first payload field isn't itself `int`
-    /// just falls back to a literal (the statement-form match above already
-    /// covers reading a non-int payload back out). Caller must ensure
-    /// `sc.enum_binds` is non-empty.
+    /// Exhaustive `match` expression (a `Select` tree) bound by a `let`. Always
+    /// `int`: an arm whose first payload field is not `int` yields literal `0`.
+    /// Caller must ensure `sc.enum_binds` is non-empty.
     fn gen_match_expr_let(&mut self, sc: &mut Scope, indent: usize) -> String {
         let (ev_name, eidx) = self.rng.pick(&sc.enum_binds).clone();
         let def = self.enums[eidx].clone();
@@ -2636,7 +2557,7 @@ impl Gen {
         let inner_pad = "  ".repeat(indent + 1);
         let mut arms = Vec::new();
         for v in &def.variants {
-            let (pattern, read) = self.enum_pattern(v, "r");
+            let (pattern, read) = Self::enum_pattern(v, "r");
             let first_ty = match &v.payload {
                 EnumPayload::Unit => None,
                 EnumPayload::Positional(tys) => Some(tys[0]),
@@ -2661,15 +2582,14 @@ impl Gen {
         )
     }
 
-    /// `if let PATTERN = enumVar { .. } else { .. }` - a single-variant
-    /// refutable bind (shorthand for a `match` with one real arm). Both
-    /// branches read/produce through a plain `let` the same way the match
-    /// arms above do. Caller must ensure `sc.enum_binds` is non-empty.
+    /// `if let PATTERN = enumVar { .. } else { .. }`, a single-variant
+    /// refutable bind. Both branches bind a plain `let`, like the match arms.
+    /// Caller must ensure `sc.enum_binds` is non-empty.
     fn gen_if_let_stmt(&mut self, sc: &Scope, indent: usize) -> String {
         let (ev_name, eidx) = self.rng.pick(&sc.enum_binds).clone();
         let def = self.enums[eidx].clone();
         let vidx = self.rng.below(def.variants.len());
-        let (pattern, read) = self.enum_pattern(&def.variants[vidx], "q");
+        let (pattern, read) = Self::enum_pattern(&def.variants[vidx], "q");
         let pad = "  ".repeat(indent);
         let inner_pad = "  ".repeat(indent + 1);
         let h_then = self.fresh("mh");
@@ -2679,7 +2599,7 @@ impl Gen {
         )
     }
 
-    // ── top-level declarations ──
+    // Top-level declarations
 
     fn gen_type_alias(&mut self) {
         let name = self.fresh("R");
@@ -2701,14 +2621,9 @@ impl Gen {
         self.records.push(RecordDef { name, fields });
     }
 
-    /// A small non-generic `enum`: 2-4 variants, each unit, positional
-    /// (1-2 scalar fields), or named (1-2 scalar fields) - kept simple (no
-    /// nested records/enums/arrays/maps, no generics, no explicit `= N`
-    /// discriminants) so generated programs actually compile clean instead of
-    /// tripping an unrelated generator/typecheck limitation. Emitted as a
-    /// SINGLE line (like `gen_type_alias` above) so `scan_enum_types`
-    /// (fuzzer-side storage derivation) can find it with the same
-    /// column-0-line convention `scan_record_types` uses.
+    /// A small non-generic `enum` of 2-4 variants, each unit, positional or
+    /// named with 1-2 scalar fields and no explicit discriminants. Emitted on
+    /// one column-0 line so `scan_enum_types` can parse it.
     fn gen_enum_type(&mut self) {
         let name = self.fresh("En");
         let idx = self.enums.len();
@@ -2763,7 +2678,7 @@ impl Gen {
     }
 
     /// Build a construction expression for one variant, using the correct
-    /// bracket form for its declared shape (bare path / `(...)` / `{ ... }` -
+    /// bracket form for its declared shape (bare path, `(...)` or `{ ... }`;
     /// see docs/src/enums.md#construction) so it never trips WS065.
     fn enum_ctor_variant(&mut self, eidx: usize, vidx: usize) -> String {
         let ename = self.enums[eidx].name.clone();
@@ -2786,21 +2701,17 @@ impl Gen {
         }
     }
 
-    /// Construct a random variant of enum `eidx`, returning its index too (so
-    /// a caller that needs to know which variant it baked - e.g. to log or to
-    /// bias toward payload variants - can without re-parsing the text).
+    /// Construct a random variant of enum `eidx`, returning the variant index
+    /// and the construction text.
     fn enum_ctor_random(&mut self, eidx: usize) -> (usize, String) {
         let vidx = self.rng.below(self.enums[eidx].variants.len());
         let s = self.enum_ctor_variant(eidx, vidx);
         (vidx, s)
     }
 
-    /// One top-level enum-typed `var` per declared enum (most of the time) -
-    /// the only shape a match/if-let scrutinee is allowed to be (never an
-    /// `in` port; see docs/src/enums.md's port caveat). Skipping some
-    /// enums some of the time keeps "declared but never turned into state" a
-    /// live case too (exercises the type alone, e.g. via `.Discriminant` on a
-    /// variant path elsewhere, without every enum growing a var).
+    /// A top-level enum-typed `var` for about 3 in 4 declared enums, the only
+    /// valid match/if-let scrutinee (an `in` port is not; see docs/src/enums.md).
+    /// The rest stay declared-but-unused types.
     fn gen_enum_vars(&mut self) {
         for eidx in 0..self.enums.len() {
             if !self.rng.chance(3, 4) {
@@ -3001,10 +2912,8 @@ impl Gen {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                // Occasionally give the mod a trailing `...rest` variadic that its
-                // body never reads — call sites append extra trailing args past the
-                // fixed params (captured, dropped). Exercises the parse of `...rest`,
-                // the WS022 arity relaxation, and the per-call-site rest capture.
+                // Sometimes add a trailing `...rest` variadic the body never reads,
+                // so call sites can pass extra args (the WS022 arity relaxation).
                 let make_variadic = self.rng.chance(1, 5);
                 let sig = if make_variadic {
                     format!("{sig}, ...rest")
@@ -3057,7 +2966,7 @@ impl Gen {
                         ty: t,
                         acc: Acc::Direct,
                     });
-                    sig.push_str(&format!(", dd: {}", t.name()));
+                    let _ = write!(sig, ", dd: {}", t.name());
                 }
                 let cnt = self.rng.range(1, 3);
                 let stmts = self.exec_stmts(&mut body_sc, 2, cnt, None, 1);
@@ -3139,18 +3048,9 @@ impl Gen {
                     variadic: false,
                 });
             }
-            // Unbounded `<T>` generic identity mod, structurally identical to
-            // `pick<T>` in examples/generics.ws. Declared ONCE
-            // as source text, but registered as `SCALAR_TYS.len()` separate
-            // `ModSig` entries sharing one name — one per monomorphization.
-            // Every existing call site (`pure_call`, the exec mod-call
-            // fallback) already selects candidates purely by declared
-            // param/ret `Ty`, oblivious to whether the decl behind a name is
-            // monomorphic or generic — so this makes real generic mods
-            // (implicit T-inference through arguments, real
-            // monomorphization via mono.rs/infer.rs/coerce.rs) reachable
-            // from every existing expression/statement shape for free, with
-            // zero changes to call-site codegen.
+            // Unbounded `<T>` generic identity mod, declared once but registered
+            // as one `ModSig` per scalar type under the same name. Call sites
+            // pick candidates by param/ret `Ty`, so each one instantiates `T`.
             6 => {
                 self.blocks.push(format!(
                     "mod {name}<T>(a: T, b: T, c: bool) -> T {{\n  return if c then a else b\n}}"
@@ -3418,9 +3318,8 @@ impl Gen {
                         continue;
                     }
                     let m = self.rng.pick(&recs).clone();
-                    let ridx = match m.ret {
-                        Some(RetTy::Rec(r)) => r,
-                        _ => unreachable!(),
+                    let Some(RetTy::Rec(ridx)) = m.ret else {
+                        unreachable!()
                     };
                     let mut args = Vec::new();
                     for (_, p) in &m.params {
@@ -3695,12 +3594,9 @@ impl Gen {
         });
     }
 
-    /// Top-level shadowing declarations exploiting the WS013 escape (`let` /
-    /// `out` are not duplicate-checked against `var` / `in`): a `let`
-    /// re-binding a var's name (later references silently read the constant,
-    /// the storage keeps existing), and a `let` re-binding an exec input's
-    /// name (an `on <name>` handler then binds the CONSTANT - its exec input
-    /// is silently dead).
+    /// Top-level shadowing declarations that WS013 does not catch (`let`/`out`
+    /// are not duplicate-checked against `var`/`in`): a `let` re-binding a var's
+    /// name, or an exec input's name so an `on <name>` handler binds the constant.
     fn gen_top_shadows(&mut self) {
         if self.rng.chance(1, 6) {
             let vars: Vec<Sca> = self
@@ -3722,8 +3618,7 @@ impl Gen {
             let e = self.rng.pick(&self.execs).clone();
             let lit = self.lit(Ty::Int);
             self.blocks.push(format!("let {e} = {lit}"));
-            // deliberately KEPT in `execs`: a later `on <e>` handler then
-            // exercises the trigger-binds-to-constant path.
+            // Kept in `execs`, so a later `on <e>` handler binds the constant.
         }
     }
 
@@ -3762,11 +3657,9 @@ impl Gen {
         self.blocks.join("\n")
     }
 
-    /// Entry generator for multi-file programs: `prelude` (import lines + any
-    /// deliberate local re-declarations) goes first, then the normal grammar
-    /// - which also reaches every symbol the caller injected into the tables
-    /// beforehand (bare names for `import "m"`, `N.x` paths for
-    /// `import * as N`).
+    /// Entry generator for multi-file programs: `prelude` (import lines and
+    /// local re-declarations) first, then the normal grammar over the symbols the
+    /// caller injected (bare names for `import "m"`, `N.x` for `import * as N`).
     fn generate_entry(mut self, prelude: Vec<String>) -> String {
         self.blocks = prelude;
         self.generate_body();
@@ -3826,9 +3719,9 @@ impl Gen {
 
 #[derive(Clone)]
 struct ModuleExports {
-    /// top-level `var`s (Acc::Var)
+    /// top-level `var`s (`Acc::Var`)
     vars: Vec<Sca>,
-    /// top-level buffers (Acc::Direct - pure-readable by bare name)
+    /// top-level buffers (`Acc::Direct`: pure-readable by bare name)
     buffers: Vec<Sca>,
     /// value in-ports declared by the module (only meaningful bare)
     ports: Vec<Sca>,
@@ -3840,7 +3733,7 @@ struct ModuleExports {
 /// ~5% of programs: mutate a valid program into (probable) garbage as a
 /// parser/pipeline crash check.
 fn mutate_garbage(rng: &mut Rng, src: &str) -> String {
-    let mut lines: Vec<String> = src.lines().map(|l| l.to_string()).collect();
+    let mut lines: Vec<String> = src.lines().map(std::string::ToString::to_string).collect();
     let ops = rng.range(1, 3);
     for _ in 0..ops {
         if lines.is_empty() {
@@ -3891,16 +3784,12 @@ fn mutate_garbage(rng: &mut Rng, src: &str) -> String {
     lines.join("\n")
 }
 
-// --------------------------- multi-file program generators ---------------------------
+// Multi-file program generators
 
-/// Full-grammar multi-file mode: 1-3 modules (top-level state, mods, chips,
-/// sometimes an in-port + handler writing the module's own state), imported
-/// via `import "m"` or `import * as N from "m"`, with DELIBERATE collisions:
-/// later modules re-declare a state name of module 1 (same or different
-/// storage kind), and the entry sometimes re-declares a namespace-imported
-/// name locally. The entry is a normal full-grammar program whose symbol
-/// tables were seeded with the imported state, so its statements read/write
-/// cross-module state through both bare and `N.x` paths.
+/// Full-grammar multi-file mode: 1-3 modules imported via `import "m"` or
+/// `import * as N from "m"`, where later modules may re-declare a state name of
+/// module 1 and the entry may re-declare a namespace-imported name locally. The
+/// entry reads and writes imported state through both bare and `N.x` paths.
 fn gen_import_program(seed: u64) -> String {
     let mut rng = Rng::new(seed ^ 0x17B7_A2E5);
     let n_mods = rng.range(1, 3);
@@ -3917,9 +3806,8 @@ fn gen_import_program(seed: u64) -> String {
         mg.n = (i as u32) * 40;
         let with_handler = rng.chance(1, 3);
         let (mut src, mut exports) = mg.generate_module(with_handler);
-        // deliberate cross-module collision: re-declare a state name of
-        // module 0, same kind or a different one (the storage-identity bugs
-        // ignore the type too)
+        // Cross-module collision: re-declare a state name of module 0 as the
+        // same or a different storage kind.
         if i > 0 && rng.chance(1, 2) {
             let mut names: Vec<String> = Vec::new();
             names.extend(plans[0].exports.vars.iter().map(|s| s.name.clone()));
@@ -3929,7 +3817,7 @@ fn gen_import_program(seed: u64) -> String {
                 let name = rng.pick(&names).clone();
                 match rng.below(3) {
                     0 => {
-                        src.push_str(&format!("\nvar {name}: int = {}", rng.below(9)));
+                        let _ = write!(src, "\nvar {name}: int = {}", rng.below(9));
                         exports.vars.push(Sca {
                             name,
                             ty: Ty::Int,
@@ -3937,11 +3825,11 @@ fn gen_import_program(seed: u64) -> String {
                         });
                     }
                     1 => {
-                        src.push_str(&format!("\nvar {name}: int[]"));
+                        let _ = write!(src, "\nvar {name}: int[]");
                         exports.arrays.push((name, Ty::Int, true));
                     }
                     _ => {
-                        src.push_str(&format!("\nbuffer {name} = {}", rng.below(9)));
+                        let _ = write!(src, "\nbuffer {name} = {}", rng.below(9));
                         exports.buffers.push(Sca {
                             name,
                             ty: Ty::Int,
@@ -3978,9 +3866,9 @@ fn gen_import_program(seed: u64) -> String {
             for (n, t, w) in &p.exports.arrays {
                 eg.ns_arrays.push((format!("{}.{n}", p.alias), *t, *w));
             }
-            // exec-only mods: a namespaced PURE call's result types as `any`
-            // today (unusable in typed expressions), so only statement-position
-            // exec mods go through the `N.m(..)` path.
+            // Exec-only mods: a namespaced pure call's result types as `any`
+            // (unusable in typed expressions), so only statement-position exec
+            // mods go through the `N.m(..)` path.
             for m in &p.exports.mods {
                 if m.ret.is_none() && !m.pure_call {
                     let mut m2 = m.clone();
@@ -4009,9 +3897,8 @@ fn gen_import_program(seed: u64) -> String {
             eg.chips.extend(p.exports.chips.iter().cloned());
         }
     }
-    // entry-local re-declaration of a namespace-imported name (silent today:
-    // the module's same-named state never gets its own gate). Only names NOT
-    // also reachable bare - a bare duplicate is a WS013 hard error.
+    // Entry-local re-declaration of a namespace-imported name. Only names not
+    // also reachable bare, since a bare duplicate is a WS013 error.
     if rng.chance(1, 3) {
         let mut cands: Vec<String> = Vec::new();
         for p in plans.iter().filter(|p| p.namespaced) {
@@ -4046,13 +3933,10 @@ fn gen_import_program(seed: u64) -> String {
     out
 }
 
-/// Canary mode: SMALL, fully-controlled multi-file programs whose storage
-/// expectations are exactly derivable from the source (`derive_storage_expect`)
-/// - every declared state gets a read and usually a write through its own
-/// access path. Collision shapes generated: same name in two modules (any mix
-/// of import kinds and storage kinds), a local decl vs a namespaced import,
-/// same file imported twice (the KNOWN-GOOD sharing case), and writes routed
-/// through a ref-param mod (`refw`).
+/// Canary mode: small multi-file programs whose storage expectations
+/// `derive_storage_expect` derives exactly. Covers same name in two modules, a
+/// local decl vs a namespaced import, one file imported twice (shared storage,
+/// known good) and writes through a ref-param mod (`refw`).
 fn gen_import_canary(seed: u64) -> String {
     let mut r = Rng::new(seed ^ 0xCA7A_B15D);
     const POOL: [&str; 6] = ["g", "cnt", "dat", "xs", "mm", "qq"];
@@ -4076,15 +3960,9 @@ fn gen_import_canary(seed: u64) -> String {
         Named,
     }
 
-    // A record CONTAINER declared as importable module state: `var name: T`
-    // / `var name: T[]` / `var name: Map<int, T>` where `T` is a module-
-    // private `type T = { a: int, b: int }` alias declared alongside it (in
-    // the SAME file - record types don't cross the import boundary, only
-    // field/method access on the container does). Always exactly two `int`
-    // fields named `a`/`b` - the canary stays small and fully controlled;
-    // the interesting axis under test is the import/namespace boundary, not
-    // field-type diversity (the general-purpose fuzzer already exercises
-    // record field-type variety in pure `let`-bound contexts).
+    // A record container as importable module state (`var name: T`, `T[]` or
+    // `Map<int, T>`) where `T = { a: int, b: int }` is declared in the same
+    // file, since record types do not cross the import boundary.
     #[derive(Clone, Copy, PartialEq)]
     enum RecKind {
         Var,
@@ -4106,8 +3984,8 @@ fn gen_import_canary(seed: u64) -> String {
     let mut imps: Vec<Imp> = Vec::new();
     for i in 0..n_mods {
         if i > 0 && r.chance(1, 4) {
-            // re-import module 0's FILE under a second namespace: shared
-            // state on purpose - must stay ONE gate and stay silent.
+            // Re-import module 0's file under a second namespace: the shared
+            // state must stay one gate and raise no finding.
             modules.push(modules[0].clone());
             rec_items.push(rec_items[0].clone());
             file_of.push(0);
@@ -4139,11 +4017,9 @@ fn gen_import_canary(seed: u64) -> String {
             });
         }
         modules.push(items);
-        // ~half the modules also carry a record container - occasionally
-        // (like the scalar items above) reusing module 0's container NAME
-        // under a freshly re-rolled kind, to stress the same
-        // storage-collapse-on-collision shape the scalar canary already
-        // covers, but for per-field record backing.
+        // About half the modules also carry a record container, sometimes
+        // reusing module 0's container name under a re-rolled kind to test
+        // collisions on per-field record backing.
         let mut ritems: Vec<RecItem> = Vec::new();
         if r.chance(1, 2) {
             let name = if i > 0 && r.chance(1, 3) && !rec_items[0].is_empty() {
@@ -4292,8 +4168,8 @@ fn gen_import_canary(seed: u64) -> String {
                     *rn += 1;
                     let rv = format!("r{rn}");
                     push_line(body, format!("  let {rv} = {path}.length()"));
-                    // a NAMESPACED array method result types as `any` today,
-                    // so only bare-path lengths feed the int accumulator
+                    // A namespaced array method result types as `any`, so only
+                    // bare-path lengths feed the int accumulator.
                     if bare {
                         int_reads.push(rv);
                     }
@@ -4309,9 +4185,9 @@ fn gen_import_canary(seed: u64) -> String {
                     push_line(body, format!("  let r{rn} = {path}.get({})", r.below(5)));
                 }
                 StoreKind::Buffer => {
-                    // buffers are pure-readable by bare name only; a
-                    // namespaced buffer stays declare-only (its gate still
-                    // must exist - the count check covers it).
+                    // Buffers are pure-readable by bare name only, so a
+                    // namespaced buffer is declare-only; the count check still
+                    // requires its gate.
                     if bare {
                         buffer_outs.push(path.to_string());
                     }
@@ -4357,16 +4233,9 @@ fn gen_import_canary(seed: u64) -> String {
         }
     }
 
-    // Record-container access. Ops written directly to `body` (not through
-    // `push_line`'s dedup - out of scope above, and unneeded: unlike the
-    // scalar collision path, nothing re-visits the same (mi, name) pair) -
-    // field access/write, whole-record assign, array push + index read +
-    // whole-element write, map set + index-field read. All verified against
-    // the real compiler in both bare and namespaced form before wiring in;
-    // the one namespaced pothole (`.get(k).a` on a MAP typing its result as
-    // `Any`, the same gap as a namespaced array's `.length()`) is gated
-    // behind `bare` below rather than "fixed" here - it's the pre-existing
-    // namespaced-method-call limitation, not a record bug.
+    // Record-container access: field read/write, whole-record assign, array
+    // push and index read, map set and index-field read. `.get(k).a` is bare
+    // only, because a namespaced map's `.get` result types as `Any`.
     for (mi, ritems) in rec_items.iter().enumerate() {
         for rit in ritems {
             let (path, bare) = match imps[mi] {
@@ -4456,7 +4325,7 @@ fn gen_import_canary(seed: u64) -> String {
     out
 }
 
-// ─────────────────────────── minimization ───────────────────────────
+// Minimization
 
 fn oracle_holds(src: &str, kind: Kind, bucket: &str) -> bool {
     let out = run_pipeline(src);
@@ -4466,7 +4335,7 @@ fn oracle_holds(src: &str, kind: Kind, bucket: &str) -> bool {
 }
 
 fn minimize(src: &str, kind: Kind, bucket: &str, max_runs: usize) -> String {
-    let mut lines: Vec<String> = src.lines().map(|l| l.to_string()).collect();
+    let mut lines: Vec<String> = src.lines().map(std::string::ToString::to_string).collect();
     let mut runs = 0usize;
     loop {
         let before = lines.len();
@@ -4499,7 +4368,7 @@ fn minimize(src: &str, kind: Kind, bucket: &str, max_runs: usize) -> String {
     lines.join("\n")
 }
 
-// ─────────────────────────── findings + buckets ───────────────────────────
+// Findings and buckets
 
 struct Finding {
     kind: Kind,
@@ -4513,15 +4382,13 @@ struct Finding {
     raw_detail: String,
 }
 
-// ─────────────────────────── selftest / calibrate ───────────────────────────
+// Selftest and calibrate
 
 fn selftest() -> bool {
     let mut ok = true;
 
-    // 1. _Unsupported detection: pure-context array index read. (Note:
-    // typecheck WS007-errors this, so it is NOT a silent-miscompile finding
-    // — but the lowered module must still contain the placeholder, proving
-    // the scanner works.)
+    // 1. _Unsupported detection: a pure-context array index read. Typecheck
+    // rejects it (WS007), but the lowered module still holds the placeholder.
     let src = "var items: int[]\nlet x = items[0]\nout r = x";
     let out = run_pipeline(src);
     if out.unsupported.is_empty() {
@@ -4543,10 +4410,10 @@ fn selftest() -> bool {
         let mk = |id: u32| Node {
             id: NodeId(1_000_000 + id),
             kind: NodeKind::Gate,
-            gate_class: "BrickComponentType_Expr_MathAdd",
-            properties: Arc::new(Default::default()),
+            gate_class: gc::MATH_ADD,
+            properties: Arc::new(wirescript::collections::HashMap::default()),
             ports: Arc::new(GateIO::default()),
-            source_range: Default::default(),
+            source_range: wirescript::diagnostic::SourceRange::default(),
             chip_id: None,
             chain_id: None,
             scope_id: 0,
@@ -4598,9 +4465,9 @@ fn selftest() -> bool {
         eprintln!("[selftest] ok: clean program produces no findings");
     }
 
-    // 4. KNOWN-GOOD storage canary: distinct state across two modules, plus
-    // the same file imported under TWO namespaces (deliberately-shared state
-    // must stay ONE gate and must NOT fire the oracle).
+    // 4. Known-good storage canary: distinct state across two modules, plus
+    // one file imported under two namespaces, whose shared state stays one
+    // gate without firing the oracle.
     let good = "\
 //!ws-file mg1
 var g: int = 1
@@ -4641,11 +4508,9 @@ out o: int = acc.Value";
         );
     }
 
-    // 5. REGRESSION GUARD: two modules each declaring `var g`, imported as
-    // two namespaces, used to collapse into ONE storage gate so writing A.g
-    // changed B.g. The namespace direct-state fix makes them distinct, so
-    // the oracle must now stay SILENT; a storage-collapse finding here means
-    // the bug regressed.
+    // 5. Two modules each declaring `var g`, imported as two namespaces, get
+    // two distinct storage gates; a storage-collapse finding here means writing
+    // A.g would change B.g.
     let bad = "\
 //!ws-file mb1
 var g: int = 1
@@ -4687,11 +4552,9 @@ out o: int = acc.Value";
         );
     }
 
-    // 6. REGRESSION GUARD: a namespace-imported module's `on` handler used
-    // to be silently dropped, taking its
-    // `wv = wv + 1` write with it. The namespaced-handler fix runs it, so the
-    // write's mutation gate now exists and the oracle must stay SILENT; a
-    // dropped-write finding here means the handler was dropped again.
+    // 6. A namespace-imported module's `on` handler lowers, so its
+    // `wv = wv + 1` write has a mutation gate; a dropped-write finding here
+    // means the handler was dropped.
     let badw = "\
 //!ws-file mw1
 var wv: int = 0
@@ -4728,13 +4591,9 @@ out o: int = acc.Value";
         );
     }
 
-    // 7. REGRESSION GUARD: an OPERATOR (or sibling call) inside a namespaced
-    // module's `on` handler must lower to a real gate. Namespaced handlers began
-    // LOWERING in 1.4.4, but typecheck did not descend into their bodies, so
-    // `n << 10` got no `op_resolutions` and lowered to `_Unsupported` (fixed by
-    // checking Handler/AnonChip bodies in the namespace arm). The oracle must
-    // stay SILENT; an unsupported-gate finding means a namespaced handler body
-    // is no longer type-checked.
+    // 7. An operator inside a namespaced module's `on` handler lowers to a real
+    // gate. An unsupported-gate finding means typecheck skipped the handler
+    // body, so `n << 10` got no `op_resolutions`.
     let nsop = "\
 //!ws-file ho1
 let n = 3
@@ -4764,14 +4623,9 @@ import * as H from \"ho1\"";
         );
     }
 
-    // 8. KNOWN-GOOD: record-typed CONTAINERS (var/array/map) declared in an
-    // imported module and driven entirely through a namespace alias - field
-    // access/write, whole-record assign, array push + index-field read +
-    // whole-element write, map set + index-field read. Every shape here was
-    // hand-verified against the real compiler before being wired into the
-    // generator; the oracle must stay SILENT (no _Unsupported placeholder,
-    // no dropped-write, no storage-collapse across the per-field backing
-    // gates `record_field_storage` decomposes each container into).
+    // 8. Known good: record-typed var/array/map containers declared in an
+    // imported module and driven through a namespace alias produce no finding
+    // across the per-field backing gates each container decomposes into.
     let rec = "\
 //!ws-file mr1
 type Rec = { a: int, b: int }
@@ -4818,9 +4672,8 @@ fn calibrate(dir: &str) {
         if p.extension().and_then(|e| e.to_str()) != Some("ws") {
             continue;
         }
-        let src = match std::fs::read_to_string(&p) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok(src) = std::fs::read_to_string(&p) else {
+            continue;
         };
         n += 1;
         let out = run_pipeline(&src);
@@ -4843,45 +4696,29 @@ fn calibrate(dir: &str) {
     eprintln!("[calibrate] {n} files, {hits} with oracle hits");
 }
 
-// ─────────────────────────── fold-diff mode ───────────────────────────
+// Fold-diff mode
 //
-// Differential fuzzer for the certified constant-fold pass:
-// compiles the SAME source twice — once with `FoldMode::ForceOff` (U, the
-// "unfolded" module) and once with `FoldMode::ForceOn` (F, the "folded"
-// module) — then:
+// Differential fuzzer for the certified constant-fold pass. Each source is
+// compiled with `FoldMode::ForceOff` (U, unfolded) and `FoldMode::ForceOn`
+// (F, folded), then:
 //
-//   1. `predict()` independently walks U's wire graph (seeding `_Literal`
-//      nodes, passing values through MicrochipInput/Output chip-boundary
-//      rerouters, and evaluating any other single-output gate via the
-//      crate's own `fold::eval::eval` once its data inputs are known) to
-//      predict which of U's root-level `out` ports the REAL fold pass
-//      should be able to fold to a known value.
-//   2. For every prediction, `trace_delivered()` walks F's wire graph from
-//      the SAME `out` port (matched across the two independent compiles by
-//      its declared name, since NodeIds are fresh per `lower()` call) to
-//      determine what value F actually delivers there — a live `_Literal`
-//      source, or a value inlined directly onto a boundary node's own
-//      property (`inline_orphan_literals`), chasing through as many chip
-//      hops as it takes.
-//   3. Mismatch (or "delivers nothing") between the prediction and F's
-//      actual delivery is a FINDING — the fold pass shorted a wire wrong,
-//      dropped one, or folded through a barrier it shouldn't have.
-//   4. Structural invariants on F: the existing `check_wires` oracle, plus
-//      folded (nodes, wires) <= unfolded (nodes, wires) componentwise (the
-//      fold pass may only ever remove/replace structure, never add it).
+//   1. `predict()` walks U's wire graph (seeding `_Literal`s, passing values
+//      through chip boundaries, evaluating gates with `eval::eval`) to predict
+//      which root-level `out` ports fold to a known value.
+//   2. `trace_delivered()` finds the value F delivers at the same `out` port,
+//      matched by declared name because NodeIds differ per `lower()` call.
+//   3. A mismatch, or no delivered value, is a finding: a wrong rewire, a
+//      dropped wire, or a fold through a barrier.
+//   4. F must pass `check_wires`, and folded (nodes, wires) <= unfolded
+//      componentwise, since folding only removes or replaces structure.
 //
-// `predict()` deliberately never re-implements the certified value laws —
-// every arithmetic/comparison/logical result comes from `eval::eval` itself
-// (the crate's own evaluator), so a refusal there is always "no prediction",
-// never a wrong one. Only the WIRE-PROPAGATION walk (which nodes are
-// literals, which pass through chip boundaries, which are fully resolved)
-// is independently re-derived here — that walk is exactly what this test is
-// trying to catch bugs in, so of course it can't be borrowed from the pass
-// under test.
+// Value laws all come from `eval::eval`, so a refusal there means "no
+// prediction", never a wrong one. Only the wire-propagation walk is derived
+// independently here, because that walk is what the mode checks.
 
 /// Recursively collect every node in `module` and its nested chips, keyed by
-/// id — wires and chip-boundary hops can cross module boundaries, so both
-/// the predictor and the delivery-tracer need a flat, tree-wide view.
+/// id. Wires and chip-boundary hops cross module boundaries, so the predictor
+/// and the delivery tracer need a flat, tree-wide view.
 fn collect_all_nodes<'a>(module: &'a Module, into: &mut StdMap<NodeId, &'a Node>) {
     for (id, n) in &module.nodes {
         into.insert(*id, n);
@@ -4909,25 +4746,11 @@ fn tree_counts(module: &Module) -> (usize, usize) {
     (nodes, wires)
 }
 
-const MICROCHIP_INPUT: &str = "BrickComponentType_Internal_MicrochipInput";
-const MICROCHIP_OUTPUT: &str = "BrickComponentType_Internal_MicrochipOutput";
-
-/// Recognizes the "materialized/synthesized constant carrier" node shape the
-/// ALWAYS-ON (not `no_fold`-gated) post-lowering passes use in place of a
-/// bare `_Literal` wire whenever the consumer has no data struct to bake a
-/// property into (`lower/expr.rs::literal_node`'s string special-case, and
-/// `lower/mod.rs::materialize_unfoldable_constants`'s "dataless target"
-/// path, e.g. `Opaque`'s Rerouter — or, just as often, a chip's own
-/// MicrochipInput/Output: a plain literal crossing a chip boundary is
-/// represented this way too, so `predict()`'s boundary pass-through and
-/// `trace_delivered()`'s delivery trace both need to recognize it): a gate
-/// with NO declared input ports at all (every "operand" is a baked
-/// property — there is no port to wire) whose properties match one of the
-/// three fixed identity recipes those passes hard-code (`N+0`, `B||false`,
-/// `S..""`). None of these three shapes is a "certified operator" result —
-/// `eval::eval` never sees a zero-input call, and `..` string concatenation
-/// isn't in the certified set at all — so without this, the constant they
-/// carry would be invisible to both the predictor and the delivery tracer.
+/// The constant carried by a "materialized constant carrier": a gate with no
+/// input ports whose baked properties match an identity recipe (`N+0`,
+/// `B||false`, `S..""`, or a fully-baked Make{Vector,Rotation,Color,Quaternion}).
+/// Lowering emits these where the consumer cannot hold a baked property,
+/// such as a chip boundary or `Opaque`'s Rerouter; `eval::eval` never sees them.
 fn literal_carrier_value(n: &Node) -> Option<FoldValue> {
     if !n.ports.inputs.is_empty() || n.ports.outputs.len() != 1 {
         return None;
@@ -4960,23 +4783,16 @@ fn literal_carrier_value(n: &Node) -> Option<FoldValue> {
             _ => false,
         };
         if empty_or_absent(n.properties.get(&*sym::INPUT_B))
-            && empty_or_absent(n.properties.get(&intern("Separator")))
+            && empty_or_absent(n.properties.get(&*sym::SEPARATOR))
             && let Some(Literal::String(s)) = n.properties.get(&*sym::INPUT_A)
         {
             return Some(FoldValue::Str(s.clone()));
         }
         return None;
     }
-    // Composite carrier recipes (`lower/mod.rs::materialize_unfoldable_constants`'s
-    // `recipe` match + its dedicated `Quat` arm): a fully-baked Make{Vector,
-    // Rotation,Color,Quaternion} gate with ZERO declared input ports (the
-    // guard above already excludes any ORDINARY MakeVector/etc. call node,
-    // which always declares its X/Y/Z(/W) ports even when their values are
-    // baked-but-unwired — see `resolve_data_input`'s doc comment — so this
-    // arm only ever matches the materialized-carrier shape). Field baked as
-    // anything other than a plain `Literal::Float` never arises from that
-    // recipe, so a non-`Float` property (or a missing one) refuses rather
-    // than guesses.
+    // Composite carriers from `materialize_unfoldable_constants`. An ordinary
+    // Make* call declares its component ports, so the zero-input guard above
+    // already excludes it. A missing or non-`Float` component refuses.
     let f = |field: &str| match n.properties.get(&intern(field)) {
         Some(Literal::Float(v)) => Some(*v),
         _ => None,
@@ -5009,8 +4825,7 @@ fn literal_carrier_value(n: &Node) -> Option<FoldValue> {
 }
 
 /// `FormatText`'s substitution slots, `InputA..InputG`, in template-index
-/// order — mirrors `fold/mod.rs::FORMAT_SLOTS` (private to that module, so
-/// re-declared here identically).
+/// order. Copy of `fold/eval.rs::FORMAT_SLOTS`, which is `pub(crate)`.
 const PREDICT_FORMAT_SLOTS: [WirePort; 7] = [
     WirePort::InputA,
     WirePort::InputB,
@@ -5021,32 +4836,13 @@ const PREDICT_FORMAT_SLOTS: [WirePort; 7] = [
     WirePort::InputG,
 ];
 
-/// Mirrors `fold/mod.rs::try_resolve_format_text`'s two-part law (can't call
-/// it directly — it's private to the `fold` module and threads through that
-/// module's own `Info`/`plan` types): the template lives in the
-/// `FormatString` property (never a wire input), and at least one
-/// substitution slot must be genuinely SUBSTITUTED before even attempting
-/// the fold (a slot with no operand at all renders `"0"` and does NOT block
-/// it — certified, see `eval::format_text`'s own doc comment).
+/// Predicts a `FormatText` fold with the law of `fold/mod.rs::try_resolve_format_text`
+/// (which is private): the template is the `FormatString` property, and at
+/// least one slot must be substituted (an empty slot renders `"0"`).
 ///
-/// Deliberately NOT identical to `try_resolve_format_text`, though: THAT
-/// function reads `in_wires` built from `fold_certified_constants`'s OWN
-/// pre-cleanup snapshot, where a literal `${...}` operand is still a real
-/// wired `_Literal` source (`lower/ops.rs::lower_interp` always wires every
-/// slot via `lower_expr`+`connect`, unlike a builtin CALL argument, which
-/// can bake straight onto the consuming gate — see `resolve_data_input`'s
-/// doc comment). But `predict()` here only ever sees `u_mod`, the module
-/// `lower()` already returned — and the ALWAYS-ON (FoldMode-independent)
-/// `inline_orphan_literals` lowering cleanup has, by then, already deleted
-/// that wire+`_Literal` node and baked the value directly onto THIS node's
-/// own property whenever `port_accepts_inline_variant` allows it (exactly
-/// like a Math* gate's literal operand). So an unwired slot here ALSO needs
-/// the baked-property fallback (`--fold-diff`-fuzzer-discovered:
-/// `Length("v${Length(\"a\")}-${26}")`'s `${26}` slot mispredicted as
-/// unsubstituted without it, even though production folds the whole
-/// expression correctly — production's OWN driver never has this problem,
-/// since it runs before that cleanup pass, so this fallback is needed HERE
-/// only, not ported back to `try_resolve_format_text`).
+/// Unlike the fold pass, this sees the module after `inline_orphan_literals`,
+/// which may have baked a literal `${...}` operand onto the slot's property and
+/// dropped its wire, so an unwired slot falls back to its baked property.
 fn predict_format_text(
     n: &Node,
     id: NodeId,
@@ -5085,34 +4881,16 @@ fn predict_format_text(
     eval::format_text(&template, &inputs).map(FoldValue::Str)
 }
 
-/// Step 1: independently predict which nodes of the UNFOLDED module `root`
-/// carry a fully-known certified value. A bounded fixpoint (not a real
-/// topo-sort — simpler, and these generated programs are small and the pure
-/// subgraph is acyclic by construction): each round, resolve every
-/// not-yet-known node whose classification allows it; stop when a round
-/// resolves nothing new.
-///
-/// Classification (deliberately the "stop there" minimal predictor from the
-/// design — Select/Branch/vars/etc. are never predicted through):
-///   - `_Literal`: seed from its `Value` property.
-///   - a "materialized constant carrier" (see `literal_carrier_value`):
-///     seed from the recipe it hard-codes.
-///   - MicrochipInput/Output (chip boundary): pass through its single known
-///     wire source, if it has exactly one.
-///   - any other single-output node: gather its non-`Exec` data inputs in
-///     declared port order. A port can be known two ways — wired to a
-///     single already-known source, or (this is the load-bearing case:
-///     `data/gate_semantics.json`-certified operator gates bake a literal
-///     OPERAND directly onto their own consuming gate's properties at
-///     lowering time — see `lower_binop`/`literal_for_property_port` —
-///     rather than wiring a sibling `_Literal` node, so this is the common
-///     case, not the exception) unwired but with a matching baked property.
-///     Genuinely unwired-and-unbaked = `None`; fan-in = permanently
-///     unresolvable. Once every input is resolved, hand them to
-///     `eval::eval` — the SAME certified evaluator the real fold pass uses.
-///     A non-finite float result is discarded here too, mirroring the real
-///     pass's belt-and-suspenders guard (it never bakes a NaN/inf literal
-///     either).
+/// Step 1: predict which nodes of the unfolded module `root` carry a known
+/// certified value, by a bounded fixpoint that stops when a round resolves
+/// nothing new. Select, Branch and vars are never predicted through.
+///   - `_Literal` and constant carriers (`literal_carrier_value`) seed values.
+///   - MicrochipInput/Output passes through its single known wire source.
+///   - Any other single-output gate resolves its data inputs from a single
+///     known wire source or, when unwired, a baked operand property (the
+///     common case: `lower_binop` bakes literal operands). Fan-in blocks. The
+///     inputs go to `eval::eval`; a non-finite float result is discarded, as
+///     the fold pass never bakes NaN or infinity.
 fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
     let mut nodes: StdMap<NodeId, &Node> = StdMap::new();
     collect_all_nodes(root, &mut nodes);
@@ -5131,9 +4909,8 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
     let mut ids: Vec<NodeId> = nodes.keys().copied().collect();
     ids.sort_unstable();
 
-    // +4 headroom over a strict topo-depth bound costs nothing on these
-    // small generated graphs and avoids an off-by-one against chip-boundary
-    // hops (each hop is its own round).
+    // +4 headroom over the topo-depth bound, since each chip-boundary hop
+    // takes its own round.
     let max_rounds = ids.len() + 4;
     for _ in 0..max_rounds {
         let mut changed = false;
@@ -5161,7 +4938,7 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
                 continue;
             }
 
-            if n.gate_class == MICROCHIP_INPUT || n.gate_class == MICROCHIP_OUTPUT {
+            if n.gate_class == gc::MICROCHIP_INPUT || n.gate_class == gc::MICROCHIP_OUTPUT {
                 if let Some(srcs) = in_wires.get(&(id, WirePort::RerInput))
                     && srcs.len() == 1
                     && let Some(v) = known.get(&srcs[0].node_id)
@@ -5172,13 +4949,9 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
                 continue;
             }
 
-            // `FormatText`'s certified signature is a synthetic `[Tmpl]`
-            // marker no real `Value` can ever match (see `eval.rs`'s own
-            // comment on this), so it's unreachable through the generic gate
-            // path below — special-cased here exactly the way production
-            // folding special-cases it in `fold/mod.rs::try_resolve_format_text`,
-            // otherwise `${...}`-interpolation would be permanently
-            // unpredictable and this pool addition would test nothing.
+            // `FormatText`'s certified signature is a synthetic `[Tmpl]` marker
+            // no `Value` matches, so the generic path below cannot resolve it;
+            // it is special-cased like `try_resolve_format_text` does.
             if n.gate_class == gc::STRING_FORMAT_TEXT {
                 if let Some(v) = predict_format_text(n, id, &in_wires, &known) {
                     known.insert(id, v);
@@ -5204,11 +4977,8 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
                 let wire_srcs = in_wires.get(&(id, *port)).filter(|s| !s.is_empty());
                 match wire_srcs {
                     None => {
-                        // Unwired — but the operand may still be a baked
-                        // property (see the doc comment above): a literal
-                        // operand of a certified operator gate is inlined
-                        // directly onto the CONSUMING gate at lowering time,
-                        // not wired from a sibling `_Literal`.
+                        // Unwired: the operand may be a literal baked onto
+                        // this gate's property at lowering time.
                         let baked = n
                             .properties
                             .get(&intern(port.as_str()))
@@ -5247,10 +5017,9 @@ fn predict(root: &Module) -> StdMap<NodeId, FoldValue> {
     known
 }
 
-/// `module`'s ROOT-level (not nested-chip) `out` ports, keyed by declared
-/// name (`PortLabel`) — the only thing stable across two independent
-/// `lower()` calls on the same source, since NodeIds are a fresh
-/// process-global counter per call.
+/// `module`'s root-level (not nested-chip) `out` ports, keyed by declared
+/// name (`PortLabel`), the only key stable across two `lower()` calls on the
+/// same source, since `NodeIds` come from a process-global counter.
 fn root_out_labels(module: &Module) -> StdMap<String, NodeId> {
     let mut map = StdMap::new();
     for id in &module.outputs {
@@ -5264,23 +5033,10 @@ fn root_out_labels(module: &Module) -> StdMap<String, NodeId> {
     map
 }
 
-/// Step 2: what value (if any) does `node_id` in the FOLDED tree actually
-/// deliver? Chases through as many MicrochipInput/Output chip-boundary hops
-/// as it takes (the same boundary a folded constant crosses on its way out
-/// of a named chip), stopping at whichever of the pipeline's legitimate
-/// "this port now IS the constant" shapes it finds first:
-///   (a) a live wire whose source is a `_Literal` node — read its `Value`.
-///   (b) a live wire whose source is a "materialized constant carrier" (see
-///       `literal_carrier_value`) — the common shape for a literal crossing
-///       a chip boundary, since MicrochipInput/Output has no data struct to
-///       bake a property into either (same as `Opaque`'s Rerouter).
-///   (c) no incoming wire, but the node's OWN `RER_Input`-keyed property is
-///       set — `inline_orphan_literals` (or, for a Vector/Color/Rotation,
-///       `materialize_unfoldable_constants`) baked the constant in place
-///       and dropped the wire.
-/// Anything else (a live non-literal, non-carrier, non-boundary source;
-/// fan-in) means nothing legitimately delivers the value at this port —
-/// `None`.
+/// Step 2: the value `node_id` in the folded tree delivers, chasing through
+/// chip-boundary hops to the first of: a `_Literal` source, a constant carrier
+/// (`literal_carrier_value`), or no incoming wire with a baked `RER_Input`
+/// property. Any other source, or fan-in, returns `None`.
 fn trace_delivered(
     wires: &[Wire],
     nodes: &StdMap<NodeId, &Node>,
@@ -5288,7 +5044,7 @@ fn trace_delivered(
     depth: u32,
 ) -> Option<FoldValue> {
     if depth > 64 {
-        return None; // guard only; no legitimate chain is anywhere near this deep
+        return None; // recursion guard; real chains are far shallower
     }
     let node = *nodes.get(&node_id)?;
 
@@ -5312,12 +5068,12 @@ fn trace_delivered(
             .get(&*sym::RER_INPUT)
             .and_then(FoldValue::from_literal),
         1 => trace_delivered(wires, nodes, incoming[0].source.node_id, depth + 1),
-        _ => None, // fan-in — never a legitimate fold delivery
+        _ => None, // fan-in is never a legitimate fold delivery
     }
 }
 
 /// A short per-node/wire text dump of `module` (and nested chips) for
-/// finding reports — just enough to see what actually got wired.
+/// finding reports.
 fn dump_module(module: &Module, indent: usize, out: &mut String) {
     let pad = "  ".repeat(indent);
     let mut ids: Vec<NodeId> = module.nodes.keys().copied().collect();
@@ -5352,12 +5108,9 @@ fn dump_module(module: &Module, indent: usize, out: &mut String) {
     }
 }
 
-/// Compile `src` twice — `FoldMode::ForceOff` (U) and `FoldMode::ForceOn` (F) —
-/// sharing one resolve+typecheck pass (fold only touches `lower()`, so U/F
-/// always see identical diagnostics up to that point). Panics in any stage
-/// are caught, mirroring `run_pipeline`; a plain diagnostic error on either
-/// side means "reject the program" (the generator is a tight, certified-only
-/// grammar, so this should essentially never happen) rather than a finding.
+/// `src` compiled with `FoldMode::ForceOff` (U) and `FoldMode::ForceOn` (F).
+/// Panics in any stage are caught as in `run_pipeline`; a diagnostic error on
+/// either side rejects the program instead of counting as a finding.
 struct DiffPrep {
     pair: Option<(Module, Module)>,
     panic: Option<String>,
@@ -5390,7 +5143,7 @@ fn lower_variant(src: &str, file: &str, fold_mode: FoldMode) -> Result<Option<Mo
             }
         })
     }))
-    .map_err(|p| format!("PANIC {stage}(fold_mode={fold_mode:?}): {}", panic_msg(p)))?;
+    .map_err(|p| format!("PANIC {stage}(fold_mode={fold_mode:?}): {}", panic_msg(&*p)))?;
     let rejected = |ds: &[wirescript::diagnostic::Diagnostic]| {
         ds.iter().any(|d| d.severity == Severity::Error)
     };
@@ -5462,7 +5215,7 @@ fn run_fold_diff(count: usize, seed: u64) {
         let pseed = (seed
             .wrapping_mul(1_000_003)
             .wrapping_add(idx as u64)
-            .wrapping_mul(0x9E3779B97F4A7C15))
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15))
             ^ 0xF01D_0000_0000_0000;
         let src = gen_fold_diff_program(pseed);
 
@@ -5582,20 +5335,15 @@ fn run_fold_diff(count: usize, seed: u64) {
     }
 }
 
-// ─────────────────────────── fold-diff program generator ───────────────────────────
+// Fold-diff program generator
 //
-// A small, DEDICATED generator (not the general `Gen::expr` grammar used by
-// the main fuzz mode, which reaches far outside the certified operator set —
-// bitwise ops, vectors, records, math builtins, string concatenation, ... —
-// none of which `predict()` can ever resolve). Reuses `Gen`'s existing
-// literal/name-freshening utilities (`Gen::lit`, `Gen::fresh`, its `Rng`) so
-// literal syntax (escaping, negative numbers, ...) matches the rest of the
-// harness, but restricts every operator to the certified set:
-// `+ - * / % == != < <= > >= && || ^^ !`.
+// A generator restricted to operators `predict()` can resolve, unlike the
+// general `Gen::expr` grammar. It reuses `Gen::lit`, `Gen::fresh` and `Gen`'s
+// `Rng`; the scalar operators are `+ - * / % == != < <= > >= && || ^^ !`.
 
-/// A leaf: 80% a plain literal, 20% `Opaque(<literal>)` — a genuine wired
-/// value the fold pass (and `predict()`, matching it) must never propagate
-/// through, since `Opaque`'s gate class carries no certified-table entry.
+/// A leaf: 80% a plain literal, 20% `Opaque(<literal>)`, a wired value that
+/// neither the fold pass nor `predict()` may propagate through, since
+/// `Opaque`'s gate class has no certified-table entry.
 fn fold_leaf(g: &mut Gen, ty: Ty) -> String {
     let l = g.lit(ty);
     if g.rng.chance(1, 5) {
@@ -5605,13 +5353,9 @@ fn fold_leaf(g: &mut Gen, ty: Ty) -> String {
     }
 }
 
-/// An ASCII string, <=32 chars — dedicated to the certified STRING op pool
-/// (`..`/`${...}`/`Length`/`Contains`/`StartsWith`/`ToLower`/`ToUpper`/
-/// `Trim`): unlike `Gen::lit(Ty::Str)` (which occasionally emits a
-/// multibyte `"héllo wörld"` literal for the GENERAL fuzzer), every
-/// certified string law in `eval.rs` refuses non-ASCII operands outright
-/// (`string_operands_foldable`), so a non-ASCII leaf here would just be a
-/// permanent, uninteresting refusal instead of exercising the pool below.
+/// An ASCII string literal of at most 32 chars for the certified string ops.
+/// ASCII only, because every certified string law refuses non-ASCII operands
+/// (`string_operands_foldable`).
 fn fold_str_ascii_lit(g: &mut Gen) -> String {
     const WORDS: &[&str] = &[
         "",
@@ -5628,7 +5372,7 @@ fn fold_str_ascii_lit(g: &mut Gen) -> String {
     format!("\"{}\"", g.rng.pick(WORDS))
 }
 
-/// Like `fold_leaf`, but for `fold_str_ascii_lit` — 20% `Opaque`-wrapped.
+/// Like `fold_leaf`, but for `fold_str_ascii_lit`: 20% `Opaque`-wrapped.
 fn fold_str_leaf(g: &mut Gen) -> String {
     let s = fold_str_ascii_lit(g);
     if g.rng.chance(1, 5) {
@@ -5638,13 +5382,9 @@ fn fold_str_leaf(g: &mut Gen) -> String {
     }
 }
 
-/// An EXACTLY-representable (as f64) decimal float literal — mirrors the
-/// certified probe's own `compositeMath`/`compositeOps` operand set (halves
-/// and quarters, e.g. `MakeVector(1.5,-2.5,0.75)`) — dedicated to the
-/// composite pool (`Vec`/`Quat` leaves) so every component is exactly
-/// representable, unlike `Gen::lit(Ty::Float)` (which can produce an
-/// arbitrary, not-exactly-representable decimal like `"23.7"` for the
-/// GENERAL fuzzer).
+/// A float literal exactly representable as f64 (halves and quarters, the
+/// operand set the `compositeMath`/`compositeOps` probes used), for `Vec` and
+/// `Quat` components.
 fn fold_exact_float_lit(g: &mut Gen) -> String {
     const VALUES: &[&str] = &[
         "0.0", "1.0", "-1.0", "0.5", "-0.5", "0.25", "-0.25", "1.5", "-1.5", "2.0", "-2.0", "0.75",
@@ -5655,7 +5395,7 @@ fn fold_exact_float_lit(g: &mut Gen) -> String {
 
 /// A `Ty::Vec3` leaf: `Vec(x, y, z)` over three independent
 /// exact-representable float components (`fold_exact_float_lit`), 20%
-/// `Opaque`-wrapped as a whole — mirrors `fold_leaf`'s convention.
+/// `Opaque`-wrapped as a whole.
 fn fold_vec_leaf(g: &mut Gen) -> String {
     let v = format!(
         "Vec({}, {}, {})",
@@ -5672,8 +5412,8 @@ fn fold_vec_leaf(g: &mut Gen) -> String {
 
 /// A `Ty::Vec3` expression, depth <= `depth`: leaf, component-wise/broadcast
 /// `+ - * /` (certified `compositeMath`), or `Cross`/`ScaleVec` (certified
-/// `compositeOps`) — `Dot` is float-typed and lives in `fold_expr`'s
-/// `Ty::Float` arm instead.
+/// `compositeOps`). `Dot` is float-typed, so it is in `fold_expr`'s
+/// `Ty::Float` arm.
 fn fold_vec_expr(g: &mut Gen, depth: u32) -> String {
     if depth == 0 || g.rng.chance(1, 2) {
         return fold_vec_leaf(g);
@@ -5686,7 +5426,7 @@ fn fold_vec_expr(g: &mut Gen, depth: u32) -> String {
             format!("({a} {op} {b})")
         }
         1 => {
-            // scalar broadcast — certified on either side.
+            // Scalar broadcast, certified on either side.
             let op = *g.rng.pick(&["+", "-", "*", "/"]);
             let v = fold_vec_expr(g, depth - 1);
             let s = fold_exact_float_lit(g);
@@ -5709,13 +5449,9 @@ fn fold_vec_expr(g: &mut Gen, depth: u32) -> String {
     }
 }
 
-/// A `Ty::Str` expression, depth <= `depth`: an ASCII leaf
-/// (`fold_str_leaf` — dedicated so a non-ASCII `Gen::lit` pick never lands
-/// here and silently tanks this pool's coverage with refusals), `..`
-/// concatenation of two (possibly differently-typed) scalar sub-expressions,
-/// `ToLower`/`ToUpper`/`Trim` of a Str sub-expression, or a
-/// `${...}`-interpolated leaf (`fold_interp_leaf`) — the certified `strings`
-/// chapter's own operator set (`eval.rs`).
+/// A `Ty::Str` expression, depth <= `depth`, over the certified string
+/// operators: an ASCII leaf, `..` of two scalar sub-expressions,
+/// `ToLower`/`ToUpper`/`Trim`, or a `${...}` interpolation (`fold_interp_leaf`).
 fn fold_str_expr(g: &mut Gen, depth: u32) -> String {
     if depth == 0 || g.rng.chance(1, 2) {
         return fold_str_leaf(g);
@@ -5743,21 +5479,16 @@ fn fold_str_expr(g: &mut Gen, depth: u32) -> String {
     }
 }
 
-/// A `${...}`-interpolated Str leaf: 1-3 embedded Int/Float/Bool
-/// sub-expressions (matching `render_for_format`'s certified law for those
-/// variants — composites are deliberately excluded (scalar-only inputs);
-/// nested STRING sub-expressions are also excluded, sidestepping untested
-/// quote-in-interpolation lexing) wrapped in
-/// static ASCII text, free of `"`/`\`/`$` so it can never accidentally start
-/// a second interpolation. Lowers to `String_FormatText`
-/// (`lower/ops.rs::lower_interp`) — exercises `predict_format_text`.
+/// A `${...}`-interpolated Str leaf: 1-3 Int/Float/Bool sub-expressions (the
+/// variants `render_for_format` certifies) in static ASCII text without `"`,
+/// `\` or `$`. Lowers to `String_FormatText`, checked by `predict_format_text`.
 fn fold_interp_leaf(g: &mut Gen, depth: u32) -> String {
     let n = g.rng.range(1, 3);
     let mut out = String::from("\"v");
     for i in 0..n {
         let t = *g.rng.pick(&[Ty::Int, Ty::Float, Ty::Bool]);
         let e = fold_expr(g, t, depth);
-        out.push_str(&format!("${{{e}}}"));
+        let _ = write!(out, "${{{e}}}");
         if i + 1 < n {
             out.push('-');
         }
@@ -5766,25 +5497,13 @@ fn fold_interp_leaf(g: &mut Gen, depth: u32) -> String {
     out
 }
 
-/// An expression of type `ty`, depth <= `depth`, built only from the
-/// certified operator set over homogeneous-typed operands (equality is the
-/// only operator exercised across all five scalar/composite types; ordered
-/// compares and logical combinators keep to the types the certified table
-/// actually probed those signatures at). `Str` delegates to `fold_str_expr`
-/// and `Vec3` to `fold_vec_expr` (both certified `strings`/`compositeMath`/
-/// `compositeOps` chapter operator sets); `Ty::Float` occasionally routes
-/// through `Dot` and `Ty::Int` through `Length`, both vector/string-typed
-/// operands producing a scalar result.
+/// An expression of type `ty`, depth <= `depth`, from certified operators over
+/// same-typed operands, each at the types the certified table probed. `Str`
+/// and `Vec3` delegate; `Float` may use `Dot` and `Int` may use `Length`.
 fn fold_expr(g: &mut Gen, ty: Ty, depth: u32) -> String {
-    // A higher early-exit chance than the main fuzzer's general `Gen::expr`
-    // (which uses 1/4): with 20% of LEAVES independently `Opaque`-wrapped
-    // (a permanent, by-design prediction barrier), a full-width depth-4
-    // tree accumulates enough leaves that almost every root `out` ends up
-    // blocked, tanking the predictor's measured coverage even though the
-    // predictor itself is sound. Depth stays capped at <= 4; deep chains
-    // still happen, just less often — only the AVERAGE leaf count drops,
-    // which is the generator-side lever available for tuning (not the
-    // predictor).
+    // Early exit at 1/2 keeps the leaf count low: with 20% of leaves
+    // `Opaque`-wrapped, a full depth-4 tree would block nearly every root
+    // `out` from prediction.
     if depth == 0 || g.rng.chance(1, 2) {
         return fold_leaf(g, ty);
     }
@@ -5842,9 +5561,8 @@ fn fold_expr(g: &mut Gen, ty: Ty, depth: u32) -> String {
 }
 
 /// Like `fold_expr`, but the top operator combines the chip's own parameter
-/// `pname` (read bare, unwrapped) with a certified-const subexpression — so
-/// the chip body actually depends on its argument, exercising the
-/// MicrochipInput -> ... -> MicrochipOutput propagation path.
+/// `pname` with a certified-const subexpression, so the chip body depends on
+/// its argument and values propagate from `MicrochipInput` to `MicrochipOutput`.
 fn fold_expr_with_param(g: &mut Gen, ty: Ty, pname: &str, depth: u32) -> String {
     match ty {
         Ty::Int | Ty::Float => {
@@ -5870,18 +5588,10 @@ fn fold_expr_with_param(g: &mut Gen, ty: Ty, pname: &str, depth: u32) -> String 
     }
 }
 
-/// One constant-heavy fold-diff program: 1-3 `out` declarations of random
-/// scalar/composite types (each a depth-<=4 certified expression), with a
-/// 30% chance one of them is routed through a named chip call
-/// (`chip F(x: T) -> (r: T)` called with a constant — exercises
-/// chip-boundary propagation), a 25% chance of an extra `quat`-typed `out`
-/// (`MakeQuaternion` over 4 independent arithmetic float args — the
-/// transitively-certified recipe from `eval.rs::make_quaternion`'s doc
-/// comment, so the constructor only ever folds once all four operands
-/// resolve), and a 20% chance of an
-/// unrelated `on t { if <const-expr> { .. } else { .. } }` wrapper
-/// (exercises Branch-truncation structural cleanup; deliberately NOT
-/// value-checked — `predict()` never resolves through Branch).
+/// One constant-heavy fold-diff program: 1-3 `out`s of certified expressions,
+/// 30% with one routed through a named chip call, 25% with an extra
+/// `MakeQuaternion` `out` of four float args, and 20% with an
+/// `on t { if <const> { .. } else { .. } }` that is checked structurally only.
 fn gen_fold_diff_program(seed: u64) -> String {
     let mut g = Gen::new(seed);
     let mut blocks: Vec<String> = Vec::new();
@@ -5943,7 +5653,7 @@ fn gen_fold_diff_program(seed: u64) -> String {
     blocks.join("\n")
 }
 
-// ─────────────────────────── main ───────────────────────────
+// Main
 
 fn main() {
     let mut count: usize = 5000;
@@ -5968,7 +5678,7 @@ fn main() {
             }
             "--out" => {
                 i += 1;
-                out_dir = args[i].clone();
+                out_dir.clone_from(&args[i]);
             }
             "--calibrate" => {
                 i += 1;
@@ -6055,12 +5765,11 @@ fn main() {
         let pseed = seed
             .wrapping_mul(1_000_003)
             .wrapping_add(idx as u64)
-            .wrapping_mul(0x9E3779B97F4A7C15);
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let mut meta_rng = Rng::new(pseed ^ 0xABCD);
         // ~10% storage-canary bundles, ~15% full-grammar import bundles, the
-        // rest single-file. Bundles are never garbage-mutated (the storage
-        // oracle derives expectations from the source text, and scrambled
-        // markers would make those claims meaningless).
+        // rest single-file. Bundles are never garbage-mutated, because the
+        // storage oracle derives its expectations from the source text.
         let flavor = meta_rng.below(20);
         let src = if flavor < 2 {
             gen_import_canary(pseed)
@@ -6126,7 +5835,7 @@ fn main() {
             match existing {
                 Some(f) => {
                     if src.len() < f.program.len() {
-                        f.program = src.clone();
+                        f.program.clone_from(&src);
                         f.seed = pseed;
                         f.index = idx;
                         f.diags = diags;
@@ -6167,7 +5876,7 @@ fn main() {
         findings.len()
     );
 
-    // ── minimize ──
+    // Minimize
     let tmin = std::time::Instant::now();
     let mut minimized: Vec<(usize, String)> = Vec::new();
     for (fi, f) in findings.iter().enumerate() {
@@ -6183,7 +5892,7 @@ fn main() {
     }
     let min_elapsed = tmin.elapsed().as_secs_f64();
 
-    // ── write findings dir ──
+    // Write findings dir
     std::fs::create_dir_all(&out_dir).expect("create out dir");
     let mut report = String::new();
     let _ = writeln!(
@@ -6211,7 +5920,7 @@ fn main() {
         let slug: String = f
             .bucket
             .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
+            .filter(char::is_ascii_alphanumeric)
             .take(24)
             .collect();
         let dir = format!("{out_dir}/bucket_{fi:03}_{}_{slug}", f.kind.name());
@@ -6241,10 +5950,10 @@ fn main() {
             let _ = writeln!(meta, "  {d}");
         }
         let _ = writeln!(meta, "minimized diagnostics:");
-        for d in re_out.error_diags.iter() {
+        for d in &re_out.error_diags {
             let _ = writeln!(meta, "  E {d}");
         }
-        for d in re_out.warn_diags.iter() {
+        for d in &re_out.warn_diags {
             let _ = writeln!(meta, "  W {d}");
         }
         std::fs::write(format!("{dir}/meta.txt"), &meta).expect("write meta");

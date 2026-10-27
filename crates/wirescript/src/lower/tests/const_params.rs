@@ -1,7 +1,7 @@
-//! A const parameter must reach the positions that require a literal — the
-//! whole point of the feature. `SendCustomEvent`'s channel name is the
-//! sharpest case: it is gate CONFIG, not a wire, so a non-constant there is an
-//! error and a constant bakes into the component data.
+//! A const parameter reaches the positions that require a literal.
+//! `SendCustomEvent`'s channel name is the sharpest case: it is gate CONFIG,
+//! not a wire, so a non-constant there is an error and a constant bakes into
+//! the component data.
 
 pub(crate) use super::lower_ok;
 
@@ -22,9 +22,9 @@ fn event_name_properties(m: &crate::ir::Module) -> Vec<String> {
 }
 
 /// The baked `EventName` of every `CustomEvent` receiver node (`on
-/// CustomEvent(...)`). Mirrors `event_name_properties` but reads the RECEIVER
-/// gate class, not the sender's — the two must agree on `EventName` for a
-/// computed channel to actually connect a sender to its receiver.
+/// CustomEvent(...)`). Mirrors `event_name_properties` for the RECEIVER gate
+/// class; sender and receiver must agree on `EventName` for a computed channel
+/// to connect.
 fn receiver_event_names(m: &crate::ir::Module) -> Vec<String> {
     super::nodes_of(m, crate::ir::gate_class::CUSTOM_EVENT)
         .iter()
@@ -37,16 +37,10 @@ fn receiver_event_names(m: &crate::ir::Module) -> Vec<String> {
         .collect()
 }
 
-/// The third manifestation of the single-named-output wrapping bug (see
-/// `a_single_named_output_const_mod_result_bakes_as_a_scalar` in
-/// `const_init.rs` for the first, and
-/// `a_single_named_output_const_mod_result_is_scalar_config_not_a_record` in
-/// `typecheck/tests.rs` for the second): routed through a `const string`
-/// PARAMETER, the record slipped past typecheck's own constant-config check
-/// and reached the emitter, which aborted the whole compile with
-/// `UnrepresentableLiteral { field: "EventName", literal: Record([("r",
-/// String("hit_evt"))]) }`. `lower_ok` asserts no errors from any stage, so
-/// this fails on the abort; the assertion then pins the baked name itself.
+/// A single-named-output const mod result routed through a `const string`
+/// PARAMETER bakes as the scalar, not a record: a `Record([("r", ...)])` reaching
+/// the emitter aborts the compile with `UnrepresentableLiteral`. `lower_ok`
+/// asserts no errors from any stage; the assertion pins the baked name.
 #[test]
 fn a_single_named_output_const_mod_bakes_a_custom_event_channel_name() {
     let m = lower_ok(
@@ -107,10 +101,9 @@ fn two_chip_call_sites_get_two_bodies_not_one_reused() {
 }
 
 /// A const param consumes no pin, so every LATER param's pin index shifts.
-/// `build_chip_module` and `wire_chip_args_and_outputs` must skip it in
-/// lockstep or the runtime args land on the wrong pins — checked with the
-/// const param FIRST (worst case: every following param shifts) by confirming
-/// the runtime arg still reaches the body's own gate.
+/// `build_chip_module` and `wire_chip_args_and_outputs` skip it in lockstep, or
+/// the runtime args land on the wrong pins. Checked with the const param FIRST
+/// (every following param shifts) by confirming the runtime arg reaches the body.
 #[test]
 fn a_leading_const_param_does_not_shift_later_pins() {
     let m = lower_ok(
@@ -142,11 +135,9 @@ fn a_leading_const_param_does_not_shift_later_pins() {
     );
 }
 
-// A computed channel name sent via a named constant must reach a receiver
-// bound to the SAME constant — i.e. the sender's and receiver's baked
-// `EventName` values must be byte-identical, not just each individually
-// non-empty; a receiver that rejects a named constant like `CH` (WS028)
-// would leave the round trip never lowering at all.
+// A computed channel name sent via a named constant reaches a receiver bound to
+// the SAME constant: the sender's and receiver's baked `EventName` values are
+// byte-identical, and the receiver accepts a named constant like `CH` (no WS028).
 #[test]
 fn a_named_constant_round_trips_from_sender_to_receiver() {
     let m = lower_ok(
@@ -178,9 +169,8 @@ fn a_computed_channel_expression_bakes_as_a_receiver_channel_name() {
     assert_eq!(receiver_event_names(&m), vec!["evt_died".to_string()]);
 }
 
-/// The same constant at two call sites should still share ONE template — the
-/// key must discriminate on the const VALUE, not merely on a const param being
-/// present (which would defeat template reuse entirely).
+/// The same constant at two call sites shares ONE template: the key
+/// discriminates on the const VALUE, not merely on a const param being present.
 #[test]
 fn two_chip_call_sites_with_the_same_const_share_one_template() {
     let m = lower_ok(
@@ -197,14 +187,11 @@ fn two_chip_call_sites_with_the_same_const_share_one_template() {
     );
 }
 
-/// A `const` parameter's value has no wire — `lower_chip_call_inline` records
-/// it in `scoped_consts` instead of binding a port — so reading it in a plain
-/// WIRE position (`n + m`) has to resolve through the constant environment.
-/// It did not: `lower_ident` fell through to `_Unsupported`, which is only a
-/// WSP001 warning, so the program compiled and the operand silently did
-/// nothing at runtime. Regression guard for that (`lower/expr.rs`'s `None`
-/// arm), asserting BOTH halves: no `_Unsupported`, and the constant actually
-/// reached the consuming gate as an inlined operand.
+/// A `const` parameter's value has no wire (`lower_chip_call_inline` records it
+/// in `scoped_consts` instead of binding a port), so reading it in a plain WIRE
+/// position (`n + m`) resolves through the constant environment. Both halves are
+/// asserted: no `_Unsupported` (only a WSP001 warning), and the constant reaches
+/// the consuming gate as an inlined operand.
 #[test]
 fn a_const_param_read_in_a_wire_position_inlines_as_a_literal() {
     let m = lower_ok(
@@ -228,9 +215,9 @@ fn a_const_param_read_in_a_wire_position_inlines_as_a_literal() {
     );
 }
 
-/// The same const param used where it is only ever READ as a constant still
-/// costs nothing — the literal materialized by the fix above must be inlined
-/// and pruned, not left behind as an orphan gate.
+/// The same const param used where it is only ever READ as a constant costs
+/// nothing: its materialized literal is inlined and pruned, not left as an
+/// orphan gate.
 #[test]
 fn a_const_param_used_only_as_config_still_emits_no_literal_gate() {
     let m = lower_ok(
@@ -245,12 +232,9 @@ fn a_const_param_used_only_as_config_still_emits_no_literal_gate() {
     );
 }
 
-/// The acceptance test for the feature's headline claim: a `const mod` call
-/// in a constant-only gate-config position must actually BAKE its value into the
-/// gate. Typecheck accepting it (`assert_no_diags`) proves nothing on its own
-/// — lowering's `literal_for_property_port` folded only env-less literals and
-/// bare identifiers, so this program compiled clean with `EventName` unset and
-/// the channel silently missing.
+/// A `const mod` call in a constant-only gate-config position BAKES its value
+/// into the gate. Typecheck accepting it (`assert_no_diags`) is not enough: with
+/// `EventName` unset, the program compiles clean and the channel is missing.
 #[test]
 fn a_const_mod_call_bakes_as_a_custom_event_channel_name() {
     let m = lower_ok(
@@ -265,10 +249,9 @@ fn a_const_mod_call_bakes_as_a_custom_event_channel_name() {
     );
 }
 
-/// The same accept-but-drop hole, reached through a certified receiver-method
-/// call instead of a `const mod` call: lowering must evaluate certified
-/// method calls the same way typecheck's full evaluator does, or the gate
-/// ships with no channel.
+/// A certified receiver-method call in the same position bakes too: lowering
+/// evaluates certified method calls the way typecheck's full evaluator does,
+/// or the gate ships with no channel.
 #[test]
 fn a_certified_method_call_bakes_as_a_custom_event_channel_name() {
     let m =
@@ -281,14 +264,9 @@ fn a_certified_method_call_bakes_as_a_custom_event_channel_name() {
 }
 
 /// A block-scope **`const`** destructure feeding a constant-only config slot
-/// must BAKE its value into the gate, in every scope and spelling.
-///
-/// This asserts against the baked `EventName` PROPERTY, not the IR dump,
-/// because the dump cannot see this class of bug at all: the broken and the
-/// working programs both print exactly one `SendCustomEvent` gate and differ
-/// only in the component data the dump never renders. The same distinction was
-/// confirmed end-to-end against a real `.brdb` with brdb's `read_components`
-/// example (0 occurrences broken vs 1 fixed).
+/// BAKES its value into the gate, in every scope and spelling. Asserted against
+/// the baked `EventName` PROPERTY: the IR dump does not render component data,
+/// so a missing channel prints the same as a baked one.
 #[test]
 fn a_block_scope_const_destructure_bakes_a_custom_event_channel_name() {
     let rows: &[(&str, &str, &str)] = &[
@@ -336,10 +314,9 @@ fn a_block_scope_const_destructure_bakes_a_custom_event_channel_name() {
 }
 
 /// Resolve, typecheck and lower `src`, returning LOWERING's error codes.
-/// Unlike [`lower_ok`] this tolerates lowering errors — it exists for the
-/// cases where the point IS that lowering reports something typecheck cannot.
-/// Typecheck must still be clean, or the test would be asserting about a
-/// program that never had a chance to lower.
+/// Unlike [`lower_ok`] this tolerates lowering errors, for the cases where
+/// lowering reports something typecheck cannot. Typecheck must still be clean,
+/// so the program did lower.
 fn lowering_codes(src: &str) -> Vec<String> {
     let crate::compile::FrontEnd {
         typecheck: tc,
@@ -367,15 +344,10 @@ fn lowering_codes(src: &str) -> Vec<String> {
         .collect()
 }
 
-/// A named chip's body is a `Block`, so its `const`s never go through
-/// `build_const_env`; they are recorded into `scoped_consts`, and the chip's
-/// child ctx used to open no frame for them at all. The constant was dropped
-/// on the floor and `SendCustomEvent` baked an EMPTY channel — a gate that
-/// silently never fires — with nothing reported by either stage.
-///
-/// Asserted on the BAKED value rather than on a diagnostic, because a
-/// diagnostic is exactly the oracle that missed this: every spelling here
-/// type-checks and lowers without a word.
+/// A named chip's body is a `Block`, so its `const`s skip `build_const_env` and
+/// are recorded into `scoped_consts`; the chip's child ctx opens a frame for
+/// them. A lost constant bakes an EMPTY channel (a gate that never fires) with
+/// no diagnostic from either stage, so the BAKED value is asserted.
 #[test]
 fn a_named_chips_own_const_bakes_in_its_own_handler() {
     const BODY: &str = "const a = \"ev\"\n\
@@ -393,8 +365,7 @@ fn a_named_chips_own_const_bakes_in_its_own_handler() {
          means the constant was dropped rather than baked"
     );
 
-    // The `mod` spelling of the identical body always worked, which is what
-    // made the chip one look like a language rule instead of a lost frame.
+    // The `mod` spelling of the identical body bakes the same channel.
     let via_mod = lower_ok(&format!(
         "mod send(name: const string) {{ SendCustomEvent(name, 1) }}\n\
          mod Named(t: exec) {{ {BODY} }}\n\
@@ -410,7 +381,7 @@ fn a_named_chips_own_const_bakes_in_its_own_handler() {
 /// The nested form of the case above: a chip declared INSIDE another chip is
 /// built against the constants of the scope its declaration sees, so the
 /// ENCLOSING chip's body constants reach it, as typecheck (whose scopes nest)
-/// resolves them. It once reported WS028 at lowering instead.
+/// resolves them, with no WS028.
 #[test]
 fn a_chip_inside_a_chip_reads_the_enclosing_chips_constants() {
     let src = "mod send(name: const string) { SendCustomEvent(name, 1) }\n\

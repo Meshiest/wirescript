@@ -1,4 +1,4 @@
-//! Built-in event registry. Maps PascalCase surface names (used in
+//! Built-in event registry. Maps `PascalCase` surface names (used in
 //! `on X { ... }`) to gate classes + bound data outputs.
 
 use crate::collections::HashMap;
@@ -10,7 +10,7 @@ use crate::ir::Type;
 pub struct EventDataBinding {
     /// Source-level name (the binding identifier in `on X(name)`).
     pub name: &'static str,
-    /// Actual gate output port name — usually PascalCase.
+    /// The gate's output port name, usually `PascalCase`.
     pub port: &'static str,
     pub ty: Type,
 }
@@ -31,15 +31,13 @@ pub struct EventSpec {
     /// the value's expected type). e.g. `zone = zoneBrick` on the zone events
     /// wires a `zone` reference into the `Zone` port. Empty for most events.
     pub input_named: Vec<(&'static str, &'static str, Type)>,
-    /// The gate's exec OUTPUT port name — the port the handler body chains from.
+    /// The gate's exec output port, which the handler body chains from.
     /// Most events use `ExecOut`; the internal zone-event gates name it `Exec`.
     pub exec_out: &'static str,
 }
 
-/// How a NAMED handler arg (`on E(name = value)`) classifies against an event's
-/// declared slots. The single source of truth for "is this arg name meaningful",
-/// so typecheck (diagnostics), lowering (wire vs bake), and hover agree instead
-/// of each re-deriving the answer and drifting.
+/// How a named handler arg (`on E(name = value)`) classifies against an event's
+/// declared slots. Typecheck, lowering and hover all classify through this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventArgKind {
     /// Wires the value into a gate INPUT port (may be dynamic).
@@ -48,8 +46,7 @@ pub enum EventArgKind {
     /// Bakes the value into a constant-only settings field.
     /// `(surface name, gate data-struct field)`.
     ConfigField(&'static str, &'static str),
-    /// Matches no declared slot — a typo. Nothing lowers it, so it silently
-    /// no-ops; typecheck flags it (WS041).
+    /// Matches no declared slot. Lowering ignores it; typecheck flags it (WS041).
     Unknown,
 }
 
@@ -75,8 +72,7 @@ impl EventSpec {
     }
 }
 
-/// Every built-in event. Order matches the TS reference for deterministic
-/// iteration.
+/// Every built-in event, keyed by surface name.
 fn build_events() -> HashMap<&'static str, EventSpec> {
     let mk = |surface: &'static str, class: &'static str, data: Vec<EventDataBinding>| {
         (
@@ -164,9 +160,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
         ty: Type::Entity,
     };
     // The player-join/left gates expose a `UserId` output (gate type `any`);
-    // surface it as `string` so it compares, interpolates, and keys leaderboards
-    // like `GetUserId()`. Useful for disconnect cleanup, where the `controller`
-    // reference may already be torn down but the id is still stable.
+    // surface it as `string` so it compares and interpolates like `GetUserId()`.
+    // The id stays valid after the `controller` reference is torn down.
     let string = |name, port| EventDataBinding {
         name,
         port,
@@ -386,13 +381,10 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             // `on ChatCommand("greet", Description = "Greets you")`
             vec![("description", "HelpText"), ("helptext", "HelpText")],
         ),
-        // Whole-grid interaction/targeting events. These `Event_WholeGrid*` gates
-        // have NO `ExecOut`; their trigger is a differently-named output that acts
-        // as the exec (like Clock's `Pulse`): `WholeGridInteracted` fires from
-        // `Character` (the interacting character) — which is ALSO bound as the
-        // `character` data param — exposing `held` (`bHeld`, true while held);
-        // `WholeGridTargeted` fires from its `Targeted` exec output, exposing the
-        // hit character/damage/weapon.
+        // The `Event_WholeGrid*` gates have no `ExecOut`; another output acts as
+        // the exec (like Clock's `Pulse`). `WholeGridInteracted` fires from
+        // `Character`, also bound as the `character` data; `WholeGridTargeted`
+        // fires from `Targeted`.
         (
             "WholeGridInteracted",
             EventSpec {
@@ -459,14 +451,11 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
             },
         ),
         // (Personal) Custom Event: pulses when a matching same-owner
-        // `SendCustomEvent` fires, exposing the up-to-8 data values it carried.
-        // The leading positional is the channel name (baked into `EventName` when
-        // constant); the remaining params are the TYPED data outputs, whose
-        // annotations type the gate's `WireValue` ports (the game can't store
-        // them as `any`). Unused slots default to float. `isObject` is constant
-        // config that scopes the event to a specific grid/object instead of firing
-        // grid-wide. Delivery is same-owner only — the ownership-agnostic
-        // counterpart is `on GlobalCustomEvent(...)`.
+        // `SendCustomEvent` fires, exposing its up to 8 data values. The leading
+        // positional is the channel name (baked into `EventName` when constant).
+        // The captures' annotations type the gate's `WireValue` ports, which the
+        // game cannot store as `any`; unused slots default to float. `isObject`
+        // scopes the event to one grid or object.
         // `on CustomEvent("dmg") -> (amount: int, source: character) { last = amount }`.
         (
             "CustomEvent",
@@ -521,10 +510,8 @@ fn build_events() -> HashMap<&'static str, EventSpec> {
                 exec_out: "ExecOut",
             },
         ),
-        // Global Custom Event: the ownership-agnostic counterpart of Custom Event
-        // — fires for a matching `SendGlobalCustomEvent` regardless of owner. Same
-        // shape (channel-name positional, up to 8 typed data outputs, `isObject`
-        // config).
+        // Global Custom Event: fires for a matching `SendGlobalCustomEvent`
+        // regardless of owner. Same shape as Custom Event.
         (
             "GlobalCustomEvent",
             EventSpec {
@@ -592,7 +579,7 @@ pub fn find_event(surface_name: &str) -> Option<&'static EventSpec> {
     events().get(surface_name)
 }
 
-/// A data output an event used to bind and no longer does.
+/// A data output removed from an event; a capture that still names it is rejected.
 pub struct RemovedBinding {
     pub name: &'static str,
     /// Capture names (lowercase) that read as this binding.

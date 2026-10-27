@@ -66,12 +66,7 @@ fn compile_failures(file: &str, src: &str, mode: FoldMode) -> Vec<String> {
         }
     });
 
-    match wirescript::compile(CompileInput {
-        source: src,
-        file,
-        module_name: None,
-        fold_mode: mode,
-    }) {
+    match wirescript::compile(CompileInput::new(src, file).fold_mode(mode)) {
         Ok(r) => {
             out.extend(
                 r.diagnostics

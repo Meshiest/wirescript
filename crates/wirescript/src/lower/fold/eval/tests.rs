@@ -68,8 +68,8 @@ fn bitwise_laws() {
     assert_eq!(got("BitwiseOR", i(12), i(10)), Some(14));
     assert_eq!(got("BitwiseXOR", i(12), i(10)), Some(6));
     assert_eq!(got("BitwiseNOT", i(12), None), Some(-13));
-    assert_eq!(got("BitwiseNAND", i(12), i(10)), Some(!(12 & 10)));
-    assert_eq!(got("BitwiseNOR", i(12), i(10)), Some(!(12 | 10)));
+    assert_eq!(got("BitwiseNAND", i(12), i(10)), Some(!(0b1100 & 0b1010)));
+    assert_eq!(got("BitwiseNOR", i(12), i(10)), Some(!(0b1100 | 0b1010)));
     assert_eq!(got("BitwiseShiftLeft", i(1), i(5)), Some(32));
     assert_eq!(got("BitwiseShiftRight", i(64), i(2)), Some(16));
     assert_eq!(got("BitwiseBitCount", i(255), None), Some(8));
@@ -127,24 +127,23 @@ fn case_value(ci: &crate::lower::fold::table::CaseInput) -> Option<Value> {
             b: *b,
             a: *a,
         },
-        // FormatText's synthetic tmpl label — not a real value, never
-        // reached by the replay loop (FormatText is allowlisted whole).
+        // FormatText's synthetic tmpl label; the replay loop skips FormatText.
         (InVariant::Tmpl, _) => return None,
         (InVariant::Unwired, _) => unreachable!(),
         _ => unreachable!("variant/CaseValue shape mismatch — table.rs bug"),
     })
 }
 
-/// Signatures/values eval deliberately refuses (Global Constraints).
-/// Every table case must either replay exactly or match one of these;
-/// the counts are asserted so laws can't silently rot into refusals.
+/// Signatures and values eval refuses on purpose. Every table case must
+/// replay exactly or match one of these; the counts are asserted so a law
+/// cannot quietly turn into a refusal.
 fn is_expected_refusal(gate: &str, case: &crate::lower::fold::table::Case) -> bool {
     let sig: Vec<InVariant> = case.inputs.iter().map(|i| i.variant).collect();
     if gate.contains("_Math") && sig.contains(&InVariant::Str) {
         return true;
     }
-    // Multibyte string operands (ASCII-only string family, see
-    // `ascii_str`'s doc comment) — the 4 "π≈3" cases.
+    // Multibyte string operands: the four "π≈3" cases (the string family is
+    // ASCII-only).
     gate.contains("_String_")
         && case.inputs.iter().any(|i| match &i.value {
             Some(CaseValue::Scalar(s)) if i.variant == InVariant::Str => !s.is_ascii(),
@@ -152,20 +151,10 @@ fn is_expected_refusal(gate: &str, case: &crate::lower::fold::table::Case) -> bo
         })
 }
 
-/// Composite-constructor gates whose ONLY table evidence is "renders
-/// blank" (rotator/quat/color case outputs are ALWAYS `""` through
-/// FormatText — certified, see `render_for_format`'s doc comment).
-/// Replaying blank==blank proves nothing about whether `eval()`
-/// computed the right VALUE, so these 6 cases are tallied separately
-/// rather than asserted at all. Two of the six (`MakeQuaternion`,
-/// `MakeColor`'s 3-arg form) DO still fold in production — they're
-/// certified TRANSITIVELY through a different, value-bearing gate (see
-/// `make_quaternion`'s / `make_color`'s doc comments in `eval.rs`
-/// above) — but the replay harness has no way to check that here; the
-/// transitive-certification comment on each `make_*` function is the
-/// actual justification, not this test. The other 4 (`MakeRotation`,
-/// `MakeColorSRGB`, `MakeColorHex`, `InvertRotation`) hard-refuse in
-/// production (see `eval()`'s `BLANK_RENDER_REFUSED`).
+/// Composite constructors whose own cases render blank, which proves nothing
+/// about the value, so they are counted rather than replayed. `MakeQuaternion`
+/// and `MakeColor` are certified through other gates; the rest are
+/// `BLANK_RENDER_REFUSED`.
 const BLANK_RENDER_ONLY: &[&str] = &[
     G_MAKE_ROTATION,
     G_MAKE_QUATERNION,
@@ -182,29 +171,18 @@ fn replay_every_certified_case() {
     for gate in t.gate_classes() {
         let short = gate.rsplit('_').next().unwrap_or("");
         for case in t.cases(gate) {
-            // Blank-render-only composites: see BLANK_RENDER_ONLY's doc
-            // comment — blank==blank proves nothing, so these are
-            // neither replayed nor treated as an expected refusal; just
-            // counted.
             if BLANK_RENDER_ONLY.contains(&short) {
                 blank += 1;
                 continue;
             }
-            // FormatText: the persisted table only carries a synthetic
-            // per-case label (`tmpl:0str`, ...), not the real template
-            // text or the real substitution operands — those only exist
-            // in `probes/gate_semantics.ws` (not loaded at runtime), so
-            // none of these 11 cases are replayable from the table
-            // alone. `format_text()` is instead validated directly
-            // against the recovered templates in
-            // `format_text_matches_recovered_probe_cases` below.
+            // The table stores only a label per FormatText case (`tmpl:0str`),
+            // not the template or operands; `format_text` is checked against
+            // the probe's templates in `format_text_matches_recovered_probe_cases`.
             if gate == FORMAT_TEXT {
                 refused += 1;
                 continue;
             }
-            // `deferredOps` chapter: certified but never folded — always
-            // refuse, allowlisted wholesale (see the module-level
-            // `DEFERRED` list `eval()` itself refuses against).
+            // `deferredOps`: probed but always refused.
             if DEFERRED.contains(&short) {
                 refused += 1;
                 continue;
@@ -242,12 +220,9 @@ fn replay_every_certified_case() {
                         "{gate} {:?}: unexpected refusal",
                         case.inputs
                     );
-                    // Every refused MATH-with-string observation recorded
-                    // 0 — if a future probe contradicts that, this
-                    // screams. The multibyte string refusals carry a
-                    // real (non-"0") recorded output since the game DID
-                    // compute something for them — we simply decline to
-                    // reproduce it (unicode model unconfirmed).
+                    // Every refused math-with-string case recorded 0. The
+                    // multibyte string cases recorded real output that the
+                    // evaluator declines to reproduce.
                     if gate.contains("_Math") {
                         assert_eq!(case.output_value, "0");
                     }
@@ -261,7 +236,9 @@ fn replay_every_certified_case() {
         413,
         "table case count changed - re-audit"
     );
-    assert_eq!(replayed, 379); // +45 v4: 30 extendedMath + 9 bitwise + 6 rounding; +8 v5: int abs/sign*3/negate/min/max/clamp (float output)
+    // Includes 30 extendedMath, 9 bitwise, 6 rounding and 8 integer-operand
+    // extended-math cases.
+    assert_eq!(replayed, 379);
     assert_eq!(
         refused, 28,
         "3 math-with-string + 11 FormatText + 4 multibyte + 10 deferredOps"
@@ -273,12 +250,9 @@ fn replay_every_certified_case() {
     );
 }
 
-/// FormatText's real template+operands are unrecoverable from the
-/// persisted table (see the allowlist comment above); recovered instead
-/// by reading `probes/gate_semantics.ws` directly (allowed to READ,
-/// never edit) — every `fmt*` probe mod's exact template literal and
-/// `Opaque(...)` operand, cross-checked against its `tmpl:LABEL` case
-/// output in `data/gate_semantics.json`.
+/// Each `fmt*` probe's template and `Opaque(...)` operands, copied from
+/// `probes/gate_semantics.ws`, with its recorded `tmpl:LABEL` output from
+/// `data/gate_semantics.json`.
 #[test]
 fn format_text_matches_recovered_probe_cases() {
     let i = |v: Value| Some(v);
@@ -328,13 +302,13 @@ fn format_text_matches_recovered_probe_cases() {
         ),
         Some("A-B-C".into())
     );
-    // `Fmt("literal{a}brace")` — `{a}` is not a numbered slot, so it
-    // renders "0" like any other unbound tag.
+    // `Fmt("literal{a}brace")`: `{a}` is not a numbered slot, so it renders
+    // "0" like any other unbound tag.
     assert_eq!(
         format_text("literal{a}brace", &[]),
         Some("literal0brace".into())
     );
-    // `Fmt("{0}{1}", Opaque(1))` — slot 1 has no operand at all.
+    // `Fmt("{0}{1}", Opaque(1))`: slot 1 has no operand.
     assert_eq!(
         format_text("{0}{1}", &[i(Value::Int(1))]),
         Some("10".into())
@@ -348,7 +322,7 @@ fn format_text_refuses_unprobed_gate_syntax() {
     let i = |v: Value| Some(v);
     assert_eq!(format_text("{A} apples", &[i(Value::Int(5))]), None);
     assert_eq!(format_text("{G}", &[]), None);
-    assert_eq!(format_text("{A:,}", &[i(Value::Int(1234567))]), None);
+    assert_eq!(format_text("{A:,}", &[i(Value::Int(1_234_567))]), None);
     assert_eq!(format_text("{0:.2} m/s", &[i(Value::Float(1.2345))]), None);
     assert_eq!(
         format_text("Door: {A:Open=Closed}", &[i(Value::Bool(true))]),
@@ -404,16 +378,16 @@ fn render_for_format_matches_certified_table() {
     check("int:1000", Value::Int(1000));
     check("int:9999", Value::Int(9999));
     check("int:10000", Value::Int(10000));
-    check("int:999999", Value::Int(999999));
-    check("int:-1000000", Value::Int(-1000000));
-    check("int:9007199254740993", Value::Int(9007199254740993));
+    check("int:999999", Value::Int(999_999));
+    check("int:-1000000", Value::Int(-1_000_000));
+    check("int:9007199254740993", Value::Int(9_007_199_254_740_993));
     check("float:1.0", Value::Float(1.0));
     check("float:-1.0", Value::Float(-1.0));
     check("float:0.5", Value::Float(0.5));
     check("float:1.0/3.0", Value::Float(1.0 / 3.0));
     check("float:0.1+0.2", Value::Float(0.1 + 0.2));
     check("float:2.0/3.0", Value::Float(2.0 / 3.0));
-    check("float:123456.789", Value::Float(123456.789));
+    check("float:123456.789", Value::Float(123_456.789));
     check("float:1e-7", Value::Float(1e-7));
     check("float:-0.0", Value::Float(-0.0));
     check("float:1e15", Value::Float(1e15));
@@ -481,8 +455,8 @@ fn render_for_format_matches_certified_table() {
 
 #[test]
 fn concat_stringifies_bool_natively_not_via_format_law() {
-    // Certified: Concatenate's own operand stringification differs from
-    // render_for_format's — "true"/"false", not "1"/"0".
+    // Certified: Concatenate prints bools "true"/"false", where
+    // render_for_format prints "1"/"0".
     assert_eq!(
         eval(
             "BrickComponentType_Expr_String_Concatenate",
@@ -614,12 +588,11 @@ fn eval_refuses_what_the_game_was_not_probed_on() {
 #[test]
 fn oversized_float_refuses_string_fold() {
     let concat = "BrickComponentType_Expr_String_Concatenate";
-    // Signature coverage only cares about variant shape, so this is
-    // reachable even though no case probed this exact magnitude.
-    assert!(
-        string_operands_foldable(&[Some(&Value::Str("x".into())), Some(&Value::Float(1e16)),])
-            == false
-    );
+    // Coverage checks only variant shape, so this magnitude reaches the guard.
+    assert!(!string_operands_foldable(&[
+        Some(&Value::Str("x".into())),
+        Some(&Value::Float(1e16)),
+    ]));
     let _ = concat; // documents which gate family this guard protects
 }
 
@@ -630,14 +603,14 @@ fn oversized_string_result_refuses_fold() {
     // MAX_FOLDED_STRING_LEN (8192), so it must refuse.
     let s5000 = Some(Value::Str("a".repeat(5000)));
     assert!(
-        eval(concat, &[s5000.clone(), s5000.clone()]).is_none(),
+        eval(concat, &[s5000.clone(), s5000]).is_none(),
         "oversized result (10000 chars) must refuse"
     );
     // Concatenating two 4096-char strings produces 8192 chars, exactly at the
     // limit, so it should fold.
     let s4096 = Some(Value::Str("a".repeat(4096)));
     assert_eq!(
-        eval(concat, &[s4096.clone(), s4096.clone()]),
+        eval(concat, &[s4096.clone(), s4096]),
         Some(Value::Str("a".repeat(8192))),
         "result at limit (8192 chars) must fold"
     );
@@ -655,13 +628,8 @@ fn deferred_ops_always_refuse() {
     }
 }
 
-/// Mirrors `deferred_ops_always_refuse`: `MakeRotation`/`MakeColorSRGB`/
-/// `MakeColorHex`/`InvertRotation` are hard-refused by `eval()`'s
-/// `BLANK_RENDER_REFUSED` list regardless of signature coverage (their
-/// only table evidence is a case whose output renders blank — see
-/// `BLANK_RENDER_REFUSED`'s doc comment) — replayed here on their own
-/// certified/covered signatures to lock that `eval()` never silently
-/// starts folding them.
+/// Every `BLANK_RENDER_REFUSED` gate refuses even on its own covered
+/// signatures.
 #[test]
 fn blank_render_gates_always_refuse() {
     for short in BLANK_RENDER_REFUSED {
@@ -690,8 +658,8 @@ fn rotate_vector_replays_the_45_degree_case_exactly() {
     let q = Some(Value::Quat {
         x: 0.0,
         y: 0.0,
-        z: 0.3826834323650898,
-        w: 0.9238795325112867,
+        z: 0.382_683_432_365_089_8,
+        w: 0.923_879_532_511_286_7,
     });
     let got = eval(gate, &[v, q]).expect("covered signature must fold");
     assert_eq!(render(&got), "X=0.707 Y=0.707 Z=0.000");
@@ -699,9 +667,8 @@ fn rotate_vector_replays_the_45_degree_case_exactly() {
 
 #[test]
 fn composite_modulo_mixed_sign_does_not_refuse() {
-    // Certified deviation from the scalar path: compositeMath's Modulo
-    // computes unconditionally (Rust `%`, truncated remainder), even
-    // mixed-sign — `Vec(0.5,0.25,-0.75) % Vec(0.25,0.5,0.75) -> Z=-0.000`.
+    // Certified: unlike the scalar path, vector modulo computes the truncated
+    // remainder even for mixed signs.
     let md = "BrickComponentType_Expr_MathModulo";
     let v1 = Some(Value::Vector {
         x: 0.5,

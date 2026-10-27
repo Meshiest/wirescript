@@ -34,7 +34,7 @@ fn labelled(brz: &[u8]) -> Vec<Labelled> {
         let mut per: std::collections::BTreeMap<
             u32,
             (Option<String>, Vec<(u16, String)>, Vec<BrdbValue>),
-        > = Default::default();
+        > = std::collections::BTreeMap::default();
         for (i, c) in comps.iter().enumerate() {
             let e = per.entry(soa.component_brick_indices[i]).or_default();
             e.1.push((types[i] as u16, names[types[i] as usize].clone()));
@@ -201,7 +201,7 @@ fn a_map_of_arrays_holds_each_array_under_its_key() {
     );
 }
 
-/// A ref initializer bakes, so it no longer warns that it is dropped.
+/// A ref initializer bakes into the save, so it does not warn that it is dropped.
 #[test]
 fn a_baked_ref_initializer_does_not_warn() {
     let codes = common::compile_diag_codes(SRC, "refs.ws");
@@ -267,7 +267,7 @@ fn a_ref_element_of_the_wrong_type_is_an_error() {
     assert!(common::diag_codes(src).contains(&"WS003".to_string()));
 }
 
-/// Literals still bake as before into an array of refs' sibling types.
+/// A constant array of literals bakes its values into the save.
 #[test]
 fn a_constant_array_still_bakes_literals() {
     let bricks = labelled(&common::brz("var xs: int[] = [1, 2]\n", "lits.ws"));

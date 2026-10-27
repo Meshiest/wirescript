@@ -1,10 +1,7 @@
 [package]
 name = "wirescript"
-version = "2.3.0"
-edition = "2024"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
+version = "2.3.1"
+edition.workspace = true
 
 [[bin]]
 name = "wirescript-check"
@@ -22,20 +19,23 @@ dhat-heap = ["dep:dhat"]
 [dependencies]
 wirescript-ir.workspace = true
 brdb = { workspace = true, features = ["brz"] }
-rustc-hash = "2"
+rustc-hash.workspace = true
 thiserror.workspace = true
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-petgraph = "0.7"
+serde.workspace = true
+serde_json.workspace = true
+petgraph.workspace = true
 bitflags = "2"
-lasso = { version = "0.7", features = ["multi-threaded"] }
+lasso.workspace = true
 # The formatter reads `.editorconfig` (indent, line length, line endings).
 ec4rs = "1.2"
 dhat = { version = "0.3", optional = true }
 
 # Native-only: global allocator for the check bin + examples (never wasm32).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-mimalloc = "0.1"
+mimalloc.workspace = true
 
 [dev-dependencies]
 wirescript-ir = { workspace = true, features = ["test-internals"] }
+
+[lints]
+workspace = true

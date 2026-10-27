@@ -1,11 +1,20 @@
 //! Vertical stacking: lines into bands, bands into pages, and the edge-pin
 //! stacks that flank each page.
 
-use super::*;
+use crate::collections::HashMap;
+use crate::emit::Placement;
+use crate::ir::{Module, NodeId, NodeKind};
+use crate::layout::{NodeRotation, Z_PLANE};
+
+use super::adjacency::Adjacency;
+use super::gutter::PageBus;
+use super::lines::LinePlan;
+use super::nodes::{cell_half_size, edge_stack_key};
+use super::{BAND_GUTTER, CodeBudgets};
 
 /// A vertical stack of lines capped at `band_height`; per-node offsets
 /// relative to the band's top-left.
-pub struct Band {
+pub(super) struct Band {
     height: i32,
     width: i32,
     nodes: Vec<(NodeId, i32, i32)>,
@@ -14,7 +23,7 @@ pub struct Band {
 
 impl Band {
     fn new() -> Self {
-        Band {
+        Self {
             height: 0,
             width: 0,
             nodes: Vec::new(),
@@ -27,10 +36,9 @@ impl Band {
     }
 }
 
-/// Stack lines into bands greedily: a line whose bottom would exceed the
-/// band budget closes the band (bands never split a line). Blank-run
-/// gaps only count inside a band — a line opening a new band starts at
-/// its top.
+/// Stack lines into bands greedily: a line whose bottom would exceed the band budget closes
+/// the band (bands never split a line). Blank-run gaps only count inside a band: a line
+/// opening a new band starts at its top.
 pub(super) fn assemble_bands(lines: Vec<LinePlan>, budgets: &CodeBudgets) -> Vec<Band> {
     let mut bands: Vec<Band> = Vec::new();
     let mut band = Band::new();
@@ -58,7 +66,7 @@ pub(super) fn assemble_bands(lines: Vec<LinePlan>, budgets: &CodeBudgets) -> Vec
 
 /// One page's worth of bands placed left->right with `BAND_GUTTER` gaps;
 /// per-node offsets relative to the page's top-left.
-pub struct PagePlan {
+pub(super) struct PagePlan {
     width: i32,
     pub(super) nodes: Vec<(NodeId, i32, i32)>,
     pub(super) anns: Vec<(usize, i32, i32)>,
@@ -66,7 +74,7 @@ pub struct PagePlan {
 
 impl PagePlan {
     fn new() -> Self {
-        PagePlan {
+        Self {
             width: 0,
             nodes: Vec::new(),
             anns: Vec::new(),
@@ -80,7 +88,7 @@ impl PagePlan {
 
 /// Pack bands into pages greedily: a band whose right edge would exceed
 /// the plane budget closes the page.
-pub fn assemble_pages(bands: Vec<Band>, budgets: &CodeBudgets) -> Vec<PagePlan> {
+pub(super) fn assemble_pages(bands: Vec<Band>, budgets: &CodeBudgets) -> Vec<PagePlan> {
     let mut pages: Vec<PagePlan> = Vec::new();
     let mut page = PagePlan::new();
     for band in bands {

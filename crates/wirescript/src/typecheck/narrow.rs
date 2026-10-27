@@ -101,7 +101,7 @@ pub(crate) fn describe_test(test: &Expr) -> Option<String> {
 
 /// Narrow for the arm `member` of `match test { ... }`, where `test` is a
 /// kind test. Gives whether it did, for [`pop`].
-pub(crate) fn push_arm(ctx: &mut TypeCheckCtx, test: &Expr, member: &str) -> bool {
+pub(crate) fn push_arm(ctx: &mut TypeCheckCtx<'_>, test: &Expr, member: &str) -> bool {
     let (Some(subject), Some(written)) = (kind_test_subject(test), describe_test(test)) else {
         return false;
     };
@@ -115,7 +115,7 @@ pub(crate) fn push_arm(ctx: &mut TypeCheckCtx, test: &Expr, member: &str) -> boo
 
 /// Narrow `subject` to the type `member` names, for the arm or block about
 /// to be checked. Gives whether it did, so the caller pops only its own.
-fn push(ctx: &mut TypeCheckCtx, subject: &Expr, member: &str, by: String) -> bool {
+fn push(ctx: &mut TypeCheckCtx<'_>, subject: &Expr, member: &str, by: String) -> bool {
     let (Some((root, fields)), Some(ty)) = (place(subject), member_type(member)) else {
         return false;
     };
@@ -132,14 +132,14 @@ fn push(ctx: &mut TypeCheckCtx, subject: &Expr, member: &str, by: String) -> boo
     true
 }
 
-pub(crate) fn pop(ctx: &mut TypeCheckCtx, pushed: bool) {
+pub(crate) fn pop(ctx: &mut TypeCheckCtx<'_>, pushed: bool) {
     if pushed {
         ctx.narrowings.pop();
     }
 }
 
 /// What a narrowing gives `e`, a read of a narrowed place, if any.
-pub(crate) fn narrowed(ctx: &TypeCheckCtx, e: &Expr) -> Option<NarrowedRead> {
+pub(crate) fn narrowed(ctx: &TypeCheckCtx<'_>, e: &Expr) -> Option<NarrowedRead> {
     let (root, fields) = place(e)?;
     let n = ctx.narrowings.iter().rev().find(|n| {
         n.root == root
@@ -157,7 +157,7 @@ pub(crate) fn narrowed(ctx: &TypeCheckCtx, e: &Expr) -> Option<NarrowedRead> {
 
 /// Narrow for the block an `if` runs when `cond` holds, when `cond` is
 /// `x.getType() is Type.X`. Gives whether it did, for [`pop`].
-pub(crate) fn push_if(ctx: &mut TypeCheckCtx, cond: &Expr) -> bool {
+pub(crate) fn push_if(ctx: &mut TypeCheckCtx<'_>, cond: &Expr) -> bool {
     let Expr::Is { value, path, .. } = cond else {
         return false;
     };

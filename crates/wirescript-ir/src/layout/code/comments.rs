@@ -1,17 +1,26 @@
 //! Own-line source comments: which plane renders each one, and where.
+#![cfg_attr(
+    not(feature = "test-internals"),
+    expect(unreachable_pub, reason = "public only for the test-internals export")
+)]
 
-use super::*;
+use std::sync::Arc;
 
-/// The source text's own indentation for a 1-based `line`, when a source
-/// map is attached and covers that line. This is the statement's indent;
-/// the first node on a line sits wherever its subexpression starts (the
-/// RHS of a `let`, say), which is why the fallback over-indents.
+use crate::collections::HashMap;
+use crate::ir::{Module, NodeId, SourceComment};
+use crate::layout::LayoutOptions;
+
+use super::nodes::{has_range, is_edge_pin, is_spawnable};
+
+/// The source text's own indentation for a 1-based `line`, when a source map is attached
+/// and covers that line. This is the statement's indent; the first node on a line sits
+/// wherever its subexpression starts (the RHS of a `let`, say), which is why the fallback
+/// over-indents.
 ///
-/// The map only describes the entry file. A plane anchored on some other
-/// file — an imported chip's body, or a root whose inlined `mod` bodies
-/// outnumber its own statements — numbers its lines against that file, so
-/// the map's rows would be someone else's; `None` sends those planes to
-/// the node-column fallback.
+/// The map only describes the entry file. A plane anchored on some other file (an imported
+/// chip's body, or a root whose inlined `mod` bodies outnumber its own statements) numbers
+/// its lines against that file, so the map's rows would be someone else's; `None` sends
+/// those planes to the node-column fallback.
 pub(super) fn source_indent(opts: &LayoutOptions, anchor: &Arc<str>, line: i32) -> Option<u32> {
     let map = opts.source_map.as_ref()?;
     if map.file != *anchor {
@@ -21,13 +30,12 @@ pub(super) fn source_indent(opts: &LayoutOptions, anchor: &Arc<str>, line: i32) 
     map.line_indent.get(idx).copied()
 }
 
-/// The source-line span a plane covers in `anchor`: the first and last
-/// line of the nodes it places literally, plus the spans of every chip
-/// nested inside it — a chip's own rows stop where its children's begin,
-/// so without the descendants the parent's span would have holes its
-/// grandchildren fill. `None` when the plane has no such rows at all (a
-/// ports-only chip, or one lowered from another file).
-pub fn line_span(module: &Module, anchor: &Arc<str>) -> Option<(i32, i32)> {
+/// The source-line span a plane covers in `anchor`: the first and last line of the nodes it
+/// places literally, plus the spans of every chip nested inside it (a chip's own rows stop
+/// where its children's begin, so without the descendants the parent's span would have
+/// holes). `None` when the plane has no such rows at all (a ports-only chip, or one lowered
+/// from another file).
+pub(super) fn line_span(module: &Module, anchor: &Arc<str>) -> Option<(i32, i32)> {
     let mut lo = i32::MAX;
     let mut hi = i32::MIN;
     for n in module.nodes.values() {
@@ -49,27 +57,24 @@ pub fn line_span(module: &Module, anchor: &Arc<str>) -> Option<(i32, i32)> {
 
 /// Decide, once for the whole tree, which plane renders each own-line comment.
 ///
-/// It cannot be decided locally. [`line_span`] is a min/max ENVELOPE over a
-/// module's rows, and those rows are often sparse — a `mod` inlined at two
-/// distant call sites, an anon chip partitioned out of a long handler — so a
-/// module's window can cover most of the file while it occupies a handful of
-/// lines in it. Sibling windows then overlap almost entirely, and since a
-/// module's claim excludes only its own CHILDREN, every sibling renders every
-/// comment in the overlap. On a real program that turned 951 source comments
-/// into 2958 comment bricks.
+/// It cannot be decided locally. [`line_span`] is a min/max ENVELOPE over a module's rows,
+/// and those rows are often sparse (a `mod` inlined at two distant call sites, an anon chip
+/// partitioned out of a long handler), so a module's window can cover most of the file
+/// while it occupies a handful of lines in it. Sibling windows then overlap almost
+/// entirely, and since a module's claim excludes only its own CHILDREN, every sibling would
+/// render every comment in the overlap.
 ///
-/// The rule keeps the old eligibility test and adds a tie-break, so nothing
-/// that already landed on the right plane moves:
+/// The rule:
 ///
-/// * ELIGIBLE: the planes whose span brackets the line, exactly as before. A
-///   plane can only claim a comment inside its own region, so a nested plane
-///   can never reach back past its parent for a file's leading note.
-/// * CHOSEN: among those, the plane whose next ROW comes soonest after the
-///   comment — an own-line comment documents the code that follows it. Ties go
-///   to the deeper plane (the more specific one), then to the lower chip id so
-///   the answer never depends on map iteration order.
-/// * FALLBACK: a comment no plane brackets belongs to the outermost one, which
-///   is what keeps a file's leading and trailing notes.
+/// * ELIGIBLE: the planes whose span brackets the line. A plane can only claim a comment
+///   inside its own region, so a nested plane can never reach back past its parent for a
+///   file's leading note.
+/// * CHOSEN: among those, the plane whose next ROW comes soonest after the comment, since an
+///   own-line comment documents the code that follows it. Ties go to the deeper plane (the
+///   more specific one), then to the lower chip id so the answer never depends on map
+///   iteration order.
+/// * FALLBACK: a comment no plane brackets belongs to the outermost one, which keeps a
+///   file's leading and trailing notes.
 pub fn assign_comment_owners(
     root: &Module,
     opts: &LayoutOptions,
@@ -83,8 +88,8 @@ pub fn assign_comment_owners(
         return out;
     }
 
-    // Every module in the tree with the anchor-file lines it actually
-    // occupies — the rows themselves, not their envelope.
+    // Every module in the tree with the anchor-file lines it actually occupies (the rows
+    // themselves, not their envelope).
     fn walk(
         m: &Module,
         key: Option<NodeId>,
@@ -155,12 +160,11 @@ pub fn assign_comment_owners(
 
 /// The own-line `//` comments this module renders, keyed by source line.
 ///
-/// A comment belongs to the innermost plane whose rows bracket its line, so
-/// lines inside a child chip's body are left to that chip. The outermost
-/// module additionally claims comments outside every row's span — a file's
-/// leading and trailing notes would otherwise be dropped. Trailing comments
-/// (code then `//` on the same line) are never claimed: they would need a
-/// row the code already occupies.
+/// A comment belongs to the innermost plane whose rows bracket its line, so lines inside a
+/// child chip's body are left to that chip. The outermost module additionally claims
+/// comments outside every row's span, since a file's leading and trailing notes would
+/// otherwise be dropped. Trailing comments (code then `//` on the same line) are never
+/// claimed: they would need a row the code already occupies.
 ///
 /// Planes anchored on a file other than the map's claim nothing: their rows
 /// are lines of a file the map never saw, and bracketing a comment against

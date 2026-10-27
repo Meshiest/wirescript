@@ -5,35 +5,25 @@
 //! MicrochipInput/Output rerouter pins, one per wall crossed, so external
 //! references are visible (and labeled) at each chip boundary.
 //!
-//! Exclusions — wires the pass must NOT touch:
-//! - `gc::LITERAL` sources: literals are delivered by inlining into the
-//!   target's data, not by routed wires; a rerouter cannot hold inlined data.
+//! Wires the pass leaves alone:
+//! - `gc::LITERAL` sources: literals are inlined into the target's data, and a
+//!   rerouter cannot hold inlined data.
 //! - `WirePort::Layout` synthetic edges.
 //!
-//! `VarRef`/`ArrayVarRef` crossings ARE rewired — emit traces variable
-//! bindings through rerouter pins, so a ref reaches a chip body the same way
-//! a value does. What crosses is the wire, never the port name: a ref LEAVES
-//! a pin on `RER_Output` and ENTERS one on `RER_Input`, because those are the
-//! only two ports a rerouter has (`normalize_pin_ports` below). Rewiring
-//! changes which external node ids each module's wires reference, so
-//! scope_captures is recomputed bottom-up at the end.
+//! `VarRef`/`ArrayVarRef` crossings are rewired too: a ref leaves a pin on
+//! `RER_Output` and enters one on `RER_Input`, the only two rerouter ports
+//! (see `normalize_pin_ports`). `scope_captures` is recomputed bottom-up at the end.
 //!
-//! A crossing whose deep endpoint is ALREADY a MicrochipInput/Output pin at
-//! its own wall (a declared chip param/output from ordinary lowering, or a
-//! pin this pass itself added on an earlier call) is reused rather than
-//! wrapped in a redundant second pin — this is what makes the pass
-//! idempotent and keeps it from double-pinning normal declared chip I/O.
-//! When the source and target modules are genuine siblings (neither owns
-//! the other, i.e. neither is the crossing's LCA), the middle segment is a
-//! direct MicrochipOutput -> MicrochipInput wire held in the LCA module —
-//! the exact shape ordinary lowering already gives a declared pin->pin
-//! chip-call wire, so declared chip I/O keeps its shape class and the pass
-//! stays idempotent over it.
+//! A crossing whose deep endpoint is already a pin at its own wall (a declared
+//! chip param/output, or a pin from an earlier run) reuses that pin, which keeps
+//! the pass idempotent. Between sibling modules the middle segment is a direct
+//! `MicrochipOutput` -> `MicrochipInput` wire held in the LCA module, the shape
+//! lowering gives a declared chip-call wire.
 
 use std::sync::Arc;
 
 use crate::collections::{HashMap, HashSet};
-use crate::intern::sym;
+use crate::intern::{Sym, sym};
 use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire};
@@ -41,7 +31,7 @@ use crate::ir::{GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, 
 /// Chip-node path from the root module; the root itself is `[]`.
 type ModPath = Vec<NodeId>;
 
-pub fn synthesize_boundary_pins(root: &mut Module) {
+pub(crate) fn synthesize_boundary_pins(root: &mut Module) {
     // Before anything is rewired: a crossing that already lands on a pin is
     // reused as-is by `rewire`, so a wrong port on one would be carried into
     // the new wiring instead of being corrected.
@@ -67,7 +57,7 @@ pub fn synthesize_boundary_pins(root: &mut Module) {
         rewire(root, wire, &mut owner, &mut pins);
     }
 
-    assign_pin_labels(root);
+    root.walk_mut(&mut |_, m| assign_pin_labels(m));
     refresh_scope_captures(root);
 }
 
@@ -75,34 +65,19 @@ pub fn synthesize_boundary_pins(root: &mut Module) {
 /// rerouter port: a value LEAVES a pin on `RER_Output` and ENTERS one on
 /// `RER_Input`.
 ///
-/// A `MicrochipInput`/`MicrochipOutput` component has exactly those two ports
-/// (`data/logic_gate_inventory.simple.json`), so a wire naming any other port
-/// on one names a port the game does not have. Lowering produces exactly that
-/// whenever a pin stands in for a storage gate: a chip's array/Map/ref
-/// parameter is bound to its `MicrochipInput` pin, and every read of that
-/// binding asks for the storage gate's ref port (`ArrayVarRef`, `MapVarRef`,
-/// `VarRef`). Stating the rule once here rather than at each of the ~85 sites
-/// that spell a ref port also covers whatever produces such a wire next; it is
-/// the same remap `flatten::merge_child` and `emit::build_port_index` already
-/// apply to a wire that addresses a pin by its chip-side label.
-///
-/// `WirePort::Layout` edges are synthetic and never reach a brick port, so
-/// they keep their port. Idempotent: an endpoint already on the right
-/// rerouter port is rewritten to itself.
+/// A pin component has only those two ports, so any other port name on one
+/// does not exist in game. Lowering produces such wires when a pin stands in for
+/// a storage gate (a chip's array/Map/ref param read through `ArrayVarRef`,
+/// `MapVarRef` or `VarRef`). `flatten::merge_child` and emit's `build_port_index`
+/// apply the same remap. `WirePort::Layout` edges keep their port. Idempotent.
 fn normalize_pin_ports(root: &mut Module) {
-    // Tree-wide, because a parent's wire legitimately names a pin owned by a
-    // child chip (that is the shape a declared chip param has all along).
-    fn collect_pins(m: &Module, out: &mut HashSet<NodeId>) {
-        for (id, n) in &m.nodes {
-            if matches!(n.kind, NodeKind::Input | NodeKind::Output) {
-                out.insert(*id);
-            }
-        }
-        for c in m.chips.values() {
-            collect_pins(c, out);
-        }
+    // Tree-wide, because a parent's wire can name a pin owned by a child chip
+    // (the shape of a declared chip param).
+    let pins = root.node_ids_where(|n| matches!(n.kind, NodeKind::Input | NodeKind::Output));
+    if pins.is_empty() {
+        return;
     }
-    fn rewrite(m: &mut Module, pins: &HashSet<NodeId>) {
+    root.walk_mut(&mut |_, m| {
         for w in &mut m.wires {
             if w.source.port != WirePort::Layout && pins.contains(&w.source.node_id) {
                 w.source.port = WirePort::RerOutput;
@@ -111,16 +86,7 @@ fn normalize_pin_ports(root: &mut Module) {
                 w.target.port = WirePort::RerInput;
             }
         }
-        for c in m.chips.values_mut() {
-            rewrite(c, pins);
-        }
-    }
-    let mut pins: HashSet<NodeId> = HashSet::default();
-    collect_pins(root, &mut pins);
-    if pins.is_empty() {
-        return;
-    }
-    rewrite(root, &pins);
+    });
 }
 
 /// Rewiring changes which external node ids each module's wires reference;
@@ -140,19 +106,11 @@ fn refresh_scope_captures(m: &mut Module) {
 /// literal-source check needs a read-only view while `retain` holds the
 /// mutable borrow.
 fn extract_crossings(root: &mut Module, owner: &HashMap<NodeId, ModPath>, out: &mut Vec<Wire>) {
-    let mut literal_ids: HashSet<NodeId> = Default::default();
-    collect_literals(root, &mut literal_ids);
+    let literal_ids = root.node_ids_where(|n| n.gate_class == gc::LITERAL);
     // A call's definition wire runs straight from the `fn` shell, through any
     // wall (see `function::is_definition_wire`).
-    let mut shells: HashSet<NodeId> = Default::default();
-    collect_fn_shells(root, &mut shells);
-    fn walk(
-        m: &mut Module,
-        owner: &HashMap<NodeId, ModPath>,
-        literal_ids: &HashSet<NodeId>,
-        shells: &HashSet<NodeId>,
-        out: &mut Vec<Wire>,
-    ) {
+    let shells = root.node_ids_where(|n| n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION);
+    root.walk_mut(&mut |_, m| {
         m.wires.retain(|w| {
             if w.source.port == WirePort::Layout || w.target.port == WirePort::Layout {
                 return true;
@@ -173,41 +131,7 @@ fn extract_crossings(root: &mut Module, owner: &HashMap<NodeId, ModPath>, out: &
             out.push(*w);
             false
         });
-        let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
-        kids.sort();
-        for k in kids {
-            walk(
-                m.chips.get_mut(&k).unwrap(),
-                owner,
-                literal_ids,
-                shells,
-                out,
-            );
-        }
-    }
-    walk(root, owner, &literal_ids, &shells, out);
-}
-
-fn collect_fn_shells(m: &Module, out: &mut HashSet<NodeId>) {
-    for (id, n) in &m.nodes {
-        if n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION {
-            out.insert(*id);
-        }
-    }
-    for c in m.chips.values() {
-        collect_fn_shells(c, out);
-    }
-}
-
-fn collect_literals(m: &Module, out: &mut HashSet<NodeId>) {
-    for (id, n) in &m.nodes {
-        if n.gate_class == gc::LITERAL {
-            out.insert(*id);
-        }
-    }
-    for c in m.chips.values() {
-        collect_literals(c, out);
-    }
+    });
 }
 
 fn rewire(
@@ -225,10 +149,9 @@ fn rewire(
 
     let mut feeder = wire.source;
     let mut feeder_path = sp.clone();
-    // Upward legs: each module from the source's, up to (not incl.) the LCA.
-    // The deepest wall (mpath == sp) is skipped — reusing `wire.source`
-    // itself — when it's already a MicrochipOutput there (a declared chip
-    // output, or a pin an earlier run of this pass already added).
+    // Upward legs: each module from the source's up to, not including, the LCA.
+    // The deepest wall (mpath == sp) reuses `wire.source` when it is already
+    // a MicrochipOutput there.
     for k in (lca + 1..=sp.len()).rev() {
         let mpath = sp[..k].to_vec();
         if mpath == sp
@@ -251,11 +174,8 @@ fn rewire(
             &ty,
             &label,
         );
-        // `pin_for` dedupes on (mpath, feeder): a pin reused by another
-        // crossing already has its feeding wire from that earlier call, so
-        // only a freshly created pin needs one now — otherwise two
-        // crossings sharing a feeder would both target the same
-        // (pin, RerInput) tuple.
+        // Only a new pin needs a feeding wire; a reused one already has it, and
+        // a second would fan two wires into the same (pin, RerInput).
         if is_new {
             push_wire_at_lca(
                 root,
@@ -275,9 +195,9 @@ fn rewire(
         feeder_path = mpath;
     }
 
-    // Downward legs: each module from just below the LCA down to the
-    // target's. The deepest wall (mpath == tp) is skipped — reusing
-    // `wire.target` itself — when it's already a MicrochipInput there.
+    // Downward legs: each module from just below the LCA down to the target's.
+    // The deepest wall (mpath == tp) reuses `wire.target` when it is already a
+    // MicrochipInput there.
     for k in lca + 1..=tp.len() {
         let mpath = tp[..k].to_vec();
         if mpath == tp
@@ -320,7 +240,7 @@ fn rewire(
     push_wire_at_lca(root, &feeder_path, &tp, feeder, wire.target);
 }
 
-/// New wires live in the LCA module of their endpoints — the parent for a
+/// A new wire lives in the LCA module of its endpoints: the parent for a
 /// parent<->child-pin hop, the module itself for a local hop.
 fn push_wire_at_lca(
     root: &mut Module,
@@ -335,9 +255,8 @@ fn push_wire_at_lca(
         .push(Wire { source, target });
 }
 
-/// Returns the pin's id and whether it was just created (`false` means an
-/// earlier crossing in this same pass run already created and fed it, via
-/// the `(mpath, feeder)` dedup key — the caller must not feed it again).
+/// The pin for `(mpath, feeder)` and whether it was just created. `false` means
+/// an earlier crossing created and fed it, so the caller must not feed it again.
 fn pin_for(
     root: &mut Module,
     owner: &mut HashMap<NodeId, ModPath>,
@@ -385,20 +304,15 @@ fn source_port_type(root: &Module, sp: &[NodeId], src: PortRef) -> Option<Type> 
     root.at(sp).nodes.get(&src.node_id)?.output_type(src.port)
 }
 
-/// The referenced identifier, when the source node has one — `NAME_LABEL`
-/// (a var/array/param's own declared name) first, then `PORT_LABEL` (an
-/// upstream pin's already-resolved label), then `BINDING_NAME` (a `let`
-/// binding's name, tagged on its value node). Returns an empty string when
-/// none is present; callers must not fall back to `Node.note` or the
-/// gate class, since both are internal implementation strings, not
-/// something a player would recognize in-game. `assign_pin_labels` turns
-/// any empty result into a synthetic name after all pins for this module
-/// have been created.
+/// The source node's identifier: `NAME_LABEL` (a declared name), then
+/// `PORT_LABEL` (an upstream pin's label), then `BINDING_NAME` (a `let`), else
+/// empty, which `assign_pin_labels` replaces. `Node.note` and the gate class are
+/// internal strings and must not be used as a player-visible label.
 fn derive_label(root: &Module, sp: &[NodeId], src: NodeId) -> String {
     let Some(n) = root.at(sp).nodes.get(&src) else {
         return String::new();
     };
-    let get_str = |k: crate::intern::Sym| match n.properties.get(&k) {
+    let get_str = |k: Sym| match n.properties.get(&k) {
         Some(Literal::String(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
@@ -408,18 +322,10 @@ fn derive_label(root: &Module, sp: &[NodeId], src: NodeId) -> String {
         .unwrap_or_default()
 }
 
-/// Finalizes every synthesized pin's `PORT_LABEL` for one module: pins
-/// `derive_label` couldn't name (empty label) get a short synthetic name
-/// (`ext1`, `ext2`, …), and any remaining collision — two pins in the same
-/// module landing on the same label, synthetic or identifier-derived — is
-/// resolved by appending the lowest free numeric suffix. Assignment order is
-/// each pin's `NodeId`, which reflects creation order (`pin_for` calls
-/// `NodeId::fresh()` in the crossing-processing order `extract_crossings`
-/// fixed), so runs over the same input are stable.
-///
-/// The taken-name set starts from the module's DECLARED ports, not just the
-/// pins: a chip with a `score` parameter that also reads an outer `score`
-/// would otherwise put two ports named `score` on the same edge.
+/// Finalize each synthesized pin's `PORT_LABEL` in one module: an unnamed pin gets
+/// `ext1`, `ext2` and so on, and a collision gets the lowest free numeric suffix.
+/// Pins go in `NodeId` (creation) order so output is stable. Declared ports count
+/// as taken, so a `score` param and a captured outer `score` get distinct labels.
 fn assign_pin_labels(m: &mut Module) {
     let mut pin_ids: Vec<NodeId> = m
         .nodes
@@ -472,11 +378,5 @@ fn assign_pin_labels(m: &mut Module) {
         used.insert(label.clone());
         let node = m.nodes.get_mut(&id).unwrap();
         Arc::make_mut(&mut node.properties).insert(*sym::PORT_LABEL, Literal::String(label));
-    }
-
-    let mut kids: Vec<NodeId> = m.chips.keys().copied().collect();
-    kids.sort();
-    for k in kids {
-        assign_pin_labels(m.chips.get_mut(&k).unwrap());
     }
 }

@@ -6,14 +6,14 @@ use super::{Module, NodeId};
 /// Modules by index, each with its parent and depth. Index 0 is the root, and
 /// a module is pushed after its parent.
 #[derive(Default)]
-pub struct ModuleTree {
+pub(crate) struct ModuleTree {
     parent: Vec<Option<usize>>,
     depth: Vec<usize>,
 }
 
 impl ModuleTree {
     /// A tree holding only the root, index 0.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             parent: vec![None],
             depth: vec![0],
@@ -21,23 +21,23 @@ impl ModuleTree {
     }
 
     /// Add a module inside `parent`; returns its index.
-    pub fn push(&mut self, parent: usize) -> usize {
+    pub(crate) fn push(&mut self, parent: usize) -> usize {
         self.parent.push(Some(parent));
         self.depth.push(self.depth[parent] + 1);
         self.parent.len() - 1
     }
 
-    pub fn parent(&self, m: usize) -> Option<usize> {
+    pub(crate) fn parent(&self, m: usize) -> Option<usize> {
         self.parent[m]
     }
 
-    pub fn depth(&self, m: usize) -> usize {
+    pub(crate) fn depth(&self, m: usize) -> usize {
         self.depth[m]
     }
 
     /// The innermost module containing both `a` and `b`: where a wire between
     /// them is stored by default.
-    pub fn common_module(&self, mut a: usize, mut b: usize) -> usize {
+    pub(crate) fn common_module(&self, mut a: usize, mut b: usize) -> usize {
         while self.depth[a] > self.depth[b] {
             a = self.parent[a].expect("only the root has no parent");
         }
@@ -56,7 +56,7 @@ impl ModuleTree {
 /// return the root. `modules` is indexed like a [`ModuleTree`]; `bodies` lists
 /// `(chip node, body index, parent index)`. A body comes after its parent, so
 /// moving the highest index first nests every body before its parent moves.
-pub fn nest_bodies(modules: Vec<Module>, mut bodies: Vec<(NodeId, usize, usize)>) -> Module {
+pub(crate) fn nest_bodies(modules: Vec<Module>, mut bodies: Vec<(NodeId, usize, usize)>) -> Module {
     let mut modules: Vec<Option<Module>> = modules.into_iter().map(Some).collect();
     bodies.sort_by_key(|&(_, body, _)| std::cmp::Reverse(body));
     for (chip, body, parent) in bodies {

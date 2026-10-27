@@ -48,7 +48,7 @@ fn string_branches_inline_into_the_select() {
                 _ => None,
             })
             .collect();
-        strs.sort();
+        strs.sort_unstable();
         let concat = count_class(&r.module, gc::STRING_CONCATENATE);
         let wired = r
             .module
@@ -80,7 +80,7 @@ fn string_concat_op_works() {
 #[test]
 fn constant_string_inlines_into_consumers() {
     // A constant string used in a wire-value context (array push, var init,
-    // comparison) folds into the consumer's data as a wire-variant — no
+    // comparison) folds into the consumer's data as a wire-variant, with no
     // `String_Concatenate` wrapper. Real concats (`a .. b`, wired inputs) are
     // unaffected (covered by `string_concat_op_works`).
     for src in [
@@ -104,9 +104,8 @@ fn constant_string_inlines_into_consumers() {
 
 #[test]
 fn string_equality_lowers_to_native_compare() {
-    // String == / != now lower directly to the native Compare gates (which
-    // accept the `Str` `WireValue` alternative), not the old
-    // contains(a,b) && length(a)==length(b) workaround.
+    // String == / != lower directly to the native Compare gates, which accept the
+    // `Str` `WireValue` alternative.
     let r = compile_ok("let a = \"x\"\nlet b = \"y\"\nout eq = a == b\nout ne = a != b");
     assert!(
         has_gate(&r, gc::COMPARE_EQUAL),
@@ -116,8 +115,8 @@ fn string_equality_lowers_to_native_compare() {
         has_gate(&r, gc::COMPARE_NOT_EQUAL),
         "string != should lower to CompareNotEqual"
     );
-    // The old workaround is gone: no String_Length / String_Contains gates,
-    // and no LogicalAND/NAND stitched in for the comparison.
+    // No String_Length / String_Contains gates, and no LogicalAND/NAND stitched in
+    // for the comparison.
     assert_eq!(
         count_class(&r.module, gc::STRING_LENGTH),
         0,
@@ -131,10 +130,10 @@ fn string_equality_lowers_to_native_compare() {
 
 #[test]
 fn long_interpolation_splits_across_format_text_gates() {
-    // A template with more than 7 `${...}` values must not silently drop the
-    // extras — it splits into several FormatText gates (7 substitution inputs
-    // each) whose outputs are concatenated. `in` ports make each substitution a
-    // real wire (not an inlinable literal), so we can count them.
+    // A template with more than 7 `${...}` values keeps every value: it splits into
+    // several FormatText gates (7 substitution inputs each) whose outputs are
+    // concatenated. `in` ports make each substitution a real wire (not an inlinable
+    // literal), so they can be counted.
     let src = "in a: int\nin b: int\nin c: int\nin d: int\nin e: int\n\
                in f: int\nin g: int\nin h: int\nin i: int\n\
                out s = \"${a}${b}${c}${d}${e}${f}${g}${h}${i}\"";
@@ -155,9 +154,9 @@ fn long_interpolation_splits_across_format_text_gates() {
     );
 
     use crate::ir::port_registry::WirePort::*;
-    // Substitution wires: into a FormatText input slot from a NON-FormatText
-    // source (this excludes the concat wires between FormatText gates). All 9
-    // interpolated values must be wired — none dropped.
+    // Substitution wires: into a FormatText input slot from a NON-FormatText source
+    // (this excludes the concat wires between FormatText gates). All 9
+    // interpolated values are wired.
     let subst = r
         .module
         .wires
@@ -235,7 +234,7 @@ enum CoercedFrom {
 
 /// A string reaching a bool destination routes through exactly one inserted
 /// `CompareNotEqual(s, "")` (`s != ""`, not the game's port truthiness where
-/// "0"/"false" are falsy). Each row: what feeds the compare's InputA, and the
+/// "0"/"false" are falsy). Each row: what feeds the compare's `InputA`, and the
 /// gate (class, optional port label) and port its bOutput must feed.
 #[test]
 fn a_string_into_a_bool_destination_inserts_a_not_empty_compare() {
@@ -263,9 +262,9 @@ fn a_string_into_a_bool_destination_inserts_a_not_empty_compare() {
             (gc::BRANCH, None),
             Some(WirePort::BCond),
         ),
-        // ArraySetAtIndex's `Value` port is typed with the ELEMENT type (it was
-        // `Type::Any`, hiding the coercion). Array-set values always WIRE, so the
-        // literal form is a compare carrying the inlined "0": "0" != "" is true.
+        // ArraySetAtIndex's `Value` port is typed with the ELEMENT type, so the
+        // coercion applies. Array-set values always WIRE, so the literal form is a
+        // compare carrying the inlined "0": "0" != "" is true.
         (
             "a string literal into a bool array slot",
             "in t: exec\nvar a: bool[]\non t { a.push(false)\na[0] = \"0\" }",
@@ -280,8 +279,7 @@ fn a_string_into_a_bool_destination_inserts_a_not_empty_compare() {
             (gc::ARRAY_SET_AT_INDEX, None),
             Some(WirePort::Value),
         ),
-        // `lower_buffer_body` once wired its initializer with a direct
-        // `builder.connect`, bypassing the coercion choke point.
+        // `lower_buffer_body` wires its initializer through the coercion choke point.
         (
             "a string initializer on a bool buffer",
             "in s: string\nbuffer buf: bool = s",
@@ -378,14 +376,13 @@ fn a_string_into_a_bool_destination_inserts_a_not_empty_compare() {
     crate::test_support::report_failures(&failures, rows.len());
 }
 
-// ---- compile-time string -> bool on literal-BAKE paths ----
+// Compile-time string -> bool on literal-BAKE paths
 //
-// Bare String literals never reach the wire choke point — they bake straight
-// into component data (var/array InitialValue, call-arg data fields). Each
-// bake site applies the same `!= ""` law as the runtime CompareNotEqual gate
-// (see `bake_string_bool` in lower/expr.rs): a raw String left on a Bool
-// destination either miscompiles (native content-aware truthiness reads "0"
-// as false at load, diverging from the documented law) or crashes emit
+// Bare String literals bake straight into component data (var/array
+// InitialValue, call-arg data fields) without reaching the wire choke point.
+// Each bake site applies the runtime CompareNotEqual gate's `!= ""` law (see
+// `bake_string_bool` in lower/expr.rs). A raw String on a Bool destination
+// either reads "0" as false at load (native truthiness) or crashes emit
 // (UnimplementedCast("bool", "String") on a Bool data field).
 
 /// A string literal on a bool data field bakes `Bool(!s.is_empty())`, never
@@ -494,7 +491,7 @@ fn constant_string_index_folds_to_a_literal() {
         r.module
             .nodes
             .values()
-            .map(|n| n.properties.clone())
+            .map(|n| std::sync::Arc::clone(&n.properties))
             .collect::<Vec<_>>()
     );
 }
@@ -513,7 +510,7 @@ fn string_index_counts_code_points_and_declines_out_of_range() {
         r.module
             .nodes
             .values()
-            .map(|n| n.properties.clone())
+            .map(|n| std::sync::Arc::clone(&n.properties))
             .collect::<Vec<_>>()
     );
     // Past the end, the gate decides rather than the compiler guessing.

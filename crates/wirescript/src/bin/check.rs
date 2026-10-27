@@ -1,5 +1,5 @@
 use std::{env, fs, path::Path, process};
-use wirescript::{CompileInput, FoldMode, Severity, diagnostics_only};
+use wirescript::{CompileInput, Severity, diagnostics_only};
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -22,37 +22,26 @@ fn main() {
         let source = match fs::read_to_string(&abs) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("\x1b[31mERROR\x1b[0m cannot read '{}': {}", file_arg, e);
+                eprintln!("\x1b[31mERROR\x1b[0m cannot read '{file_arg}': {e}");
                 total_errors += 1;
                 continue;
             }
         };
 
-        // Run the full front-end through lowering (not just typecheck): the
-        // lowering stage is what emits the `WSP001` "_Unsupported placeholder"
-        // warnings for a construct that type-checks clean but has no real lowering
-        // (e.g. destructuring a payload the awaited signal doesn't carry). A
-        // typecheck-only check reports "no errors" for those and lets a silent
-        // miscompile through. `diagnostics_only` mirrors `compile` up to (not
-        // including) emit, on the big compile stack.
-        let all = diagnostics_only(
-            CompileInput {
-                source: &source,
-                file: &file_str,
-                module_name: None,
-                fold_mode: FoldMode::Auto,
-            },
-            &wirescript::FsLoader,
-        );
+        // Run the front end through lowering, not just typecheck: lowering reports
+        // the `WSP001` placeholder warnings for a construct that type-checks but has
+        // no lowering, which a typecheck-only run would pass as clean.
+        // `diagnostics_only` runs `compile` up to emit, on the big compile stack.
+        let all = diagnostics_only(CompileInput::new(&source, &file_str), &wirescript::FsLoader);
         // Diagnostics from an imported module are reported too, against the file
         // they came from. Dropping them printed "no errors" for programs the
         // compiler rejects outright, and every real project here is multi-file.
         if all.is_empty() {
-            eprintln!("\x1b[32m✓\x1b[0m {}: no errors", file_arg);
+            eprintln!("\x1b[32m✓\x1b[0m {file_arg}: no errors");
             continue;
         }
 
-        for d in all.iter() {
+        for d in &all {
             let (label, color) = match d.severity {
                 Severity::Error => {
                     total_errors += 1;
@@ -62,7 +51,7 @@ fn main() {
                     total_warnings += 1;
                     ("WARN", "\x1b[33m")
                 }
-                _ => ("INFO", "\x1b[36m"),
+                Severity::Info => ("INFO", "\x1b[36m"),
             };
             eprintln!(
                 "{color}{label}\x1b[0m [{}] {} ({})",
@@ -74,7 +63,7 @@ fn main() {
     }
 
     if total_errors > 0 || total_warnings > 0 {
-        eprintln!("\n{} error(s), {} warning(s)", total_errors, total_warnings);
+        eprintln!("\n{total_errors} error(s), {total_warnings} warning(s)");
     }
-    process::exit(if total_errors > 0 { 1 } else { 0 });
+    process::exit(i32::from(total_errors > 0));
 }

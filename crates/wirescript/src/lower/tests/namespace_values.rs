@@ -1,6 +1,6 @@
-//! `import * as ns` VALUE members (`ns.myValue`) — as opposed to `ns.f(...)`
-//! calls, which have always worked. These used to type as `any` and lower to an
-//! `_Unsupported` placeholder that silently read 0.
+//! `import * as ns` VALUE members (`ns.myValue`), as opposed to `ns.f(...)`
+//! calls: each types as the member's type and lowers to its real gate, not an
+//! `_Unsupported` placeholder that silently reads 0.
 
 use super::*;
 use crate::resolve::{MemLoader, resolve};
@@ -47,7 +47,7 @@ fn assert_clean(tc: &crate::typecheck::TypeCheckResult, lr: &LowerResult) {
         crate::test_support::error_codes(&lr.diagnostics),
     ];
     assert!(
-        errors.iter().all(|e| e.is_empty()),
+        errors.iter().all(std::vec::Vec::is_empty),
         "typecheck errors: {:?}\nlower errors: {:?}",
         tc.diagnostics,
         lr.diagnostics
@@ -160,7 +160,7 @@ fn a_namespaced_value_member_lowers_to_its_value() {
             crate::test_support::error_codes(&tc.diagnostics),
             crate::test_support::error_codes(&lr.diagnostics),
         ];
-        if !errors.iter().all(|e| e.is_empty()) {
+        if !errors.iter().all(std::vec::Vec::is_empty) {
             failures.push(format!("{label}: errors {errors:?}"));
             continue;
         }
@@ -177,10 +177,9 @@ fn a_namespaced_value_member_lowers_to_its_value() {
     crate::test_support::report_failures(&failures, rows.len());
 }
 
-/// An imported module's root-level `in` port, triggered as `on ns.port`. The
-/// namespace lowering never declared `in`/`out` at all, so the port did not
-/// exist and the trigger matched nothing — which silently dropped the ENTIRE
-/// handler body, with both typecheck and lowering reporting the file clean.
+/// An imported module's root-level `in` port, triggered as `on ns.port`: the
+/// namespace lowering declares its `in`/`out` ports, so the trigger matches and
+/// the handler body lowers. An unmatched trigger silently drops the whole body.
 #[test]
 fn namespaced_input_port_can_trigger_a_handler() {
     let (tc, lr) = compile_with_lib(
@@ -378,8 +377,7 @@ fn local_var_and_namespaced_var_same_name_stay_distinct() {
 }
 
 /// A namespaced import's top-level `on` handler runs as part of the importing
-/// program. Handlers used to fall into the namespace arm's `_ => {}` and be
-/// dropped, so importing a module as a namespace ran none of its handlers.
+/// program: importing a module as a namespace runs its handlers.
 #[test]
 fn namespaced_import_on_handler_runs() {
     let (tc, lr) = compile_with_lib(
@@ -418,8 +416,7 @@ fn namespaced_and_local_handlers_both_run() {
 }
 
 /// An anonymous chip (`chip on t { ... }`) in a namespaced module installs its
-/// behaviour just like a top-level handler. It used to fall into the namespace
-/// arm's `_ => {}` and vanish, taking its writes with it.
+/// behaviour just like a top-level handler, writes included.
 #[test]
 fn namespaced_import_anon_chip_runs() {
     let (tc, lr) = compile_with_lib(
@@ -437,10 +434,9 @@ fn namespaced_import_anon_chip_runs() {
 }
 
 /// Two modules with a same-named private `helper`, each called by a public mod:
-/// `A.f` must run A's `helper` and `B.g` must run B's. The bodies used to
-/// resolve `helper` through the shared bare scope (last namespace won), so both
-/// ran ONE module's helper. Now each mod body is lowered with its own module's
-/// members pushed into the frame.
+/// `A.f` runs A's `helper` and `B.g` runs B's. Each mod body is lowered with its
+/// own module's members pushed into the frame, not a shared bare scope where the
+/// last namespace wins.
 #[test]
 fn namespaced_sibling_mod_resolves_its_own_module() {
     let (tc, lr) = compile_with_libs(
@@ -475,8 +471,8 @@ fn namespaced_sibling_mod_resolves_its_own_module() {
 
 /// A namespaced mod that mutates its module's `var` writes ITS module's gate.
 /// Both modules declare `var g` + `mod bump` (the name collision), but only
-/// `A.g` is read out; `A.bump()`'s increment must target the very gate `A.g`
-/// reads. It used to write whichever namespace lowered last (B's).
+/// `A.g` is read out; `A.bump()`'s increment targets the very gate `A.g` reads,
+/// not whichever namespace lowered last.
 #[test]
 fn namespaced_mod_mutates_its_own_module_var() {
     let (tc, lr) = compile_with_libs(
@@ -524,10 +520,9 @@ fn namespaced_mod_mutates_its_own_module_var() {
     );
 }
 
-/// An operator inside a namespaced module's `on` handler must be typechecked
-/// (its `op_resolutions` recorded) so it lowers to a real gate. The handler
-/// itself lowers, but typecheck used to never descend into its body, so
-/// arithmetic like `n << 10` lowered to `_Unsupported`.
+/// An operator inside a namespaced module's `on` handler is typechecked (its
+/// `op_resolutions` recorded) so it lowers to a real gate: typecheck descends
+/// into the handler body, and `n << 10` is no `_Unsupported`.
 #[test]
 fn namespaced_handler_operator_lowers_to_a_gate() {
     let (tc, lr) = compile_with_lib(
@@ -548,14 +543,10 @@ fn namespaced_handler_operator_lowers_to_a_gate() {
     );
 }
 
-/// N1: a free name in a namespaced module's `on` handler must NOT resolve to
-/// the importer's same-named top-level state. `lib`'s `on go { q = q + 1 }`
-/// (with no `go`/`q` of its own) once SILENTLY wired to main's `go`/`q`; the
-/// namespace body is now checked under a sealed scope floor, so those names are
-/// undefined and reported (WS001 for the trigger, WS002 for the body). The
-/// diagnostic aborts compilation, so the leak can never ship — the fix is that
-/// it is no longer silent, not that lowering (which never runs to completion
-/// here) rewires it.
+/// A free name in a namespaced module's `on` handler does NOT resolve to the
+/// importer's same-named top-level state: `lib`'s `on go { q = q + 1 }` (with no
+/// `go`/`q` of its own) is checked under a sealed scope floor, so those names
+/// are undefined and reported (WS001 for the trigger, WS002 for the body).
 #[test]
 fn namespaced_handler_free_name_does_not_leak_to_importer_state() {
     let (tc, _lr) = compile_with_lib(
@@ -567,10 +558,9 @@ fn namespaced_handler_free_name_does_not_leak_to_importer_state() {
     crate::test_support::assert_code(&tc.diagnostics, "WS001");
 }
 
-/// N2: the SAME file's state imported both plain and via `import * as` must
-/// resolve to ONE gate (docs promise one shared gate), and its handler must
-/// install once. Previously `g` and `S.g` diverged into two gates each with
-/// its own increment handler — a double-count on every `bump`.
+/// The SAME file's state imported both plain and via `import * as` resolves to
+/// ONE gate (docs promise one shared gate), and its handler installs once: `g`
+/// and `S.g` do not diverge into two gates that each count every `bump`.
 #[test]
 fn same_file_state_via_plain_and_namespace_shares_one_gate() {
     let (tc, lr) = compile_with_lib(
@@ -619,10 +609,10 @@ fn same_file_var_via_named_and_aliased_shares_one_gate() {
     );
 }
 
-/// N11: a namespace a module privately imports (`a` does `import * as B`) must
-/// not leak to a plain importer of that module. `main` imports `a` but not `b`,
-/// so its own `B.bar()` is an unknown identifier — not a silent resolution of
-/// the alias that traveled in for `a`'s `useB`.
+/// A namespace a module privately imports (`a` does `import * as B`) does not
+/// leak to a plain importer of that module. `main` imports `a` but not `b`, so
+/// its own `B.bar()` is an unknown identifier, not a silent resolution of the
+/// alias that traveled in for `a`'s `useB`.
 #[test]
 fn private_namespace_does_not_leak_to_plain_importer() {
     let (tc, _lr) = compile_with_libs(
@@ -683,10 +673,10 @@ fn namespaced_defaulted_output_no_emit_has_single_driver() {
     );
 }
 
-/// 4b: a namespaced `out` reached by a default plus an `emit` must be
-/// var-backed, not fanned in. The top-level pass-1b backing-var prescan does
-/// not descend into `ns.decls`, so `out r = 0` + `emit r = 5` drove the output
-/// rerouter from two sources (the default and the emit) — a load-time fan-in.
+/// A namespaced `out` reached by a default plus an `emit` is var-backed, not
+/// fanned in: the backing-var prescan descends into `ns.decls`, so `out r = 0` +
+/// `emit r = 5` do not drive the output rerouter from two sources (a load-time
+/// fan-in).
 #[test]
 fn namespaced_output_default_plus_emit_has_single_driver() {
     let (tc, lr) = compile_with_lib(
@@ -799,10 +789,9 @@ fn transitive_namespace_resolves_in_a_namespaced_body() {
 }
 
 /// The alias COLLIDES: the importer and the module it imports both spell their
-/// `import * as` the same. An alias is FILE-LOCAL, so this is not a conflict --
-/// each file's `Other` means its own import. Both tables are keyed by name
-/// alone, so the traveling one used to be dropped and every reference through
-/// it read as an unknown identifier.
+/// `import * as` the same. An alias is FILE-LOCAL, so this is not a conflict:
+/// each file's `Other` means its own import, and a reference through the
+/// traveling one resolves.
 #[test]
 fn colliding_namespace_alias_resolves_per_file() {
     let (tc, lr) = compile_with_libs(
@@ -946,16 +935,11 @@ fn namespaced_record_type_decomposes_like_a_named_import() {
     );
 }
 
-/// Regression: a namespace's own `out` DECLARATION must be lowered in pure
-/// position, never inheriting a preceding namespace's leftover exec chain. A
-/// `TopDecl::Namespace` is neither `is_handler_like` nor `is_pure_top_decl`, so
-/// when namespace A (whose own handler writes a var) is lowered before
-/// namespace B (which declares `out n: int = 5` and separately writes `n` from
-/// its own handler, giving `n` a backing var), `mod.rs`'s pass-2 loop flushed
-/// A's handler-end exec into `current_exec` before calling into B's namespace
-/// arm, and nothing there cleared it before B's own outputs loop ran: B's
-/// declared default took a `Var_Set` fed by A's unrelated trigger instead of
-/// baking `InitialValue`, silently dropping the default until A's trigger fired.
+/// A namespace's own `out` DECLARATION is lowered in pure position, never
+/// inheriting a preceding namespace's leftover exec chain: with namespace A's
+/// handler-end exec in `current_exec`, namespace B's declared `out n: int = 5`
+/// (backed by a var B's handler writes) still bakes its `InitialValue` rather
+/// than taking a `Var_Set` fed by A's unrelated trigger.
 #[test]
 fn namespace_output_declaration_does_not_inherit_a_preceding_namespaces_exec() {
     let (tc, lr) = compile_with_libs(
@@ -1207,7 +1191,7 @@ fn namespaced_array_literal_assign_with_spread_appends_the_source() {
 }
 
 /// A non-literal whole-container assign to a namespace member has no gate to
-/// lower to, so it is the same WS027 error as the bare spelling, not a Var_Set
+/// lower to, so it is the same WS027 error as the bare spelling, not a `Var_Set`
 /// wired from a port the container gate does not have.
 #[test]
 fn namespaced_non_literal_container_assign_is_ws027() {

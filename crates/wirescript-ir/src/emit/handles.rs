@@ -10,9 +10,17 @@
 //! is its position's chunk; its index counts the bricks before it in the same
 //! chunk of the same grid. So the bake runs last, on the finished world.
 
-use super::*;
-
 use brdb::schema::{SavedBrickRef, SavedComponentRef, WireValue};
+use brdb::{AsBrdbValue, World};
+
+use crate::collections::HashMap;
+use crate::intern::sym;
+use crate::ir::{Literal, Module, Node, NodeId, Type, gate_class as gc};
+
+use super::components::one_field_component;
+use super::module::EmitContext;
+use super::options::EmitError;
+use super::variants::{DynArray, DynMap, map_from_type, wire_value_as};
 
 /// Where each brick of a world is, by its id: its save address (grid, chunk,
 /// index in chunk) and its place in the world's lists (`None` for the main
@@ -69,19 +77,24 @@ impl BrickIndex {
 /// The refs a program bakes, found in its module tree.
 #[derive(Default)]
 struct BakedRefs<'m> {
-    /// Each handle var as (handle, target).
-    handles: Vec<(NodeId, NodeId)>,
+    /// Each handle var as (handle, target), the target as the IR stores it.
+    handles: Vec<(NodeId, i64)>,
     /// Each `GetMicrochipBrick()` var.
     chips: Vec<NodeId>,
     /// Each `ArrayVar` / `MapVar` whose initializer is refs.
     containers: Vec<&'m Node>,
 }
 
+/// The node a baked ref's `i64` target names, or `None` when it is no node id.
+fn target_node(t: i64) -> Option<NodeId> {
+    u32::try_from(t).ok().map(NodeId)
+}
+
 fn baked_refs<'m>(m: &'m Module, out: &mut BakedRefs<'m>) {
     let chip_key = crate::intern::intern(crate::ir::MICROCHIP_BRICK);
     for (id, n) in &m.nodes {
         if let Some(Literal::Int(t)) = n.properties.get(&*sym::HANDLE_TARGET) {
-            out.handles.push((*id, NodeId(*t as u32)));
+            out.handles.push((*id, *t));
         }
         if n.properties.contains_key(&chip_key) {
             out.chips.push(*id);
@@ -180,16 +193,17 @@ fn bake_containers(
     containers: &[&Node],
 ) -> Result<(), EmitError> {
     for node in containers {
-        let missing = |what: &str| {
-            EmitError::MissingPlacement(format!("ref initializer {}: {what}", node.id))
-        };
+        let missing =
+            |what: &str| EmitError::RefBake(format!("ref initializer {}: {what}", node.id));
         let holder = *ctx
             .node_brick_ids
             .get(&node.id)
             .ok_or_else(|| missing("no brick"))?;
         let target_ref = |t: &Literal| match t {
             Literal::Int(t) => {
-                container_ref(world, ctx, bricks, holder, NodeId(*t as u32)).map_err(missing)
+                let target = target_node(*t)
+                    .ok_or_else(|| missing(&format!("target {t} is not a node id")))?;
+                container_ref(world, ctx, bricks, holder, target).map_err(missing)
             }
             other => Err(missing(&format!("a target is {other:?}, not a node"))),
         };
@@ -255,12 +269,13 @@ pub(super) fn bake_handles(
     bake_containers(world, ctx, &bricks, &containers)?;
     found.sort();
     for (handle, target) in found {
-        let missing =
-            |what: &str| EmitError::MissingPlacement(format!("fn handle {handle}: {what}"));
+        let missing = |what: &str| EmitError::RefBake(format!("fn handle {handle}: {what}"));
         let holder = *ctx
             .node_brick_ids
             .get(&handle)
             .ok_or_else(|| missing("no brick"))?;
+        let target = target_node(target)
+            .ok_or_else(|| missing(&format!("its target {target} is not a node id")))?;
         let target_brick = *ctx
             .node_brick_ids
             .get(&target)
@@ -289,8 +304,7 @@ pub(super) fn bake_handles(
     }
     // `GetMicrochipBrick()`: the program's own microchip brick, on the main grid.
     for var in chips {
-        let missing =
-            |what: &str| EmitError::MissingPlacement(format!("GetMicrochipBrick() {var}: {what}"));
+        let missing = |what: &str| EmitError::RefBake(format!("GetMicrochipBrick() {var}: {what}"));
         let holder = *ctx
             .node_brick_ids
             .get(&var)

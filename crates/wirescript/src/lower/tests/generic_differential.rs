@@ -29,7 +29,7 @@ in go: exec
 /// Every gate as its class, port types and properties (labels aside), and
 /// every wire as `class.port -> class.port`, across the chip tree, sorted.
 pub(super) fn shape(r: &LowerResult) -> Vec<String> {
-    fn walk(m: &Module, out: &mut Vec<String>) {
+    fn module_shape(m: &Module, out: &mut Vec<String>) {
         let class = |id: &crate::ir::NodeId| m.nodes.get(id).map_or("pin", |n| n.gate_class);
         for n in m.nodes.values() {
             let mut ports: Vec<String> = n
@@ -81,12 +81,9 @@ pub(super) fn shape(r: &LowerResult) -> Vec<String> {
                 w.target.port
             ));
         }
-        for c in m.chips.values() {
-            walk(c, out);
-        }
     }
     let mut out = Vec::new();
-    walk(&r.module, &mut out);
+    r.module.walk(&mut |_, m| module_shape(m, &mut out));
     out.sort();
     out
 }
@@ -133,7 +130,7 @@ fn demanded(src: &str, key: &[Type]) -> bool {
 /// [`demanded`] for any of `keys`, from one type check.
 fn demanded_any(src: &str, keys: &[&[Type]]) -> bool {
     let parsed = crate::parser::parse(src, "test");
-    let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let tc = typecheck(&parsed.ast, &crate::typecheck::CeSlotMap::default());
     keys.iter()
         .any(|key| tc.demanded_instantiations.iter().any(|k| *k.3 == **key))
 }
@@ -206,7 +203,10 @@ fn instances(i: usize, full: bool) -> Vec<(&'static str, (&'static str, &'static
     if full {
         INSTANCES.to_vec()
     } else {
-        vec![INSTANCES[1], INSTANCES[if i % 2 == 0 { 0 } else { 2 }]]
+        vec![
+            INSTANCES[1],
+            INSTANCES[if i.is_multiple_of(2) { 0 } else { 2 }],
+        ]
     }
 }
 
@@ -219,8 +219,7 @@ fn past_cap(
 ) -> bool {
     instances
         .iter()
-        .map(|(args, types)| mod_case(bounds, body, result, args, *types))
-        .fold(false, |any, past| any || past)
+        .any(|(args, types)| mod_case(bounds, body, result, args, *types))
 }
 
 /// `a + b` over an `int` and a `float` is a `float`, though every combination
@@ -611,11 +610,7 @@ fn namespace_calls_past_the_cap_keep_their_types() {
                 .collect(),
         };
         let resolved = crate::resolve::resolve(&generic, "main", &loader);
-        let tc = typecheck(
-            &resolved.ast,
-            "main",
-            &crate::typecheck::CeSlotMap::default(),
-        );
+        let tc = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
         assert!(
             tc.demanded_instantiations
                 .iter()
@@ -680,7 +675,7 @@ fn a_deep_expression_past_the_cap_compiles_promptly() {
     body_case(&body);
     let elapsed = start.elapsed();
     assert!(
-        elapsed < std::time::Duration::from_secs(60),
+        elapsed < std::time::Duration::from_mins(1),
         "depth 24 took {elapsed:?}"
     );
 }

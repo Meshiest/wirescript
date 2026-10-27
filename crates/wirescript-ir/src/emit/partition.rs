@@ -1,21 +1,19 @@
 //! Pre-pass that moves `chip_id`-tagged nodes into child modules.
 
-use super::*;
-use crate::collections::HashSet;
+use crate::collections::{HashMap, HashSet};
+use crate::intern::sym;
+use crate::ir::port_registry::WirePort;
+use crate::ir::{Module, NodeId, NodeKind, PortRef, Wire, gate_class as gc};
 
-/// Pre-pass: move nodes tagged with `chip_id` into child Modules so the
-/// existing chip emit path handles them. Cross-boundary wires are kept in
-/// the parent module — the brdb writer's `add_wire` automatically creates
-/// remote wire sources when source and target are on different grids.
+/// Pre-pass: move nodes tagged with `chip_id` into child Modules so the chip emit path
+/// handles them. Cross-boundary wires stay in the parent module; the brdb writer's `add_wire`
+/// creates remote wire sources when source and target are on different grids.
 pub fn partition_anon_chips(module: &mut Module) {
     partition_one(module);
-    // A named chip's instance module is partitioned too: an anon `chip { }`
-    // written inside one tags its nodes there, not at the root, so a
-    // root-only pass left them tagged and emit skipped the `Chip` node for
-    // want of a `chips` entry, dropping the box and emitting its contents
-    // flat onto the enclosing chip's grid. Sorted, for the same reason
-    // `chip_ids` below is sorted: the intern order of `_anon_{id}` names
-    // decides emitted wire counts and Sym numbering.
+    // A named chip's instance module is partitioned too: an anon `chip { }` written inside
+    // one tags its nodes there, not at the root, and emit skips a `Chip` node that has no
+    // `chips` entry. Sorted, since the intern order of `_anon_{id}` names decides emitted wire
+    // counts and Sym numbering.
     let mut nested: Vec<NodeId> = module.chips.keys().copied().collect();
     nested.sort_unstable();
     for id in nested {
@@ -34,21 +32,17 @@ fn partition_one(module: &mut Module) {
         .iter()
         .filter_map(|(id, n)| n.chip_id.map(|c| (*id, c)))
         .collect();
-    // Sorted Vec, NOT a std HashSet: iteration order decides the intern order
-    // of the `_anon_{id}` module names — random order made emitted wire
-    // counts and Sym numbering nondeterministic run-to-run.
+    // Sorted Vec, not a std HashSet: iteration order decides the intern order of the
+    // `_anon_{id}` module names, and so emitted wire counts and Sym numbering.
     let mut chip_ids: Vec<NodeId> = assignment.values().copied().collect();
     chip_ids.sort_unstable();
     chip_ids.dedup();
 
-    // Anon chips with an entirely empty functional body (e.g. `@label("...")
-    // chip on trigger { }`) tag no descendant nodes at all, so the partition
-    // loop below never sees them: they'd stay bare orphan `Chip` nodes with
-    // no `module.chips` entry, and emit skips those — silently discarding
-    // the `@label`/`@closed`/doc annotations along with them. Give them an
-    // empty child module so the (labelled/collapsed) shell still reaches
-    // emit. Named chip instances already have a populated module by this
-    // point (see `lower/call.rs`), so this only ever catches anon chips.
+    // Anon chips with an entirely empty functional body (e.g. `@label("...") chip on trigger { }`)
+    // tag no descendant nodes, so the loop below never sees them, and emit skips a `Chip` node
+    // with no `module.chips` entry along with its `@label`/`@closed`/doc annotations. Give them
+    // an empty child module. Named chip instances already have a populated module (see
+    // `lower/call.rs`).
     let empty_annotated: Vec<NodeId> = module
         .nodes
         .iter()
@@ -91,13 +85,10 @@ fn partition_one(module: &mut Module) {
         }
     }
 
-    // Map each chip-instance boundary pin (MicrochipInput/Output of a called
-    // `chip`'s module) to the anon chip its instance node is tagged to. A wire
-    // targeting such a pin belongs INSIDE that anon chip's module (one boundary
-    // from the instance). Without this it stays at the root as a wire whose
-    // endpoint is nested several grids deep — the game can route a root wire
-    // one grid in, but an exec pulse can't cross into an instance grid that
-    // sits inside another anon chip, so the called chip silently never fires.
+    // Map each chip-instance boundary pin (MicrochipInput/Output of a called `chip`'s module)
+    // to the anon chip its instance node is tagged to. A wire targeting such a pin belongs
+    // inside that anon chip's module: a root wire can route one grid in, but an exec pulse
+    // cannot cross into an instance grid nested inside another anon chip.
     let mut pin_chip: HashMap<NodeId, NodeId> = HashMap::default();
     for (chip_node, inst) in &module.chips {
         if let Some(&cid) = assignment.get(chip_node) {
@@ -108,11 +99,9 @@ fn partition_one(module: &mut Module) {
     }
     let chip_of = |id: &NodeId| assignment.get(id).or_else(|| pin_chip.get(id)).copied();
 
-    // Partition wires in ONE pass: internal wires go to their chip's child,
-    // cross-boundary wires stay in the parent as remote wires with Layout
-    // edges keeping the chips inline in the DAG. A wire that crosses between
-    // two chips gets edges for chip->chip, chip->inner-node, and
-    // inner-node->chip.
+    // Partition wires in one pass: internal wires go to their chip's child; cross-boundary
+    // wires stay in the parent as remote wires, with Layout edges keeping the chips inline in
+    // the DAG (chip->chip, chip->inner-node and inner-node->chip as the wire crosses).
     let layout_edge = |a: NodeId, b: NodeId| Wire {
         source: PortRef {
             node_id: a,
@@ -131,15 +120,11 @@ fn partition_one(module: &mut Module) {
     for w in std::mem::take(&mut module.wires) {
         let src_chip = chip_of(&w.source.node_id);
         let tgt_chip = chip_of(&w.target.node_id);
-        // A `_Literal` source feeding a target in a DIFFERENT module can't be
-        // delivered as a wire: `_Literal` is a compiler placeholder, not a real
-        // component — emit inlines it into its SAME-module consumers, so a
-        // cross-module literal wire leaves its far end reading the port default
-        // (0). Clone the literal into the TARGET's module and keep the wire
-        // internal there, so every module inlines its own copy. Vars cross a
-        // boundary via a Ref port; a literal has none. This covers all cross-
-        // module directions — parent->child, chip->chip, AND chip->parent —
-        // e.g. a `let k = 20` declared in one chip and referenced in another.
+        // A `_Literal` source feeding a target in a different module cannot be a wire: `_Literal`
+        // is a compiler placeholder that emit inlines into its same-module consumers, so a
+        // cross-module wire leaves the far end reading the port default (0). Clone the literal into
+        // the target's module and keep the wire internal there. Vars cross a boundary via a Ref
+        // port; a literal has none. Covers parent->child, chip->chip and chip->parent.
         if src_chip != tgt_chip {
             let src_is_literal = match src_chip {
                 Some(a) => &children[&a].nodes,
@@ -230,13 +215,12 @@ fn partition_one(module: &mut Module) {
         }
     }
 
-    // Re-nest inner chip modules: a child module holding a Chip node whose
-    // module sits in this module's `chips` map takes that module into its own
-    // `chips` map so emit can find it. Every module is still at this level
-    // when the parent links are read; moving the deepest first keeps each
-    // parent at this level until its own children have moved into it.
+    // Re-nest inner chip modules: a child module holding a Chip node whose module sits in this
+    // module's `chips` map takes that module into its own `chips` map so emit can find it.
+    // Moving the deepest first keeps each parent at this level until its own children have
+    // moved into it.
     let mut parent_of: HashMap<NodeId, NodeId> = HashMap::default();
-    for (parent_id, child_mod) in module.chips.iter() {
+    for (parent_id, child_mod) in &module.chips {
         for (nid, n) in &child_mod.nodes {
             if n.kind == NodeKind::Chip && module.chips.contains_key(nid) {
                 parent_of.insert(*nid, *parent_id);

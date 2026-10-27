@@ -47,7 +47,11 @@ impl Compiled {
 
     fn dump(&self) -> &[String] {
         self.dump.get_or_init(|| {
-            let mut lines: Vec<String> = self.components().iter().map(|c| c.to_string()).collect();
+            let mut lines: Vec<String> = self
+                .components()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             lines.sort();
             lines
         })
@@ -100,7 +104,11 @@ pub(super) fn compiled(
         module_name: None,
         fold_mode,
     };
-    let result = match crate::compile::compile_keeping_lowered(input, Default::default(), &loader) {
+    let result = match crate::compile::compile_keeping_lowered(
+        input,
+        crate::emit::EmitOptions::default(),
+        &loader,
+    ) {
         (Some(module), Ok(out)) => Ok(Rc::new(Compiled {
             out,
             module,
@@ -108,7 +116,7 @@ pub(super) fn compiled(
             dump: OnceCell::new(),
         })),
         (_, Err(crate::CompileError::HasErrors(errors))) => {
-            Err(errors.iter().map(|d| d.code.to_string()).collect())
+            Err(errors.iter().map(|d| d.code.clone()).collect())
         }
         (_, Err(e)) => panic!("{e:?}\n{src}"),
         (None, Ok(_)) => panic!("a compile kept no module\n{src}"),
@@ -178,7 +186,9 @@ fn values_in_save(
             BrdbValue::Enum(e) if narrow => out.push(Literal::Int(e.value as i64)),
             BrdbValue::Struct(s) => s.properties.values().for_each(|p| go(p, out, narrow)),
             BrdbValue::Array(items) | BrdbValue::FlatArray(items) => {
-                items.iter().for_each(|i| go(i, out, narrow))
+                for i in items {
+                    go(i, out, narrow);
+                }
             }
             BrdbValue::DynamicArray(a) => a.values.iter().for_each(|i| go(i, out, narrow)),
             BrdbValue::DynamicMap(m) => m.entries.iter().for_each(|(k, v)| {
@@ -231,7 +241,7 @@ pub(super) fn warnings(src: &str, deps: &[(&str, &str)]) -> Vec<(String, String)
         .diagnostics
         .iter()
         .filter(|d| d.severity == crate::diagnostic::Severity::Warning)
-        .map(|d| (d.code.to_string(), d.message.clone()))
+        .map(|d| (d.code.clone(), d.message.clone()))
         .collect()
 }
 
@@ -275,8 +285,8 @@ fn same_save_at(
 }
 
 #[track_caller]
-fn report(failures: Vec<String>, rows: usize) {
-    crate::test_support::report_failures(&failures, rows);
+fn report(failures: &[String], rows: usize) {
+    crate::test_support::report_failures(failures, rows);
 }
 
 const HEAD: &str = "in go: exec\nvar x: float = 0.0\nvar n: int = 0\nvar s: string = \"\"\n";
@@ -337,7 +347,7 @@ fn an_alias_body_reads_its_names_where_it_is_declared() {
         let twin = format!("{HEAD}{}\n", body.replace("{A}", "Z"));
         same_save(row, &collide, &twin, &[], &[], &mut failures);
     }
-    report(failures, GENERIC_BODY_ROWS.len());
+    report(&failures, GENERIC_BODY_ROWS.len());
 }
 
 /// The alias body of the first row stores the float its declaration names.
@@ -455,7 +465,7 @@ fn library_reads_its_own_aliases_matrix(full: bool) {
             }
         }
     }
-    report(failures, rows);
+    report(&failures, rows);
 }
 
 /// A library's signature names an alias whose body names another alias,
@@ -483,7 +493,7 @@ on go { x = lg(1, 5) }
         &[("lib", &twin)],
         &mut failures,
     );
-    report(failures, 1);
+    report(&failures, 1);
 }
 
 #[test]
@@ -523,9 +533,7 @@ fn a_library_cannot_name_an_alias_only_its_importer_declares() {
     }
 }
 
-/// A library's own alias naming no type is reported where the library uses
-/// it, as it was when the library's body read its aliases through the
-/// importer's.
+/// A library's own alias naming no type is reported where the library uses it.
 #[test]
 fn a_library_alias_naming_no_type_is_reported_where_it_is_used() {
     for (lib, body) in [
@@ -738,7 +746,7 @@ fn alias_of_a_ref_matrix(full: bool) {
             &mut failures,
         );
     }
-    report(failures, REF_ROWS.len());
+    report(&failures, REF_ROWS.len());
 }
 
 #[test]
@@ -762,7 +770,7 @@ fn a_namespaced_alias_of_a_ref_binds_as_the_ref_it_names() {
         &[("lib", lib)],
         &mut failures,
     );
-    report(failures, 1);
+    report(&failures, 1);
 }
 
 /// The write `inc` makes through an alias of `*int` reaches `v`: the body has
@@ -840,7 +848,7 @@ fn a_generic_enum_stores_a_record_payload_field_by_field() {
         );
         same_save(row, &generic, &plain, &[], &[], &mut failures);
     }
-    report(failures, RECORD_PAYLOAD_ROWS.len());
+    report(&failures, RECORD_PAYLOAD_ROWS.len());
 }
 
 #[test]
@@ -897,7 +905,7 @@ fn an_int_payload_given_a_fraction_truncates_with_a_warning_const_and_var_alike(
             failures.push(format!("{decl}: no WS106"));
         }
     }
-    report(failures, 5);
+    report(&failures, 5);
 }
 
 /// An `if`, `match`, argument or `return` whose value is checked against an
@@ -939,7 +947,7 @@ fn an_enum_join_builds_each_branch_at_the_expected_instantiation() {
         let float_payload = format!("{head}{}\n", body.replace('@', "7.0"));
         same_save(row, &int_payload, &float_payload, &[], &[], &mut failures);
     }
-    report(failures, JOIN_ROWS.len());
+    report(&failures, JOIN_ROWS.len());
 }
 
 #[test]

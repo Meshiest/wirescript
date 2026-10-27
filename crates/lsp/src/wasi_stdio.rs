@@ -10,13 +10,13 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 
-pub struct Stdin {
+pub(crate) struct Stdin {
     rx: mpsc::Receiver<Vec<u8>>,
     chunk: Vec<u8>,
     pos: usize,
 }
 
-pub fn stdin() -> Stdin {
+pub(crate) fn stdin() -> Stdin {
     let (tx, rx) = mpsc::channel(64);
     std::thread::Builder::new()
         .name("wirescript-stdin".into())
@@ -66,7 +66,7 @@ impl AsyncRead for Stdin {
     }
 }
 
-pub struct Stdout;
+pub(crate) struct Stdout;
 
 impl AsyncWrite for Stdout {
     fn poll_write(

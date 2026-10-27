@@ -6,6 +6,9 @@
 
 use std::sync::Arc;
 
+use crate::collections::HashMap;
+use crate::intern::Sym;
+
 use super::{Literal, Module, Node};
 
 /// A lowered program, ready to lay out and emit.
@@ -60,15 +63,14 @@ pub struct ProgramSettings {
 /// Which placement engine lays out module interiors.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum LayoutMode {
-    /// Flat topological DAG layout (the long-standing default). Modules past
-    /// `layout::GRID_LAYOUT_THRESHOLD` nodes fall back to [`Self::Cube`],
-    /// whose cost does not grow with the wire graph.
+    /// Flat topological DAG layout (the default). Modules past `layout::GRID_LAYOUT_THRESHOLD`
+    /// nodes fall back to [`Self::Cube`], whose cost does not grow with the wire graph.
     #[default]
     Dag,
     /// Source-shaped layout: row = source line, indent = source column.
     Code,
-    /// Compact 3D grid — nodes packed into a cube by brick size, skipping DAG
-    /// analysis entirely. Reached either by size or by `@layout("cube")`.
+    /// Compact 3D grid: nodes packed into a cube by brick size, skipping DAG analysis
+    /// entirely. Reached by size or by `@layout("cube")`.
     Cube,
 }
 
@@ -102,10 +104,9 @@ pub struct SourceComment {
     pub text: String,
     /// True when the comment is the only thing on its line.
     pub own_line: bool,
-    /// True when the comment sits inside an unclosed `[` — an array literal
-    /// or a multi-line data table. These are the repetitive ones: a note per
-    /// row of a table costs a brick per row and says the same thing each
-    /// time, so the code layout leaves them out of the plane.
+    /// True when the comment sits inside an unclosed `[` (an array literal or a multi-line
+    /// data table). These are repetitive: a note per row costs a brick per row, so the code
+    /// layout leaves them out of the plane.
     pub in_array: bool,
 }
 
@@ -131,7 +132,7 @@ impl Program {
     /// in order, inputs, outputs, scopes, labels, styles, value
     /// names and chips. `template_key` and `scope_captures` are not
     /// compared; only lowering reads them.
-    pub fn diff(&self, other: &Program) -> Option<String> {
+    pub fn diff(&self, other: &Self) -> Option<String> {
         if self.settings != other.settings {
             return Some(format!(
                 "settings differ: {:?} vs {:?}",
@@ -142,10 +143,7 @@ impl Program {
     }
 }
 
-fn same_properties(
-    a: &crate::collections::HashMap<crate::intern::Sym, Literal>,
-    b: &crate::collections::HashMap<crate::intern::Sym, Literal>,
-) -> bool {
+fn same_properties(a: &HashMap<Sym, Literal>, b: &HashMap<Sym, Literal>) -> bool {
     a.len() == b.len()
         && a.iter()
             .all(|(k, x)| b.get(k).is_some_and(|y| same_literal(x, y)))
@@ -231,7 +229,7 @@ fn diff_module(a: &Module, b: &Module, path: &str) -> Option<String> {
         let (x, y) = (&a.nodes[id], &b.nodes[id]);
         // Everything but the properties by `==`; the properties by their bits.
         let bare = |n: &Node| Node {
-            properties: Default::default(),
+            properties: Arc::default(),
             ..n.clone()
         };
         let same = same_properties(&x.properties, &y.properties) && bare(x) == bare(y);

@@ -2,14 +2,14 @@
 
 use super::*;
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     /// Parse a single pattern: alternatives joined by `|`, each a `..` chain
     /// (a string concat or a number range) of pattern atoms. An atom is `_`, a
     /// literal (`"+"`, `3`, `-1`, `2.5`, `true`, `:red`), `Name(...)` /
     /// `Name { ... }` (a variant with a positional/named payload), or a bare
-    /// identifier (`Pattern::Binding` - kept dumb here; the typechecker
-    /// reclassifies a bare capitalized name into a unit-variant match once the
-    /// scrutinee's enum type is known).
+    /// identifier (`Pattern::Binding`; the typechecker reclassifies a bare
+    /// capitalized name into a unit-variant match once the scrutinee's enum
+    /// type is known).
     pub(super) fn parse_pattern(&mut self) -> Pattern {
         if !self.enter_nesting() {
             self.leave_nesting(1);
@@ -221,7 +221,7 @@ impl<'a> Parser<'a> {
                 let field_pattern = if self.match_tok(TokenKind::Colon, None).is_some() {
                     self.parse_pattern()
                 } else {
-                    // Shorthand: `w` means `w: w` - the field binds a local
+                    // Shorthand: `w` means `w: w`, so the field binds a local
                     // of the same name.
                     Pattern::Binding {
                         name: field_tok.text.clone(),

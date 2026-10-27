@@ -39,42 +39,38 @@ pub(in crate::lower) fn positional_args(args: &[CallArg]) -> Vec<&Expr> {
 /// (recorded by typecheck); an unresolved / non-tuple spread expands to nothing
 /// (typecheck already reported it). A call with no spreads is returned as-is.
 pub(in crate::lower) fn expand_spread_args<'a>(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     args: &'a [CallArg],
 ) -> std::borrow::Cow<'a, [CallArg]> {
-    if !args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
+    if !args.has_spread() {
         return std::borrow::Cow::Borrowed(args);
     }
     let mut out = Vec::with_capacity(args.len());
     for a in args {
         match a {
-            // A tuple/record LITERAL (a tuple `(a, b)` desugars to a numeric-field
-            // record literal) expands to its field value expressions directly — a
-            // literal isn't a resolvable binding, so a `TuplePick` on it would not
-            // lower. Each value then lowers in place.
-            CallArg::Spread(t @ Expr::RecordLit { fields, .. }) => {
-                let _ = t;
+            // A tuple/record literal (a tuple `(a, b)` desugars to a numeric-field
+            // record literal) expands to its field values directly, since a
+            // literal is not a binding a pick could resolve.
+            CallArg::Spread(Expr::RecordLit { fields, .. }) => {
                 for f in fields {
                     match f {
-                        crate::ast::RecordLitField::Named { value, .. } => {
-                            out.push(CallArg::Positional(value.clone()))
+                        RecordLitField::Named { value, .. } => {
+                            out.push(CallArg::Positional(value.clone()));
                         }
-                        crate::ast::RecordLitField::Shorthand { name, range } => {
+                        RecordLitField::Shorthand { name, range } => {
                             out.push(CallArg::Positional(Expr::Ident {
                                 name: name.clone(),
                                 range: range.clone(),
-                            }))
+                            }));
                         }
-                        crate::ast::RecordLitField::Spread { .. } => {}
+                        RecordLitField::Spread { .. } => {}
                     }
                 }
             }
-            // A bound tuple (`let t = (a, b)`) or a field chain reaching one: pick
-            // each element by index (resolves through its `Binding::Record`). Arity
-            // comes from the live binding when the spread reaches one — a variadic
-            // `...rest` is bound per call site and has no single static tuple type,
-            // so the type map alone (checked once at the mod's declaration) would
-            // under-count it. Fall back to the recorded type otherwise.
+            // A bound tuple (`let t = (a, b)`) or a field chain reaching one.
+            // Arity comes from the live binding when there is one, since a
+            // variadic `...rest` is bound per call site and has no single static
+            // type; otherwise from the recorded type.
             CallArg::Spread(t) => {
                 let ty = ctx.type_of(t);
                 let inner = crate::types::mono::unwrap_ref(&ty);
@@ -86,15 +82,11 @@ pub(in crate::lower) fn expand_spread_args<'a>(
                         _ => 0,
                     },
                 };
-                // Pick each element by its declared KEY, not a numeric index. A
-                // tuple literal binds its record by "0"/"1", but a multi-output
-                // CALL result binds it by output NAME, so a numeric `TuplePick`
-                // missed the call-result case and lowered to `_Unsupported`.
-                // `tuple_positions` yields the ordered keys from the type (field
-                // names for a record, "0".."n" for a tuple), and a `FieldAccess`
-                // resolves both spellings — including an inline `...f()`, via the
-                // record-returning-call field projection in `lower_field_access`.
-                for key in crate::lower::decl::tuple_positions(&inner, n) {
+                // Each element is picked by its key, not a numeric index: a tuple
+                // literal binds "0", "1" and so on, a multi-output call result
+                // binds output names. A `FieldAccess` resolves both, an inline
+                // `...f()` included (via `lower_field_access`).
+                for key in tuple_positions(&inner, n) {
                     out.push(CallArg::Positional(Expr::FieldAccess {
                         obj: Box::new(t.clone()),
                         field: key,
@@ -122,7 +114,7 @@ fn named_args_in_place<'a>(
     let moves = args
         .iter()
         .any(|a| matches!(a, CallArg::Named { name, .. } if param_of(name).is_some()));
-    if !moves || args.iter().any(|a| matches!(a, CallArg::Spread(_))) {
+    if !moves || args.has_spread() {
         return std::borrow::Cow::Borrowed(args);
     }
     let positional = positional_args(args);
@@ -160,14 +152,14 @@ fn named_args_in_place<'a>(
 }
 
 pub(super) fn lower_chip_call(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     chip_decl: &ChipDecl,
     args: &[CallArg],
     type_args: &[TypeExpr],
     range: &SourceRange,
 ) -> PortRef {
     if chip_decl.is_fn {
-        return crate::lower::function::lower_fn_call(ctx, chip_decl, args, range);
+        return function::lower_fn_call(ctx, chip_decl, args, range);
     }
     let named = !chip_decl.name.is_empty();
     if named

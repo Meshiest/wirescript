@@ -18,7 +18,7 @@ fn empty_source_is_just_eof() {
 #[test]
 fn multibyte_chars_do_not_panic() {
     // A stray multi-byte char (outside a string) must not panic the
-    // byte-slicing punct reader — it errors gracefully. Multi-byte chars
+    // byte-slicing punct reader; it errors gracefully. Multi-byte chars
     // inside strings lex normally.
     let _ = lex("▲", "test"); // no panic
     let _ = lex("let x = ▲", "test"); // no panic
@@ -283,7 +283,7 @@ fn lex_nested_prefab_block() {
 #[test]
 fn lex_nested_prefab_nesting_and_strings() {
     // A triple-backtick inside an inner string must not close the block, and a
-    // nested `$```…``` must be balanced (the OUTER block owns the whole span).
+    // nested `$```...``` must be balanced (the OUTER block owns the whole span).
     let src = "$```on x { let s = \"```\" \n let e = $```in q: exec```\n }```";
     let r = lex(src, "t");
     assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
@@ -333,9 +333,8 @@ fn both_quote_styles_read_the_same_escapes() {
 
 /// A doc comment in a CRLF file does not keep its `\r`.
 ///
-/// The scan stops at `\n`, so the text ran one byte past its end. A doc
-/// comment is baked into the world as a chip's header text, so the stray
-/// carriage return shipped into the save.
+/// The scan stops at `\n`, and a doc comment is baked into the save as a
+/// chip's header text, so a kept `\r` would ship into the save.
 #[test]
 fn a_doc_comment_does_not_keep_its_carriage_return() {
     for (src, want) in [

@@ -1,5 +1,5 @@
 //! Generic-inference solver: collects constraints on type variables and
-//! solves them into a substitution. **Safe widening**, not strict equality —
+//! solves them into a substitution. **Safe widening**, not strict equality:
 //! when several constraints pin the same var, the resolved type is their
 //! join over a non-lossy, widening-only lattice
 //! ([`crate::types::coerce::widening_join`]), and each contributing argument
@@ -12,12 +12,12 @@ use crate::ir::Type;
 use std::collections::HashMap;
 
 /// A resolved substitution: type-variable name -> concrete type.
-pub type Subst = HashMap<String, Type>;
+pub(crate) type Subst = HashMap<String, Type>;
 
 /// One inference constraint.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Constraint {
-    /// The type variable named `.0` must be able to widen from `.1` — i.e.
+pub(crate) enum Constraint {
+    /// The type variable named `.0` must be able to widen from `.1`, i.e.
     /// `.1` is a lower bound on the var, not necessarily its exact type.
     /// `solve` folds every surviving `.1` for a given var with
     /// `widening_join`; the var resolves to their join.
@@ -25,12 +25,12 @@ pub enum Constraint {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum InferError {
+pub(crate) enum InferError {
     /// Two constraints pin the same var to types with no common widening
-    /// (e.g. int vs vector — genuinely incompatible, not just "different").
+    /// (e.g. int vs vector, genuinely incompatible, not just "different").
     Conflict { var: String, a: Type, b: Type },
-    /// A var has no (non-`any`) constraint — can't be inferred (annotate, or
-    /// pass an explicit type argument).
+    /// A var has no (non-`any`) constraint, so it can't be inferred (annotate,
+    /// or pass an explicit type argument).
     Unpinnable(String),
     /// The resolved (joined) type isn't a member of the var's mask.
     OutOfMask {
@@ -48,18 +48,18 @@ fn is_dynamic(ty: &Type) -> bool {
 
 /// Solve `constraints` for the type variables in `params` (each var paired with
 /// its mask). Rules:
-///  - An `any`/`Opaque`-typed constraint value contributes NOTHING (gradual:
-///    consistent with everything, pins nothing) — drop it before solving.
+///  - An `any`/`Opaque`-typed constraint value contributes nothing (gradual:
+///    consistent with everything, pins nothing) and is dropped before solving.
 ///  - For each var in `params`: fold all its surviving `Eq` constraint types
-///    with [`crate::types::coerce::widening_join`] (least-upper-bound over
-///    the widening-only lattice); if any fold step has no common widening
-///    (`widening_join` returns `None`) -> `Conflict`. The var's resolved type
-///    is the final join (e.g. int + float folds to float).
-///  - A var with no surviving constraint -> `Unpinnable`.
-///  - The resolved (joined) type must satisfy `mask_contains(mask, &ty)` ->
+///    with [`crate::types::coerce::widening_join`]; if any fold step has no
+///    common widening (`widening_join` returns `None`) the result is
+///    `Conflict`. The var's resolved type is the final join (e.g. int + float
+///    folds to float).
+///  - A var with no surviving constraint is `Unpinnable`.
+///  - The resolved (joined) type must satisfy `mask_contains(mask, &ty)`,
 ///    else `OutOfMask`.
-///  - Success -> a `Subst` mapping every var in `params` to its resolved type.
-pub fn solve(
+///  - Success gives a `Subst` mapping every var in `params` to its resolved type.
+pub(crate) fn solve(
     constraints: &[Constraint],
     params: &[(String, Vec<Type>)],
 ) -> Result<Subst, InferError> {
@@ -90,9 +90,8 @@ pub fn solve(
             });
         }
 
-        let ty = match resolved {
-            Some(ty) => ty,
-            None => return Err(InferError::Unpinnable(var.clone())),
+        let Some(ty) = resolved else {
+            return Err(InferError::Unpinnable(var.clone()));
         };
 
         if !crate::types::classes::mask_contains(mask, &ty) {

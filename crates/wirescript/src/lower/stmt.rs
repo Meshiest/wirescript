@@ -1,15 +1,16 @@
 use super::*;
 use crate::ast::walk;
+use crate::lower::matchtree::Decision;
 use crate::typecheck::ContainerKind;
 
-pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
+pub(super) fn lower_stmt(ctx: &mut LowerCtx<'_>, s: &Stmt) {
     match s {
         Stmt::Assign(a) => lower_assign(ctx, a),
         Stmt::If(i) => lower_if(ctx, i),
         Stmt::Emit(e) => lower_emit(ctx, e),
         Stmt::Await(a) => ctx.with_nofold(a.no_fold, |ctx| lower_await(ctx, a)),
         Stmt::OutBinding(b) => ctx.with_nofold(b.no_fold, |ctx| {
-            lower_out_binding(ctx, &b.name, b.value.as_ref(), &b.range)
+            lower_out_binding(ctx, &b.name, b.value.as_ref(), &b.range);
         }),
         Stmt::ExprStmt(es) => lower_expr_stmt(ctx, &es.expr),
         Stmt::Handler(h) => ctx.with_nofold(h.no_fold, |ctx| lower_handler(ctx, h)),
@@ -17,146 +18,7 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
         Stmt::AnonChip(ac) => lower_anon_chip(ctx, ac),
         Stmt::ChipDecl(c) => lower_chip_decl(ctx, c),
         Stmt::In(_) => {}
-        Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| {
-            let declares = needs_declaration(ctx, &v.name, &v.range);
-            // `var x = <init reading x>`: the initializer reads the `x` around
-            // the declaration, as a `let`'s does, so the var is declared under
-            // a name of its own and `x` names it once it exists.
-            if declares && let Some(apart) = v.declared_apart() {
-                lower_stmt(ctx, &Stmt::Var(apart.clone()));
-                if let Some(binding) = ctx.scope.get(&apart.name).cloned() {
-                    ctx.scope.insert(&v.name, binding);
-                }
-                ctx.consts.forget(&v.name);
-                return;
-            }
-            if declares {
-                pre_declare_var(ctx, v);
-            }
-            // Pure position (chip/mod body instantiated without exec) or
-            // `static var`: no exec reset runs, so a non-constant init is
-            // dropped — surface it.
-            if v.is_static || ctx.current_exec.is_none() {
-                warn_unbaked_var_init(ctx, v, false);
-            }
-            // A record (or tuple or enum) var is several gates, so its
-            // initializer runs as an assignment to them, which resets the var
-            // each time this scope is entered like the forms below do.
-            if !v.is_static
-                && ctx.current_exec.is_some()
-                && let Some(init) = &v.init
-                && let Some(target @ Binding::Record(_)) = ctx.scope.get(&v.name).cloned()
-            {
-                if let Some(lit) = crate::lower::predeclare::const_container_init(ctx, init) {
-                    rebuild_from_constant(ctx, &target, &v.name, init, lit, &v.range);
-                    return;
-                }
-                lower_assign(
-                    ctx,
-                    &Assign {
-                        target: Expr::Ident {
-                            name: v.name.clone(),
-                            range: v.range.clone(),
-                        },
-                        value: init.clone(),
-                        range: v.range.clone(),
-                    },
-                );
-                return;
-            }
-            // With no initializer each scalar leaf resets to its zero value,
-            // as a plain `var x: int` does. A container leaf is left as the
-            // plain `var xs: int[]` form leaves it.
-            if !v.is_static
-                && ctx.current_exec.is_some()
-                && v.init.is_none()
-                && let Some(Binding::Record(fields)) = ctx.scope.get(&v.name).cloned()
-            {
-                reset_record_leaves(ctx, &fields, &v.range);
-                return;
-            }
-            // In exec context, emit a Var_Set to reset the variable to its
-            // initial value each time this scope is entered. Without this,
-            // PseudoVar keeps its value from the previous invocation.
-            // `static var` skips this — it retains its value across calls.
-            // Array-typed vars have no `VarRef` port (only `ArrayVarRef`), so
-            // the generic Var_Set reset would emit a wire from a nonexistent
-            // source port ("Wire source port VarRef does not exist" in-game);
-            // rebuild them with the array-literal assign (clear + push) instead.
-            if !v.is_static
-                && ctx.current_exec.is_some()
-                && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
-                && var_rec.storage == VarStorage::Array
-            {
-                if let Some(init @ Expr::Array { .. }) = &v.init {
-                    let target = Binding::Var(var_rec);
-                    rebuild_container(ctx, &target, &v.name, init, &v.range, &mut lower_in_place(init, false));
-                } else if let Some(init) = &v.init
-                    && let Some(lit) = crate::lower::predeclare::const_container_init(ctx, init)
-                {
-                    rebuild_from_constant(ctx, &Binding::Var(var_rec), &v.name, init, lit, &v.range);
-                } else if let Some(init) = &v.init {
-                    ctx.warn(
-                        format!(
-                            "'var {}' array initializer must be an array literal, so this value is dropped; build the array with methods like push/copyFrom instead",
-                            v.shown_name()
-                        ),
-                        init.range(),
-                    );
-                }
-                return;
-            }
-            // Map-typed vars have no `VarRef` port either (only `MapVarRef`),
-            // same hazard as arrays above; rebuild via the map-literal assign
-            // (clear + set per entry) each time this scope is entered.
-            if !v.is_static
-                && ctx.current_exec.is_some()
-                && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
-                && var_rec.storage == VarStorage::Map
-            {
-                let init = v.init.as_ref().map(|i| ctx.with_map_literals(i));
-                if let Some(init @ Expr::MapLit { .. }) = init.as_deref() {
-                    let target = Binding::Var(var_rec);
-                    rebuild_container(ctx, &target, &v.name, init, &v.range, &mut lower_in_place(init, false));
-                } else if let Some(init) = &v.init
-                    && let Some(lit) = crate::lower::predeclare::const_container_init(ctx, init)
-                {
-                    rebuild_from_constant(ctx, &Binding::Var(var_rec), &v.name, init, lit, &v.range);
-                } else if let Some(init) = &v.init {
-                    ctx.warn(
-                        format!(
-                            "'var {}' map initializer must be a map literal, so this value is dropped; build the map with methods like set/copyFrom instead",
-                            v.shown_name()
-                        ),
-                        init.range(),
-                    );
-                }
-                return;
-            }
-            if !v.is_static
-                && let Some(exec) = ctx.current_exec
-                && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
-            {
-                let init_val = v.init.as_ref().map(|e| lower_expr(ctx, e)).or_else(|| {
-                    default_literal_for_var_type(&var_rec.inner_type)
-                        .map(|lit| raw_literal(ctx, &v.range, var_rec.inner_type.clone(), lit, None))
-                });
-                if let Some(val_port) = init_val {
-                    let exec_in = ctx.current_exec.unwrap_or(exec);
-                    let inner = var_rec.inner_type.clone();
-                    chain_var_write(
-                        ctx,
-                        exec_in,
-                        var_rec.node_id.port(WirePort::VarRef),
-                        inner.clone(),
-                        val_port,
-                        false,
-                        v.range.clone(),
-                        None,
-                    );
-                }
-            } // !is_static
-        }),
+        Stmt::Var(v) => ctx.with_nofold(v.no_fold, |ctx| lower_var_stmt(ctx, v)),
         Stmt::Array(a) => {
             if needs_declaration(ctx, &a.name, &a.range) {
                 pre_declare_array(ctx, a);
@@ -173,248 +35,18 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
             // this statement must get its own gate rather than re-driving the
             // outer buffer's `Input` (a fan-in that fails to load).
             if ctx.lookup_buffer_current_frame(&b.name).is_none()
-                || ctx.unhoisted.contains(&(b.range.file.clone(), b.range.start.offset))
+                || ctx.unhoisted.contains(&b.range.start_key())
             {
                 pre_declare_buffer(ctx, b);
             }
-            // Wire the initializer into the buffer's Input. Pre-declaration
-            // (here or in a body pre-pass) only creates the gate; without this
-            // the initializer of any statement-position buffer (chip/mod/
-            // handler body) is silently dropped and the input dangles.
+            // Pre-declaration (here or in a body pre-pass) only creates the
+            // gate, so the initializer is wired into its Input here.
             lower_buffer_body(ctx, b);
         }
         Stmt::IfLet(i) => lower_if_let(ctx, i),
         Stmt::LetElse(l) => lower_let_else(ctx, l),
-        Stmt::Return { value, .. } => {
-            // A tuple return `(v0, v1, ...)` to a mod with multiple NAMED
-            // outputs wires each element onto the matching output in declaration
-            // order, the same delivery as `emit out_i = v_i`. A tuple parses to
-            // an index-keyed record; without this it is stashed as one return
-            // record and the caller's `let (a, b) = f()` reads the unwired output
-            // nodes as `_Unsupported`. A single tuple/record output (count 1) and
-            // a named `{ a, b }` record both keep the record path below.
-            let names = ctx.mod_output_names.clone();
-            let tuple = match value {
-                Some(Expr::RecordLit { fields, .. })
-                    if fields.iter().all(|f| {
-                        matches!(f, RecordLitField::Named { name, .. } if name.parse::<usize>().is_ok())
-                    }) =>
-                {
-                    Some(fields)
-                }
-                _ => None,
-            };
-            let tuple_to_multi = tuple.is_some()
-                && if names.is_empty() {
-                    ctx.output_count() > 1
-                } else {
-                    names.len() > 1
-                };
-            // A gate read held as its outputs, returned to the one output of
-            // one value, is its first output on every return.
-            let held_first = match value {
-                Some(expr) if ctx.chip_return_outputs.is_empty() && ctx.output_count() == 1 => ctx
-                    .first_output()
-                    .map(|(_, out)| out.ty.clone())
-                    .and_then(|t| held_first_output(ctx, expr, &t)),
-                _ => None,
-            };
-            if !ctx.chip_return_outputs.is_empty() {
-                if let Some(expr) = value {
-                    lower_chip_return(ctx, expr);
-                }
-            } else if names.len() > 1
-                && let Some(ret_rec) = ctx.mod_return_record.clone()
-            {
-                // Several outputs and several returns: every return stores each
-                // output into the return storage, by output name. A tuple's
-                // elements go to the outputs, whose types are its slots.
-                let src = match (value, tuple) {
-                    (Some(_), Some(fields)) => {
-                        let targets = return_targets(&mod_outputs_with_exec(ctx, &names), fields.len());
-                        let slots = Type::Tuple(
-                            targets
-                                .iter()
-                                .map(|n| {
-                                    ctx.mod_output_types
-                                        .get(n)
-                                        .cloned()
-                                        .or_else(|| ctx.lookup_output(n).map(|o| o.ty.clone()))
-                                        .unwrap_or(Type::Any)
-                                })
-                                .collect(),
-                        );
-                        Some(lower_record_lit(ctx, fields, Slots::Of(&slots)))
-                    }
-                    (Some(expr), None) => written_record_fields(ctx, "this returned value", expr),
-                    (None, _) => None,
-                };
-                if let (Some(expr), Some(src)) = (value, src) {
-                    let names = return_targets(&mod_outputs_with_exec(ctx, &names), src.len());
-                    let src = by_output_name(ctx, src, expr, &names);
-                    assign_record_fields(ctx, &ret_rec, &src, &SourceRange::default());
-                }
-            } else if tuple_to_multi {
-                if let Some(fields) = tuple {
-                    // Each element goes to its output: the outputs' types are
-                    // the tuple's slots.
-                    let outs = ctx.ordered_outputs();
-                    let slots: Vec<Type> = if names.is_empty() {
-                        outs.iter().map(|o| o.ty.clone()).collect()
-                    } else {
-                        return_targets(&mod_outputs_with_exec(ctx, &names), fields.len())
-                            .iter()
-                            .map(|n| ctx.lookup_output(n).map_or(Type::Any, |o| o.ty.clone()))
-                            .collect()
-                    };
-                    let rec = lower_record_lit(ctx, fields, Slots::Of(&Type::Tuple(slots)));
-                    if names.is_empty() {
-                        for (i, out) in outs.iter().enumerate() {
-                            let key = crate::intern::intern(&i.to_string());
-                            if let Some(binding) = rec.get(&key).cloned()
-                                && let Some(port) =
-                                    binding_to_port(ctx, &binding, &SourceRange::default())
-                            {
-                                ctx.connect(port, out.node_id.port(WirePort::RerInput));
-                            }
-                        }
-                    } else {
-                        let names = return_targets(&mod_outputs_with_exec(ctx, &names), rec.len());
-                        for (i, name) in names.iter().enumerate() {
-                            let Some(binding) = rec.get(&crate::intern::intern(&i.to_string())).cloned() else {
-                                continue;
-                            };
-                            // A record-typed output has no port of its own; its
-                            // fields travel as the output's record, as
-                            // `out name = rec` sends them.
-                            if let Binding::Record(f) = binding {
-                                ctx.pending_out_records.insert(name.clone(), f);
-                            } else if let Some(out) = ctx.lookup_output(name).cloned()
-                                && let Some(port) = binding_to_port(ctx, &binding, &SourceRange::default())
-                            {
-                                ctx.connect(port, out.node_id.port(WirePort::RerInput));
-                            }
-                        }
-                    }
-                }
-            } else if names.len() > 1
-                && let Some(expr) = value
-                && ctx.gate_outputs(expr.range()).is_some()
-            {
-                // A gate read returned whole to several outputs (`return
-                // fs.min()`, `return k` after `let k = g2(x)`) fills them by
-                // output name, by position when the names differ, as the
-                // several-returns path above stores them.
-                if let Some(src) = written_record_fields(ctx, "this returned value", expr) {
-                    let targets = return_targets(&mod_outputs_with_exec(ctx, &names), src.len());
-                    ctx.pending_return_record = Some(by_output_name(ctx, src, expr, &targets));
-                }
-            } else if let Some(first) = held_first {
-                match first {
-                    // An enum first output is the value of the enum output.
-                    Binding::Record(rec) => match ctx.mod_return_record.clone() {
-                        Some(ret_rec) => assign_record_fields(ctx, &ret_rec, &rec, &SourceRange::default()),
-                        None => ctx.pending_return_record = Some(rec),
-                    },
-                    binding => {
-                        if let Some(port) = binding_to_port(ctx, &binding, &SourceRange::default()) {
-                            return_one_value(ctx, port);
-                        }
-                    }
-                }
-            } else if ctx.mod_return_record.is_some() {
-                // Multi-return mod with a single ENUM or RECORD output: store the
-                // returned value's fields into the shared return record (per-field
-                // Var_Set), so the caller reads the runtime-selected branch rather
-                // than a leaked construction / record literal from one arm.
-                // `value_record_fields` resolves a record literal, a record var /
-                // field chain, OR an enum/record construction (through its own
-                // may-produce-record lowering) to a field map uniformly, so every
-                // return form routes through the same storage.
-                if let Some(expr) = value {
-                    let ret_rec = ctx.mod_return_record.clone().unwrap();
-                    let what = "this returned value";
-                    if let Some(src) = written_record_fields(ctx, what, expr)
-                        && let Some(src) = fit_record_value(ctx, what, expr, &ret_rec, src)
-                    {
-                        assign_record_fields(ctx, &ret_rec, &src, &SourceRange::default());
-                    }
-                }
-            } else if let Some(lit_expr @ Expr::RecordLit { fields, .. }) = value {
-                // A record-literal return: `-> { a, b }` is a single record-typed
-                // output, and a bare record literal is not a standalone
-                // expression, so destructure it into a field->binding map. The
-                // inline-mod call binds the caller's record from this (see
-                // `pending_return_record`) rather than from a single value port.
-                let lit = ctx.type_of(lit_expr);
-                ctx.pending_return_record = Some(lower_record_lit(ctx, fields, Slots::Of(&lit)));
-            } else if let Some(expr) = value
-                && let Some(Binding::Record(fields)) = resolve_field_chain(ctx, expr).cloned()
-            {
-                // `return r` / `return r.sub` where the value is a record
-                // binding: forward its field map — a record has no single
-                // value port to wire to the output node. A gate read held in
-                // a field the output holds one value in is its first output.
-                let slot = ctx.first_output().map(|(_, out)| unwrap_ref(&out.ty));
-                let fields = match (slot, ctx.checked_type_at(expr.range())) {
-                    (Some(slot @ (Type::Record(_) | Type::Tuple(_))), Some(checked)) if ctx.output_count() == 1 => {
-                        held_reads_where_one_value(checked, fields, Slot::Typed(slot))
-                    }
-                    _ => fields,
-                };
-                ctx.pending_return_record = Some(fields);
-            } else if let Some(expr) = value
-                && !matches!(expr, Expr::Call { .. })
-                && ctx.output_count() == 1
-                && ctx.first_output().is_some_and(|(_, out)| match unwrap_ref(&out.ty) {
-                    Type::Record(_) | Type::Tuple(_) | Type::Enum { .. } => true,
-                    Type::Any => matches!(
-                        unwrap_ref(&ctx.type_of(expr)),
-                        Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }
-                    ),
-                    _ => false,
-                })
-            {
-                // Any other value of the one record, tuple or enum output
-                // (a construction, an `if`/`match` choosing one, an element of
-                // a column array) is handed to the caller as its fields; it has
-                // no single port to wire. An output named by a type alias has
-                // no type here, so the value's own type decides.
-                if let Some(fields) = written_record_fields(ctx, "this returned value", expr) {
-                    ctx.pending_return_record = Some(fields);
-                }
-            } else if let Some(expr) = value {
-                // Clear any leftover inline-mod record so only THIS
-                // expression's call can set it.
-                ctx.pending_inline_record = None;
-                let val_port = lower_expr(ctx, expr);
-                // A gate read returned from an output of one value is its
-                // first output, the port the call gives.
-                let first_of_gate_read = ctx.output_count() == 1
-                    && ctx.first_output().is_some_and(|(_, out)| holds_one_value(&unwrap_ref(&out.ty)))
-                    && ctx.gate_outputs(expr.range()).is_some();
-                if matches!(expr, Expr::Call { .. })
-                    && let Some(record) = ctx.pending_inline_record.take()
-                    && !first_of_gate_read
-                {
-                    // `return make(x)` where `make` returns a record: the call
-                    // stashed a field->source map (its value "port" is a
-                    // placeholder, not a real node). Forward the record to the
-                    // caller instead of wiring the placeholder.
-                    let one_enum = ctx.output_count() == 1
-                        && ctx.first_output().is_some_and(|(_, out)| matches!(unwrap_ref(&out.ty), Type::Enum { .. }));
-                    ctx.pending_return_record =
-                        Some(if one_enum { one_enum_value(ctx, expr, record) } else { record });
-                } else {
-                    return_one_value(ctx, val_port);
-                }
-            }
-            if let Some(exec) = ctx.current_exec.take() {
-                let prev = ctx.mod_return_exec.take();
-                ctx.mod_return_exec = merge_exec(ctx, prev, Some(exec), &SourceRange::default());
-            }
-        }
-        Stmt::For(f) => crate::lower::for_loop::lower_for(ctx, f),
+        Stmt::Return { value, .. } => lower_return(ctx, value.as_ref()),
+        Stmt::For(f) => for_loop::lower_for(ctx, f),
         Stmt::Break { range } => {
             let Some(exec) = ctx.current_exec else {
                 return;
@@ -441,28 +73,424 @@ pub(super) fn lower_stmt(ctx: &mut LowerCtx, s: &Stmt) {
     }
 }
 
+/// Lower a `var` statement: declare it when this scope has not, then reset it
+/// to its initializer (or its zero) on the exec chain.
+fn lower_var_stmt(ctx: &mut LowerCtx<'_>, v: &VarDecl) {
+    let declares = needs_declaration(ctx, &v.name, &v.range);
+    // `var x = <init reading x>`: the initializer reads the `x` around
+    // the declaration, as a `let`'s does, so the var is declared under
+    // a name of its own and `x` names it once it exists.
+    if declares && let Some(apart) = v.declared_apart() {
+        lower_stmt(ctx, &Stmt::Var(apart.clone()));
+        if let Some(binding) = ctx.scope.get(&apart.name).cloned() {
+            ctx.scope.insert(&v.name, binding);
+        }
+        ctx.consts.forget(&v.name);
+        return;
+    }
+    if declares {
+        pre_declare_var(ctx, v);
+    }
+    // Pure position (chip/mod body instantiated without exec) or
+    // `static var`: no exec reset runs, so a non-constant init is
+    // dropped; warn about it.
+    if v.is_static || ctx.current_exec.is_none() {
+        warn_unbaked_var_init(ctx, v, false);
+    }
+    // A record (or tuple or enum) var is several gates, so its
+    // initializer runs as an assignment to them, which resets the var
+    // each time this scope is entered like the forms below do.
+    if !v.is_static
+        && ctx.current_exec.is_some()
+        && let Some(init) = &v.init
+        && let Some(target @ Binding::Record(_)) = ctx.scope.get(&v.name).cloned()
+    {
+        if let Some(lit) = const_container_init(ctx, init) {
+            rebuild_from_constant(ctx, &target, &v.name, init, lit, &v.range);
+            return;
+        }
+        lower_assign(
+            ctx,
+            &Assign {
+                target: Expr::Ident {
+                    name: v.name.clone(),
+                    range: v.range.clone(),
+                },
+                value: init.clone(),
+                range: v.range.clone(),
+            },
+        );
+        return;
+    }
+    // With no initializer each scalar leaf resets to its zero value,
+    // as a plain `var x: int` does. A container leaf is left as the
+    // plain `var xs: int[]` form leaves it.
+    if !v.is_static
+        && ctx.current_exec.is_some()
+        && v.init.is_none()
+        && let Some(Binding::Record(fields)) = ctx.scope.get(&v.name).cloned()
+    {
+        reset_record_leaves(ctx, &fields, &v.range);
+        return;
+    }
+    // In exec context a non-static var is reset to its initial value
+    // each time this scope is entered; a PseudoVar otherwise keeps the
+    // previous invocation's value. Array vars have no `VarRef` port
+    // (only `ArrayVarRef`), and a wire from it fails to load ("Wire
+    // source port VarRef does not exist"), so they are rebuilt with the
+    // array-literal assign (clear + push).
+    if !v.is_static
+        && ctx.current_exec.is_some()
+        && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
+        && var_rec.storage == VarStorage::Array
+    {
+        if let Some(init @ Expr::Array { .. }) = &v.init {
+            let target = Binding::Var(var_rec);
+            rebuild_container(
+                ctx,
+                &target,
+                &v.name,
+                init,
+                &v.range,
+                &mut lower_in_place(init, false),
+            );
+        } else if let Some(init) = &v.init
+            && let Some(lit) = const_container_init(ctx, init)
+        {
+            rebuild_from_constant(ctx, &Binding::Var(var_rec), &v.name, init, lit, &v.range);
+        } else if let Some(init) = &v.init {
+            let src = lower_expr(ctx, init);
+            copy_container_from(ctx, &var_rec, src, &v.range);
+        }
+        return;
+    }
+    // Map-typed vars have no `VarRef` port either (only `MapVarRef`),
+    // same hazard as arrays above; rebuild via the map-literal assign
+    // (clear + set per entry) each time this scope is entered.
+    if !v.is_static
+        && ctx.current_exec.is_some()
+        && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
+        && var_rec.storage == VarStorage::Map
+    {
+        let init = v.init.as_ref().map(|i| ctx.with_map_literals(i));
+        if let Some(init @ Expr::MapLit { .. }) = init.as_deref() {
+            let target = Binding::Var(var_rec);
+            rebuild_container(
+                ctx,
+                &target,
+                &v.name,
+                init,
+                &v.range,
+                &mut lower_in_place(init, false),
+            );
+        } else if let Some(init) = &v.init
+            && let Some(lit) = const_container_init(ctx, init)
+        {
+            rebuild_from_constant(ctx, &Binding::Var(var_rec), &v.name, init, lit, &v.range);
+        } else if let Some(init) = &v.init {
+            let src = lower_expr(ctx, init);
+            copy_container_from(ctx, &var_rec, src, &v.range);
+        }
+        return;
+    }
+    if !v.is_static
+        && let Some(exec) = ctx.current_exec
+        && let Some(var_rec) = ctx.lookup_var(&v.name).cloned()
+    {
+        let init_val = v.init.as_ref().map(|e| lower_expr(ctx, e)).or_else(|| {
+            default_literal_for_var_type(&var_rec.inner_type)
+                .map(|lit| raw_literal(ctx, &v.range, var_rec.inner_type.clone(), lit, None))
+        });
+        if let Some(val_port) = init_val {
+            let exec_in = ctx.current_exec.unwrap_or(exec);
+            store_on_chain(
+                ctx,
+                exec_in,
+                &var_rec,
+                val_port,
+                WriteKind::Set,
+                v.range.clone(),
+                None,
+            );
+        }
+    } // !is_static
+}
+
+/// Lower a `return`: hand its value to the mod's output storage by the shape of
+/// the value and of the outputs, then merge the chain into the mod's return exec.
+fn lower_return(ctx: &mut LowerCtx<'_>, value: Option<&Expr>) {
+    // A tuple return `(v0, v1, ...)` (an index-keyed record) to a mod
+    // with several outputs wires each element onto the matching output
+    // in declaration order, as `emit out_i = v_i` does. A single
+    // tuple/record output and a named `{ a, b }` record take the record
+    // paths below.
+    let names = ctx.mod_output_names.clone();
+    let tuple = match value {
+        Some(Expr::RecordLit { fields, .. })
+            if fields.iter().all(|f| {
+                matches!(f, RecordLitField::Named { name, .. } if name.parse::<usize>().is_ok())
+            }) =>
+        {
+            Some(fields)
+        }
+        _ => None,
+    };
+    let tuple_to_multi = tuple.is_some()
+        && if names.is_empty() {
+            ctx.output_count() > 1
+        } else {
+            names.len() > 1
+        };
+    // A gate read held as its outputs, returned to the one output of
+    // one value, is its first output on every return.
+    let held_first = match value {
+        Some(expr) if ctx.chip_return_outputs.is_empty() && ctx.output_count() == 1 => ctx
+            .first_output()
+            .map(|(_, out)| out.ty.clone())
+            .and_then(|t| held_first_output(ctx, expr, &t)),
+        _ => None,
+    };
+    if !ctx.chip_return_outputs.is_empty() {
+        if let Some(expr) = value {
+            lower_chip_return(ctx, expr);
+        }
+    } else if names.len() > 1
+        && let Some(ret_rec) = ctx.mod_return_record.clone()
+    {
+        store_returns_by_name(ctx, &ret_rec, &names, value, tuple);
+    } else if tuple_to_multi {
+        if let Some(fields) = tuple {
+            return_tuple_to_outputs(ctx, &names, fields);
+        }
+    } else if names.len() > 1
+        && let Some(expr) = value
+        && ctx.gate_outputs(expr.range()).is_some()
+    {
+        // A gate read returned whole to several outputs (`return
+        // fs.min()`, `return k` after `let k = g2(x)`) fills them by
+        // output name, by position when the names differ, as the
+        // several-returns path above stores them.
+        if let Some(src) = written_record_fields(ctx, "this returned value", expr) {
+            let targets = return_targets(&mod_outputs_with_exec(ctx, &names), src.len());
+            ctx.pending_return_record = Some(by_output_name(ctx, src, expr, &targets));
+        }
+    } else if let Some(first) = held_first {
+        match first {
+            // An enum first output is the value of the enum output.
+            Binding::Record(rec) => match ctx.mod_return_record.clone() {
+                Some(ret_rec) => assign_record_fields(ctx, &ret_rec, &rec, &SourceRange::default()),
+                None => ctx.pending_return_record = Some(rec),
+            },
+            binding => {
+                if let Some(port) = binding_to_port(ctx, &binding, &SourceRange::default()) {
+                    return_one_value(ctx, port);
+                }
+            }
+        }
+    } else if ctx.mod_return_record.is_some() {
+        // Multi-return mod with a single enum or record output: every
+        // return stores the value's fields into the shared return record
+        // (one Var_Set per field), so the caller reads the branch that
+        // ran rather than the value from one arm.
+        if let Some(expr) = value {
+            let ret_rec = ctx.mod_return_record.clone().unwrap();
+            let what = "this returned value";
+            if let Some(src) = written_record_fields(ctx, what, expr)
+                && let Some(src) = fit_record_value(ctx, what, expr, &ret_rec, src)
+            {
+                assign_record_fields(ctx, &ret_rec, &src, &SourceRange::default());
+            }
+        }
+    } else if let Some(lit_expr @ Expr::RecordLit { fields, .. }) = value {
+        // A record-literal return: `-> { a, b }` is a single record-typed
+        // output, and a bare record literal is not a standalone
+        // expression, so destructure it into a field->binding map. The
+        // inline-mod call binds the caller's record from this (see
+        // `pending_return_record`) rather than from a single value port.
+        let lit = ctx.type_of(lit_expr);
+        ctx.pending_return_record = Some(lower_record_lit(ctx, fields, Slots::Of(&lit)));
+    } else if let Some(expr) = value
+        && let Some(Binding::Record(fields)) = resolve_field_chain(ctx, expr).cloned()
+    {
+        // `return r` / `return r.sub` where the value is a record
+        // binding: forward its field map, since a record has no single
+        // value port to wire to the output node. A gate read held in
+        // a field the output holds one value in is its first output.
+        let slot = ctx.first_output().map(|(_, out)| unwrap_ref(&out.ty));
+        let fields = match (slot, ctx.checked_type_at(expr.range())) {
+            (Some(slot @ (Type::Record(_) | Type::Tuple(_))), Some(checked))
+                if ctx.output_count() == 1 =>
+            {
+                held_reads_where_one_value(checked, fields, &Slot::Typed(slot))
+            }
+            _ => fields,
+        };
+        ctx.pending_return_record = Some(fields);
+    } else if let Some(expr) = value
+        && !matches!(expr, Expr::Call { .. })
+        && ctx.output_count() == 1
+        && ctx
+            .first_output()
+            .is_some_and(|(_, out)| match unwrap_ref(&out.ty) {
+                Type::Record(_) | Type::Tuple(_) | Type::Enum { .. } => true,
+                Type::Any => matches!(
+                    unwrap_ref(&ctx.type_of(expr)),
+                    Type::Record(_) | Type::Tuple(_) | Type::Enum { .. }
+                ),
+                _ => false,
+            })
+    {
+        // Any other value of the one record, tuple or enum output
+        // (a construction, an `if`/`match` choosing one, an element of
+        // a column array) is handed to the caller as its fields; it has
+        // no single port to wire. An output named by a type alias has
+        // no type here, so the value's own type decides.
+        if let Some(fields) = written_record_fields(ctx, "this returned value", expr) {
+            ctx.pending_return_record = Some(fields);
+        }
+    } else if let Some(expr) = value {
+        return_value_expr(ctx, expr);
+    }
+    if let Some(exec) = ctx.current_exec.take() {
+        let prev = ctx.mod_return_exec.take();
+        ctx.mod_return_exec = merge_exec(ctx, prev, Some(exec), &SourceRange::default());
+    }
+}
+
+/// Several outputs and several returns: every return stores each output into
+/// the return storage `ret_rec`, by output name. A tuple's elements go to the
+/// outputs, whose types are its slots.
+fn store_returns_by_name(
+    ctx: &mut LowerCtx<'_>,
+    ret_rec: &Fields,
+    names: &[String],
+    value: Option<&Expr>,
+    tuple: Option<&Vec<RecordLitField>>,
+) {
+    let src = match (value, tuple) {
+        (Some(_), Some(fields)) => {
+            let targets = return_targets(&mod_outputs_with_exec(ctx, names), fields.len());
+            let slots = Type::Tuple(
+                targets
+                    .iter()
+                    .map(|n| {
+                        ctx.mod_output_types
+                            .get(n)
+                            .cloned()
+                            .or_else(|| ctx.lookup_output(n).map(|o| o.ty.clone()))
+                            .unwrap_or(Type::Any)
+                    })
+                    .collect(),
+            );
+            Some(lower_record_lit(ctx, fields, Slots::Of(&slots)))
+        }
+        (Some(expr), None) => written_record_fields(ctx, "this returned value", expr),
+        (None, _) => None,
+    };
+    if let (Some(expr), Some(src)) = (value, src) {
+        let names = return_targets(&mod_outputs_with_exec(ctx, names), src.len());
+        let src = by_output_name(ctx, src, expr, &names);
+        assign_record_fields(ctx, ret_rec, &src, &SourceRange::default());
+    }
+}
+
+/// A tuple return wired element by element onto the mod's several outputs. The
+/// outputs' types are the tuple's slots.
+fn return_tuple_to_outputs(ctx: &mut LowerCtx<'_>, names: &[String], fields: &[RecordLitField]) {
+    // Each element goes to its output: the outputs' types are
+    // the tuple's slots.
+    let outs = ctx.ordered_outputs();
+    let slots: Vec<Type> = if names.is_empty() {
+        outs.iter().map(|o| o.ty.clone()).collect()
+    } else {
+        return_targets(&mod_outputs_with_exec(ctx, names), fields.len())
+            .iter()
+            .map(|n| ctx.lookup_output(n).map_or(Type::Any, |o| o.ty.clone()))
+            .collect()
+    };
+    let rec = lower_record_lit(ctx, fields, Slots::Of(&Type::Tuple(slots)));
+    if names.is_empty() {
+        for (i, out) in outs.iter().enumerate() {
+            let key = intern(&i.to_string());
+            if let Some(binding) = rec.get(&key).cloned()
+                && let Some(port) = binding_to_port(ctx, &binding, &SourceRange::default())
+            {
+                ctx.connect(port, out.node_id.port(WirePort::RerInput));
+            }
+        }
+    } else {
+        let names = return_targets(&mod_outputs_with_exec(ctx, names), rec.len());
+        for (i, name) in names.iter().enumerate() {
+            let Some(binding) = rec.get(&intern(&i.to_string())).cloned() else {
+                continue;
+            };
+            // A record-typed output has no port of its own; its
+            // fields travel as the output's record, as
+            // `out name = rec` sends them.
+            if let Binding::Record(f) = binding {
+                ctx.pending_out_records.insert(name.clone(), f);
+            } else if let Some(out) = ctx.lookup_output(name).cloned()
+                && let Some(port) = binding_to_port(ctx, &binding, &SourceRange::default())
+            {
+                ctx.connect(port, out.node_id.port(WirePort::RerInput));
+            }
+        }
+    }
+}
+
+/// Hand the value of `expr`, a `return`ed expression, to the mod's output: its
+/// record forwarded when it is a call returning one, its port otherwise.
+fn return_value_expr(ctx: &mut LowerCtx<'_>, expr: &Expr) {
+    // Clear any leftover inline-mod record so only THIS
+    // expression's call can set it.
+    ctx.pending_inline_record = None;
+    let val_port = lower_expr(ctx, expr);
+    // A gate read returned from an output of one value is its
+    // first output, the port the call gives.
+    let first_of_gate_read = ctx.output_count() == 1
+        && ctx
+            .first_output()
+            .is_some_and(|(_, out)| holds_one_value(&unwrap_ref(&out.ty)))
+        && ctx.gate_outputs(expr.range()).is_some();
+    if matches!(expr, Expr::Call { .. })
+        && let Some(record) = ctx.pending_inline_record.take()
+        && !first_of_gate_read
+    {
+        // `return make(x)` where `make` returns a record: the call
+        // stashed a field->source map (its value "port" is a
+        // placeholder, not a real node). Forward the record to the
+        // caller instead of wiring the placeholder.
+        let one_enum = ctx.output_count() == 1
+            && ctx
+                .first_output()
+                .is_some_and(|(_, out)| matches!(unwrap_ref(&out.ty), Type::Enum { .. }));
+        ctx.pending_return_record = Some(if one_enum {
+            one_enum_value(ctx, expr, record)
+        } else {
+            record
+        });
+    } else {
+        return_one_value(ctx, val_port);
+    }
+}
+
 /// Hand `val_port`, a `return`ed value, to the mod's one output of one value:
 /// stored into its return var when several returns choose it, wired to the
 /// output otherwise.
-fn return_one_value(ctx: &mut LowerCtx, val_port: PortRef) {
+fn return_one_value(ctx: &mut LowerCtx<'_>, val_port: PortRef) {
     if let Some(var_rec) = ctx.mod_return_var.clone() {
-        // Multi-return: Var_Set to the return var
         if let Some(exec) = ctx.current_exec {
-            let inner = var_rec.inner_type.clone();
-            let var_ref = var_rec.node_id.port(WirePort::VarRef);
-            chain_var_write(
+            store_on_chain(
                 ctx,
                 exec,
-                var_ref,
-                inner,
+                &var_rec,
                 val_port,
-                false,
+                WriteKind::Set,
                 SourceRange::default(),
                 Some("ret_set"),
             );
         }
     } else if ctx.output_count() == 1 {
-        // Single return: wire directly to output
         let out = ctx.first_output().unwrap().1.clone();
         ctx.connect(val_port, out.node_id.port(WirePort::RerInput));
     }
@@ -518,32 +546,13 @@ pub(super) fn block_contains_return(block: &Block) -> bool {
 /// Does a `var`/`array`/`map` STATEMENT need to declare `name`, or does an
 /// existing binding already cover it?
 ///
-/// A statement-position declaration is skipped when the name already resolves
-/// to a var IN THE CURRENT FRAME, which is what lets a body pre-pass declare it
-/// once and the statement itself only run the reset. The check must be
-/// CURRENT-FRAME, not a full chain walk: a same-named var in an ANCESTOR frame
-/// (an outer handler/block, or a mod's top-level body around a nested `if`) is a
-/// DIFFERENT variable being shadowed, and this statement must get its own fresh
-/// storage gate. A chain walk found the ancestor and skipped the declaration, so
-/// the inner `var` silently reused the outer's gate — type-divergent writes, a
-/// `static var` reset every call, or a load-breaking buffer fan-in.
-///
-/// The one binding that must NOT count is a lazily materialized `const`
-/// container (see `predeclare::materialize_const_container`): it exists only
-/// because something READ the constant earlier in this body, so treating it as
-/// "already declared" makes a genuine `var xs: int[]` reuse the const
-/// container's gate instead of shadowing it — the declaration silently vanishes
-/// and every later write lands on (or, being immutable, is rejected against) the
-/// wrong array.
-///
-/// A declaration the body pre-declare left to its statement always declares:
-/// the current frame binds its name to the parameter or module member it
-/// shadows, which is not this declaration's storage.
-fn needs_declaration(ctx: &LowerCtx, name: &str, range: &SourceRange) -> bool {
-    if ctx
-        .unhoisted
-        .contains(&(range.file.clone(), range.start.offset))
-    {
+/// It is skipped when the name already resolves to a var in the CURRENT frame
+/// (a body pre-pass declared it). An ancestor frame's var is a different
+/// variable being shadowed. A lazily materialized `const` container
+/// (`predeclare::materialize_const_container`) does not count, and a
+/// declaration the body pre-declare left to its statement always declares.
+fn needs_declaration(ctx: &LowerCtx<'_>, name: &str, range: &SourceRange) -> bool {
+    if ctx.unhoisted.contains(&range.start_key()) {
         return true;
     }
     match ctx.lookup_var_current_frame(name) {
@@ -556,7 +565,7 @@ fn needs_declaration(ctx: &LowerCtx, name: &str, range: &SourceRange) -> bool {
 /// An expression statement: its value, if any, is discarded. In statement
 /// position (a live exec chain) a match whose arms are blocks threads exec
 /// through a Branch/Union tree; the exec continues via `current_exec`.
-pub(super) fn lower_expr_stmt(ctx: &mut LowerCtx, e: &Expr) {
+pub(super) fn lower_expr_stmt(ctx: &mut LowerCtx<'_>, e: &Expr) {
     match e {
         Expr::MatchExpr {
             scrutinee,
@@ -573,7 +582,10 @@ pub(super) fn lower_expr_stmt(ctx: &mut LowerCtx, e: &Expr) {
     }
 }
 
-pub(super) fn match_increment_self<'s>(ctx: &LowerCtx, s: &'s Assign) -> Option<(&'s Expr, bool)> {
+pub(super) fn match_increment_self<'s>(
+    ctx: &LowerCtx<'_>,
+    s: &'s Assign,
+) -> Option<(&'s Expr, bool)> {
     fn same_target(a: &Expr, b: &Expr) -> bool {
         match (a, b) {
             (Expr::Ident { name: x, .. }, Expr::Ident { name: y, .. }) => x == y,
@@ -616,7 +628,7 @@ pub(super) fn match_increment_self<'s>(ctx: &LowerCtx, s: &'s Assign) -> Option<
 /// `-delta` for a numeric literal `delta`, negated where it is written, or
 /// for an integer constant (`STEP`), the integer it negates to, as a negated
 /// integer constant is in `lower_unop`.
-fn negated_literal(ctx: &mut LowerCtx, delta: &Expr, range: &SourceRange) -> Option<PortRef> {
+fn negated_literal(ctx: &mut LowerCtx<'_>, delta: &Expr, range: &SourceRange) -> Option<PortRef> {
     match delta {
         Expr::IntLit { value, .. } => Some(raw_literal(
             ctx,
@@ -633,11 +645,8 @@ fn negated_literal(ctx: &mut LowerCtx, delta: &Expr, range: &SourceRange) -> Opt
             None,
         )),
         _ if unwrap_ref(&ctx.type_of(delta)) == Type::Int => {
-            let lookup = |n: &str| ctx.resolve_mod(n);
-            let cx = ctx.certified_const_ctx(Some(&lookup));
-            let mut budget = crate::const_eval::Budget::default();
-            let n = match crate::const_eval::eval_expr(delta, &cx, &mut budget) {
-                Ok(Literal::Int(n)) if !budget.uncertified => n.checked_neg()?,
+            let n = match ctx.const_eval_budget(delta, ConstScope::Certified) {
+                (Ok(Literal::Int(n)), budget) if !budget.uncertified => n.checked_neg()?,
                 _ => return None,
             };
             Some(raw_literal(ctx, range, Type::Int, Literal::Int(n), None))
@@ -647,7 +656,7 @@ fn negated_literal(ctx: &mut LowerCtx, delta: &Expr, range: &SourceRange) -> Opt
 }
 
 /// `-delta` through a `MathNegate` gate over its lowered `port`.
-fn negated(ctx: &mut LowerCtx, delta: &Expr, port: PortRef, range: &SourceRange) -> PortRef {
+fn negated(ctx: &mut LowerCtx<'_>, delta: &Expr, port: PortRef, range: &SourceRange) -> PortRef {
     let ty = unwrap_ref(&ctx.type_of(delta));
     let node = ctx.add_gate(AddNodeOpts {
         gate_class: gc::MATH_NEGATE,
@@ -672,7 +681,7 @@ fn increments_left(s: &Assign, delta: &Expr) -> bool {
 /// change it. Then `x` (as `target` reads it) is read before `d` runs, and the
 /// sum (difference) is set instead.
 fn increment_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     s: &Assign,
     delta: &Expr,
     negate: bool,
@@ -684,15 +693,12 @@ fn increment_value(
     if negate && let Some(port) = negated_literal(ctx, delta, &s.range) {
         return (port, true);
     }
-    let mut ord = crate::lower::ordered::Ordered::default();
+    let mut ord = ordered::Ordered::default();
     let t = ord.push(target, "", None, &s.range);
     let d = ord.port(ctx, delta);
     let delta_port = ord.port_of(ctx, d);
     match ord.value(ctx, t) {
-        Some(Binding::Local(held)) => (
-            crate::lower::ops::binop_gate(ctx, &s.value, held.port, delta_port),
-            false,
-        ),
+        Some(Binding::Local(held)) => (binop_gate(ctx, &s.value, held.port, delta_port), false),
         _ if negate => (negated(ctx, delta, delta_port, &s.range), true),
         _ => (delta_port, true),
     }
@@ -700,12 +706,11 @@ fn increment_value(
 
 /// Emit a `Var_Set` (or, for buffer storage, a direct `Input` wire) writing an
 /// ALREADY-LOWERED `value_port` into `var_rec` on the current exec chain,
-/// advancing `current_exec` and invalidating the read cache. Extracted from the
-/// field-assignment path so the whole-record decomposition writes each leaf
-/// field identically. A non-buffer write in pure position (no `current_exec`)
-/// is a no-op, matching the caller's own guard.
+/// advancing `current_exec` and invalidating the read cache. Field assignment
+/// and whole-record writes both use it for each leaf field. A non-buffer write
+/// in pure position (no `current_exec`) is a no-op.
 pub(super) fn set_scalar_var(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     var_rec: &VarRecord,
     value_port: PortRef,
     range: &SourceRange,
@@ -717,25 +722,23 @@ pub(super) fn set_scalar_var(
     let Some(exec_in) = ctx.current_exec else {
         return;
     };
-    let inner = var_rec.inner_type.clone();
-    chain_var_write(
+    store_on_chain(
         ctx,
         exec_in,
-        var_rec.node_id.port(WirePort::VarRef),
-        inner.clone(),
+        var_rec,
         value_port,
-        false,
+        WriteKind::Set,
         range.clone(),
         None,
     );
-    invalidate_var_cache(ctx, &var_rec.node_id);
+    invalidate_var_cache(ctx, var_rec.node_id);
 }
 
 /// Rebuild the container `target` from `lit`, the folded value of an
 /// initializer that names a constant (`var xs: int[] = IS` in a handler), as
 /// its literal twin is rebuilt: each element a literal gate.
 pub(super) fn rebuild_from_constant(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     target: &Binding,
     name: &str,
     init: &Expr,
@@ -752,7 +755,7 @@ pub(super) fn rebuild_from_constant(
                     .collect(),
                 range: at.clone(),
             };
-            let mut supply = |ctx: &mut LowerCtx, i: usize| {
+            let mut supply = |ctx: &mut LowerCtx<'_>, i: usize| {
                 Supplied::Item(literal_element(ctx, target, items[i].clone(), &at))
             };
             rebuild_container(ctx, target, name, &value, range, &mut supply);
@@ -764,7 +767,7 @@ pub(super) fn rebuild_from_constant(
             let value = Expr::MapLit {
                 entries: pairs
                     .iter()
-                    .map(|_| crate::ast::MapLitEntry {
+                    .map(|_| MapLitEntry {
                         key: init.clone(),
                         value: init.clone(),
                         range: at.clone(),
@@ -772,7 +775,7 @@ pub(super) fn rebuild_from_constant(
                     .collect(),
                 range: at.clone(),
             };
-            let mut supply = |ctx: &mut LowerCtx, i: usize| {
+            let mut supply = |ctx: &mut LowerCtx<'_>, i: usize| {
                 let (k, v) = pairs[i].clone();
                 let key = literal_node_range(
                     ctx,
@@ -812,20 +815,20 @@ fn column_element_type(v: &VarRecord) -> Type {
 /// gate for an array or map var, one per column for a record or enum
 /// container (a column the value has no field for takes its type's zero).
 fn literal_element(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     target: &Binding,
     lit: Literal,
     at: &SourceRange,
 ) -> ElemValue {
     fn record(
-        ctx: &mut LowerCtx,
-        cols: &HashMap<crate::intern::Sym, Binding>,
+        ctx: &mut LowerCtx<'_>,
+        cols: &Fields,
         fields: &[(String, Literal)],
         at: &SourceRange,
-    ) -> HashMap<crate::intern::Sym, Binding> {
+    ) -> Fields {
         let mut out = HashMap::default();
         for (k, col) in cols {
-            let fname = crate::intern::resolve(*k);
+            let fname = resolve(*k);
             let field = fields
                 .iter()
                 .find(|(n, _)| *n == fname)
@@ -871,13 +874,9 @@ fn literal_element(
 /// Reset every scalar leaf of a record var to the value its gate starts with,
 /// which for a var declared with no initializer is its zero value (an enum's
 /// first variant).
-fn reset_record_leaves(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-    range: &SourceRange,
-) {
-    let mut keys: Vec<crate::intern::Sym> = fields.keys().copied().collect();
-    keys.sort_by_key(|k| crate::intern::resolve(*k));
+fn reset_record_leaves(ctx: &mut LowerCtx<'_>, fields: &Fields, range: &SourceRange) {
+    let mut keys: Vec<Sym> = fields.keys().copied().collect();
+    keys.sort_by_key(|k| resolve(*k));
     for k in keys {
         match &fields[&k] {
             Binding::Record(sub) => reset_record_leaves(ctx, sub, range),
@@ -900,16 +899,8 @@ fn reset_record_leaves(
 
 /// A returned record value keyed by the mod's output names: a tuple's
 /// positions, or a multi-output call's outputs, map onto the names in order.
-fn by_output_name(
-    ctx: &LowerCtx,
-    src: HashMap<crate::intern::Sym, Binding>,
-    value: &Expr,
-    names: &[String],
-) -> HashMap<crate::intern::Sym, Binding> {
-    if names
-        .iter()
-        .all(|n| src.contains_key(&crate::intern::intern(n)))
-    {
+fn by_output_name(ctx: &LowerCtx<'_>, src: Fields, value: &Expr, names: &[String]) -> Fields {
+    if names.iter().all(|n| src.contains_key(&intern(n))) {
         return src;
     }
     let order: Vec<String> = match unwrap_ref(&ctx.type_of(value)) {
@@ -921,10 +912,7 @@ fn by_output_name(
     order
         .iter()
         .zip(names)
-        .filter_map(|(from, to)| {
-            src.get(&crate::intern::intern(from))
-                .map(|b| (crate::intern::intern(to), b.clone()))
-        })
+        .filter_map(|(from, to)| src.get(&intern(from)).map(|b| (intern(to), b.clone())))
         .collect()
 }
 
@@ -941,7 +929,7 @@ fn return_targets(outputs: &[(String, bool)], arity: usize) -> Vec<String> {
 }
 
 /// The inlined mod's outputs, each with whether it is an exec output.
-fn mod_outputs_with_exec(ctx: &LowerCtx, names: &[String]) -> Vec<(String, bool)> {
+fn mod_outputs_with_exec(ctx: &LowerCtx<'_>, names: &[String]) -> Vec<(String, bool)> {
     names
         .iter()
         .map(|n| {
@@ -959,7 +947,7 @@ fn mod_outputs_with_exec(ctx: &LowerCtx, names: &[String]) -> Vec<(String, bool)
 /// takes the whole value). An output with a backing (written by several
 /// returns or also by `emit`) stores into it on the exec chain; any other is
 /// driven straight from the value, field by field for a record output.
-fn lower_chip_return(ctx: &mut LowerCtx, expr: &Expr) {
+fn lower_chip_return(ctx: &mut LowerCtx<'_>, expr: &Expr) {
     let range = expr.range().clone();
     let Some(src) = value_record_fields(ctx, expr) else {
         return;
@@ -972,15 +960,15 @@ fn lower_chip_return(ctx: &mut LowerCtx, expr: &Expr) {
         .collect();
     let src = if let [(only, _)] = outputs.as_slice() {
         let mut whole = HashMap::default();
-        whole.insert(crate::intern::intern(only), Binding::Record(src));
+        whole.insert(intern(only), Binding::Record(src));
         whole
     } else {
         let names = return_targets(&outputs, src.len());
         by_output_name(ctx, src, expr, &names)
     };
-    let mut stored: HashMap<crate::intern::Sym, Binding> = HashMap::default();
+    let mut stored: Fields = HashMap::default();
     for name in &value_names {
-        let key = crate::intern::intern(name);
+        let key = intern(name);
         let Some(value) = src.get(&key).cloned() else {
             continue;
         };
@@ -992,11 +980,7 @@ fn lower_chip_return(ctx: &mut LowerCtx, expr: &Expr) {
             stored.insert(key, Binding::Var(backing));
             continue;
         }
-        match ctx
-            .scope
-            .get(&crate::lower::context::output_scope_key(name))
-            .cloned()
-        {
+        match ctx.scope.get(&output_scope_key(name)).cloned() {
             Some(Binding::Record(pins)) => {
                 if let Binding::Record(fields) = value {
                     wire_record_output_fields(ctx, &pins, &fields, &range);
@@ -1025,7 +1009,7 @@ fn lower_chip_return(ctx: &mut LowerCtx, expr: &Expr) {
 /// an array or map of records has several containers with no single reference
 /// to choose, so the value has no form: WS071, as `if c then pts else pts2` is.
 /// `true` when it reported.
-fn reject_column_record_choice(ctx: &mut LowerCtx, value: &Expr, range: &SourceRange) -> bool {
+fn reject_column_record_choice(ctx: &mut LowerCtx<'_>, value: &Expr, range: &SourceRange) -> bool {
     fn column_field(fields: &[(String, Type)]) -> Option<(String, &'static str)> {
         fields.iter().find_map(|(name, ft)| match unwrap_ref(ft) {
             Type::Array(e) | Type::Map(_, e) => match *e {
@@ -1065,19 +1049,16 @@ fn reject_column_record_choice(ctx: &mut LowerCtx, value: &Expr, range: &SourceR
 /// construction is lowered here and its stashed per-field record taken.
 /// Returns `None` for a value with no field map, leaving the caller to fall
 /// through rather than miswire.
-pub(super) fn value_record_fields(
-    ctx: &mut LowerCtx,
-    value: &Expr,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+pub(super) fn value_record_fields(ctx: &mut LowerCtx<'_>, value: &Expr) -> Option<Fields> {
     if let Expr::RecordLit { fields, .. } = value {
         let lit = ctx.type_of(value);
         return Some(lower_record_lit(ctx, fields, Slots::Of(&lit)));
     }
     if let Expr::As { value: inner, .. } = value {
-        return crate::lower::convert::as_record_fields(ctx, inner, value);
+        return convert::as_record_fields(ctx, inner, value);
     }
     // `f(c).r` on `-> (r: Hue)` is the value of `f(c)`.
-    if let Some(call) = crate::lower::access::named_enum_output_call(ctx, value) {
+    if let Some(call) = named_enum_output_call(ctx, value) {
         return value_record_fields(ctx, call);
     }
     // `f(c).o` on `-> (o: Opt, q: int)`: that output of the call's outputs.
@@ -1086,23 +1067,21 @@ pub(super) fn value_record_fields(
             unwrap_ref(&ctx.type_of(value)),
             Type::Enum { .. } | Type::Record(_)
         )
-        && crate::lower::access::called_chip_decl(ctx, obj)
+        && called_chip_decl(ctx, obj)
             .is_some_and(|d| d.outputs.len() > 1 && d.outputs.iter().any(|o| o.name == *field))
         && let Some(outputs) = value_record_fields(ctx, obj)
-        && let Some(Binding::Record(output)) = outputs.get(&crate::intern::intern(field)).cloned()
+        && let Some(Binding::Record(output)) = outputs.get(&intern(field)).cloned()
     {
         return Some(output);
     }
     if let Expr::RefOf { operand, range } = value
         && let Some(Binding::Record(fields)) = resolve_field_chain(ctx, operand).cloned()
     {
-        return Some(crate::lower::ref_fields::refs_of(ctx, &fields, range));
+        return Some(ref_fields::refs_of(ctx, &fields, range));
     }
-    // `if c then x else y` yielding a RECORD. A record has no single-wire form,
-    // so the choice is made per leaf: one Select each, all sharing the one
-    // lowered condition. Every caller bails silently on a `None` from here, so
-    // without this arm assignment, the `out` position and a chip argument all
-    // produce nothing at all.
+    // `if c then x else y` yielding a record: a record has no single-wire form,
+    // so the choice is made per leaf, one Select each, all sharing the one
+    // lowered condition.
     if let Expr::IfExpr {
         cond,
         then_branch,
@@ -1114,8 +1093,7 @@ pub(super) fn value_record_fields(
             return None;
         }
         if ctx.current_exec.is_some()
-            && (crate::lower::expr::has_effects(ctx, then_branch)
-                || crate::lower::expr::has_effects(ctx, else_branch))
+            && (has_effects(ctx, then_branch) || has_effects(ctx, else_branch))
         {
             report_effectful_aggregate_choice(ctx, range);
             return None;
@@ -1129,13 +1107,10 @@ pub(super) fn value_record_fields(
         }
         return Some(rec);
     }
-    // `match s { A => p, B => q }` yielding a RECORD or an ENUM value: the same
-    // per-leaf choice the if-expr arm above makes, spread over the match's
-    // decision tree. Must precede the `Call`/enum-typed fallback at the bottom,
-    // which would lower an enum-typed match through the SCALAR match path and
-    // report each arm as WS071. Without this arm every consumer bailed on the
-    // `None` and a record-valued match assigned nothing at all - no Select, no
-    // store, no diagnostic.
+    // `match s { A => p, B => q }` yielding a record or enum value: the same
+    // per-leaf choice as the if-expr arm, over the match's decision tree. It
+    // must precede the enum-typed fallback at the bottom, which would lower the
+    // match through the scalar path and report each arm as WS071.
     if let Expr::MatchExpr { range, .. } = value
         && reject_column_record_choice(ctx, value, range)
     {
@@ -1146,7 +1121,7 @@ pub(super) fn value_record_fields(
         arms,
         range,
     } = value
-        && let Some(rec) = crate::lower::expr::lower_match_expr_record(ctx, scrutinee, arms, range)
+        && let Some(rec) = lower_match_expr_record(ctx, scrutinee, arms, range)
     {
         if let Some(outputs) = ctx.gate_outputs(range) {
             mark_gate_read_choice(ctx, &rec, outputs);
@@ -1160,12 +1135,9 @@ pub(super) fn value_record_fields(
     {
         return Some(rec);
     }
-    // `.Value` / `.prev` on a record VALUE opens the variable, the same way
-    // `resolve_field_chain` opens a NAMED one. A map `get` is a call, so it has
-    // no scope binding for that path to walk, which left `m.get(k).Value`
-    // without a record even though `m[k]` had one. That combination was the
-    // worst kind: `WS066` on `m.get(k)` names `.Value` as the fix, and `.Value`
-    // then failed too.
+    // `.Value` / `.prev` on a record VALUE (`m.get(k).Value`, `a.pop().Value`)
+    // opens the variable, as `resolve_field_chain` opens a named one; a call has
+    // no scope binding for that path to walk.
     if let Expr::FieldAccess { obj, field, .. } = value
         && crate::catalog::is_var_pseudo_field(field)
         && matches!(obj.as_ref(), Expr::Call { .. } | Expr::IndexAccess { .. })
@@ -1173,7 +1145,7 @@ pub(super) fn value_record_fields(
     {
         // A real `Value` field (`a.pop().Value`) wins over the identity, exactly
         // as it does in `resolve_field_chain`.
-        return match inner.get(&crate::intern::intern(field)) {
+        return match inner.get(&intern(field)) {
             Some(Binding::Record(f)) => Some(f.clone()),
             Some(_) => None,
             None => Some(inner),
@@ -1188,7 +1160,7 @@ pub(super) fn value_record_fields(
     {
         return Some(rec);
     }
-    // `m[k].inner` / `m.get(k).inner` — the same for a NESTED record field of a
+    // `m[k].inner` / `m.get(k).inner`: the same for a nested record field of a
     // record MAP value (per-field MapGet).
     if matches!(value, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
         && let Some(rec) = lower_record_field_path_value(ctx, Columns::Map, value, value.range())
@@ -1210,17 +1182,11 @@ pub(super) fn value_record_fields(
         }
         _ => {}
     }
-    // A record-returning CALL that isn't one of the shapes above - `pts.pop()`,
-    // a record-returning mod/chip - OR an enum CONSTRUCTION reaching this
-    // point (`Dir.E`, `Shape.Circle(5.0)`, `Box.Dims { w, h }` - every check
-    // above only resolves an EXISTING record binding, never a fresh
-    // construction) stashes its per-field record in `pending_inline_record`
-    // when lowered (see `try_lower_enum_ctor` in `lower/expr.rs` for the
-    // construction case). Lower it and take that. The construction forms are
-    // gated on the value's own CHECKED type (rather than unconditionally
-    // routing every `FieldAccess` through here) so an ordinary non-record
-    // field access - which this function correctly has no binding for -
-    // still falls through to `None` below without a wasted lowering.
+    // A record-returning call (`pts.pop()`, a record-returning mod/chip) or an
+    // enum construction (`Dir.E`, `Shape.Circle(5.0)`; see `try_lower_enum_ctor`)
+    // stashes its per-field record in `pending_inline_record` when lowered, so
+    // lower it and take that. Only calls, constructors and enum-typed values
+    // are lowered here; any other value returns `None` unlowered.
     let may_produce_record = matches!(value, Expr::Call { .. } | Expr::VariantCtor { .. })
         || matches!(ctx.type_of(value), Type::Enum { .. });
     ctx.last_value_record_port = None;
@@ -1242,7 +1208,7 @@ pub(super) fn value_record_fields(
         // chip's own rerouters.
         if matches!(value, Expr::Call { .. })
             && let Type::Record(fields) = unwrap_ref(&ctx.type_of(value))
-            && let Some(rec) = crate::lower::access::multi_output_chip_record(ctx, port, &fields)
+            && let Some(rec) = multi_output_chip_record(ctx, port, &fields)
         {
             return Some(rec);
         }
@@ -1255,19 +1221,16 @@ pub(super) fn value_record_fields(
         // tags, a builtin's enum output like `v.getType()`) is the enum value
         // whose tag is that wire.
         if !matches!(value, Expr::VariantCtor { .. })
-            && crate::lower::predeclare::unit_enum_port(ctx, &unwrap_ref(&ctx.type_of(value)))
-            && !ctx
+            && unit_enum_port(ctx, &unwrap_ref(&ctx.type_of(value)))
+            && ctx
                 .builder
                 .module
                 .nodes
                 .get(&port.node_id)
-                .is_some_and(|n| n.gate_class == gc::UNSUPPORTED)
+                .is_none_or(|n| n.gate_class != gc::UNSUPPORTED)
         {
             let mut rec = HashMap::default();
-            rec.insert(
-                crate::intern::intern("__disc"),
-                Binding::Local(LocalRecord { port }),
-            );
+            rec.insert(*DISC, Binding::Local(LocalRecord { port }));
             return Some(rec);
         }
     }
@@ -1277,20 +1240,13 @@ pub(super) fn value_record_fields(
 /// The outputs of `value`, a gate read held on `port`, its gate's first
 /// output (`fs.max()`, `k` after `let k = fs.max()`), each by the name it is
 /// declared with. `None` for any other value.
-fn gate_port_outputs(
-    ctx: &LowerCtx,
-    value: &Expr,
-    port: PortRef,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+fn gate_port_outputs(ctx: &LowerCtx<'_>, value: &Expr, port: PortRef) -> Option<Fields> {
     let outputs = ctx.gate_outputs(value.range())?;
-    let rec: HashMap<crate::intern::Sym, Binding> = outputs
+    let rec: Fields = outputs
         .iter()
         .filter_map(|(n, _)| {
-            let port = crate::lower::access::resolve_output_field_port(ctx, port.node_id, n)?;
-            Some((
-                crate::intern::intern(n),
-                Binding::Local(LocalRecord { port }),
-            ))
+            let port = resolve_output_field_port(ctx, port.node_id, n)?;
+            Some((intern(n), Binding::Local(LocalRecord { port })))
         })
         .collect();
     (rec.len() == outputs.len()).then_some(rec)
@@ -1299,7 +1255,7 @@ fn gate_port_outputs(
 /// The port [`value_record_fields`] lowered for exactly `value`, if its last
 /// probe lowered one. A port from a probe of a different expression (such as
 /// the `obj` of `obj.Value`) is dropped, never handed back.
-pub(super) fn take_value_record_port(ctx: &mut LowerCtx, value: &Expr) -> Option<PortRef> {
+pub(super) fn take_value_record_port(ctx: &mut LowerCtx<'_>, value: &Expr) -> Option<PortRef> {
     match ctx.last_value_record_port.take() {
         Some((range, port)) if &range == value.range() => Some(port),
         _ => None,
@@ -1311,21 +1267,15 @@ pub(super) fn take_value_record_port(ctx: &mut LowerCtx, value: &Expr) -> Option
 /// call as the record itself, so `mk().x` is its field), and several outputs'
 /// is keyed by output name, each a real member. Any other call gets
 /// [`unwrap_single_record_output`].
-pub(super) fn unwrap_call_record(
-    ctx: &LowerCtx,
-    value: &Expr,
-    rec: HashMap<crate::intern::Sym, Binding>,
-) -> HashMap<crate::intern::Sym, Binding> {
-    match crate::lower::access::called_chip_decl(ctx, value) {
+pub(super) fn unwrap_call_record(ctx: &LowerCtx<'_>, value: &Expr, rec: Fields) -> Fields {
+    match called_chip_decl(ctx, value) {
         Some(_) => rec,
-        None if crate::lower::call::is_builtin_select(ctx, value) => rec,
+        None if is_builtin_select(ctx, value) => rec,
         None => unwrap_single_record_output(rec),
     }
 }
 
-pub(super) fn unwrap_single_record_output(
-    rec: HashMap<crate::intern::Sym, Binding>,
-) -> HashMap<crate::intern::Sym, Binding> {
+pub(super) fn unwrap_single_record_output(rec: Fields) -> Fields {
     if rec.len() == 1
         && let Some(Binding::Record(inner)) = rec.values().next()
     {
@@ -1340,10 +1290,10 @@ pub(super) fn unwrap_single_record_output(
 /// in a choice that is no gate read gives it its first output (an enum
 /// first output joined with an enum).
 pub(super) fn choice_branch_fields(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     value: &Expr,
     join: &SourceRange,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+) -> Option<Fields> {
     let mut fields = branch_record_fields(ctx, value)?;
     let mut ty = ctx.type_of(value);
     if ctx.gate_outputs(join).is_none()
@@ -1353,11 +1303,11 @@ pub(super) fn choice_branch_fields(
         fields = first;
         ty = ctx.one_value_type_at(value.range()).unwrap_or(ty);
     }
-    crate::lower::ref_fields::rebind_typed(
+    ref_fields::rebind_typed(
         ctx,
         &ty,
         &mut fields,
-        crate::lower::ref_fields::FieldKind::Value,
+        ref_fields::FieldKind::Value,
         value.range(),
     );
     Some(fields)
@@ -1368,16 +1318,11 @@ pub(super) fn choice_branch_fields(
 /// `{Value, Found}`) as its per-port record, so the conditional chooses each
 /// port separately.
 ///
-/// Deliberately not in `value_record_fields` itself. Everywhere else a
-/// multi-output result auto-unwraps to its FIRST port, which is what a scalar
-/// sink expects (`var n: int = m.get(k)`); returning a record there would
-/// change what those consumers receive. In a conditional it is the opposite:
-/// one Select over port 0 is all the branches ever produced, so `c.Found` read
-/// the *value* Select and the `bFound` port was wired nowhere at all.
-pub(super) fn branch_record_fields(
-    ctx: &mut LowerCtx,
-    value: &Expr,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+/// Not in `value_record_fields` itself: everywhere else a multi-output result
+/// unwraps to its first port, which is what a scalar sink expects
+/// (`var n: int = m.get(k)`). A conditional must choose every port, or
+/// `c.Found` would read the value Select.
+pub(super) fn branch_record_fields(ctx: &mut LowerCtx<'_>, value: &Expr) -> Option<Fields> {
     if let Some(rec) = value_record_fields(ctx, value) {
         return Some(rec);
     }
@@ -1404,12 +1349,9 @@ pub(super) fn branch_record_fields(
     let mut out = HashMap::default();
     for (name, _) in &fields {
         // All or nothing: a field with no matching port would leave a hole the
-        // Select tree would silently drop, which is the bug being fixed.
-        let p = crate::lower::access::resolve_output_field_port(ctx, port.node_id, name)?;
-        out.insert(
-            crate::intern::intern(name),
-            Binding::Local(LocalRecord { port: p }),
-        );
+        // Select tree silently drops.
+        let p = resolve_output_field_port(ctx, port.node_id, name)?;
+        out.insert(intern(name), Binding::Local(LocalRecord { port: p }));
     }
     Some(out)
 }
@@ -1422,8 +1364,8 @@ pub(super) const GATE_READ_CHOICE: &str = "gate read choice select";
 /// Note every `Select` of `rec`, a choice between two gate reads' outputs,
 /// as [`GATE_READ_CHOICE`], its ports typed as the output it chooses is.
 pub(in crate::lower) fn mark_gate_read_choice(
-    ctx: &mut LowerCtx,
-    rec: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    rec: &Fields,
     outputs: &[(String, Type)],
 ) {
     for (name, b) in rec {
@@ -1432,10 +1374,7 @@ pub(in crate::lower) fn mark_gate_read_choice(
             && node.gate_class == gc::SELECT
         {
             node.note = Some(GATE_READ_CHOICE);
-            if let Some((_, ty)) = outputs
-                .iter()
-                .find(|(n, _)| crate::intern::intern(n) == *name)
-            {
+            if let Some((_, ty)) = outputs.iter().find(|(n, _)| intern(n) == *name) {
                 let ports = std::sync::Arc::make_mut(&mut node.ports);
                 let values = ports.inputs.iter_mut().chain(ports.outputs.iter_mut());
                 for p in values.filter(|p| p.name != *sym::B_SELECT_B) {
@@ -1451,17 +1390,15 @@ pub(in crate::lower) fn mark_gate_read_choice(
 /// every gate reading the SAME already-lowered `cond_port` (re-lowering the
 /// condition per field would multiply it by the record's width).
 ///
-/// Fields present on only one side are dropped: typecheck has already required
-/// both branches to be the same record type, so a one-sided field cannot appear
-/// in a well-formed program, and taking the intersection keeps a mis-typed one
-/// from wiring a Select with a missing input.
+/// Fields present on only one side are dropped (typecheck requires both
+/// branches to be the same record type), so no Select has a missing input.
 pub(super) fn select_record_fields(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cond_port: PortRef,
-    then_fields: &HashMap<crate::intern::Sym, Binding>,
-    else_fields: &HashMap<crate::intern::Sym, Binding>,
+    then_fields: &Fields,
+    else_fields: &Fields,
     range: &SourceRange,
-) -> HashMap<crate::intern::Sym, Binding> {
+) -> Fields {
     let mut out = HashMap::default();
     for (fname, then_b) in in_field_order(then_fields) {
         let Some(else_b) = else_fields.get(&fname) else {
@@ -1476,39 +1413,24 @@ pub(super) fn select_record_fields(
             }
             _ => {
                 let (Some(then_port), Some(else_port)) = (
-                    crate::lower::access::binding_to_port(ctx, then_b, range),
-                    crate::lower::access::binding_to_port(ctx, else_b, range),
+                    binding_to_port(ctx, then_b, range),
+                    binding_to_port(ctx, else_b, range),
                 ) else {
                     continue;
                 };
-                let ty = crate::lower::call::arg_port_type(ctx, then_port)
-                    .or_else(|| crate::lower::call::arg_port_type(ctx, else_port))
+                let ty = arg_port_type(ctx, then_port)
+                    .or_else(|| arg_port_type(ctx, else_port))
                     .unwrap_or(Type::Any);
-                let node_id = ctx.add_gate(AddNodeOpts {
-                    gate_class: gc::SELECT,
-                    source_range: range.clone(),
-                    ports: GateIO {
-                        inputs: vec![
-                            PortSpec::new(*sym::INPUT_A, ty.clone()),
-                            PortSpec::new(*sym::INPUT_B, ty.clone()),
-                            PortSpec::new(*sym::B_SELECT_B, Type::Bool),
-                        ],
-                        outputs: vec![PortSpec::new(*sym::OUTPUT, ty.clone())],
-                    },
-                    note: Some("record if-expr select"),
-                    ..Default::default()
-                });
-                // Same polarity as the scalar `lower_if_expr`: the THEN value is
-                // InputB (picked when bSelectB is true), the ELSE value InputA.
-                ctx.connect(cond_port, node_id.port(WirePort::BSelectB));
-                ctx.connect(then_port, node_id.port(WirePort::InputB));
-                ctx.connect(else_port, node_id.port(WirePort::InputA));
-                out.insert(
-                    fname,
-                    Binding::Local(LocalRecord {
-                        port: node_id.port(WirePort::Output),
-                    }),
+                let port = emit_select(
+                    ctx,
+                    cond_port,
+                    then_port,
+                    else_port,
+                    &ty,
+                    "record if-expr select",
+                    range,
                 );
+                out.insert(fname, Binding::Local(LocalRecord { port }));
             }
         }
     }
@@ -1518,8 +1440,8 @@ pub(super) fn select_record_fields(
 /// `lit`, a record or tuple literal's type, as the storage `target` holds it:
 /// a field the target stores as one value takes one value there, so a gate
 /// read in it is its first output (`var t = { m: fs.max(), k: 7 }`).
-fn held_as_stored(lit: &Type, target: &HashMap<crate::intern::Sym, Binding>) -> Type {
-    let slot = |k: &str, t: &Type| match target.get(&crate::intern::intern(k)) {
+fn held_as_stored(lit: &Type, target: &Fields) -> Type {
+    let slot = |k: &str, t: &Type| match target.get(&intern(k)) {
         Some(Binding::Record(inner)) => held_as_stored(t, inner),
         Some(Binding::Var(v)) if matches!(t, Type::Record(_)) && holds_one_value(&v.inner_type) => {
             v.inner_type.clone()
@@ -1542,27 +1464,20 @@ fn held_as_stored(lit: &Type, target: &HashMap<crate::intern::Sym, Binding>) -> 
 /// leaf `Var` field is read from the matching source field (`binding_to_port`,
 /// which emits a `Var_Get` for a stored source) and written with `set_scalar_var`;
 /// nested record fields recurse. A record literal goes through
-/// [`crate::lower::record_assign::assign_literal`]. A source that reads storage
+/// [`record_assign::assign_literal`]. A source that reads storage
 /// the assignment writes (`p = t` after `let t = { x: p.y, y: p.x }`) is read
 /// before the first write, and a container is copied before anything replaces
-/// it (see [`crate::lower::record_assign::assign_value`]).
+/// it (see [`record_assign::assign_value`]).
 fn assign_record(
-    ctx: &mut LowerCtx,
-    target_fields: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    target_fields: &Fields,
     path: &str,
     value: &Expr,
     range: &SourceRange,
 ) {
     if let Expr::RecordLit { fields, .. } = value {
         let lit = held_as_stored(&ctx.type_of(value), target_fields);
-        crate::lower::record_assign::assign_literal(
-            ctx,
-            target_fields,
-            path,
-            fields,
-            Slots::Of(&lit),
-            range,
-        );
+        record_assign::assign_literal(ctx, target_fields, path, fields, Slots::Of(&lit), range);
         return;
     }
     let what = "the value assigned here";
@@ -1573,15 +1488,13 @@ fn assign_record(
         return;
     };
     src.retain(|k, b| !target_fields.get(k).is_some_and(|t| same_storage(t, b)));
-    crate::lower::record_assign::assign_value(ctx, target_fields, path, src, range);
+    record_assign::assign_value(ctx, target_fields, path, src, range);
 }
 
 /// A record's fields in declaration order: by the storage gate each holds,
 /// which is made in that order, and by name for fields holding none. Hash
 /// order would move with the order names were interned.
-pub(super) fn in_field_order(
-    fields: &HashMap<crate::intern::Sym, Binding>,
-) -> Vec<(crate::intern::Sym, &Binding)> {
+pub(super) fn in_field_order(fields: &Fields) -> Vec<(Sym, &Binding)> {
     fn first_gate(b: &Binding) -> Option<NodeId> {
         match b {
             Binding::Var(v) => Some(v.node_id),
@@ -1589,11 +1502,10 @@ pub(super) fn in_field_order(
             _ => None,
         }
     }
-    let mut out: Vec<(crate::intern::Sym, &Binding)> =
-        fields.iter().map(|(k, b)| (*k, b)).collect();
+    let mut out: Vec<(Sym, &Binding)> = fields.iter().map(|(k, b)| (*k, b)).collect();
     out.sort_by_cached_key(|(k, b)| {
         let gate = first_gate(b);
-        (gate.is_none(), gate, crate::intern::resolve(*k))
+        (gate.is_none(), gate, resolve(*k))
     });
     out
 }
@@ -1611,7 +1523,7 @@ pub(super) fn same_storage(a: &Binding, b: &Binding) -> bool {
     }
 }
 
-pub(super) fn report_non_record_map_entry(ctx: &mut LowerCtx, range: &SourceRange) {
+pub(super) fn report_non_record_map_entry(ctx: &mut LowerCtx<'_>, range: &SourceRange) {
     ctx.error(
         "WS071",
         "this map entry's value is not a record, so it can't be split across the \
@@ -1621,9 +1533,9 @@ pub(super) fn report_non_record_map_entry(ctx: &mut LowerCtx, range: &SourceRang
 }
 
 pub(super) fn assign_record_fields(
-    ctx: &mut LowerCtx,
-    target: &HashMap<crate::intern::Sym, Binding>,
-    src: &HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    target: &Fields,
+    src: &Fields,
     range: &SourceRange,
 ) {
     for (fname, tbind) in in_field_order(target) {
@@ -1640,7 +1552,7 @@ pub(super) fn assign_record_fields(
             Binding::Var(tvar) if tvar.storage == VarStorage::Var => {
                 // A slot holding a ref stores a place's own ref.
                 let port = if matches!(tvar.inner_type, Type::Ref(_)) {
-                    crate::lower::ref_fields::ref_port_of(ctx, &sbind, range)
+                    ref_fields::ref_port_of(ctx, &sbind, range)
                 } else {
                     binding_to_port(ctx, &sbind, range)
                 };
@@ -1648,11 +1560,9 @@ pub(super) fn assign_record_fields(
                     set_scalar_var(ctx, &tvar, port, range);
                 }
             }
-            // A container field copies its CONTENTS. Skipping it (the old
-            // behavior) made `q = p` a clean-compiling partial copy: the scalar
-            // fields moved and `q.xs` silently kept whatever it held before.
-            // `copyFrom` replaces the destination's contents wholesale, which is
-            // exactly whole-record-copy semantics.
+            // A container field copies its contents with `copyFrom`, which
+            // replaces the destination's contents wholesale, so `q = p` copies
+            // `p.xs` too.
             Binding::Var(tvar) => copy_container(ctx, &tvar, &sbind, range),
             _ => {}
         }
@@ -1662,9 +1572,26 @@ pub(super) fn assign_record_fields(
 /// `copyFrom` of the container `src` into the array or map `tvar`; nothing for
 /// a scalar `tvar`.
 pub(super) fn copy_container(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     tvar: &VarRecord,
     src: &Binding,
+    range: &SourceRange,
+) {
+    if !matches!(tvar.storage, VarStorage::Array | VarStorage::Map) {
+        return;
+    }
+    let Some(src_ref) = binding_to_port(ctx, src, range) else {
+        return;
+    };
+    copy_container_from(ctx, tvar, src_ref, range);
+}
+
+/// `copyFrom` of the container whose ref is `src_ref` into the array or map
+/// `tvar`, on the current exec chain; nothing for a scalar `tvar`.
+fn copy_container_from(
+    ctx: &mut LowerCtx<'_>,
+    tvar: &VarRecord,
+    src_ref: PortRef,
     range: &SourceRange,
 ) {
     let (gate, port, src_ty) = match tvar.storage {
@@ -1679,9 +1606,6 @@ pub(super) fn copy_container(
             Type::Ref(Box::new(Type::Any)),
         ),
         _ => return,
-    };
-    let Some(src_ref) = binding_to_port(ctx, src, range) else {
-        return;
     };
     let target = tvar.node_id.port(port);
     let extra = vec![(WirePort::SourceRef, src_ty, src_ref)];
@@ -1708,10 +1632,8 @@ pub(super) fn copy_container(
     }
 }
 
-pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
-    if crate::lower::props::lower_environment_write(ctx, s)
-        || crate::lower::props::lower_component_write(ctx, s)
-    {
+pub(super) fn lower_assign(ctx: &mut LowerCtx<'_>, s: &Assign) {
+    if props::lower_environment_write(ctx, s) || props::lower_component_write(ctx, s) {
         return;
     }
     let with_map_literals;
@@ -1722,13 +1644,9 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         }
         std::borrow::Cow::Borrowed(_) => s,
     };
-    // An assignment is an exec statement, so with no exec chain to run on it is
-    // dropped: a mod/chip body used as a value (`let x = f()`), or a top-level
-    // assignment outside any handler. `Assign` never reaches here through the
-    // pure-chip declaration path, so a missing exec chain always means a drop.
-    //
-    // `dead_after_break` means WS081 already covered this exact statement,
-    // so this stays quiet instead of also blaming a pure position.
+    // An assignment is an exec statement, so with no exec chain it is dropped:
+    // a mod/chip body used as a value (`let x = f()`), or an assignment outside
+    // any handler. Under `dead_after_break`, WS081 already reported it.
     if ctx.current_exec.is_none() && !ctx.dead_after_break {
         let msg = if ctx.exec_closed_by_buffer_emit {
             "this assignment has no exec chain to run on, so it never happens. A `buffer \
@@ -1742,217 +1660,228 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         };
         ctx.warn_code("WS058", msg, &s.range);
     }
-    // `unsafe v.Variant.field = x` writes the payload slot the assertion names.
-    // The slot is ordinary storage, so a scalar goes through `set_scalar_var`
-    // and a record payload through `assign_record`, exactly as a capture write
-    // does. `__disc` is not touched: the spelling asserts the tag rather than
-    // setting it.
-    if let Expr::Unsafe { inner, range } = &s.target {
-        if ctx.current_exec.is_none() {
-            return;
+    match &s.target {
+        Expr::Unsafe { inner, range } => assign_unsafe(ctx, s, inner, range),
+        Expr::Deref { operand, .. } => assign_deref(ctx, s, operand),
+        Expr::IndexAccess { obj, index, .. } => assign_index(ctx, s, obj, index),
+        _ => assign_named(ctx, s),
+    }
+}
+
+/// An assignment to a field chain or a bare name: record columns, a whole
+/// record, a field write, or a var.
+fn assign_named(ctx: &mut LowerCtx<'_>, s: &Assign) {
+    if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
+        && assign_through_field_chain(ctx, s)
+    {
+        return;
+    }
+    if rebuild_record_columns(ctx, s) {
+        return;
+    }
+    if assign_whole_record(ctx, s) {
+        return;
+    }
+    match &s.target {
+        Expr::FieldAccess { obj, field, .. } => reject_field_write(ctx, s, obj, field),
+        Expr::Ident { name, .. } => assign_ident(ctx, s, name),
+        _ => {}
+    }
+}
+
+/// `unsafe v.Variant.field = x` writes the payload slot the assertion names.
+/// The slot is ordinary storage, so a scalar goes through `set_scalar_var`
+/// and a record payload through `assign_record`, exactly as a capture write
+/// does. `__disc` is not touched: the spelling asserts the tag rather than
+/// setting it.
+fn assign_unsafe(ctx: &mut LowerCtx<'_>, s: &Assign, inner: &Expr, range: &SourceRange) {
+    if ctx.current_exec.is_none() {
+        return;
+    }
+    match resolve_unsafe_slot(ctx, inner).cloned() {
+        Some(Binding::Var(var_rec)) => {
+            let value_port = lower_expr(ctx, &s.value);
+            set_scalar_var(ctx, &var_rec, value_port, &s.range);
         }
-        match crate::lower::access::resolve_unsafe_slot(ctx, inner).cloned() {
-            Some(Binding::Var(var_rec)) => {
-                let value_port = lower_expr(ctx, &s.value);
-                set_scalar_var(ctx, &var_rec, value_port, &s.range);
+        Some(Binding::Record(fields)) => {
+            assign_record(ctx, &fields, &target_path(inner), &s.value, &s.range);
+        }
+        _ => ctx.error(
+            "WS007",
+            "this `unsafe` payload access resolves to no storage slot, so the write would emit nothing",
+            range,
+        ),
+    }
+}
+
+/// `*e = v`: write through the ref `e` evaluates to. `*x = v` on a plain
+/// var or a `*T` parameter is the explicit spelling of `x = v`.
+fn assign_deref(ctx: &mut LowerCtx<'_>, s: &Assign, operand: &Expr) {
+    if ctx.current_exec.is_none() {
+        return;
+    }
+    if !matches!(ctx.type_of(operand), Type::Ref(_)) {
+        // `*x = *x + d` is `x = x + d`, so it increments as that does.
+        let own = |e: &Expr| match (e, operand) {
+            (Expr::Deref { operand: o, .. }, Expr::Ident { name, .. }) if matches!(o.as_ref(), Expr::Ident { name: n, .. } if n == name) => {
+                o.as_ref().clone()
             }
-            Some(Binding::Record(fields)) => {
-                assign_record(ctx, &fields, &target_path(inner), &s.value, &s.range)
-            }
-            _ => ctx.error(
-                "WS007",
-                "this `unsafe` payload access resolves to no storage slot, so the write would emit nothing",
+            _ => e.clone(),
+        };
+        let value = match &s.value {
+            Expr::BinOp {
+                op,
+                left,
+                right,
                 range,
-            ),
-        }
+            } if op == "+" || op == "-" => Expr::BinOp {
+                op: op.clone(),
+                left: Box::new(own(left)),
+                right: Box::new(own(right)),
+                range: range.clone(),
+            },
+            other => other.clone(),
+        };
+        let plain = Assign {
+            target: operand.clone(),
+            value,
+            range: s.range.clone(),
+        };
+        lower_assign(ctx, &plain);
         return;
     }
+    let inner = match ctx.type_of(operand) {
+        Type::Ref(t) => *t,
+        _ => unreachable!("checked above"),
+    };
+    let (value, ref_port, increment) = match match_increment_self(ctx, s) {
+        Some((delta, negate)) if increments_left(s, delta) => {
+            let ref_port = lower_expr(ctx, operand);
+            let target = Binding::DynRef(DynRefRecord {
+                port: ref_port,
+                storage: VarStorage::Var,
+                inner_type: inner.clone(),
+            });
+            let (value, increment) = increment_value(ctx, s, delta, negate, target);
+            (value, ref_port, increment)
+        }
+        // The ref is the target, evaluated before the value.
+        increment => {
+            let delta = increment.map(|(d, _)| d);
+            let ports = ordered::lower_in_order(ctx, &[operand, delta.unwrap_or(&s.value)]);
+            (ports[1], ports[0], increment.is_some())
+        }
+    };
+    write_through_ref(ctx, ref_port, &inner, value, increment, &s.range);
+}
 
-    // `*e = v`: write through the ref `e` evaluates to. `*x = v` on a plain
-    // var or a `*T` parameter is the explicit spelling of `x = v`.
-    if let Expr::Deref { operand, .. } = &s.target {
+/// `m[k] = v` and `xs[i] = v`: a map set, a record-position set, or an array
+/// element write, by what `obj` is.
+fn assign_index(ctx: &mut LowerCtx<'_>, s: &Assign, obj: &Expr, index: &Expr) {
+    // Map subscript `m[k] = v` lowers to a MapVar_Set, as `m.set(k, v)`
+    // does; typecheck's recorded kind for the object picks the map path.
+    // Other targets fall through to the array path, which reports (WS044)
+    // a map target that neither map path could take.
+    if let Some(ContainerKind::Map { key: k, value: v }) = ctx.container_kind(obj)
+        && let Some(ContainerSource::Ref(map_ref)) = container_ref(
+            ctx,
+            obj,
+            &ContainerKind::Map {
+                key: k.clone(),
+                value: v.clone(),
+            },
+        )
+    {
         if ctx.current_exec.is_none() {
             return;
         }
-        if !matches!(ctx.type_of(operand), Type::Ref(_)) {
-            // `*x = *x + d` is `x = x + d`, so it increments as that does.
-            let own = |e: &Expr| match (e, operand.as_ref()) {
-                (Expr::Deref { operand: o, .. }, Expr::Ident { name, .. }) if matches!(o.as_ref(), Expr::Ident { name: n, .. } if n == name) => {
-                    o.as_ref().clone()
-                }
-                _ => e.clone(),
-            };
-            let value = match &s.value {
-                Expr::BinOp {
-                    op,
-                    left,
-                    right,
-                    range,
-                } if op == "+" || op == "-" => Expr::BinOp {
-                    op: op.clone(),
-                    left: Box::new(own(left)),
-                    right: Box::new(own(right)),
-                    range: range.clone(),
-                },
-                other => other.clone(),
-            };
-            let plain = Assign {
-                target: operand.as_ref().clone(),
-                value,
-                range: s.range.clone(),
-            };
-            lower_assign(ctx, &plain);
+        // `m[k] = v` is a mutation, so the `const` container rule applies
+        // as it does to `m.set(k, v)` (and to `lower_array_set`).
+        if reject_const_container_mutation(ctx, map_ref.node_id, true, "an index write", &s.range) {
             return;
         }
-        let inner = match ctx.type_of(operand) {
-            Type::Ref(t) => *t,
-            _ => unreachable!("checked above"),
-        };
-        let (value, ref_port, increment) = match match_increment_self(ctx, s) {
-            Some((delta, negate)) if increments_left(s, delta) => {
-                let ref_port = lower_expr(ctx, operand);
-                let target = Binding::DynRef(DynRefRecord {
-                    port: ref_port,
-                    storage: VarStorage::Var,
-                    inner_type: inner.clone(),
-                });
-                let (value, increment) = increment_value(ctx, s, delta, negate, target);
-                (value, ref_port, increment)
-            }
-            // The ref is the target, evaluated before the value.
-            increment => {
-                let delta = increment.map(|(d, _)| d);
-                let ports = crate::lower::ordered::lower_in_order(
-                    ctx,
-                    &[operand, delta.unwrap_or(&s.value)],
-                );
-                (ports[1], ports[0], increment.is_some())
-            }
-        };
-        write_through_ref(ctx, ref_port, &inner, value, increment, &s.range);
+        let ports = ordered::lower_in_order(ctx, &[index, &s.value]);
+        let (key, val) = (ports[0], ports[1]);
+        map_exec_op(
+            ctx,
+            &s.range,
+            map_ref,
+            gc::MAP_SET,
+            vec![(WirePort::Key, k, key), (WirePort::Value, v, val)],
+            vec![],
+            WirePort::ExecOut,
+        );
         return;
     }
-
-    if let Expr::IndexAccess { obj, index, .. } = &s.target {
-        // Map subscript `m[k] = v` desugars to a MapVar_Set (the same gate
-        // `m.set(k, v)` lowers to) — mirrors the read desugar in
-        // `lower_index_access`. Typecheck's recorded kind for the target
-        // object picks the map path. Falls through to the array path below
-        // for non-map subscript targets, which reports (WS044) a map target
-        // that neither map path could take.
-        if let Some(ContainerKind::Map { key: k, value: v }) = ctx.container_kind(obj)
-            && let Some(ContainerSource::Ref(map_ref)) = container_ref(
-                ctx,
-                obj,
-                &ContainerKind::Map {
-                    key: k.clone(),
-                    value: v.clone(),
-                },
-            )
-        {
-            if ctx.current_exec.is_none() {
-                return;
-            }
-            // `m[k] = v` is a mutation — the `const` container rule applies to
-            // it exactly as it does to `m.set(k, v)`. Mirrors the array
-            // subscript write in `lower_array_set`.
-            if reject_const_container_mutation(
-                ctx,
-                map_ref.node_id,
-                true,
-                "an index write",
-                &s.range,
-            ) {
-                return;
-            }
-            let ports = crate::lower::ordered::lower_in_order(ctx, &[index, &s.value]);
-            let (key, val) = (ports[0], ports[1]);
-            map_exec_op(
-                ctx,
-                &s.range,
-                map_ref,
-                gc::MAP_SET,
-                vec![
-                    (WirePort::Key, k.clone(), key),
-                    (WirePort::Value, v.clone(), val),
-                ],
-                vec![],
-                WirePort::ExecOut,
-            );
-            return;
-        }
-        // `m[k] = rec` where `m` is a record map: fan the record value across the
-        // parallel field maps at the shared key. Checked before the array path,
-        // which resolves only single arrays / record arrays.
-        if let Some(fields) = resolve_record_columns(ctx, Columns::Map, obj)
-            && lower_record_position_set(ctx, Columns::Map, &fields, index, &s.value, &s.range)
-        {
-            return;
-        }
-        lower_array_set(ctx, obj, index, &s.value, &s.range);
+    // `m[k] = rec` where `m` is a record map: fan the record value across the
+    // parallel field maps at the shared key. Checked before the array path,
+    // which resolves only single arrays / record arrays.
+    if let Some(fields) = resolve_record_columns(ctx, Columns::Map, obj)
+        && lower_record_position_set(ctx, Columns::Map, &fields, index, &s.value, &s.range)
+    {
         return;
     }
+    lower_array_set(ctx, obj, index, &s.value, &s.range);
+}
 
-    // `pts[i].f1.f2… = v` — write a field (possibly nested) of a record array's
+/// Assignment to a field-chain target (`pts[i].f = v`, `m[k].f = v`, `cpu.x = 5`,
+/// `pair.0 = 5`) that resolves to storage. Returns false, emitting nothing, when
+/// none of the shapes applies.
+fn assign_through_field_chain(ctx: &mut LowerCtx<'_>, s: &Assign) -> bool {
+    // `pts[i].f1.f2 = v` writes a field (possibly nested) of a record array's
     // element by fanning across the parallel arrays at the shared index. The
     // target is a FieldAccess/TuplePick chain over an IndexAccess, so neither
-    // the IndexAccess branch above nor the record field-chain branch below
-    // reaches it.
-    if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
-        && lower_record_field_path_set(ctx, Columns::Array, &s.target, &s.value, &s.range)
-    {
-        return;
+    // `assign_index` nor the record field-chain case below reaches it.
+    if lower_record_field_path_set(ctx, Columns::Array, &s.target, &s.value, &s.range) {
+        return true;
     }
 
-    // `m[k].f1.f2… = v` — the same for a record MAP value, fanning across the
-    // parallel maps at the shared key (the map spelling of the branch above).
-    if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
-        && lower_record_field_path_set(ctx, Columns::Map, &s.target, &s.value, &s.range)
-    {
-        return;
+    // `m[k].f1.f2 = v`: the same for a record MAP value, fanning across the
+    // parallel maps at the shared key.
+    if lower_record_field_path_set(ctx, Columns::Map, &s.target, &s.value, &s.range) {
+        return true;
     }
 
     // Field targets that resolve through a record to a var: `cpu.x = 5`, and
     // the tuple spelling `pair.0 = 5` (a `TuplePick` over an index-keyed
     // record).
-    if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
-        && let Some(binding) = resolve_field_chain(ctx, &s.target).cloned()
+    if let Some(binding) = resolve_field_chain(ctx, &s.target).cloned()
         && let Binding::Var(var_rec) = binding
     {
         if ctx.current_exec.is_none() {
-            return;
+            return true;
         }
         // `ns.xs = [..]` / `rec.m = { .. }`: a container field or namespace
         // member is written like the bare container var.
         if lower_container_assign(ctx, &var_rec, &target_path(&s.target), &s.value, &s.range) {
-            return;
+            return true;
         }
         let value_port = lower_expr(ctx, &s.value);
         set_scalar_var(ctx, &var_rec, value_port, &s.range);
-        return;
+        return true;
     }
     // A record parameter's `*T` field given a ref value names the var the ref
     // points at, so the write goes through the ref.
-    if matches!(&s.target, Expr::FieldAccess { .. } | Expr::TuplePick { .. })
-        && let Some(Binding::DynRef(d)) = resolve_field_chain(ctx, &s.target).cloned()
+    if let Some(Binding::DynRef(d)) = resolve_field_chain(ctx, &s.target).cloned()
         && d.storage == VarStorage::Var
     {
         if ctx.current_exec.is_none() {
-            return;
+            return true;
         }
         let value = lower_expr(ctx, &s.value);
         write_through_ref(ctx, d.port, &d.inner_type, value, false, &s.range);
-        return;
+        return true;
     }
+    false
+}
 
+/// `recArr = [..]` and `recMap = { .. }` on a record array or map (parallel
+/// per-field containers). Returns false, emitting nothing, for any other target.
+fn rebuild_record_columns(ctx: &mut LowerCtx<'_>, s: &Assign) -> bool {
     // `recArr = [rec0, rec1, ...]` on a RECORD array (a `Binding::Record` of
-    // parallel per-field arrays): rebuild it at runtime like the scalar array
-    // path, fanned across the fields — clear all field arrays, then push / append
-    // each element. Must precede the whole-record-assign branch below: a record
-    // array is ALSO a `Binding::Record`, so that branch would otherwise claim it
-    // and `assign_record` would silently drop the array literal. Reuses the
-    // record-array method lowering, so an element that is a record literal, a
-    // record var, or a tuple-pick of a record all wire.
+    // parallel per-field arrays): clear every field array, then push each
+    // element. It must precede the whole-record branch below, which would also
+    // claim the `Binding::Record` and drop the array literal.
     if ctx.current_exec.is_some()
         && let Expr::Array { .. } = &s.value
         && let Some(fields) = resolve_record_columns(ctx, Columns::Array, &s.target)
@@ -1966,7 +1895,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             &s.range,
             &mut lower_in_place(&s.value, true),
         );
-        return;
+        return true;
     }
     // `m = { k: rec, .. }` on a RECORD map: the map spelling of the branch above.
     if ctx.current_exec.is_some()
@@ -1982,14 +1911,16 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             &s.range,
             &mut lower_in_place(&s.value, true),
         );
-        return;
+        return true;
     }
+    false
+}
 
-    // Whole-record assignment: `p = {..}` / `p = q` / `big.sub = {..}` where the
-    // target resolves to a `Binding::Record`. A record has no single storage
-    // gate, so decompose both sides field-by-field and write each leaf via its
-    // own `Var_Set`. Without this the assignment silently did nothing (no
-    // `_Unsupported`, no wire — a typechecked no-op).
+/// Whole-record assignment: `p = {..}` / `p = q` / `big.sub = {..}` where the
+/// target resolves to a `Binding::Record`. A record has no single storage
+/// gate, so both sides are decomposed field by field and each leaf gets its
+/// own `Var_Set`.
+fn assign_whole_record(ctx: &mut LowerCtx<'_>, s: &Assign) -> bool {
     let target_record = match &s.target {
         Expr::Ident { name, .. } => match ctx.scope.get(name) {
             Some(Binding::Record(f)) => Some(f.clone()),
@@ -2003,7 +1934,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
     };
     if let Some(target_fields) = target_record {
         if ctx.current_exec.is_none() {
-            return;
+            return true;
         }
         assign_record(
             ctx,
@@ -2012,16 +1943,16 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             &s.value,
             &s.range,
         );
-        return;
+        return true;
     }
+    false
+}
 
-    // A record field that resolves to a non-`var` backing (a field of a
-    // `let`/input/literal record) has no storage gate, so writing it cannot
-    // produce any wire. Reject it like assigning a `let` rather than dropping
-    // it silently. A `var`-backed field is written by the `Binding::Var` branch
-    // above and never reaches here.
-    if let Expr::FieldAccess { field, .. } = &s.target
-        && let Some(binding) = resolve_field_chain(ctx, &s.target).cloned()
+/// A write to a record field with nothing writable behind it: a field of a
+/// `let`/input record is read-only; an enum payload field names its variants;
+/// anything else emits no gate. Reports the error.
+fn reject_field_write(ctx: &mut LowerCtx<'_>, s: &Assign, obj: &Expr, field: &str) {
+    if let Some(binding) = resolve_field_chain(ctx, &s.target).cloned()
         && matches!(binding, Binding::Local(_) | Binding::Input(_))
     {
         ctx.error(
@@ -2035,64 +1966,53 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
-    // Everything below writes a bare `Ident`, so a FieldAccess/TuplePick target
-    // reaching here was claimed by no branch above and cannot produce a gate.
-    // Nothing upstream catches it either: an assignment target that is a field
-    // access is deliberately typed `any` (see
-    // `typecheck::stmt::infer_assign_target`) precisely because lowering is what
-    // resolves it. Without a diagnostic here the statement type-checks clean and
-    // emits nothing.
+    // A field target reaching here cannot produce a gate. Typecheck types
+    // field-access assignment targets `any` (`typecheck::stmt::infer_assign_target`),
+    // so this is the only report.
     //
-    // The common shape is an ENUM payload field (`e.s = v`). An enum value is a
-    // `Binding::Record` of `__disc` plus one `__{Variant}_{field}` slot per
-    // payload field, so the SURFACE name never resolves; naming the variants
-    // whose payload carries the field points at the destructure that does reach
-    // the slot.
-    if let Expr::FieldAccess { obj, field, .. } = &s.target {
-        let owner = resolve_field_chain(ctx, obj).cloned();
-        let variants: Vec<&'static str> = match &owner {
-            Some(Binding::Record(fields))
-                if fields.contains_key(&crate::intern::intern("__disc")) =>
-            {
-                let suffix = format!("_{field}");
-                let mut vs: Vec<&'static str> = fields
-                    .keys()
-                    .map(|k| crate::intern::resolve(*k))
-                    .filter(|k| k.starts_with("__") && k.ends_with(&suffix))
-                    .map(|k| &k[2..k.len() - suffix.len()])
-                    .collect();
-                vs.sort_unstable();
-                vs
-            }
-            _ => Vec::new(),
-        };
-        if let Some(v) = variants.first() {
-            ctx.error(
-                "WS007",
-                format!(
-                    "cannot assign to `{field}` directly: it is payload of variant `{v}`, and an enum's payload has no field write. Destructure and assign the capture, which writes the slot in place: `if let {v} {{ {field} }} = <value> {{ {field} = ... }}` (or the same capture in a `match` arm). To write the slot without testing the tag, `unsafe <value>.{v}.{field} = ...`"
-                ),
-                &s.range,
-            );
-            return;
+    // The common shape is an enum payload field (`e.s = v`): an enum value holds
+    // `__disc` plus one `__{Variant}_{field}` slot per payload field, so the
+    // surface name never resolves, and the error names the variants instead.
+    let owner = resolve_field_chain(ctx, obj).cloned();
+    let variants: Vec<&'static str> = match &owner {
+        Some(Binding::Record(fields)) if fields.contains_key(&*DISC) => {
+            let suffix = format!("_{field}");
+            let mut vs: Vec<&'static str> = fields
+                .keys()
+                .map(|k| resolve(*k))
+                .filter(|k| k.starts_with("__") && k.ends_with(&suffix))
+                .map(|k| &k[2..k.len() - suffix.len()])
+                .collect();
+            vs.sort_unstable();
+            vs
         }
-        // Not an enum: an unknown field, or a field of something with no
-        // storage (a scalar, a call result). Either way the write is a no-op.
+        _ => Vec::new(),
+    };
+    if let Some(v) = variants.first() {
         ctx.error(
             "WS007",
             format!(
-                "cannot assign to `{field}`: nothing writable is behind it, so the write would emit no gate. Only a variable, an array/map element, or a `var`-backed record field can be assigned"
+                "cannot assign to `{field}` directly: it is payload of variant `{v}`, and an enum's payload has no field write. Destructure and assign the capture, which writes the slot in place: `if let {v} {{ {field} }} = <value> {{ {field} = ... }}` (or the same capture in a `match` arm). To write the slot without testing the tag, `unsafe <value>.{v}.{field} = ...`"
             ),
             &s.range,
         );
         return;
     }
+    // Not an enum: an unknown field, or a field of something with no
+    // storage (a scalar, a call result). Either way the write is a no-op.
+    ctx.error(
+        "WS007",
+        format!(
+            "cannot assign to `{field}`: nothing writable is behind it, so the write would emit no gate. Only a variable, an array/map element, or a `var`-backed record field can be assigned"
+        ),
+        &s.range,
+    );
+}
 
-    let var_name = match &s.target {
-        Expr::Ident { name, .. } => name.clone(),
-        _ => return,
-    };
-    if let Some(Binding::DynRef(d)) = ctx.scope.get(&var_name).cloned() {
+/// Assignment to the bare name `var_name`: through a ref, into a container, a
+/// buffer, or a scalar var (an increment when it reads itself).
+fn assign_ident(ctx: &mut LowerCtx<'_>, s: &Assign, var_name: &str) {
+    if let Some(Binding::DynRef(d)) = ctx.scope.get(var_name).cloned() {
         if ctx.current_exec.is_none() {
             return;
         }
@@ -2116,16 +2036,14 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         write_through_ref(ctx, d.port, &d.inner_type, value, increment, &s.range);
         return;
     }
-    let var_rec = match ctx.lookup_var(&var_name).cloned() {
-        Some(v) => v,
-        None => return,
+    let Some(var_rec) = ctx.lookup_var(var_name).cloned() else {
+        return;
     };
-    let current_exec = match ctx.current_exec {
-        Some(e) => e,
-        None => return,
+    let Some(current_exec) = ctx.current_exec else {
+        return;
     };
 
-    if lower_container_assign(ctx, &var_rec, &var_name, &s.value, &s.range) {
+    if lower_container_assign(ctx, &var_rec, var_name, &s.value, &s.range) {
         return;
     }
 
@@ -2136,7 +2054,7 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
         return;
     }
 
-    // Optimization: `x = x + <expr>` -> Exec_Var_Increment
+    // `x = x + <expr>` lowers to Exec_Var_Increment.
     if let Some((delta_expr, negate)) = match_increment_self(ctx, s) {
         let (delta, increment) =
             increment_value(ctx, s, delta_expr, negate, Binding::Var(var_rec.clone()));
@@ -2144,49 +2062,44 @@ pub(super) fn lower_assign(ctx: &mut LowerCtx, s: &Assign) {
             set_scalar_var(ctx, &var_rec, delta, &s.range);
             return;
         }
-        // Re-read current_exec after lowering the delta — lower_expr may
-        // have advanced the chain via Var_Get / nested exec-taking ops.
+        // Lowering the delta may have advanced the chain (Var_Get, nested
+        // exec-taking ops), so `current_exec` is read again.
         let exec_in = ctx.current_exec.unwrap_or(current_exec);
-        let inner = var_rec.inner_type.clone();
-        let var_ref = var_rec.node_id.port(WirePort::VarRef);
-        chain_var_write(
+        store_on_chain(
             ctx,
             exec_in,
-            var_ref,
-            inner,
+            &var_rec,
             delta,
-            true,
+            WriteKind::Increment,
             s.range.clone(),
             None,
         );
-        invalidate_var_cache(ctx, &var_rec.node_id);
+        invalidate_var_cache(ctx, var_rec.node_id);
         return;
     }
 
-    // General assignment: Exec_Var_Set
+    // General assignment: Exec_Var_Set.
     let value_port = lower_expr(ctx, &s.value);
-    // Re-read current_exec after lowering the RHS — lower_expr may have
-    // advanced the chain via Var_Get / nested exec-taking ops.
+    // Lowering the value may have advanced the chain (Var_Get, nested
+    // exec-taking ops), so `current_exec` is read again.
     let exec_in = ctx.current_exec.unwrap_or(current_exec);
-    let inner = var_rec.inner_type.clone();
-    chain_var_write(
+    store_on_chain(
         ctx,
         exec_in,
-        var_rec.node_id.port(WirePort::VarRef),
-        inner.clone(),
+        &var_rec,
         value_port,
-        false,
+        WriteKind::Set,
         s.range.clone(),
         None,
     );
-    invalidate_var_cache(ctx, &var_rec.node_id);
+    invalidate_var_cache(ctx, var_rec.node_id);
 }
 
 /// Whole-container assignment to an array or map var `name`, shared by the bare
 /// `xs = ..` target and the field-chain `ns.xs = ..` / `rec.xs = ..` ones.
 /// Returns false, emitting nothing, when `var_rec` is not a container.
 pub(super) fn lower_container_assign(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     var_rec: &VarRecord,
     name: &str,
     value: &Expr,
@@ -2207,21 +2120,15 @@ pub(super) fn lower_container_assign(
         }
         // `foo = { k => v, ... }` on a map var: rebuild the contents at runtime.
         // There's no single "set map" gate, so clear it then set each entry in
-        // order (mirrors the array literal assign above).
+        // order.
         Expr::MapLit { .. } if var_rec.storage == VarStorage::Map => {
             let target = Binding::Var(var_rec.clone());
             rebuild_container(ctx, &target, name, value, range, &mut lower_in_place(value, false));
         }
-        // Assigning a whole container from a non-literal expression (`m = m2`)
-        // is UNCONDITIONALLY unsatisfiable: there is no whole-container
-        // copy-by-assignment gate, and a container's backing gate only exposes
-        // `ArrayVarRef`/`MapVarRef`, not `VarRef`. Falling through to the
-        // generic Var_Set path would wire a nonexistent source port into the
-        // gate, which does nothing and only shows up as a load failure in-game.
-        // Since no fallback can ever satisfy it, this is a hard ERROR (mirrors
-        // WS021's "would silently produce a placeholder -> error" policy), not a
-        // droppable warning. `.copyFrom(src)` is the supported way to copy a
-        // whole container.
+        // A whole container from a non-literal (`m = m2`) has no gate: a
+        // container exposes only `ArrayVarRef`/`MapVarRef`, and a Var_Set wired
+        // from `VarRef` fails to load in game. It is an error; `.copyFrom(src)`
+        // copies a container.
         _ => ctx.diagnostics.push(Diagnostic::error(
             "WS027",
             format!(
@@ -2237,7 +2144,7 @@ pub(super) fn lower_container_assign(
 /// diagnostics.
 fn target_path(e: &Expr) -> String {
     match e {
-        Expr::Ident { name, .. } => name.to_string(),
+        Expr::Ident { name, .. } => name.clone(),
         Expr::FieldAccess { obj, field, .. } => format!("{}.{field}", target_path(obj)),
         Expr::TuplePick { obj, index, .. } => format!("{}.{index}", target_path(obj)),
         _ => "_".to_string(),
@@ -2256,7 +2163,7 @@ pub(super) enum Supplied {
 
 pub(super) enum ElemValue {
     Scalar(PortRef),
-    Record(HashMap<crate::intern::Sym, Binding>),
+    Record(Fields),
 }
 
 /// Rebuild the container `target` (an array or map var, or the columns of a
@@ -2267,12 +2174,12 @@ pub(super) enum ElemValue {
 /// leading `...name` keeps the old contents in place of the `Clear` (see
 /// [`self_spread`]).
 pub(super) fn rebuild_container(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     target: &Binding,
     name: &str,
     value: &Expr,
     range: &SourceRange,
-    supply: &mut dyn FnMut(&mut LowerCtx, usize) -> Supplied,
+    supply: &mut dyn FnMut(&mut LowerCtx<'_>, usize) -> Supplied,
 ) {
     use crate::lower::access::{
         array_exec_op, lower_record_array_method, lower_record_map_method, map_exec_op,
@@ -2370,7 +2277,7 @@ pub(super) fn rebuild_container(
                     _ => false,
                 };
                 if !pushed {
-                    crate::lower::expr::synthesise_unsupported(ctx, value);
+                    synthesise_unsupported(ctx, value);
                 }
             }
         }
@@ -2399,7 +2306,7 @@ pub(super) fn rebuild_container(
 pub(super) fn lower_in_place(
     value: &Expr,
     columns: bool,
-) -> impl FnMut(&mut LowerCtx, usize) -> Supplied + '_ {
+) -> impl FnMut(&mut LowerCtx<'_>, usize) -> Supplied + '_ {
     move |ctx, i| match value {
         Expr::Array { elements, .. } => match &elements[i] {
             ArrayElem::Item(e) if columns => value_record_fields(ctx, e)
@@ -2427,12 +2334,12 @@ pub(super) fn lower_in_place(
 /// them in order. A self-spread anywhere else would read the array after the
 /// rebuild has cleared or added to it, and is WS088.
 pub(super) fn self_spread(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     node: NodeId,
     name: &str,
     elements: &[ArrayElem],
 ) -> bool {
-    let is_self = |ctx: &LowerCtx, el: &ArrayElem| {
+    let is_self = |ctx: &LowerCtx<'_>, el: &ArrayElem| {
         matches!(el, ArrayElem::Spread(e)
             if matches!(resolve_field_chain(ctx, e), Some(Binding::Var(v)) if v.node_id == node))
     };
@@ -2453,63 +2360,27 @@ pub(super) fn self_spread(
     keep
 }
 
-pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
+pub(super) fn lower_if(ctx: &mut LowerCtx<'_>, s: &If) {
     if ctx.current_exec.is_none() {
         return;
     }
 
-    // A const-evaluable condition selects one block at compile time. This
-    // lowers the taken block STRAIGHT INTO THE PARENT SCOPE — no Branch gate,
-    // and so no Var_Get cache snapshot/restore (see this function's doc
-    // comment) — which is what makes it safe. Do not reimplement this as
-    // post-hoc deletion of an already-lowered branch. This covers a bare
-    // `true`/`false` and, more generally, every compile-time-decidable
-    // condition built from const-DECLARED names (operators over them,
-    // certified method calls, ...) via `const_eval::eval_expr` — the same
-    // evaluator `typecheck::stmt`'s `Stmt::If` arm uses to decide which
-    // block NOT to check, so the two sides agree on exactly what's
-    // constant. `if_cond_const_ctx` restricts the environment to names
-    // actually spelled `const` (NOT a plain `let` that merely happens to
-    // fold — see its doc comment): a program using no `const` must compile
-    // identically, so a condition built from a plain `let` falls straight
-    // through to the general Branch path below. A separate case: an ident
-    // bound to a literal-bool GATE (e.g. a plain mod param called with a
-    // literal argument) is not something `const_eval` can see — see
-    // `ident_literal_bool`'s doc comment — so it stays a narrower fallback
-    // below, unaffected by the const-declared restriction (it never reads
-    // `const_lookup` at all). Only when NOT under `@nofold` — that
-    // annotation promises "nothing folded or elided", so a
-    // `@nofold`-scoped `if true {...}` must still lower a real Branch (fall
-    // through to the general path below).
+    // A condition that is constant (over names declared `const`, see
+    // `if_cond_const_ctx`) lowers only the taken block, straight into the
+    // parent scope with no Branch gate. `typecheck::stmt`'s `Stmt::If` arm uses
+    // the same evaluator to skip the untaken block, so the two must agree.
+    // `@nofold` promises nothing is elided, so under it a real Branch is built.
     if ctx.nofold_depth == 0 {
-        let lookup = |n: &str| ctx.resolve_mod(n);
-        let mut budget = crate::const_eval::Budget::default();
-        let cond_cx = ctx.if_cond_const_ctx(Some(&lookup));
-        let cond_result = crate::const_eval::eval_expr(&s.cond, &cond_cx, &mut budget).ok();
-        // `const_eval` only ever resolves NAMED constants (`const`/`let`
-        // bindings, and operators/calls over them) — it has no notion of a
-        // lowered gate's value, so it can't see a plain (non-const) mod
-        // param that happens to be bound to a literal-bool ARGUMENT at this
-        // call site (e.g. `mod foo(cond: bool) { if cond {...} }` called as
-        // `foo(true)`: `cond` binds to the `_Literal` gate `lower_expr`
-        // built for that argument). `ident_literal_bool` reads that gate
-        // directly as a narrower, SEPARATE fallback — deliberately NOT
-        // folded into `const_eval`'s consts environment, so that evaluator's
-        // meaning stays "named constants only". Its hits are NOT recorded
-        // into `dropped_ranges` below: typecheck checks a mod body once,
-        // generically, per declaration — never re-checked per call site — so
-        // it has no way to know this particular call passed a literal, and
-        // always checks both branches here regardless. That's the safe
-        // over-checking direction (never under-checking), so leaving this
-        // case untracked cannot let a branch be lowered without having been
-        // checked.
+        let cond_result = ctx.const_eval(&s.cond, ConstScope::IfCond).ok();
+        // `ident_literal_bool` covers a mod param bound to a literal-bool
+        // argument, which `const_eval` cannot see. Its hits are not recorded in
+        // `dropped_ranges`: typecheck checks a mod body once for every call
+        // site, so it has checked both branches anyway.
         let taken = match cond_result {
             Some(Literal::Bool(taken)) => {
-                // Record the range of the block that was skipped, mirroring
-                // `typecheck::stmt`'s `Stmt::If` arm exactly (see
-                // `typecheck_and_lowering_drop_exactly_the_same_ranges` in
-                // `typecheck::tests`) — a taken THEN with no `else` drops
-                // nothing, since there is no second block to skip.
+                // The skipped block's range, matching typecheck's
+                // (`typecheck_and_lowering_drop_exactly_the_same_ranges`); a
+                // taken THEN with no `else` drops nothing.
                 if taken {
                     if let Some(else_b) = &s.else_block {
                         ctx.dropped_ranges.push(else_b.range.clone());
@@ -2542,37 +2413,26 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     let if_group_id = ctx.alloc_scope(ScopeKind::IfGroup, s.range.clone());
     ctx.builder.current_scope_id = if_group_id;
 
-    // IfCond — condition expression + branch gate.
+    // IfCond: the condition expression and the branch gate.
     let cond_id = ctx.alloc_scope(ScopeKind::IfCond, s.cond.range().clone());
     ctx.builder.current_scope_id = cond_id;
     let cond_port = lower_expr(ctx, &s.cond);
-    // Lowering the condition may have inserted Exec-taking gates (e.g.
-    // `Var_Get`). In that case `ctx.current_exec` has advanced past the
-    // handler's entry, and the branch's Exec input must pick up from
-    // that new chain head — not from the entry-time `current_exec`.
+    // Lowering the condition may have inserted exec-taking gates (`Var_Get`),
+    // so the Branch's Exec input takes the new chain head.
     let branch_exec_in = ctx.current_exec.unwrap_or(current_exec);
-    let branch = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::BRANCH,
-        source_range: s.range.clone(),
-        ports: GateIO::exec_branch(),
-        ..Default::default()
-    });
-    ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
-    ctx.connect(cond_port, branch.port(WirePort::BCond));
+    let branch = add_branch(ctx, branch_exec_in, cond_port, &s.range);
 
     // Snapshot every var's Var_Get cache before the branches. At the join only
-    // the vars a branch actually wrote get invalidated, so an unwritten var's
-    // pre-branch read survives instead of the whole cache being blanket-cleared
-    // — Var_Get is the single most common gate, and this drops the redundant
-    // re-reads. `cache_touched_since` compares actual cache state, so any write
-    // (direct, nested-if, inline mod, chip-instance ref arg) is caught.
+    // the vars a branch wrote are invalidated, so an unwritten var's pre-branch
+    // read survives. `cache_touched_since` compares cache state, so any kind of
+    // write (direct, nested `if`, inline mod, chip-instance ref arg) is caught.
     let pre_branch_caches = snapshot_var_caches(ctx);
 
     // Snapshot scope before branches so that declarations in one
     // branch don't leak into the other (each branch gets its own scope).
     ctx.push_scope(crate::scope::ScopeTag::BLOCK);
 
-    // IfThen — sibling of IfCond under IfGroup.
+    // IfThen: sibling of IfCond under IfGroup.
     ctx.builder.current_scope_id = if_group_id;
     let then_id = ctx.alloc_scope(ScopeKind::IfThen, s.then_block.range.clone());
     ctx.builder.current_scope_id = then_id;
@@ -2587,7 +2447,7 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     ctx.pop_scope();
     ctx.push_scope(crate::scope::ScopeTag::BLOCK);
 
-    // IfElse — allocated even when the source has no `else`, so layout
+    // IfElse: allocated even when the source has no `else`, so layout
     // always gets the triplet (empty IfElse regions compose as zero-width).
     ctx.builder.current_scope_id = if_group_id;
     let else_range = s
@@ -2598,11 +2458,9 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
     let else_id = ctx.alloc_scope(ScopeKind::IfElse, else_range);
     ctx.builder.current_scope_id = else_id;
     ctx.current_exec = Some(branch.port(WirePort::ExecOutB));
-    // A Var_Get emitted in the THEN branch lives on the ExecOutA chain, so it
-    // must not be reused on the ELSE chain (ExecOutB) - it never fires there.
-    // Restoring the pre-branch caches drops exactly those THEN-created reads
-    // while KEEPING the pre-branch reads, which fired before the split and so
-    // dominate the ELSE chain too - the else branch can reuse them.
+    // A Var_Get emitted in the THEN branch lives on ExecOutA and never fires on
+    // the ELSE chain. Restoring the pre-branch caches drops those reads and keeps
+    // the pre-branch ones, which fired before the split.
     restore_var_caches(ctx, &pre_branch_caches);
     if let Some(else_b) = &s.else_block {
         lower_block(ctx, else_b);
@@ -2628,41 +2486,21 @@ pub(super) fn lower_if(ctx: &mut LowerCtx, s: &If) {
         return;
     }
 
-    let union = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::UNION,
-        source_range: s.range.clone(),
-        ports: GateIO::exec_join(),
-        ..Default::default()
-    });
-    if let Some(e) = then_end {
-        ctx.connect(e, union.port(WirePort::ExecA));
-    }
-    if let Some(e) = else_end {
-        ctx.connect(e, union.port(WirePort::ExecB));
-    }
-    ctx.current_exec = Some(union.port(WirePort::ExecOut));
-    // Post-join cache state: restore the pre-branch reads (a Var_Get created
-    // inside either branch only fires when that branch is taken, so it can't be
-    // reused after the join — restoring drops them), then invalidate every var
-    // EITHER branch wrote. A var neither branch touched keeps its pre-branch
-    // read; a written one re-reads fresh on the (dominating) post-join chain —
-    // otherwise it would read a stale value whenever the writing branch wasn't
-    // taken (a total first read in one `if phase == …` block and re-read in a
-    // later one).
+    ctx.current_exec = Some(exec_join(ctx, then_end, else_end, &s.range));
+    // Post-join cache state: restore the pre-branch reads (a Var_Get inside
+    // either branch fires only when that branch runs), then invalidate every var
+    // either branch wrote, so a written var is read again after the join.
     restore_var_caches(ctx, &pre_branch_caches);
     for id in then_touched.iter().chain(else_touched.iter()) {
-        invalidate_var_cache(ctx, id);
+        invalidate_var_cache(ctx, *id);
     }
 }
 
-/// Lower a `match` used as a STATEMENT (a live exec chain, block-bodied arms)
-/// `if let <pattern> = <scrutinee> { then } else { else }` - a refutable-pattern
-/// conditional. It desugars to a two-arm match (`<pattern> => then`, `_ => else`)
-/// - or a one-arm match with a `Fail` pass-through when there is no `else` - and
-/// routes straight through [`lower_match_stmt`], so the `disc == variant`
-/// Branch, the ExecOutA/ExecOutB split, the rejoining `Union`, and the capture
-/// binding are all the shared match machinery, not a second walker.
-pub(super) fn lower_if_let(ctx: &mut LowerCtx, i: &IfLet) {
+/// `if let <pattern> = <scrutinee> { then } else { else }`, a refutable-pattern
+/// conditional. It desugars to a two-arm match (`<pattern> => then`,
+/// `_ => else`), or a one-arm match when there is no `else`, lowered by
+/// [`lower_match_stmt`].
+pub(super) fn lower_if_let(ctx: &mut LowerCtx<'_>, i: &IfLet) {
     let mut arms = vec![MatchArm {
         pattern: i.pattern.clone(),
         guard: None,
@@ -2680,33 +2518,28 @@ pub(super) fn lower_if_let(ctx: &mut LowerCtx, i: &IfLet) {
     lower_match_stmt(ctx, &i.scrutinee, &arms, &i.range);
 }
 
-/// `let <pattern> = <scrutinee> else { <diverge> }` - a refutable binding that
-/// runs the diverging `else` when it fails. It walks the SAME one-arm `Decision`
-/// (`matchtree::build`) `if let` drives through `lower_match_stmt`, so EVERY
-/// disc mismatch at ANY nesting level routes to the `else` - a nested pattern
-/// like `Some(Some(x))` tests both discs, not just the outer one. Unlike `if
-/// let`, the paths do NOT rejoin through a `Union`: the fully-matching leaf
-/// binds all captures into the CURRENT scope (visible to the rest of the
-/// enclosing block) and continues `current_exec`; every non-matching path runs
-/// the `else` block (which typecheck forced to diverge - WS062), so its exec
-/// never returns to the main chain.
-pub(super) fn lower_let_else(ctx: &mut LowerCtx, l: &LetElse) {
+/// `let <pattern> = <scrutinee> else { <diverge> }`, a refutable binding that
+/// runs the diverging `else` when it fails. It walks the one-arm `Decision`
+/// (`matchtree::build`), so a mismatch at any nesting level (`Some(Some(x))`)
+/// routes to the `else`. The paths do not rejoin: the matching leaf binds the
+/// captures into the current scope and continues `current_exec`; every other
+/// path runs the `else` (forced to diverge by typecheck, WS062).
+pub(super) fn lower_let_else(ctx: &mut LowerCtx<'_>, l: &LetElse) {
     // Pure position (no exec chain): nothing to thread, same as `lower_if`.
     let Some(entry_exec) = ctx.current_exec else {
         return;
     };
     let range = l.range.clone();
-    let scrut_ty = crate::lower::expr::scrutinee_type(ctx, &l.scrutinee);
+    let scrut_ty = scrutinee_type(ctx, &l.scrutinee);
 
     // The one-arm decision tree for the FULL (possibly nested) pattern. Every
     // `Switch` case leads deeper toward the single `Leaf`; every `Fail`/default
     // is a mismatch that routes to the diverging `else`.
-    let decision =
-        crate::lower::matchtree::build(ctx.enums(), &scrut_ty, std::slice::from_ref(&l.pattern));
+    let decision = matchtree::build(ctx.enums(), &scrut_ty, std::slice::from_ref(&l.pattern));
 
     // The scrutinee's `__disc` + payload-slot record (a NAMED var/let/param
     // through the scope), or a single value. An enum I/O port has no such
-    // record - loud placeholder.
+    // record and gets a placeholder.
     let Some(root) = match_root(ctx, &l.scrutinee, &scrut_ty) else {
         synthesise_unsupported_range(ctx, "a `let ... else` on a value with no enum tag", &range);
         return;
@@ -2716,212 +2549,164 @@ pub(super) fn lower_let_else(ctx: &mut LowerCtx, l: &LetElse) {
 
     ctx.current_exec = Some(entry_exec);
     let outer_concats = std::mem::take(&mut ctx.concat_cache);
-    let cont = lower_let_else_decision(
-        ctx,
-        &decision,
-        &root,
-        &l.pattern,
-        &l.else_block,
-        entry_exec,
-        &range,
-    );
+    let walk = LetElseWalk {
+        root: &root,
+        pattern: &l.pattern,
+        else_block: &l.else_block,
+        range: &range,
+    };
+    let cont = walk.decision(ctx, &decision, entry_exec);
     ctx.concat_cache = outer_concats;
     // Continue on the fully-matched path. A decision with no reachable match
-    // leaf (should not happen for a well-typed single-variant pattern) leaves
-    // exec on the entry so following statements are not silently stranded.
+    // leaf (not expected for a well-typed pattern) continues from the entry.
     ctx.current_exec = cont.or(Some(entry_exec));
 }
 
-/// Walk one `Decision` node for a `let ... else`, entering on `entry_exec`.
-/// Returns the exec on which the FULLY-matched path continues (there is exactly
-/// one such leaf), or `None` for a path that reaches the diverging `else`.
-fn lower_let_else_decision(
-    ctx: &mut LowerCtx,
-    decision: &crate::lower::matchtree::Decision,
-    root: &HashMap<crate::intern::Sym, Binding>,
-    pattern: &Pattern,
-    else_block: &Block,
-    entry_exec: PortRef,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    use crate::lower::matchtree::Decision;
-    match decision {
-        Decision::Leaf(_) => {
-            // Full match: bind every capture (all nesting levels) as a
-            // compile-time slot move into the CURRENT scope, then continue here.
-            ctx.current_exec = Some(entry_exec);
-            for name in bind_pattern_captures(ctx, pattern, root, range) {
-                ctx.consts.forget(&name);
-            }
-            Some(entry_exec)
-        }
-        // The pattern's value tests (a string pattern, a literal in a
-        // payload): pass, and it is a full match; fail, and the `else` runs.
-        Decision::Check {
-            tests, otherwise, ..
-        } => {
-            ctx.current_exec = Some(entry_exec);
-            let Some(cond_port) = lower_value_checks(ctx, root, tests, range) else {
-                return lower_let_else_decision(
-                    ctx,
-                    &Decision::Leaf(0),
-                    root,
-                    pattern,
-                    else_block,
-                    entry_exec,
-                    range,
-                );
-            };
-            let branch = let_else_branch(ctx, cond_port, entry_exec, range);
-            let pre_branch_caches = snapshot_var_caches(ctx);
-            let else_cont = lower_let_else_decision(
-                ctx,
-                otherwise,
-                root,
-                pattern,
-                else_block,
-                branch.port(WirePort::ExecOutB),
-                range,
-            );
-            restore_var_caches(ctx, &pre_branch_caches);
-            let match_cont = lower_let_else_decision(
-                ctx,
-                &Decision::Leaf(0),
-                root,
-                pattern,
-                else_block,
-                branch.port(WirePort::ExecOutA),
-                range,
-            );
-            match_cont.or(else_cont)
-        }
-        // A disc mismatch at some level: run the diverging `else`; never rejoin.
-        Decision::Fail => {
-            ctx.current_exec = Some(entry_exec);
-            lower_block(ctx, else_block);
-            None
-        }
-        Decision::Switch {
-            path,
-            cases,
-            default,
-        } => {
-            ctx.current_exec = Some(entry_exec);
-            let disc_port = read_disc_at_path(ctx, root, path, range)
-                .unwrap_or_else(|| synthesise_unsupported_range(ctx, "an enum tag read", range));
-            let head_exec = ctx.current_exec.unwrap_or(entry_exec);
-            lower_let_else_switch(
-                ctx,
-                disc_port,
-                cases,
-                default.as_deref(),
-                root,
-                pattern,
-                else_block,
-                head_exec,
-                range,
-            )
-        }
-    }
+/// What a `let ... else` walk keeps fixed while it recurses: the scrutinee
+/// record, the pattern, the diverging block, and the statement's range.
+struct LetElseWalk<'a> {
+    root: &'a Fields,
+    pattern: &'a Pattern,
+    else_block: &'a Block,
+    range: &'a SourceRange,
 }
 
-/// Chain a `Switch`'s cases as `Branch`es on `disc == k` for a `let ... else`.
-/// The matching case's sub-decision runs on `ExecOutA` (toward the leaf), the
-/// remaining cases/default on `ExecOutB` (toward the `else`). No `Union`: the
-/// single match leaf's continuation propagates up, and each `else` path
-/// diverges. The `else` chain's Var_Get reads fire only on its `ExecOutB`, so
-/// they are snapshot/restored around it and never leak to the match path.
-#[allow(clippy::too_many_arguments)]
-fn lower_let_else_switch(
-    ctx: &mut LowerCtx,
-    disc_port: PortRef,
-    cases: &[(Vec<i64>, crate::lower::matchtree::Decision)],
-    default: Option<&crate::lower::matchtree::Decision>,
-    root: &HashMap<crate::intern::Sym, Binding>,
-    pattern: &Pattern,
-    else_block: &Block,
-    entry_exec: PortRef,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    let Some(((keys, sub), rest)) = cases.split_first() else {
-        // Past the last case: the default sub-decision (a `Fail` -> `else`), or
-        // the `else` directly when there is no default.
-        return match default {
-            Some(d) => {
-                lower_let_else_decision(ctx, d, root, pattern, else_block, entry_exec, range)
+impl LetElseWalk<'_> {
+    /// Walk one `Decision` node for a `let ... else`, entering on `entry_exec`.
+    /// Returns the exec on which the FULLY-matched path continues (there is exactly
+    /// one such leaf), or `None` for a path that reaches the diverging `else`.
+    fn decision(
+        &self,
+        ctx: &mut LowerCtx<'_>,
+        decision: &Decision,
+        entry_exec: PortRef,
+    ) -> Option<PortRef> {
+        let Self {
+            root,
+            pattern,
+            else_block,
+            range,
+        } = *self;
+        match decision {
+            Decision::Leaf(_) => {
+                // Full match: bind every capture (all nesting levels) as a
+                // compile-time slot move into the CURRENT scope, then continue here.
+                ctx.current_exec = Some(entry_exec);
+                for name in bind_pattern_captures(ctx, pattern, root, range) {
+                    ctx.consts.forget(&name);
+                }
+                Some(entry_exec)
             }
-            None => {
+            // The pattern's value tests (a string pattern, a literal in a
+            // payload): pass, and it is a full match; fail, and the `else` runs.
+            Decision::Check {
+                tests, otherwise, ..
+            } => {
+                ctx.current_exec = Some(entry_exec);
+                let Some(cond_port) = lower_value_checks(ctx, root, tests, range) else {
+                    return self.decision(ctx, &Decision::Leaf(0), entry_exec);
+                };
+                let branch = let_else_branch(ctx, cond_port, entry_exec, range);
+                let pre_branch_caches = snapshot_var_caches(ctx);
+                let else_cont = self.decision(ctx, otherwise, branch.port(WirePort::ExecOutB));
+                restore_var_caches(ctx, &pre_branch_caches);
+                let match_cont =
+                    self.decision(ctx, &Decision::Leaf(0), branch.port(WirePort::ExecOutA));
+                match_cont.or(else_cont)
+            }
+            // A disc mismatch at some level: run the diverging `else`; never rejoin.
+            Decision::Fail => {
                 ctx.current_exec = Some(entry_exec);
                 lower_block(ctx, else_block);
                 None
             }
+            Decision::Switch {
+                path,
+                cases,
+                default,
+            } => {
+                ctx.current_exec = Some(entry_exec);
+                let disc_port = read_disc_at_path(ctx, root, path, range).unwrap_or_else(|| {
+                    synthesise_unsupported_range(ctx, "an enum tag read", range)
+                });
+                let head_exec = ctx.current_exec.unwrap_or(entry_exec);
+                self.switch(ctx, disc_port, cases, default.as_deref(), head_exec)
+            }
+        }
+    }
+
+    /// Chain a `Switch`'s cases as `Branch`es on `disc == k` for a `let ... else`.
+    /// The matching case's sub-decision runs on `ExecOutA` (toward the leaf), the
+    /// remaining cases/default on `ExecOutB` (toward the `else`). No `Union`: the
+    /// single match leaf's continuation propagates up, and each `else` path
+    /// diverges. The `else` chain's `Var_Get` reads fire only on its `ExecOutB`, so
+    /// they are snapshot/restored around it and never leak to the match path.
+    fn switch(
+        &self,
+        ctx: &mut LowerCtx<'_>,
+        disc_port: PortRef,
+        cases: &[(Vec<i64>, Decision)],
+        default: Option<&Decision>,
+        entry_exec: PortRef,
+    ) -> Option<PortRef> {
+        let Some(((keys, sub), rest)) = cases.split_first() else {
+            // Past the last case: the default sub-decision (a `Fail` -> `else`), or
+            // the `else` directly when there is no default.
+            return match default {
+                Some(d) => self.decision(ctx, d, entry_exec),
+                None => {
+                    ctx.current_exec = Some(entry_exec);
+                    lower_block(ctx, self.else_block);
+                    None
+                }
+            };
         };
-    };
 
-    ctx.current_exec = Some(entry_exec);
-    let cond_port = emit_disc_in(ctx, disc_port, keys, range);
-    let branch = let_else_branch(ctx, cond_port, entry_exec, range);
+        ctx.current_exec = Some(entry_exec);
+        let cond_port = emit_disc_in(ctx, disc_port, keys, self.range);
+        let branch = let_else_branch(ctx, cond_port, entry_exec, self.range);
 
-    // NON-matching (ExecOutB): the remaining cases, ending in the diverging
-    // `else`. Bracket its var caches so its reads never leak to the match path.
-    let pre_branch_caches = snapshot_var_caches(ctx);
-    let else_cont = lower_let_else_switch(
-        ctx,
-        disc_port,
-        rest,
-        default,
-        root,
-        pattern,
-        else_block,
-        branch.port(WirePort::ExecOutB),
-        range,
-    );
-    restore_var_caches(ctx, &pre_branch_caches);
+        // NON-matching (ExecOutB): the remaining cases, ending in the diverging
+        // `else`. Bracket its var caches so its reads never leak to the match path.
+        let pre_branch_caches = snapshot_var_caches(ctx);
+        let else_cont = self.switch(
+            ctx,
+            disc_port,
+            rest,
+            default,
+            branch.port(WirePort::ExecOutB),
+        );
+        restore_var_caches(ctx, &pre_branch_caches);
 
-    // MATCHING (ExecOutA): descend toward the leaf - this carries the
-    // continuation. Lowered last so `current_exec` ends on the match path.
-    let match_cont = lower_let_else_decision(
-        ctx,
-        sub,
-        root,
-        pattern,
-        else_block,
-        branch.port(WirePort::ExecOutA),
-        range,
-    );
+        // MATCHING (ExecOutA): descend toward the leaf, which carries the
+        // continuation. Lowered last so `current_exec` ends on the match path.
+        let match_cont = self.decision(ctx, sub, branch.port(WirePort::ExecOutA));
 
-    match_cont.or(else_cont)
+        match_cont.or(else_cont)
+    }
 }
 
 /// A `Branch` on `cond_port`, its Exec from the chain head (`entry_exec`, or
 /// past any read lowering the condition added).
 fn let_else_branch(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cond_port: PortRef,
     entry_exec: PortRef,
     range: &SourceRange,
 ) -> NodeId {
     let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);
-    let branch = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::BRANCH,
-        source_range: range.clone(),
-        ports: GateIO::exec_branch(),
-        ..Default::default()
-    });
-    ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
-    ctx.connect(cond_port, branch.port(WirePort::BCond));
-    branch
+    add_branch(ctx, branch_exec_in, cond_port, range)
 }
 
-/// to an exec-threaded `Branch`/`Union` tree - the statement twin of
-/// `lower_match_expr`. Both walk the same Task-13 `Decision`: a `Switch` reads
-/// `__disc` at its path and each case becomes an `if disc == k { arm } else
-/// { rest }` (a `Branch`, the arm on `ExecOutA`, the remaining cases/default on
-/// `ExecOutB`, the two exits rejoined by a `Union`). The returned port is the
-/// final exec continuation; the `Stmt::ExprStmt` caller discards it and reads
-/// `current_exec` for what follows.
+/// Lower a `match` used as a STATEMENT (a live exec chain, block-bodied arms)
+/// to an exec-threaded `Branch`/`Union` tree, the statement twin of
+/// `lower_match_expr`. Both walk the same `Decision`: a `Switch` reads `__disc`
+/// at its path and each case becomes `if disc == k { arm } else { rest }` (the
+/// arm on `ExecOutA`, the rest on `ExecOutB`, rejoined by a `Union`). The
+/// returned port is the final exec continuation; the `Stmt::ExprStmt` caller
+/// discards it and reads `current_exec`.
 pub(super) fn lower_match_stmt(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     scrutinee: &Expr,
     arms: &[MatchArm],
     range: &SourceRange,
@@ -2934,33 +2719,33 @@ pub(super) fn lower_match_stmt(
             range,
         );
     };
-    let scrut_ty = crate::lower::expr::scrutinee_type(ctx, scrutinee);
-    let decision = crate::lower::expr::build_arms(ctx, &scrut_ty, arms);
+    let scrut_ty = scrutinee_type(ctx, scrutinee);
+    let decision = build_arms(ctx, &scrut_ty, arms);
 
     // The scrutinee resolves to its `__disc` + payload-slot `Binding::Record`:
     // a NAMED scrutinee through the scope, an INLINE construction by lowering
     // it (see `match_scrutinee_record`, shared with `lower_match_expr`), or
     // a single value. A scrutinee with no record decomposition (an enum INPUT
-    // port, a typecheck-error program) is a loud `_Unsupported` placeholder.
+    // port, a typecheck-error program) becomes an `_Unsupported` placeholder.
     let Some(root) = match_root(ctx, scrutinee, &scrut_ty) else {
         return synthesise_unsupported_range(ctx, "a `match` on a value with no enum tag", range);
     };
     // A scrutinee that is a call ran on the chain; the test follows it.
     let entry_exec = ctx.current_exec.unwrap_or(entry_exec);
+    let walk = MatchWalk {
+        root: &root,
+        arms,
+        range,
+    };
 
-    // Const-elision fast path: the statement twin of
-    // `lower_match_expr`'s own -- see that function's doc comment for the
-    // `nofold_depth`/`if_cond_const_ctx` rationale, identical here. On
-    // success, every arm OTHER than the taken one is dropped: none of their
-    // statements ran, so typecheck's blanket "check every arm" (there is no
-    // const-elision on that side for `match` -- every arm is always checked,
-    // the safe over-checking direction) still agrees with lowering on which
-    // ranges never executed, matching `lower_if`'s `dropped_ranges` bookkeeping.
+    // A constant scrutinee lowers only the taken arm, as in `lower_match_expr`
+    // (not under `@nofold`). Every other arm's range goes to `dropped_ranges`;
+    // typecheck checks every arm of a `match`.
     if ctx.nofold_depth == 0
         && let Some(leaf) = try_const_decision(ctx, &decision, scrutinee)
     {
         let taken = match &leaf {
-            crate::lower::matchtree::Decision::Leaf(i) => Some(*i),
+            Decision::Leaf(i) => Some(*i),
             _ => None,
         };
         for (j, arm) in arms.iter().enumerate() {
@@ -2969,97 +2754,114 @@ pub(super) fn lower_match_stmt(
             }
         }
         let outer_concats = std::mem::take(&mut ctx.concat_cache);
-        let exit = lower_decision_stmt(ctx, &leaf, &root, arms, entry_exec, range);
+        let exit = walk.stmt_decision(ctx, &leaf, entry_exec);
         ctx.concat_cache = outer_concats;
         ctx.current_exec = exit;
         return exit.unwrap_or(entry_exec);
     }
 
     let outer_concats = std::mem::take(&mut ctx.concat_cache);
-    let exit = lower_decision_stmt(ctx, &decision, &root, arms, entry_exec, range);
+    let exit = walk.stmt_decision(ctx, &decision, entry_exec);
     ctx.concat_cache = outer_concats;
     ctx.current_exec = exit;
     exit.unwrap_or(entry_exec)
 }
 
-/// Thread exec through one `Decision`, entering on `entry_exec`. Returns the
-/// exit exec, or `None` when the taken path terminates its own chain (e.g. a
-/// buffered `emit` as an arm's last statement).
-fn lower_decision_stmt(
-    ctx: &mut LowerCtx,
-    decision: &crate::lower::matchtree::Decision,
-    root: &HashMap<crate::intern::Sym, Binding>,
-    arms: &[MatchArm],
-    entry_exec: PortRef,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    use crate::lower::matchtree::Decision;
-    match decision {
-        Decision::Leaf(i) => {
-            ctx.current_exec = Some(entry_exec);
-            lower_match_arm_stmt(ctx, &arms[*i], root);
-            ctx.current_exec.take()
-        }
-        // No arm matched (only reachable for a non-exhaustive match, already a
-        // WS054): the exec falls through unchanged, running nothing.
-        Decision::Fail => Some(entry_exec),
-        Decision::Switch {
-            path,
-            cases,
-            default,
-        } => {
-            ctx.current_exec = Some(entry_exec);
-            let disc_port = read_disc_at_path(ctx, root, path, range)
-                .unwrap_or_else(|| synthesise_unsupported_range(ctx, "an enum tag read", range));
-            // Reading `__disc` may have inserted an exec-taking `Var_Get`; the
-            // first branch's Exec input picks up from the advanced chain head.
-            let head_exec = ctx.current_exec.unwrap_or(entry_exec);
-            lower_switch_cases(
-                ctx,
-                disc_port,
+impl MatchWalk<'_> {
+    /// Thread exec through one `Decision`, entering on `entry_exec`. Returns the
+    /// exit exec, or `None` when the taken path terminates its own chain (e.g. a
+    /// buffered `emit` as an arm's last statement).
+    fn stmt_decision(
+        &self,
+        ctx: &mut LowerCtx<'_>,
+        decision: &Decision,
+        entry_exec: PortRef,
+    ) -> Option<PortRef> {
+        let Self { root, arms, range } = *self;
+        match decision {
+            Decision::Leaf(i) => {
+                ctx.current_exec = Some(entry_exec);
+                lower_match_arm_stmt(ctx, &arms[*i], root);
+                ctx.current_exec.take()
+            }
+            // No arm matched (only reachable for a non-exhaustive match, already a
+            // WS054): the exec falls through unchanged, running nothing.
+            Decision::Fail => Some(entry_exec),
+            Decision::Switch {
+                path,
                 cases,
-                default.as_deref(),
-                root,
-                arms,
-                head_exec,
-                range,
-            )
-        }
-        // `if tests && guard { arm } else { otherwise }`, the condition read
-        // where the arm's captures are bound, since a guard reads them.
-        Decision::Check {
-            tests,
-            arm,
-            guarded,
-            otherwise,
-        } => {
-            ctx.current_exec = Some(entry_exec);
-            let arm_ref = &arms[*arm];
-            let cond = crate::lower::expr::with_arm_captures(ctx, arm_ref, root, |ctx| {
-                crate::lower::expr::arm_condition(ctx, arm_ref, root, tests, *guarded, range)
-            });
-            let Some(cond) = cond else {
-                return lower_decision_stmt(
+                default,
+            } => {
+                ctx.current_exec = Some(entry_exec);
+                let disc_port = read_disc_at_path(ctx, root, path, range).unwrap_or_else(|| {
+                    synthesise_unsupported_range(ctx, "an enum tag read", range)
+                });
+                // Reading `__disc` may have inserted an exec-taking `Var_Get`; the
+                // first branch's Exec input picks up from the advanced chain head.
+                let head_exec = ctx.current_exec.unwrap_or(entry_exec);
+                self.stmt_cases(ctx, disc_port, cases, default.as_deref(), head_exec)
+            }
+            // `if tests && guard { arm } else { otherwise }`, the condition read
+            // where the arm's captures are bound, since a guard reads them.
+            Decision::Check {
+                tests,
+                arm,
+                guarded,
+                otherwise,
+            } => {
+                ctx.current_exec = Some(entry_exec);
+                let arm_ref = &arms[*arm];
+                let cond = with_arm_captures(ctx, arm_ref, root, |ctx| {
+                    arm_condition(ctx, arm_ref, root, tests, *guarded, range)
+                });
+                let Some(cond) = cond else {
+                    return self.stmt_decision(ctx, &Decision::Leaf(*arm), entry_exec);
+                };
+                let head_exec = ctx.current_exec.unwrap_or(entry_exec);
+                Some(branch_and_join(
                     ctx,
-                    &Decision::Leaf(*arm),
-                    root,
-                    arms,
-                    entry_exec,
+                    cond,
+                    head_exec,
                     range,
-                );
-            };
-            let head_exec = ctx.current_exec.unwrap_or(entry_exec);
-            branch_and_join(
-                ctx,
-                cond,
-                head_exec,
-                range,
-                |ctx, exec| {
-                    lower_decision_stmt(ctx, &Decision::Leaf(*arm), root, arms, exec, range)
-                },
-                |ctx, exec| lower_decision_stmt(ctx, otherwise, root, arms, exec, range),
-            )
+                    |ctx, exec| self.stmt_decision(ctx, &Decision::Leaf(*arm), exec),
+                    |ctx, exec| self.stmt_decision(ctx, otherwise, exec),
+                ))
+            }
         }
+    }
+
+    /// Chain a `Switch`'s cases as nested `Branch`es on `disc == k`: the head case's
+    /// arm runs on `ExecOutA`, the remaining cases (then the `default`, or a `Fail`
+    /// pass-through) on `ExecOutB`, and the two exits rejoin through a `Union`.
+    fn stmt_cases(
+        &self,
+        ctx: &mut LowerCtx<'_>,
+        disc_port: PortRef,
+        cases: &[(Vec<i64>, Decision)],
+        default: Option<&Decision>,
+        entry_exec: PortRef,
+    ) -> Option<PortRef> {
+        let Some(((keys, sub), rest)) = cases.split_first() else {
+            // Past the last case: the default sub-decision, or a Fail pass-through.
+            return match default {
+                Some(d) => self.stmt_decision(ctx, d, entry_exec),
+                None => Some(entry_exec),
+            };
+        };
+
+        ctx.current_exec = Some(entry_exec);
+        let cond_port = emit_disc_in(ctx, disc_port, keys, self.range);
+        // The compare is pure; the chain head is still read again, as in
+        // `lower_if`, in case the disc path took exec.
+        let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);
+        Some(branch_and_join(
+            ctx,
+            cond_port,
+            branch_exec_in,
+            self.range,
+            |ctx, exec| self.stmt_decision(ctx, sub, exec),
+            |ctx, exec| self.stmt_cases(ctx, disc_port, rest, default, exec),
+        ))
     }
 }
 
@@ -3068,22 +2870,15 @@ fn lower_decision_stmt(
 /// gets `lower_if`'s var-cache discipline: a read made on one side never
 /// serves the other, and at the join only the vars a side wrote are dropped.
 fn branch_and_join(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cond: PortRef,
     entry_exec: PortRef,
     range: &SourceRange,
-    then: impl FnOnce(&mut LowerCtx, PortRef) -> Option<PortRef>,
-    otherwise: impl FnOnce(&mut LowerCtx, PortRef) -> Option<PortRef>,
-) -> Option<PortRef> {
+    then: impl FnOnce(&mut LowerCtx<'_>, PortRef) -> Option<PortRef>,
+    otherwise: impl FnOnce(&mut LowerCtx<'_>, PortRef) -> Option<PortRef>,
+) -> PortRef {
     let pre_branch_caches = snapshot_var_caches(ctx);
-    let branch = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::BRANCH,
-        source_range: range.clone(),
-        ports: GateIO::exec_branch(),
-        ..Default::default()
-    });
-    ctx.connect(entry_exec, branch.port(WirePort::Exec));
-    ctx.connect(cond, branch.port(WirePort::BCond));
+    let branch = add_branch(ctx, entry_exec, cond, range);
 
     let then_end = then(ctx, branch.port(WirePort::ExecOutA));
     let then_touched = cache_touched_since(ctx, &pre_branch_caches);
@@ -3091,117 +2886,20 @@ fn branch_and_join(
     let else_end = otherwise(ctx, branch.port(WirePort::ExecOutB));
     let else_touched = cache_touched_since(ctx, &pre_branch_caches);
 
-    let union = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::UNION,
-        source_range: range.clone(),
-        ports: GateIO::exec_join(),
-        ..Default::default()
-    });
-    if let Some(e) = then_end {
-        ctx.connect(e, union.port(WirePort::ExecA));
-    }
-    if let Some(e) = else_end {
-        ctx.connect(e, union.port(WirePort::ExecB));
-    }
+    let join = exec_join(ctx, then_end, else_end, range);
     restore_var_caches(ctx, &pre_branch_caches);
     for id in then_touched.iter().chain(else_touched.iter()) {
-        invalidate_var_cache(ctx, id);
+        invalidate_var_cache(ctx, *id);
     }
-    Some(union.port(WirePort::ExecOut))
-}
-
-/// Chain a `Switch`'s cases as nested `Branch`es on `disc == k`: the head case's
-/// arm runs on `ExecOutA`, the remaining cases (then the `default`, or a `Fail`
-/// pass-through) on `ExecOutB`, and the two exits rejoin through a `Union`. The
-/// snapshot/restore var-cache discipline is `lower_if`'s: only vars an arm
-/// actually wrote get invalidated at the join, so a read that dominates the
-/// split survives while a branch-local read never leaks to a sibling.
-#[allow(clippy::too_many_arguments)]
-fn lower_switch_cases(
-    ctx: &mut LowerCtx,
-    disc_port: PortRef,
-    cases: &[(Vec<i64>, crate::lower::matchtree::Decision)],
-    default: Option<&crate::lower::matchtree::Decision>,
-    root: &HashMap<crate::intern::Sym, Binding>,
-    arms: &[MatchArm],
-    entry_exec: PortRef,
-    range: &SourceRange,
-) -> Option<PortRef> {
-    let Some(((keys, sub), rest)) = cases.split_first() else {
-        // Past the last case: the default sub-decision, or a Fail pass-through.
-        return match default {
-            Some(d) => lower_decision_stmt(ctx, d, root, arms, entry_exec, range),
-            None => Some(entry_exec),
-        };
-    };
-
-    let pre_branch_caches = snapshot_var_caches(ctx);
-
-    ctx.current_exec = Some(entry_exec);
-    let cond_port = emit_disc_in(ctx, disc_port, keys, range);
-    // Building the compare is pure, but re-read the chain head the way
-    // `lower_if` does so a future exec-taking disc path stays wired correctly.
-    let branch_exec_in = ctx.current_exec.unwrap_or(entry_exec);
-    let branch = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::BRANCH,
-        source_range: range.clone(),
-        ports: GateIO::exec_branch(),
-        ..Default::default()
-    });
-    ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
-    ctx.connect(cond_port, branch.port(WirePort::BCond));
-
-    // THEN: this case's arm (or nested switch) on ExecOutA.
-    let then_end =
-        lower_decision_stmt(ctx, sub, root, arms, branch.port(WirePort::ExecOutA), range);
-    let then_touched = cache_touched_since(ctx, &pre_branch_caches);
-
-    // ELSE: the remaining cases / default on ExecOutB. Drop the THEN chain's
-    // scratch reads first - they only fire on ExecOutA.
-    restore_var_caches(ctx, &pre_branch_caches);
-    let else_end = lower_switch_cases(
-        ctx,
-        disc_port,
-        rest,
-        default,
-        root,
-        arms,
-        branch.port(WirePort::ExecOutB),
-        range,
-    );
-    let else_touched = cache_touched_since(ctx, &pre_branch_caches);
-
-    let union = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::UNION,
-        source_range: range.clone(),
-        ports: GateIO::exec_join(),
-        ..Default::default()
-    });
-    if let Some(e) = then_end {
-        ctx.connect(e, union.port(WirePort::ExecA));
-    }
-    if let Some(e) = else_end {
-        ctx.connect(e, union.port(WirePort::ExecB));
-    }
-    // Post-join cache state: restore the pre-branch reads, then invalidate every
-    // var either side wrote (mirrors `lower_if`'s join).
-    restore_var_caches(ctx, &pre_branch_caches);
-    for id in then_touched.iter().chain(else_touched.iter()) {
-        invalidate_var_cache(ctx, id);
-    }
-    Some(union.port(WirePort::ExecOut))
+    join
 }
 
 /// Lower one arm's body on the current exec chain, its payload captures bound as
-/// compile-time slot moves (no gate) - the statement twin of `lower_match_arm`.
-fn lower_match_arm_stmt(
-    ctx: &mut LowerCtx,
-    arm: &MatchArm,
-    root: &HashMap<crate::intern::Sym, Binding>,
-) {
+/// compile-time slot moves (no gate); the statement twin of `lower_match_arm`.
+fn lower_match_arm_stmt(ctx: &mut LowerCtx<'_>, arm: &MatchArm, root: &Fields) {
     // Only this match's own arms store its value, not a match nested in one.
     let store = ctx.match_value_store.take();
-    crate::lower::expr::with_arm_captures(ctx, arm, root, |ctx| match &arm.body {
+    with_arm_captures(ctx, arm, root, |ctx| match &arm.body {
         MatchBody::Block(block) => lower_block(ctx, block),
         // A statement-position expression arm runs for its side effects; its
         // value has no consumer (the match statement yields nothing). A value
@@ -3222,7 +2920,7 @@ fn lower_match_arm_stmt(
 /// scratch var on its own chain, and the value is that var read after the arms
 /// rejoin.
 pub(super) fn lower_match_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     scrutinee: &Expr,
     arms: &[MatchArm],
     range: &SourceRange,
@@ -3244,7 +2942,7 @@ pub(super) fn lower_match_value(
     }
     let mut props = HashMap::default();
     props.insert(*sym::NAME_LABEL, Literal::String("_match".to_string()));
-    let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range, None);
+    let node = make_scalar_var_gate(ctx, &ty, props, range, None);
     let var = VarRecord::new(node, ty, VarStorage::Var);
     let saved = ctx.match_value_store.replace(var.clone());
     lower_match_stmt(ctx, scrutinee, arms, range);
@@ -3256,7 +2954,7 @@ pub(super) fn lower_match_value(
 /// WS097: an `if` or `match` expression whose value is several wires has no
 /// scratch var to choose through, so an arm that acts cannot be confined to
 /// its branch.
-pub(super) fn report_effectful_aggregate_choice(ctx: &mut LowerCtx, range: &SourceRange) {
+pub(super) fn report_effectful_aggregate_choice(ctx: &mut LowerCtx<'_>, range: &SourceRange) {
     ctx.error(
         "WS097",
         "an `if` or `match` expression whose value is a record, tuple or enum can't run an arm \
@@ -3270,7 +2968,7 @@ pub(super) fn report_effectful_aggregate_choice(ctx: &mut LowerCtx, range: &Sour
 /// (`(if c then mk() else p).a`): the read itself is one wire, but the arms
 /// give records, so the arm that acts has nowhere to be confined.
 pub(super) fn report_effectful_aggregate_field_read(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     field: &str,
     range: &SourceRange,
 ) {
@@ -3294,7 +2992,7 @@ pub(super) fn report_effectful_aggregate_field_read(
 /// read after they rejoin. A branch's effects then run only when it is taken,
 /// where the pure `Select` form would run both on every evaluation.
 pub(super) fn lower_if_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     cond: &Expr,
     then_br: &Expr,
     else_br: &Expr,
@@ -3311,21 +3009,14 @@ pub(super) fn lower_if_value(
     };
     let mut props = HashMap::default();
     props.insert(*sym::NAME_LABEL, Literal::String("_if".to_string()));
-    let node = crate::lower::predeclare::make_scalar_var_gate(ctx, &ty, props, range, None);
+    let node = make_scalar_var_gate(ctx, &ty, props, range, None);
     let var = VarRecord::new(node, ty, VarStorage::Var);
     let cond_port = lower_expr(ctx, cond);
     let branch_exec_in = ctx.current_exec.unwrap_or(entry);
-    let branch = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::BRANCH,
-        source_range: range.clone(),
-        ports: GateIO::exec_branch(),
-        ..Default::default()
-    });
-    ctx.connect(branch_exec_in, branch.port(WirePort::Exec));
-    ctx.connect(cond_port, branch.port(WirePort::BCond));
+    let branch = add_branch(ctx, branch_exec_in, cond_port, range);
     let pre_branch_caches = snapshot_var_caches(ctx);
     ctx.exec_branch_depth += 1;
-    let arm = |ctx: &mut LowerCtx, start: WirePort, value: &Expr| {
+    let arm = |ctx: &mut LowerCtx<'_>, start: WirePort, value: &Expr| {
         ctx.current_exec = Some(branch.port(start));
         let port = lower_expr(ctx, value);
         set_scalar_var(ctx, &var, port, value.range());
@@ -3337,36 +3028,19 @@ pub(super) fn lower_if_value(
     let (then_end, then_touched) = arm(ctx, WirePort::ExecOutA, then_br);
     let (else_end, else_touched) = arm(ctx, WirePort::ExecOutB, else_br);
     ctx.exec_branch_depth -= 1;
-    let union = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::UNION,
-        source_range: range.clone(),
-        ports: GateIO::exec_join(),
-        ..Default::default()
-    });
-    if let Some(end) = then_end {
-        ctx.connect(end, union.port(WirePort::ExecA));
-    }
-    if let Some(end) = else_end {
-        ctx.connect(end, union.port(WirePort::ExecB));
-    }
-    ctx.current_exec = Some(union.port(WirePort::ExecOut));
+    ctx.current_exec = Some(exec_join(ctx, then_end, else_end, range));
     for id in then_touched.iter().chain(else_touched.iter()) {
-        invalidate_var_cache(ctx, id);
+        invalidate_var_cache(ctx, *id);
     }
     binding_to_port(ctx, &Binding::Var(var), range)
         .unwrap_or_else(|| synthesise_unsupported_no_warn(ctx, range))
 }
 
-/// `cond` resolves (through the current scope) to a `_Literal` gate carrying
-/// a bool — the case a plain (non-`const`) mod parameter ends up in when its
-/// call-site argument was itself a literal (`mod foo(cond: bool) { if cond
-/// {...} }` called as `foo(true)`): the param binds to whatever gate
-/// `lower_expr` produced for the argument, which for a bare literal is a
-/// `_Literal` node. `const_eval` cannot see this — its `consts` environment
-/// only ever holds named `const`/`let` bindings, never a lowered gate's
-/// value — so `lower_if` falls back to this narrower, direct-gate-inspection
-/// check when `const_eval` reports the condition isn't constant.
-fn ident_literal_bool(ctx: &LowerCtx, cond: &Expr) -> Option<bool> {
+/// The bool of `cond` when it names a `_Literal` gate: a plain mod parameter
+/// whose argument was a literal (`foo(true)` for `mod foo(cond: bool)`).
+/// `const_eval` sees only named constants, never a lowered gate's value, so
+/// `lower_if` falls back to this when the condition is not constant.
+fn ident_literal_bool(ctx: &LowerCtx<'_>, cond: &Expr) -> Option<bool> {
     let Expr::Ident { name, .. } = cond else {
         return None;
     };
@@ -3386,7 +3060,7 @@ fn ident_literal_bool(ctx: &LowerCtx, cond: &Expr) -> Option<bool> {
 /// A write to a stored mod output with no exec chain to sequence it on: the
 /// storage is a var, and a var is only written on a chain.
 pub(in crate::lower) fn report_unsequenced_output_write(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     name: &str,
     range: &SourceRange,
 ) {
@@ -3403,17 +3077,16 @@ pub(in crate::lower) fn report_unsequenced_output_write(
 
 /// `emit name = value` into the inlined mod's return storage: the scalar
 /// return var, or the output's field of the return record.
-fn store_mod_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &SourceRange) {
+fn store_mod_output(ctx: &mut LowerCtx<'_>, name: &str, value: &Expr, range: &SourceRange) {
     if let Some(var) = ctx.mod_return_var.clone() {
         let port = lower_expr(ctx, value);
         if let Some(exec) = ctx.current_exec {
-            chain_var_write(
+            store_on_chain(
                 ctx,
                 exec,
-                var.node_id.port(WirePort::VarRef),
-                var.inner_type.clone(),
+                &var,
                 port,
-                false,
+                WriteKind::Set,
                 range.clone(),
                 Some("ret_set"),
             );
@@ -3423,7 +3096,7 @@ fn store_mod_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &Source
     let Some(ret) = ctx.mod_return_record.clone() else {
         return;
     };
-    let key = crate::intern::intern(name);
+    let key = intern(name);
     // The output's storage: its field of the per-output record, or the whole
     // record for the only output, which is then a record or enum.
     let several = ctx.mod_output_names.len() > 1;
@@ -3492,11 +3165,10 @@ pub(super) fn holds_one_value(t: &Type) -> bool {
     )
 }
 
-pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
+pub(super) fn lower_emit(ctx: &mut LowerCtx<'_>, s: &Emit) {
     let is_output = ctx.lookup_output(&s.name).is_some()
         || matches!(
-            ctx.scope
-                .get(&crate::lower::context::output_scope_key(&s.name)),
+            ctx.scope.get(&output_scope_key(&s.name)),
             Some(Binding::Record(_))
         );
     // Local exec signals resolve to their per-declaration key via the scope,
@@ -3572,26 +3244,22 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
             return;
         }
         if let Some(out) = ctx.lookup_output(&s.name).cloned() {
-            // An output value-driven from more than one `emit` site is
-            // backed by a PseudoVar (allocated by the pre-scan in `lower`). Each
-            // site does a Var_Set into it on its own exec chain; the var's value
-            // feeds the output once, after all handlers (so no fan-in). Never
-            // direct-wire a backed output — that wire would fan in with the
-            // var->output wire.
+            // An output driven from more than one `emit` site is backed by a
+            // PseudoVar: each site sets it on its own chain and the var feeds the
+            // output once. A direct wire into a backed output would fan in with
+            // the var's wire, which fails to load.
             if let Some(backing) = ctx.output_backing_vars.get(&s.name).cloned() {
                 if ctx.current_exec.is_some() {
-                    let inner = backing.inner_type.clone();
                     let value_port = lower_expr(ctx, value_expr);
                     // After the value: its reads (an `Exec_Var_Get`) advance
                     // the chain, and the set must run after them.
                     let Some(exec) = ctx.current_exec else { return };
-                    chain_var_write(
+                    store_on_chain(
                         ctx,
                         exec,
-                        backing.node_id.port(WirePort::VarRef),
-                        inner.clone(),
+                        &backing,
                         value_port,
-                        false,
+                        WriteKind::Set,
                         SourceRange::default(),
                         Some("out_set"),
                     );
@@ -3600,19 +3268,17 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
             }
             let value_port = lower_expr(ctx, value_expr);
             ctx.connect(value_port, out.node_id.port(WirePort::RerInput));
-            // A value output's RerInput carries the value, and the value update is
-            // itself the signal -- do NOT also queue the exec onto that same
-            // RerInput (double-driving it is a load-time wire fan-in). Lowering the
-            // value above already advanced current_exec, so following statements
-            // (e.g. a subsequent `emit`) are unaffected.
+            // A value output's RerInput carries the value, and the value update
+            // is the signal. Queuing the exec onto the same RerInput would be a
+            // fan-in, which fails to load.
             return;
         } else if let Some(ref key) = sig_key
             && ctx.current_exec.is_some()
         {
             // Local exec signal: the value is a ferried payload. Write it into
-            // the signal's hidden store(s) on the emit chain — sequenced before
-            // any buffer, so the value is stored this tick and read on the
-            // resumed chain after the exec crosses the barrier.
+            // the signal's hidden store(s) on the emit chain, before any buffer,
+            // so the value is stored this tick and read on the resumed chain
+            // after the exec crosses the barrier.
             write_signal_payload(ctx, key, value_expr);
         } else if sig_key.is_some() {
             report_signal_without_chain(ctx, &s.name, &s.range);
@@ -3677,7 +3343,7 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx, s: &Emit) {
 
 /// `emit name` of an exec signal where no exec chain runs: nothing would ever
 /// fire it.
-fn report_signal_without_chain(ctx: &mut LowerCtx, name: &str, range: &SourceRange) {
+fn report_signal_without_chain(ctx: &mut LowerCtx<'_>, name: &str, range: &SourceRange) {
     ctx.error(
         "WS007",
         format!(
@@ -3691,7 +3357,7 @@ fn report_signal_without_chain(ctx: &mut LowerCtx, name: &str, range: &SourceRan
 /// Queue an emit of `key` from `src_exec`, logged in `emit_log` so a splice
 /// can tell the emits queued since a point from those queued before it.
 fn queue_emit(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     key: String,
     src_exec: PortRef,
     chain: Option<u32>,
@@ -3710,7 +3376,7 @@ fn queue_emit(
 /// delays the signal delivery. Constant durations bake into gate properties;
 /// `hold` defaults to `-1` (= use `delay`, the gate's "off-time follows
 /// on-time" mode). Returns the buffer's `Output` as the new emit source.
-fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: PortRef) -> PortRef {
+fn buffered_exec(ctx: &mut LowerCtx<'_>, spec: &BufferSpec, exec_in: PortRef) -> PortRef {
     let class = if spec.seconds {
         gc::BUFFER_SECONDS
     } else {
@@ -3753,7 +3419,7 @@ fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: Por
             );
             None
         }
-        Some(d) => match crate::lower::predeclare::expr_to_literal(d) {
+        Some(d) => match crate::const_eval::expr_to_literal(d) {
             Some(lit) => {
                 props.insert(delay_sym, unit_lit(lit));
                 None
@@ -3765,13 +3431,13 @@ fn buffered_exec(ctx: &mut LowerCtx, spec: &crate::ast::BufferSpec, exec_in: Por
         },
     };
     let hold_wire = match &spec.hold {
-        Some(h) => match crate::lower::predeclare::expr_to_literal(h) {
+        Some(h) => match crate::const_eval::expr_to_literal(h) {
             Some(lit) => {
                 props.insert(hold_sym, unit_lit(lit));
                 None
             }
             None => {
-                inputs.push(PortSpec::new(hold_sym, unit_ty.clone()));
+                inputs.push(PortSpec::new(hold_sym, unit_ty));
                 Some(lower_expr(ctx, h))
             }
         },
@@ -3821,11 +3487,11 @@ fn signal_name_of(e: &Expr) -> Option<&str> {
 
 /// Get (or create) the hidden payload store var for `sig`'s `field`
 /// (`""` = scalar payload).
-fn payload_store(ctx: &mut LowerCtx, sig: &str, field: &str, ty: Type) -> NodeId {
-    if let Some(list) = ctx.exec_signal_payloads.get(sig) {
-        if let Some((_, id, _)) = list.iter().find(|(f, _, _)| f == field) {
-            return *id;
-        }
+fn payload_store(ctx: &mut LowerCtx<'_>, sig: &str, field: &str, ty: Type) -> NodeId {
+    if let Some(list) = ctx.exec_signal_payloads.get(sig)
+        && let Some((_, id, _)) = list.iter().find(|(f, _, _)| f == field)
+    {
+        return *id;
     }
     let mut props = HashMap::default();
     if let Some(lit) = default_literal_for_var_type(&ty) {
@@ -3846,7 +3512,7 @@ fn payload_store(ctx: &mut LowerCtx, sig: &str, field: &str, ty: Type) -> NodeId
 }
 
 /// `Var_Set(<var> = <value_port>)` chained on the current exec (advances it).
-fn chain_var_set(ctx: &mut LowerCtx, var: NodeId, value_port: PortRef, ty: Type) {
+fn chain_var_set(ctx: &mut LowerCtx<'_>, var: NodeId, value_port: PortRef, ty: Type) {
     let Some(exec_in) = ctx.current_exec else {
         return;
     };
@@ -3856,7 +3522,7 @@ fn chain_var_set(ctx: &mut LowerCtx, var: NodeId, value_port: PortRef, ty: Type)
         var.port(WirePort::VarRef),
         ty,
         value_port,
-        false,
+        WriteKind::Set,
         SourceRange::default(),
         Some("signal payload write"),
     );
@@ -3864,7 +3530,7 @@ fn chain_var_set(ctx: &mut LowerCtx, var: NodeId, value_port: PortRef, ty: Type)
 
 /// `Var_Get(<var>)` of a signal's payload, chained on the current exec when
 /// there is one (advancing it); returns the Value port.
-fn signal_payload_get(ctx: &mut LowerCtx, var: NodeId, ty: Type) -> PortRef {
+fn signal_payload_get(ctx: &mut LowerCtx<'_>, var: NodeId, ty: Type) -> PortRef {
     let exec_in = ctx.current_exec;
     let get = ctx.add_gate(AddNodeOpts {
         gate_class: gc::VAR_GET,
@@ -3884,7 +3550,7 @@ fn signal_payload_get(ctx: &mut LowerCtx, var: NodeId, ty: Type) -> PortRef {
 /// Write `emit sig = <value>` into the signal's payload store(s), chained on
 /// the current exec. A record literal writes one store per field; any other
 /// value uses the scalar `""` store.
-fn write_signal_payload(ctx: &mut LowerCtx, sig: &str, value_expr: &Expr) {
+fn write_signal_payload(ctx: &mut LowerCtx<'_>, sig: &str, value_expr: &Expr) {
     if let Expr::RecordLit { fields, .. } = value_expr {
         for f in fields {
             let (name, fexpr) = match f {
@@ -3918,20 +3584,20 @@ fn write_signal_payload(ctx: &mut LowerCtx, sig: &str, value_expr: &Expr) {
 
 /// True when `node` is a CustomEvent/GlobalCustomEvent receiver gate: the ones
 /// that expose `DataOut1..8` for an `await CustomEvent(...)` data capture.
-fn is_event_data_gate(ctx: &LowerCtx, node: NodeId) -> bool {
+fn is_event_data_gate(ctx: &LowerCtx<'_>, node: NodeId) -> bool {
     ctx.builder.module.nodes.get(&node).is_some_and(|n| {
         n.gate_class == gc::CUSTOM_EVENT || n.gate_class == gc::CUSTOM_EVENT_GLOBAL
     })
 }
 
-/// Set the declared type of `node`'s output `port` (used to type an awaited
-/// event's captured `DataOut` port from the `let x: T` annotation, so the game's
-/// wire variant matches instead of defaulting to float).
-fn retype_output_port(ctx: &mut LowerCtx, node: NodeId, port: WirePort, ty: Type) {
+/// Set the declared type of `node`'s output `port`. Types an awaited event's
+/// captured `DataOut` port from the `let x: T` annotation so the game's wire
+/// variant matches the declared type.
+fn retype_output_port(ctx: &mut LowerCtx<'_>, node: NodeId, port: WirePort, ty: Type) {
     if let Some(n) = ctx.builder.module.nodes.get_mut(&node) {
         let io = std::sync::Arc::make_mut(&mut n.ports);
         let name = port.sym();
-        for p in io.outputs.iter_mut() {
+        for p in &mut io.outputs {
             if p.name == name {
                 p.ty = ty;
                 return;
@@ -3940,7 +3606,7 @@ fn retype_output_port(ctx: &mut LowerCtx, node: NodeId, port: WirePort, ty: Type
     }
 }
 
-pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
+pub(super) fn lower_await(ctx: &mut LowerCtx<'_>, a: &AwaitStmt) {
     // Backstop for typecheck's loop-depth check: a mod inlines per call
     // site, so an `await` with no `for` of its own can still land inside a
     // loop plane through the caller. One written in the body typecheck
@@ -3984,18 +3650,16 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             arm_set.port(WirePort::VarRef),
         );
         ctx.connect(true_lit, arm_set.port(WirePort::Value));
-        // Exec chain ends here — pre-await code is done
+        // The pre-await exec chain ends here.
     }
 
-    // Register an unconditional `await <signal>` so flush can route same-chain
-    // emits through a `Var_Set(armed = true)` sequenced *before* the hub — a
+    // Register an unconditional `await <signal>` so flush routes same-chain
+    // emits through a `Var_Set(armed = true)` sequenced before the hub: a
     // parallel arm races the `Var_Get` below (it may read `false` and drop the
-    // continuation), and loop back-edges must re-arm every iteration. Awaits
-    // inside `if` branches don't register: their arm only fires when the branch
-    // is taken, so same-chain emits stay flag-guarded (ordering is ambiguous by
-    // design there). A signal declared in the await's own branch is the
-    // exception: every emit of it is inside that branch, so a back-edge loop
-    // there re-arms as it does at the top level.
+    // continuation), and loop back-edges must re-arm every iteration. An await
+    // inside an `if` branch registers only when its signal is declared in that
+    // same branch (every emit is then inside it); otherwise its emits stay
+    // flag-guarded.
     if let Some(key) = signal_name_of(&a.exec_expr).and_then(|sig| ctx.signal_key(sig)) {
         let chain = ctx.builder.current_chain_id;
         if ctx.exec_branch_depth == 0
@@ -4010,8 +3674,8 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         }
     }
 
-    // 3. Lower the exec expression (the trigger to wait for)
-    // Set await_armed_port so `_` in the expression resolves to the armed flag's Value
+    // 3. Lower the exec expression (the trigger to wait for), with `_` in it
+    // resolving to the armed flag's Value.
     let saved_armed = ctx.await_armed_port;
     ctx.await_armed_port = Some(armed_id.port(WirePort::Value));
     let exec_port = lower_expr(ctx, &a.exec_expr);
@@ -4030,20 +3694,12 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
         get_armed.port(WirePort::VarRef),
     );
 
-    // 5. Branch on armed flag — true branch continues, false drops
-    let branch = ctx.add_gate(AddNodeOpts {
-        gate_class: gc::BRANCH,
-        source_range: a.range.clone(),
-        ports: GateIO::exec_branch(),
-        ..Default::default()
-    });
-    ctx.connect(
+    // 5. Branch on the armed flag: true continues, false drops.
+    let branch = add_branch(
+        ctx,
         get_armed.port(WirePort::ExecOut),
-        branch.port(WirePort::Exec),
-    );
-    ctx.connect(
         get_armed.port(WirePort::Value),
-        branch.port(WirePort::BCond),
+        &a.range,
     );
 
     // 6. Reset: Var_Set(armed = false) on the true branch
@@ -4066,9 +3722,8 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
 
     // 7. Continuation: everything after await runs from reset_set's ExecOut
     ctx.current_exec = Some(reset_set.port(WirePort::ExecOut));
-    // A var can change while the exec is suspended, so the resumed chain must
-    // re-read from a fresh Var_Get rather than reuse the pre-await gate — the
-    // same invalidation lower_if does at its branch boundaries.
+    // A var can change while the exec is suspended, so the resumed chain reads
+    // through a fresh Var_Get, not the pre-await one.
     reset_var_get_caches(ctx);
 
     // 8. Bind the value if `let x = await ...`. For a local signal carrying a
@@ -4097,10 +3752,9 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             }
             exec_port.node_id.port(WirePort::DataOut1)
         } else {
-            // `let v = await sig` on a signal with no payload: there is nothing
-            // to capture. Wiring `exec_port` (the signal's exec source) into a
-            // value port produces a garbage value, so report it and bind a
-            // literal default instead of emitting an exec-into-value wire.
+            // `let v = await sig` on a signal with no payload has nothing to
+            // capture (an exec wired into a value port gives garbage), so it is
+            // reported and bound to a literal default.
             ctx.error(
                 "WS056",
                 format!(
@@ -4117,10 +3771,8 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             };
             lower_expr(ctx, &zero)
         };
-        ctx.scope.insert(
-            &binding_name,
-            Binding::Local(LocalRecord { port: val_port }),
-        );
+        ctx.scope
+            .insert(binding_name, Binding::Local(LocalRecord { port: val_port }));
     }
 
     // 9a. `let (p, t) = await CustomEvent("c")`: capture the event's data outputs
@@ -4175,44 +3827,27 @@ pub(super) fn lower_await(ctx: &mut LowerCtx, a: &AwaitStmt) {
             };
             let val_port = signal_payload_get(ctx, store, ty);
             ctx.scope
-                .insert(&local, Binding::Local(LocalRecord { port: val_port }));
+                .insert(local, Binding::Local(LocalRecord { port: val_port }));
         }
     }
 }
 
-fn build_exec_union(ctx: &mut LowerCtx, ports: Vec<PortRef>) -> PortRef {
+fn build_exec_union(ctx: &mut LowerCtx<'_>, ports: Vec<PortRef>) -> PortRef {
     if ports.len() == 1 {
         return ports.into_iter().next().unwrap();
     }
     let mut merged = ports.into_iter();
     let first = merged.next().unwrap();
     let second = merged.next().unwrap();
-    let mut current = {
-        let union = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::UNION,
-            source_range: SourceRange::default(),
-            ports: GateIO::exec_join(),
-            ..Default::default()
-        });
-        ctx.connect(first, union.port(WirePort::ExecA));
-        ctx.connect(second, union.port(WirePort::ExecB));
-        union.port(WirePort::ExecOut)
-    };
+    let range = SourceRange::default();
+    let mut current = exec_join(ctx, Some(first), Some(second), &range);
     for extra in merged {
-        let union = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::UNION,
-            source_range: SourceRange::default(),
-            ports: GateIO::exec_join(),
-            ..Default::default()
-        });
-        ctx.connect(current, union.port(WirePort::ExecA));
-        ctx.connect(extra, union.port(WirePort::ExecB));
-        current = union.port(WirePort::ExecOut);
+        current = exec_join(ctx, Some(current), Some(extra), &range);
     }
     current
 }
 
-pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
+pub(super) fn flush_pending_emits(ctx: &mut LowerCtx<'_>) {
     // By name: each union takes the next node ids, and map order differs
     // between 32-bit and 64-bit targets.
     let mut pending: Vec<_> = std::mem::take(&mut ctx.pending_emits).into_iter().collect();
@@ -4231,11 +3866,10 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
             ctx.connect(exec_out, out.node_id.port(WirePort::RerInput));
         } else if let Some(hub) = hub {
             // Local exec signal with a pre-declared hub. Emits on the same
-            // chain as an unconditional `await` of this signal route through a
-            // `Var_Set(armed = true)` *before* entering the hub — sequenced, so
-            // the awaiting `Var_Get` can't race the arm, and loop back-edges
-            // re-arm every iteration. Emits from other chains enter directly,
-            // guarded by the armed flag.
+            // chain as an unconditional `await` of this signal pass through a
+            // `Var_Set(armed = true)` before the hub, so the awaiting `Var_Get`
+            // cannot race the arm and loop back-edges re-arm every iteration.
+            // Emits from other chains enter directly, guarded by the flag.
             let awaited = ctx.signal_awaits.get(&name).copied();
             for (armed_var, chain, range) in ctx.branch_awaits.remove(&name).unwrap_or_default() {
                 if entries
@@ -4268,11 +3902,7 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
                 let union_out = build_exec_union(ctx, direct.into_iter().map(|(p, _)| p).collect());
                 ctx.connect(union_out, hub.port(next_hub_port));
             }
-        } else if ctx
-            .scope
-            .get(&crate::lower::context::output_scope_key(&name))
-            .is_some()
-        {
+        } else if ctx.scope.get(&output_scope_key(&name)).is_some() {
             // An output with no single pin (a record or enum) has nothing an
             // exec can drive; `lower_emit` routes every write to one elsewhere.
             let range = ctx.emit_sites.get(&name).cloned().unwrap_or_default();
@@ -4299,28 +3929,14 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx) {
 /// spliced hub ends at that one's source whichever goes first, so this is the
 /// result of splicing them one at a time. A cycle of hubs feeding each other
 /// is left to that one-at-a-time splice.
-fn splice_single_input_unions(ctx: &mut LowerCtx, hubs: &[NodeId]) {
-    fn count(m: &Module, hubs: &HashSet<NodeId>, feeds: &mut HashMap<NodeId, (usize, PortRef)>) {
-        for w in &m.wires {
-            if hubs.contains(&w.target.node_id) {
-                feeds.entry(w.target.node_id).or_insert((0, w.source)).0 += 1;
-            }
-        }
-        m.chips.values().for_each(|c| count(c, hubs, feeds));
-    }
-    fn apply(m: &mut Module, spliced: &HashMap<NodeId, PortRef>) {
-        m.wires.retain(|w| !spliced.contains_key(&w.target.node_id));
-        for w in m.wires.iter_mut() {
-            if let Some(src) = spliced.get(&w.source.node_id) {
-                w.source = *src;
-            }
-        }
-        m.nodes.retain(|id, _| !spliced.contains_key(id));
-        m.chips.values_mut().for_each(|c| apply(c, spliced));
-    }
+fn splice_single_input_unions(ctx: &mut LowerCtx<'_>, hubs: &[NodeId]) {
     let set: HashSet<NodeId> = hubs.iter().copied().collect();
-    let mut feeds = HashMap::default();
-    count(&ctx.builder.module, &set, &mut feeds);
+    let mut feeds: HashMap<NodeId, (usize, PortRef)> = HashMap::default();
+    for w in ctx.builder.module.wires_deep() {
+        if set.contains(&w.target.node_id) {
+            feeds.entry(w.target.node_id).or_insert((0, w.source)).0 += 1;
+        }
+    }
     let single: HashMap<NodeId, PortRef> = feeds
         .into_iter()
         .filter(|(_, (n, _))| *n == 1)
@@ -4345,13 +3961,21 @@ fn splice_single_input_unions(ctx: &mut LowerCtx, hubs: &[NodeId]) {
         }
         spliced.insert(*hub, src);
     }
-    apply(&mut ctx.builder.module, &spliced);
+    ctx.builder.module.walk_mut(&mut |_, m| {
+        m.wires.retain(|w| !spliced.contains_key(&w.target.node_id));
+        for w in &mut m.wires {
+            if let Some(src) = spliced.get(&w.source.node_id) {
+                w.source = *src;
+            }
+        }
+        m.nodes.retain(|id, _| !spliced.contains_key(id));
+    });
 }
 
 /// `Var_Set(<armed_var> = true)` gate pair (literal + set) used to arm an
 /// await's flag on the emit path, sequenced upstream of the signal hub.
 /// Mirrors the arm built in `lower_await` step 2.
-fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
+fn build_arm_set(ctx: &mut LowerCtx<'_>, armed_var: NodeId) -> NodeId {
     let true_lit = raw_literal(
         ctx,
         &SourceRange::default(),
@@ -4379,56 +4003,44 @@ fn build_arm_set(ctx: &mut LowerCtx, armed_var: NodeId) -> NodeId {
 /// and remove the hub (so e.g. one emitter drives an `await`/`on` directly,
 /// with no Union gate in between).
 ///
-/// Spans the WHOLE chip tree, not just the module the hub lives in: a signal
-/// declared at top level can be emitted or consumed from inside a `chip`
-/// (`chip C() { Timer(1, restart = sig) }`), which lowers to a sub-module wire
-/// naming the hub as an external capture. Counting only the hub's own module
-/// would misjudge a pass-through, and redirecting only that module left the
-/// sub-module wire pointing at the hub node this then deletes — a dangling
-/// endpoint that emit rejects as `EmitError::DroppedWire`. `boundary_pins`
-/// routes the redirected source through pins afterwards, exactly as it does
-/// for any other captured node.
-fn splice_single_input_union(ctx: &mut LowerCtx, hub: NodeId) {
-    let mut sources = Vec::new();
-    collect_hub_sources(&ctx.builder.module, hub, &mut sources);
-    if sources.len() != 1 {
+/// Spans the whole chip tree: a top-level signal can be emitted or consumed
+/// inside a `chip` (`chip C() { Timer(1, restart = sig) }`), a sub-module wire
+/// naming the hub as a capture. A wire left pointing at the deleted hub is
+/// rejected by emit as `EmitError::DroppedWire`. `boundary_pins` later routes
+/// the redirected source through pins like any other captured node.
+fn splice_single_input_union(ctx: &mut LowerCtx<'_>, hub: NodeId) {
+    let sources: Vec<PortRef> = ctx
+        .builder
+        .module
+        .wires_deep()
+        .filter(|w| w.target.node_id == hub)
+        .map(|w| w.source)
+        .collect();
+    let [src] = sources[..] else {
         return;
-    }
-    let src = sources.remove(0);
-    redirect_hub(&mut ctx.builder.module, hub, &src);
-}
-
-/// The source of every wire feeding `hub`, anywhere in the chip tree.
-fn collect_hub_sources(m: &Module, hub: NodeId, acc: &mut Vec<PortRef>) {
-    for w in &m.wires {
-        if w.target.node_id == hub {
-            acc.push(w.source.clone());
+    };
+    // Drop `hub` and every wire into it, and repoint its readers at `src`,
+    // through the whole chip tree (node ids are unique across it).
+    ctx.builder.module.walk_mut(&mut |_, m| {
+        m.wires.retain(|w| w.target.node_id != hub);
+        for w in &mut m.wires {
+            if w.source.node_id == hub {
+                w.source = src;
+            }
         }
-    }
-    for child in m.chips.values() {
-        collect_hub_sources(child, hub, acc);
-    }
-}
-
-/// Drop `hub` and every wire into it, and repoint its readers at `src` —
-/// through the whole chip tree, since node ids are unique across it.
-fn redirect_hub(m: &mut Module, hub: NodeId, src: &PortRef) {
-    m.wires.retain(|w| w.target.node_id != hub);
-    for w in m.wires.iter_mut() {
-        if w.source.node_id == hub {
-            w.source = src.clone();
-        }
-    }
-    m.nodes.remove(&hub);
-    for child in m.chips.values_mut() {
-        redirect_hub(child, hub, src);
-    }
+        m.nodes.remove(&hub);
+    });
 }
 
 /// A continuous `out name = expr` beside another write of the same output in
 /// a handler or branch: both would drive it. Only a constant default can seed
 /// the output's backing var.
-fn report_default_beside_emit(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &SourceRange) {
+fn report_default_beside_emit(
+    ctx: &mut LowerCtx<'_>,
+    name: &str,
+    value: &Expr,
+    range: &SourceRange,
+) {
     // With no other write, the output is stored only because this one comes
     // after an early exit (a `return`, `break` or `continue`) that has no exec
     // chain to run on, which typecheck already rejects.
@@ -4481,7 +4093,7 @@ fn report_default_beside_emit(ctx: &mut LowerCtx, name: &str, value: &Expr, rang
 /// the way a scalar output takes its value: directly, or, when the output has
 /// a backing var, by storing the tag on the chain (a constant default seeds
 /// the var instead).
-fn drive_enum_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &SourceRange) {
+fn drive_enum_output(ctx: &mut LowerCtx<'_>, name: &str, value: &Expr, range: &SourceRange) {
     let Some(out) = ctx.output_tag(name).cloned() else {
         return;
     };
@@ -4502,13 +4114,12 @@ fn drive_enum_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &Sourc
         return;
     };
     if let Some(exec) = ctx.current_exec {
-        chain_var_write(
+        store_on_chain(
             ctx,
             exec,
-            backing.node_id.port(WirePort::VarRef),
-            backing.inner_type.clone(),
+            &backing,
             tag,
-            false,
+            WriteKind::Set,
             range.clone(),
             Some("out_set"),
         );
@@ -4531,7 +4142,7 @@ fn drive_enum_output(ctx: &mut LowerCtx, name: &str, value: &Expr, range: &Sourc
 }
 
 pub(super) fn lower_out_binding(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     name: &str,
     value: Option<&Expr>,
     range: &SourceRange,
@@ -4558,18 +4169,10 @@ pub(super) fn lower_out_binding(
         }
         return;
     }
-    // An ENUM value driving an output port has no materialization yet: the
-    // out-port isn't decomposed into `__disc` + slot pins (unlike a record,
-    // which `pre_declare_output` DOES explode), so both the construction path
-    // and a record-returning enum call below would stash the value into
-    // `pending_out_records` and, for a top-level (non-inlined) out, silently
-    // drop it - a dead, unwired output with no feedback. Make that LOUD (the
-    // same WSP001 not-yet-materialized idiom the earlier `VariantCtor` stub
-    // used) and stop, rather than emit dead gates. Scoped strictly to
-    // `Type::Enum` values - a record out-port (which IS wired, field-wise,
-    // below) is untouched, and a missing/`Any` type falls through unchanged.
-    // An inline mod's output is the exception: the enum reaches its caller as
-    // its fields, as a record output does.
+    // An enum value cannot drive an output port that is not decomposed into
+    // `__disc` + slot pins (`pre_declare_output` decomposes records only), so
+    // it warns and leaves the output unwired. An inline mod's output is the
+    // exception: the enum reaches its caller as its fields, as a record does.
     if ctx.mod_output_names.iter().any(|n| n == name)
         && (matches!(unwrap_ref(&ctx.type_of(value)), Type::Enum { .. })
             || matches!(ctx.mod_output_types.get(name), Some(Type::Enum { .. })))
@@ -4579,8 +4182,7 @@ pub(super) fn lower_out_binding(
     }
     if matches!(ctx.type_of(value), Type::Enum { .. })
         && !matches!(
-            ctx.scope
-                .get(&crate::lower::context::output_scope_key(name)),
+            ctx.scope.get(&output_scope_key(name)),
             Some(Binding::Record(_))
         )
     {
@@ -4601,11 +4203,7 @@ pub(super) fn lower_out_binding(
     // A record-typed boundary output was exploded into per-field pins
     // (`pre_declare_output`); wire each field's source into its own pin instead
     // of falling through to the single-wire path below.
-    if let Some(Binding::Record(out_fields)) = ctx
-        .scope
-        .get(&crate::lower::context::output_scope_key(name))
-        .cloned()
-    {
+    if let Some(Binding::Record(out_fields)) = ctx.scope.get(&output_scope_key(name)).cloned() {
         // A record output written from several sites stores into its backing,
         // which drives the pins once (see `output_record_backing`).
         if let Some(backing) = ctx.output_record_backing.get(name).cloned() {
@@ -4624,33 +4222,25 @@ pub(super) fn lower_out_binding(
         wire_record_output(ctx, &out_fields, value, range);
         return;
     }
-    let out = match ctx.lookup_output(name).cloned() {
-        Some(o) => o,
-        None => {
-            // Nothing pre-declared a port for this binding, so the value has
-            // nowhere to go.
-            ctx.error(
-                "WS073",
-                format!(
-                    "`out {name}` has no port to bind to, so its value is dropped. \
+    let Some(out) = ctx.lookup_output(name).cloned() else {
+        // Nothing pre-declared a port for this binding, so the value has
+        // nowhere to go.
+        ctx.error(
+            "WS073",
+            format!(
+                "`out {name}` has no port to bind to, so its value is dropped. \
                      Declare the port at the top level of the file, in a chip body, \
                      or in the chip's signature."
-                ),
-                range,
-            );
-            return;
-        }
+            ),
+            range,
+        );
+        return;
     };
-    // A RECORD assigned to an output (`out card = someRecord`). A record has no
-    // single value port, so lowering it as an expression yields an
-    // `_Unsupported` placeholder and the output silently carries a default.
-    // Stash the field map under this output's name instead; the inline-call
-    // machinery hands it to the caller as a real record (see
-    // `pending_out_records`). Mirrors what `Stmt::Return` already does through
-    // `pending_return_record`.
-    // An output declared with a single-value type takes a record of named
-    // gate outputs as its first output, as `x = e` does (see below); any other
-    // record there is the type check's error.
+    // A record assigned to an output (`out card = someRecord`) has no single
+    // value port, so its field map is stashed under the output's name for the
+    // inline call to hand to the caller (`pending_out_records`), as `return`
+    // does through `pending_return_record`. An output of a single-value type
+    // takes a record of gate outputs as its first output, as `x = e` does.
     let one_value = holds_one_value(&out.ty);
     if let Some(Binding::Record(fields)) = resolve_field_chain(ctx, value).cloned()
         && !one_value
@@ -4664,50 +4254,37 @@ pub(super) fn lower_out_binding(
         stash_out_record(ctx, name, record, value);
         return;
     }
-    // A backed output written from an exec chain does the same `Var_Set` an
-    // `emit name = value` does, regardless of whether the value happens to be a
-    // literal: this must run before the constant-seed branch below, or a
-    // literal-valued handler site (e.g. `out n: int = 1`) would instead rebake
-    // the var's `InitialValue` on every call, producing zero `Var_Set` gates
-    // for what pass 1 already counted as a value-driving site. Direct-wiring
-    // here instead would fan in with the var-to-rerouter wire `lower` adds
-    // once at the end.
+    // A backed output written from an exec chain does the same `Var_Set` as
+    // `emit name = value`, even for a literal value; it must precede the
+    // constant-seed branch below, which would rebake the var's `InitialValue`
+    // instead. A direct wire would fan in with the var-to-rerouter wire.
     if let Some(backing) = ctx.output_backing_vars.get(name).cloned()
         && ctx.current_exec.is_some()
     {
-        let inner = backing.inner_type.clone();
         let value_port = lower_expr(ctx, value);
         // After the value: its reads advance the chain.
         let Some(exec) = ctx.current_exec else { return };
-        chain_var_write(
+        store_on_chain(
             ctx,
             exec,
-            backing.node_id.port(WirePort::VarRef),
-            inner.clone(),
+            &backing,
             value_port,
-            false,
+            WriteKind::Set,
             range.clone(),
             Some("out_set"),
         );
         return;
     }
-    // A var-backed output (it is also emitted to) must NOT take a direct driver
-    // from its initializer, since that would fan in with the backing var's own
-    // feed. A constant default seeds the backing var's `InitialValue`; the var
-    // then drives the output once. A declaration's value is always lowered
-    // with no current exec chain (`mod.rs`'s pass-2 loop and the
-    // namespace-member loop above both clear it before lowering one), so this
-    // branch only ever sees a genuine default, never a handler-body write. A
-    // non-constant default is left to the direct wire below (rare, and it is
-    // the sole driver only when there is no emit, which would not have
-    // created a backing var).
+    // A var-backed output must not take a direct driver from its initializer,
+    // which would fan in with the backing var's feed. A constant default (a
+    // declaration's value, lowered with no exec chain) seeds the backing var's
+    // `InitialValue` instead.
     if let Some(backing) = ctx.output_backing_vars.get(name).cloned()
         && let Some(lit) = expr_to_literal_in(value, &ctx.const_lookup())
     {
-        // Bake in the output's DECLARED type, exactly as a `var`'s
-        // initializer does: the backing gate's wire variant is picked from
-        // this literal's kind, so `out y: float = 0` would otherwise ship an
-        // integer variable (see `const_eval::scalar_in_type`).
+        // Bake in the output's declared type, as a `var`'s initializer does:
+        // the backing gate's wire variant follows the literal's kind, so
+        // `out y: float = 0` would otherwise ship an integer variable.
         let lit = crate::const_eval::scalar_in_type(lit, &backing.inner_type);
         if let Some(node) = ctx.builder.module.nodes.get_mut(&backing.node_id) {
             let props = std::sync::Arc::make_mut(&mut node.properties);
@@ -4741,12 +4318,7 @@ pub(super) fn lower_out_binding(
 /// reads it (see `pending_out_records`). Only an output of the mod being
 /// inlined is read there; any other output with one pin would be left with
 /// nothing driving it, so that write is WS105.
-fn stash_out_record(
-    ctx: &mut LowerCtx,
-    name: &str,
-    fields: HashMap<crate::intern::Sym, Binding>,
-    value: &Expr,
-) {
+fn stash_out_record(ctx: &mut LowerCtx<'_>, name: &str, fields: Fields, value: &Expr) {
     if ctx.mod_output_names.iter().any(|n| n == name) || ctx.template_build {
         ctx.pending_out_records.insert(name.to_string(), fields);
         return;
@@ -4768,7 +4340,7 @@ fn stash_out_record(
         .collect();
     aliases.sort_by_key(|n| (ctx.consts.types().declared_at(n).unwrap_or(usize::MAX), *n));
     let spelled = match aliases.first() {
-        Some(alias) => alias.to_string(),
+        Some(alias) => (*alias).clone(),
         None => crate::analysis::types::type_str(&ty),
     };
     // Written apart from its declaration (`out z` then `emit z = ..`): the
@@ -4811,16 +4383,14 @@ fn stash_out_record(
 /// port drives the matching output pin. Nested-record fields carry no single
 /// port and are left for the caller's field-array path, matching the input side.
 fn wire_record_output(
-    ctx: &mut LowerCtx,
-    out_fields: &crate::collections::HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    out_fields: &Fields,
     value: &Expr,
     range: &SourceRange,
 ) {
-    // The shared resolver, not a private copy of it. Re-implementing
-    // record-literal, field-chain and call resolution inline here leaves every
-    // other source shape (a record-valued ternary, an enum construction, a
-    // record array/map element) producing nothing in the `out` position while
-    // working in assignment position.
+    // The shared resolver, so every source shape that works in assignment
+    // position (a record-valued `if`, an enum construction, a record array or
+    // map element) works here too.
     let what = "the record value driving this output";
     let Some(src) = written_record_fields(ctx, what, value) else {
         return;
@@ -4834,11 +4404,7 @@ fn wire_record_output(
 /// `value`'s fields for the record or enum write `what`: [`value_record_fields`],
 /// reporting a value that lowered to none (see [`report_lowered_to_nothing`])
 /// unless lowering it already said why.
-fn written_record_fields(
-    ctx: &mut LowerCtx,
-    what: &str,
-    value: &Expr,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+fn written_record_fields(ctx: &mut LowerCtx<'_>, what: &str, value: &Expr) -> Option<Fields> {
     let reported = ctx.diagnostics.len();
     let fields = value_record_fields(ctx, value);
     if fields.is_none() && ctx.diagnostics.len() == reported {
@@ -4850,11 +4416,7 @@ fn written_record_fields(
 /// `src`, the fields `value` lowered to, as one enum value. A gate read is
 /// its first output, which is how typecheck coerces it (`d = f(c)` on
 /// `-> (r: Hue, e: exec)`, `d = k` after `let k = f(c)`).
-pub(super) fn one_enum_value(
-    ctx: &LowerCtx,
-    value: &Expr,
-    src: HashMap<crate::intern::Sym, Binding>,
-) -> HashMap<crate::intern::Sym, Binding> {
+pub(super) fn one_enum_value(ctx: &LowerCtx<'_>, value: &Expr, src: Fields) -> Fields {
     if enum_disc(&src).is_none()
         && let Some(Binding::Record(first)) =
             held_output(ctx, &src, value.range(), OutputPick::First)
@@ -4869,19 +4431,19 @@ pub(super) fn one_enum_value(
 /// record or enum: as one enum value when `target` is an enum's (see
 /// [`one_enum_value`]). `None`, reported, when none of them reach `target`.
 pub(super) fn fit_record_value(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     what: &str,
     value: &Expr,
-    target: &HashMap<crate::intern::Sym, Binding>,
-    src: HashMap<crate::intern::Sym, Binding>,
-) -> Option<HashMap<crate::intern::Sym, Binding>> {
+    target: &Fields,
+    src: Fields,
+) -> Option<Fields> {
     let src = if enum_disc(target).is_some() {
         one_enum_value(ctx, value, src)
     } else {
         src
     };
     let src = match ctx.checked_type_at(value.range()) {
-        Some(checked) => held_reads_where_one_value(checked, src, Slot::Storage(target)),
+        Some(checked) => held_reads_where_one_value(checked, src, &Slot::Storage(target)),
         None => src,
     };
     if shares_a_field(target, &src) {
@@ -4894,7 +4456,7 @@ pub(super) fn fit_record_value(
 /// What a record value is written into, field by field.
 pub(super) enum Slot<'a> {
     /// Storage (or pins): each field's binding.
-    Storage(&'a HashMap<crate::intern::Sym, Binding>),
+    Storage(&'a Fields),
     /// A place of this type.
     Typed(Type),
 }
@@ -4911,7 +4473,7 @@ impl Slot<'_> {
     /// The field `name` of this slot, or `None` where it has none.
     fn field(&self, name: &str) -> Option<FieldSlot<'_>> {
         match self {
-            Slot::Storage(fields) => match fields.get(&crate::intern::intern(name))? {
+            Slot::Storage(fields) => match fields.get(&intern(name))? {
                 Binding::Record(inner) => Some(FieldSlot::Record(Slot::Storage(inner))),
                 _ => Some(FieldSlot::One),
             },
@@ -4937,9 +4499,9 @@ impl Slot<'_> {
 /// for one value; a field taking a record keeps it.
 pub(super) fn held_reads_where_one_value(
     checked: &Type,
-    mut src: HashMap<crate::intern::Sym, Binding>,
-    slot: Slot,
-) -> HashMap<crate::intern::Sym, Binding> {
+    mut src: Fields,
+    slot: &Slot<'_>,
+) -> Fields {
     let fields: Vec<(String, Type)> = match unwrap_ref(checked) {
         Type::Record(fs) => fs,
         Type::Tuple(ts) => ts
@@ -4950,20 +4512,20 @@ pub(super) fn held_reads_where_one_value(
         _ => return src,
     };
     for (name, ty) in fields {
-        let key = crate::intern::intern(&name);
+        let key = intern(&name);
         let Some(Binding::Record(inner)) = src.get(&key).cloned() else {
             continue;
         };
         match (unwrap_ref(&ty), slot.field(&name)) {
             (Type::Outputs(outputs), Some(FieldSlot::One)) => {
-                if let Some(first) = inner.get(&crate::intern::intern(&outputs[0].0)).cloned() {
+                if let Some(first) = inner.get(&intern(&outputs[0].0)).cloned() {
                     src.insert(key, first);
                 }
             }
             (inner_ty @ (Type::Record(_) | Type::Tuple(_)), Some(FieldSlot::Record(nested))) => {
                 src.insert(
                     key,
-                    Binding::Record(held_reads_where_one_value(&inner_ty, inner, nested)),
+                    Binding::Record(held_reads_where_one_value(&inner_ty, inner, &nested)),
                 );
             }
             _ => {}
@@ -4974,7 +4536,7 @@ pub(super) fn held_reads_where_one_value(
 
 /// Hand `value` to the caller as `name`, a record or enum output of the mod
 /// being inlined.
-fn stash_mod_output_record(ctx: &mut LowerCtx, name: &str, what: &str, value: &Expr) {
+fn stash_mod_output_record(ctx: &mut LowerCtx<'_>, name: &str, what: &str, value: &Expr) {
     let Some(src) = written_record_fields(ctx, what, value) else {
         return;
     };
@@ -4986,10 +4548,7 @@ fn stash_mod_output_record(ctx: &mut LowerCtx, name: &str, what: &str, value: &E
 }
 
 /// Whether writing `src` into `target` reaches any of `target`'s leaves.
-fn shares_a_field(
-    target: &HashMap<crate::intern::Sym, Binding>,
-    src: &HashMap<crate::intern::Sym, Binding>,
-) -> bool {
+fn shares_a_field(target: &Fields, src: &Fields) -> bool {
     target.is_empty()
         || target.iter().any(|(k, t)| match (t, src.get(k)) {
             (Binding::Record(tf), Some(Binding::Record(sf))) => shares_a_field(tf, sf),
@@ -5002,9 +4561,9 @@ fn shares_a_field(
 /// take, so the write it makes would silently vanish. An `any` value is one
 /// wire with no fields to split, which the program can fix (WS003); anything
 /// else is a compiler bug.
-fn report_lowered_to_nothing(ctx: &mut LowerCtx, what: &str, value: &Expr) {
+fn report_lowered_to_nothing(ctx: &mut LowerCtx<'_>, what: &str, value: &Expr) {
     if matches!(
-        unwrap_ref(&crate::lower::call::lowered_arg_type(ctx, value)),
+        unwrap_ref(&lowered_arg_type(ctx, value)),
         Type::Any | Type::Opaque
     ) {
         ctx.error(
@@ -5024,7 +4583,7 @@ fn report_lowered_to_nothing(ctx: &mut LowerCtx, what: &str, value: &Expr) {
 /// reported as WS094. A compile that reports another error drops it (see
 /// `diagnostic::drop_internal_errors_beside_errors`): that error rejects the
 /// program and may be why nothing was lowered.
-fn report_internal_drop(ctx: &mut LowerCtx, what: &str, range: &SourceRange) {
+fn report_internal_drop(ctx: &mut LowerCtx<'_>, what: &str, range: &SourceRange) {
     ctx.error(
         "WS094",
         format!("internal compiler error: {what} lowered to nothing. This is a compiler bug; please report it."),
@@ -5033,13 +4592,11 @@ fn report_internal_drop(ctx: &mut LowerCtx, what: &str, range: &SourceRange) {
 }
 
 /// Wire one record source's fields onto the matching output pins, recursing
-/// into nested record fields. The flat loop skipped a `Binding::Record` output
-/// (a nested record field, which is a pin per leaf), leaving those pins
-/// dangling.
+/// into nested record fields (a nested record output is one pin per leaf).
 fn wire_record_output_fields(
-    ctx: &mut LowerCtx,
-    out_fields: &crate::collections::HashMap<crate::intern::Sym, Binding>,
-    src: &crate::collections::HashMap<crate::intern::Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    out_fields: &Fields,
+    src: &Fields,
     range: &SourceRange,
 ) {
     for (fname, out_binding) in out_fields {
@@ -5055,9 +4612,9 @@ fn wire_record_output_fields(
             Binding::Output(out_rec) => {
                 // A `*T` pin carries a ref: a place's own, or the one a value holds.
                 let port = if out_rec.ty.ref_kind() == Some(crate::ir::RefKind::Var) {
-                    crate::lower::ref_fields::ref_port_of(ctx, src_binding, range)
+                    ref_fields::ref_port_of(ctx, src_binding, range)
                 } else {
-                    crate::lower::access::binding_to_port(ctx, src_binding, range)
+                    binding_to_port(ctx, src_binding, range)
                 };
                 if let Some(port) = port {
                     ctx.connect(port, out_rec.node_id.port(WirePort::RerInput));

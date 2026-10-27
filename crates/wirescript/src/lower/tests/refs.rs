@@ -419,7 +419,7 @@ fn an_array_literal_binds_no_array_param() {
     assert!(has_error(&r, "WS044"), "{:?}", r.diagnostics);
 }
 
-/// What feeds the pin that drives the Var_Set's VarRef inside the only chip.
+/// What feeds the pin that drives the `Var_Set`'s `VarRef` inside the only chip.
 fn chip_ref_pin_feed(r: &LowerResult) -> Option<(NodeId, WirePort)> {
     let chip = r.module.chips.values().next().expect("one chip");
     let set = chip
@@ -448,8 +448,8 @@ const RECORD_REF_FIELD: &str = "var a: int = 0\ntype R = { p: *int, n: int }\n";
 const MAP_OF_REFS: &str = "var a: int = 0\nvar m: Map<string, *int>\n";
 
 /// A ref held in a record field or a map value binds a mod's ref parameter
-/// and feeds a chip's ref pin: the write's VarRef (through the pin, for the
-/// chip) comes from where the ref lives, a's own VarRef or the map read.
+/// and feeds a chip's ref pin: the write's `VarRef` (through the pin, for the
+/// chip) comes from where the ref lives, a's own `VarRef` or the map read.
 #[test]
 fn a_ref_held_in_a_field_or_map_value_binds_a_ref_param_or_pin() {
     let field_body = "let rr: R = { p: &a, n: 1 }\n M7(rr.p)";

@@ -337,16 +337,10 @@ on tick {
     );
 }
 
-/// A record-returning mod call passed DIRECTLY as an argument
-/// (`Take(Make())`) must bind the callee's record parameter to the caller's
-/// record, exactly as the hand-split `let m = Make()` / `Take(m.o)` does.
-///
-/// Argument binding only recognised a record LITERAL or something
-/// `resolve_field_chain` could walk (an ident or field chain). A call
-/// expression is neither, so the record param never received its fields, every
-/// destructured name inside the callee was unbound, and each read lowered to an
-/// `_Unsupported` placeholder returning a default. `wirescript-check` reported
-/// the file clean, so this shipped as a silent miscompile.
+/// A record-returning mod call passed directly as an argument (`Take(Make())`)
+/// binds the callee's record parameter to the caller's record, exactly as the
+/// hand-split `let m = Make()` / `Take(m.o)` does. Left unbound, every
+/// destructured read in the callee lowers to an `_Unsupported` default, silently.
 #[test]
 fn record_returning_call_as_an_argument_binds_the_record() {
     let r = compile_ok(

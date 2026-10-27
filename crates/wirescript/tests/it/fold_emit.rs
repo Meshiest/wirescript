@@ -1,17 +1,17 @@
-//! Emit-level regression tests for constant delivery into NAMED chip inputs.
+//! Emit-level tests for constant delivery into named chip inputs.
 //!
 //! A parent-side `_Literal` wired to a named chip instance's `MicrochipInput`
-//! has NO emit-time delivery mechanism: literal-source wires are skipped at
+//! has no emit-time delivery mechanism: literal-source wires are skipped at
 //! emit (they normally inline into the target's data), but a `MicrochipInput`
 //! is a rerouter with no matching data field, and `partition_anon_chips`'
-//! literal-clone arm only covers nodes moved into ANON chips. The wire was
-//! silently dropped and the chip input read 0 — for BOTH the folded
-//! `P(2 + 2)` shape and the pre-existing `let k = 4; P(k)` alias shape.
+//! literal-clone arm only covers nodes moved into anonymous chips. Without
+//! another path the wire is dropped and the chip input reads 0, for both the
+//! folded `P(2 + 2)` shape and the `let k = 4; P(k)` alias shape.
 //!
-//! These tests compile all the way to an emitted `brdb::World` (the IR-level
-//! suite structurally missed this class of bug) and assert the pin actually
-//! receives its value: exactly one incoming wire, from a real gate whose
-//! embedded data evaluates to the expected constant.
+//! These tests compile all the way to an emitted `brdb::World` (IR-level checks
+//! cannot see this) and assert the pin receives its value: either exactly one
+//! incoming wire from a real gate whose embedded data evaluates to the
+//! expected constant, or a value baked onto the real consumer.
 
 use brdb::AsBrdbValue;
 use brdb::schema::WireValue;
@@ -25,12 +25,7 @@ const REROUTER: &str = "Component_Internal_Rerouter";
 
 fn world(src: &str, fold_mode: FoldMode) -> brdb::World {
     let r = compile_to_world(
-        CompileInput {
-            source: src,
-            file: "fold_emit.ws",
-            module_name: None,
-            fold_mode,
-        },
+        CompileInput::new(src, "fold_emit.ws").fold_mode(fold_mode),
         EmitOptions::default(),
     )
     .expect("should compile");
@@ -44,7 +39,7 @@ fn world(src: &str, fold_mode: FoldMode) -> brdb::World {
     r.world
 }
 
-fn component_is(c: &Box<dyn brdb::BrdbComponent>, ty: &str) -> bool {
+fn component_is(c: &dyn brdb::BrdbComponent, ty: &str) -> bool {
     c.component_type()
         .map(|t| t.to_string() == ty)
         .unwrap_or(false)
@@ -61,7 +56,7 @@ fn as_wire_value(v: &dyn AsBrdbValue) -> Option<WireValue> {
             .get(name)
             .unwrap_or_else(|| panic!("{name} interned in max schema"));
         v.as_brdb_struct_prop_value(schema, id, id)
-            .and_then(|p| p.as_brdb_f64())
+            .and_then(brdb::AsBrdbValue::as_brdb_f64)
             .unwrap_or_else(|e| panic!("wire value component {name}: {e:?}"))
     };
     Some(match v.as_brdb_variant_member()? {
@@ -95,7 +90,10 @@ fn chip_input_brick_id(w: &brdb::World) -> usize {
     let mut ids: Vec<usize> = Vec::new();
     for (_entity, bricks) in &w.grids {
         for b in bricks {
-            if b.components.iter().any(|c| component_is(c, CHIP_IN)) {
+            if b.components
+                .iter()
+                .any(|c| component_is(c.as_ref(), CHIP_IN))
+            {
                 ids.push(b.id.expect("pin brick has an id"));
             }
         }
@@ -117,13 +115,13 @@ fn find_brick(w: &brdb::World, id: usize) -> &brdb::Brick {
 }
 
 /// Evaluate the emitted `MathAdd` component's embedded operands
-/// (`InputA + InputB`) — the value the gate outputs for unwired inputs.
+/// (`InputA + InputB`): the value the gate outputs for unwired inputs.
 fn math_add_input_sum(b: &brdb::Brick) -> i64 {
     let schema = brdb::schemas::bricks_components_schema_max();
     let comp = b
         .components
         .iter()
-        .find(|c| component_is(c, MATH_ADD))
+        .find(|c| component_is(c.as_ref(), MATH_ADD))
         .expect("MathAdd component on the wire's source brick");
     let read = |field: &str| -> i64 {
         let fid = schema
@@ -142,8 +140,8 @@ fn math_add_input_sum(b: &brdb::Brick) -> i64 {
     read("InputA") + read("InputB")
 }
 
-/// The core assertion: the chip's `v` pin is DELIVERED the constant — one
-/// incoming wire, from a real (non-literal) gate that evaluates to `expected`.
+/// The core assertion: the chip's `v` pin is delivered the constant by one
+/// incoming wire from a real (non-literal) gate that evaluates to `expected`.
 fn assert_pin_delivery(what: &str, src: &str, fold_mode: FoldMode, expected: i64) {
     let w = world(src, fold_mode);
     let pin = chip_input_brick_id(&w);
@@ -173,12 +171,11 @@ fn assert_pin_delivery(what: &str, src: &str, fold_mode: FoldMode, expected: i64
     );
 }
 
-/// The chip input pin's incoming wire COUNT — boundary-delivery cleanup
-/// drops it to ZERO once the argument is delivered straight to its
-/// real consumer instead (`live_consumer_fed_by_opaque`/
-/// `operand_source_brick` below), so this is the shape a fully-consumed
-/// argument reaches, NOT `assert_pin_delivery`'s "exactly one" — that shape
-/// is still correct for `--no-fold`, where the pin is the only delivery path.
+/// The chip input pin's incoming wire count. Boundary-delivery cleanup drops it
+/// to zero once the argument is delivered straight to its real consumer
+/// (`live_consumer_fed_by_opaque`/`operand_source_brick` below); with
+/// `--no-fold` the pin is the only delivery path, which is
+/// `assert_pin_delivery`'s "exactly one".
 fn chip_input_incoming_wire_count(w: &brdb::World, pin: usize) -> usize {
     w.wires
         .iter()
@@ -186,20 +183,17 @@ fn chip_input_incoming_wire_count(w: &brdb::World, pin: usize) -> usize {
         .count()
 }
 
-/// The real, still-live consumer brick of `component_type` whose wiring
-/// includes an incoming wire FROM a live `Opaque(...)` rerouter brick —
-/// identifies the SAME gate regardless of how its OTHER (folded) operand
-/// now arrives (a live wire, baked component data, or via a small
-/// directly-wired carrier — see `operand_source_brick`), because the
-/// Opaque side is NEVER touched by any of this: it's the fold pass's
-/// permanent barrier, always delivered by a real wire from a real
-/// rerouter brick.
+/// The real, still-live consumer brick of `component_type` with an incoming
+/// wire from a live `Opaque(...)` rerouter brick. The `Opaque` side is the fold
+/// pass's barrier and is always a real wire, so this finds the same gate
+/// however its other (folded) operand arrives: a live wire, baked component
+/// data, or a directly wired carrier (see `operand_source_brick`).
 fn live_consumer_fed_by_opaque<'w>(w: &'w brdb::World, component_type: &str) -> &'w brdb::Brick {
     let is_rerouter = |brick_id: usize| -> bool {
         find_brick(w, brick_id)
             .components
             .iter()
-            .any(|c| component_is(c, REROUTER))
+            .any(|c| component_is(c.as_ref(), REROUTER))
     };
     let consumer_id = w
         .wires
@@ -218,16 +212,14 @@ fn live_consumer_fed_by_opaque<'w>(w: &'w brdb::World, component_type: &str) -> 
     find_brick(w, consumer_id)
 }
 
-/// The brick that actually carries `port_name`'s value for `consumer`:
-/// boundary-delivery cleanup delivers a folded argument to its real
-/// consumer TWO possible ways — baked directly onto the consumer's OWN
-/// component data (ints/floats/bools/vectors/rotators/quats can all inline
-/// as a wire-variant default — see `emit::port_accepts_inline_variant`),
-/// or, for strings specifically (which CANNOT inline this way — see
-/// `lower/expr.rs::literal_node`'s doc), via one small carrier gate wired
-/// DIRECTLY into the consumer (no longer routed through the chip's pin +
-/// rerouter). If `port_name` is wired, follow it to the carrier; otherwise
-/// the value is baked on `consumer` itself.
+/// The brick that carries `port_name`'s value for `consumer`. Boundary-delivery
+/// cleanup delivers a folded argument to its real consumer in one of two ways:
+/// baked onto the consumer's own component data (ints, floats, bools, vectors,
+/// rotators and quats inline as a wire-variant default; see
+/// `emit::port_accepts_inline_variant`), or, for strings, which cannot inline,
+/// via one small carrier gate wired directly into the consumer. If `port_name`
+/// is wired, follow it to the carrier; otherwise the value is baked on
+/// `consumer` itself.
 fn operand_source_brick<'w>(
     w: &'w brdb::World,
     consumer: &brdb::Brick,
@@ -242,17 +234,16 @@ fn operand_source_brick<'w>(
     }
 }
 
-/// Read a wire-variant field of any type off ANY component (not scoped to
-/// a specific carrier gate class) — the shape boundary-delivery cleanup
-/// bakes a folded operand into when it lands directly on an ordinary math
-/// gate's own generic operand field, rather than a dedicated `MakeVector`/
-/// `MakeQuaternion` carrier's separate X/Y/Z(/W) fields.
+/// Read a wire-variant field of any type off any component (not scoped to a
+/// carrier gate class): the shape a folded operand is baked into when it lands
+/// on an ordinary math gate's generic operand field, rather than a
+/// `MakeVector`/`MakeQuaternion` carrier's separate X/Y/Z(/W) fields.
 fn read_wire_value(b: &brdb::Brick, component_type: &str, field: &str) -> WireValue {
     let schema = brdb::schemas::bricks_components_schema_max();
     let comp = b
         .components
         .iter()
-        .find(|c| component_is(c, component_type))
+        .find(|c| component_is(c.as_ref(), component_type))
         .unwrap_or_else(|| panic!("{component_type} component on brick {:?}", b.id));
     let fid = schema
         .intern
@@ -280,12 +271,10 @@ fn read_wire_value_vector(b: &brdb::Brick, component_type: &str, field: &str) ->
     }
 }
 
-/// Some fields (e.g. `QuatSlerp`'s `InputA`/receiver) embed a baked
-/// composite as a NESTED struct (X/Y/Z/W sub-fields) rather than a tagged
-/// `WireValue::Quat` alternative — unlike a generic math gate's operand slot
-/// (`read_wire_value`'s own callers), which reads back as a wire value. Try
-/// the wire-value reading first (cheaper, and correct for the fields that DO
-/// use it), falling back to the nested-struct shape.
+/// Some fields (e.g. `QuatSlerp`'s `InputA`/receiver) embed a baked composite
+/// as a nested struct (X/Y/Z/W sub-fields) rather than a tagged
+/// `WireValue::Quat`, which a generic math gate's operand slot uses. Try the
+/// wire-value reading first, then fall back to the nested-struct shape.
 fn read_wire_value_quat(
     b: &brdb::Brick,
     component_type: &str,
@@ -295,7 +284,7 @@ fn read_wire_value_quat(
     let comp = b
         .components
         .iter()
-        .find(|c| component_is(c, component_type))
+        .find(|c| component_is(c.as_ref(), component_type))
         .unwrap_or_else(|| panic!("{component_type} component on brick {:?}", b.id));
     let fid = schema
         .intern
@@ -317,7 +306,7 @@ fn read_wire_value_quat(
             .unwrap_or_else(|e| panic!("nested {field}.{sub} present: {e:?}"));
         sub_val
             .as_brdb_f64()
-            .or_else(|_| sub_val.as_brdb_f32().map(|f| f as f64))
+            .or_else(|_| sub_val.as_brdb_f32().map(f64::from))
             .unwrap_or_else(|e| panic!("nested {field}.{sub} numeric: {e:?}"))
     };
     (read_sub("X"), read_sub("Y"), read_sub("Z"), read_sub("W"))
@@ -330,7 +319,7 @@ fn string_concat_input_a(b: &brdb::Brick) -> String {
     let comp = b
         .components
         .iter()
-        .find(|c| component_is(c, STRING_CONCAT))
+        .find(|c| component_is(c.as_ref(), STRING_CONCAT))
         .expect("String_Concatenate component on the wire's source brick");
     let fid = schema
         .intern
@@ -345,25 +334,19 @@ fn string_concat_input_a(b: &brdb::Brick) -> String {
 }
 
 /// `chip P(v: string) -> (r: string)`: the argument is a constant-folded
-/// `FormatText` interpolation (`"n=${n}"`, `n = 1000`) — only known once
-/// driver-level FormatText folding runs, so this exercises that capability
-/// specifically (a bare string literal argument would already deliver via
-/// the pre-existing, fold-independent string-literal carrier machinery and
-/// wouldn't prove anything — see
-/// `cross_chip_constant_folds_inside_named_chip`'s `2 + 2` comment for the
-/// same reasoning applied to ints).
+/// `FormatText` interpolation (`"n=${n}"`, `n = 1000`), known only once
+/// `FormatText` folding runs. A bare string literal argument would deliver via
+/// the fold-independent string-literal carrier and prove nothing.
 const FOLDED_STRING_EXPR: &str = "chip P(v: string) -> (r: string) { out r = v .. Opaque(\"\") }\n\
                                    let n = 1000\n\
                                    out y = P(\"n=${n}\")\n";
 
 #[test]
 fn folded_const_string_arg_reaches_named_chip_input() {
-    // Boundary-delivery cleanup: `v`'s Known value is rewired straight to
-    // its real consumer (`v .. Opaque("")`), bypassing the chip pin
-    // entirely — the pin itself ends up wire-free. Strings specifically
-    // can't inline as baked wire-variant data (see `operand_source_brick`'s
-    // doc), so the value still arrives via one small carrier gate, just
-    // wired DIRECTLY into the consumer instead of routed through the pin.
+    // `v`'s known value is rewired straight to its real consumer
+    // (`v .. Opaque("")`), so the pin ends up wire-free. Strings cannot inline
+    // as baked wire-variant data (see `operand_source_brick`), so the value
+    // arrives via one small carrier gate wired directly into the consumer.
     let w = world(FOLDED_STRING_EXPR, FoldMode::ForceOn);
     let pin = chip_input_brick_id(&w);
     assert_eq!(
@@ -386,18 +369,17 @@ fn folded_const_string_arg_reaches_named_chip_input() {
 }
 
 /// `chip P(v: vector) -> (r: vector)`: the argument is a folded composite
-/// `MathAdd` (`Vec(1,2,3) + Vec(0.5,0.5,0.5)`), only known once certified
-/// `compositeMath` folding runs.
+/// `MathAdd` (`Vec(1,2,3) + Vec(0.5,0.5,0.5)`), known only once `compositeMath`
+/// folding runs.
 const FOLDED_VECTOR_EXPR: &str = "chip P(v: vector) -> (r: vector) { out r = v + Opaque(Vec(0.0, 0.0, 0.0)) }\n\
      out y = P(Vec(1.0, 2.0, 3.0) + Vec(0.5, 0.5, 0.5))\n";
 
 #[test]
 fn folded_const_vector_arg_reaches_named_chip_input() {
-    // Boundary-delivery cleanup: `v`'s Known vector value is rewired
-    // straight to its real consumer (`v + Opaque(...)`) — the pin ends up
-    // wire-free, and a Vector inlines fine as a generic wire-variant
-    // operand (unlike strings), so it's baked DIRECTLY onto the surviving
-    // MathAdd's own `InputA`, no carrier gate at all.
+    // `v`'s known vector value is rewired straight to its real consumer
+    // (`v + Opaque(...)`), so the pin ends up wire-free. A vector inlines as a
+    // generic wire-variant operand, so it is baked onto the surviving MathAdd's
+    // own `InputA` with no carrier gate.
     let w = world(FOLDED_VECTOR_EXPR, FoldMode::ForceOn);
     let pin = chip_input_brick_id(&w);
     assert_eq!(
@@ -419,23 +401,21 @@ fn folded_const_vector_arg_reaches_named_chip_input() {
     );
 }
 
-/// `chip P(v)` whose body can't fully fold (`Opaque` is certified-opaque):
-/// the folded `2 + 2` argument must still reach the pin as 4.
+/// `chip P(v)` whose body cannot fully fold (`Opaque` never folds): the folded
+/// `2 + 2` argument must still reach the pin as 4.
 const FOLDED_EXPR: &str = "chip P(v: int) -> (r: int) { out r = v + Opaque(0) }\n\
                            out y = P(2 + 2)\n";
 
-/// Pre-existing (fold-independent) shape: a top-level literal alias passed
-/// to a named chip lowers to the same parent-literal -> pin wire.
+/// Fold-independent shape: a top-level literal alias passed to a named chip
+/// lowers to the same parent-literal to pin wire.
 const LET_ALIAS: &str = "chip P(v: int) -> (r: int) { out r = v + Opaque(0) }\n\
                          let k = 4\n\
                          out y = P(k)\n";
 
 /// Like `assert_pin_delivery`, but for the boundary-delivery-cleanup shape
-/// (`FoldMode::ForceOn` only — `--no-fold` still delivers via the pin, see
-/// `assert_pin_delivery`'s own callers below): the pin ends up wire-free,
-/// and the value is baked directly on the real `v + Opaque(0)` consumer's
-/// own `InputA` (ints inline fine as a generic wire-variant operand, no
-/// carrier gate needed at all).
+/// (`FoldMode::ForceOn` only; `--no-fold` delivers via the pin): the pin ends
+/// up wire-free, and the value is baked onto the real `v + Opaque(0)`
+/// consumer's own `InputA` (ints inline as a generic wire-variant operand).
 fn assert_direct_delivery(what: &str, src: &str, expected: i64) {
     let w = world(src, FoldMode::ForceOn);
     let pin = chip_input_brick_id(&w);
@@ -478,29 +458,24 @@ fn let_alias_const_arg_reaches_named_chip_input_no_fold() {
 }
 
 /// Control: with folding disabled the expression argument stays a real
-/// `MathAdd(2, 2)` wired cross-grid into the pin — the canonical delivery
-/// shape the folded variants above must still reproduce.
+/// `MathAdd(2, 2)` wired cross-grid into the pin, the delivery shape the folded
+/// variants above must still reproduce.
 #[test]
 fn unfolded_expr_arg_reaches_named_chip_input() {
     assert_pin_delivery("P(2 + 2) --no-fold", FOLDED_EXPR, FoldMode::ForceOff, 4);
 }
 
 /// `chip P(v: quat) -> (r: quat)`: the argument is a folded composite
-/// `MakeQuaternion` whose four components are each an ARITHMETIC expression
-/// (`0.38 + 0.0`, not a bare literal). A bare-literal `Quat(...)` call
-/// argument bakes its floats directly into the MakeQuaternion gate's OWN
-/// properties at ordinary call lowering — no `Literal::Quat` is ever
-/// produced (`expr_to_literal` has no `Quat` arm, unlike `Vec`/`Rotation`/
-/// `Color` — see `lower/predeclare.rs`), so a bare literal would reach the
-/// pin via the pre-existing, fold-independent path and prove nothing about
-/// the `Literal::Quat` carrier arm this test targets. Arithmetic args force
-/// a real `MathAdd` per component, so a `Literal::Quat` can only appear
-/// once the certified fold pass evaluates `MakeQuaternion` itself, all four
-/// inputs known (`fold/eval.rs::make_quaternion`). `Slerp` is on the
-/// deferred-ops list (never folds — see `eval::eval`'s `DEFERRED` list), so
-/// `v`'s use inside the chip body stays a real, unfoldable gate: mirrors
-/// the vector test's `+ Opaque(...)` shape, keeping `P` a genuine
-/// cross-module boundary instead of being optimized away entirely.
+/// `MakeQuaternion` whose four components are each an arithmetic expression
+/// (`0.38 + 0.0`, not a bare literal). A bare-literal `Quat(...)` argument bakes
+/// its floats into the `MakeQuaternion` gate's own properties during call
+/// lowering and never produces a `Literal::Quat` (`expr_to_literal` has no
+/// `Quat` arm), so it would not reach the `Literal::Quat` carrier arm under
+/// test. Arithmetic arguments force a `MathAdd` per component, so a
+/// `Literal::Quat` appears only once the fold pass evaluates `MakeQuaternion`
+/// with all four inputs known (`fold/eval.rs::make_quaternion`). `Slerp` is a
+/// deferred op (see `DEFERRED` in `fold/eval.rs`) and never folds, so `v` stays
+/// a real gate inside the chip body and `P` remains a cross-module boundary.
 const FOLDED_QUAT_EXPR: &str = "chip P(v: quat) -> (r: quat) { out r = v.Slerp(Opaque(Quat(0.0, 0.0, 0.0, 1.0)), 0.0) }\n\
      out y = P(Quat(0.0 + 0.0, 0.0 + 0.0, 0.38 + 0.0, 0.92 + 0.0))\n";
 
@@ -508,12 +483,10 @@ const QUAT_SLERP: &str = "BrickComponentType_Expr_QuatSlerp";
 
 #[test]
 fn folded_const_quat_arg_reaches_named_chip_input() {
-    // Boundary-delivery cleanup: `v`'s Known quat value is rewired straight
-    // to its real consumer (`v.Slerp(Opaque(...), 0.0)` — `Slerp` is a
-    // deferred op, never folds itself) — the pin ends up wire-free, and a
-    // Quat inlines fine as a generic wire-variant operand, so it's baked
-    // DIRECTLY onto the surviving QuatSlerp's own receiver input, no
-    // carrier gate at all.
+    // `v`'s known quat value is rewired straight to its real consumer
+    // (`v.Slerp(Opaque(...), 0.0)`), so the pin ends up wire-free. A quat
+    // inlines as a generic wire-variant operand, so it is baked onto the
+    // surviving QuatSlerp's own receiver input with no carrier gate.
     let w = world(FOLDED_QUAT_EXPR, FoldMode::ForceOn);
     let pin = chip_input_brick_id(&w);
     assert_eq!(
@@ -568,7 +541,9 @@ fn traced_source<'w>(w: &'w brdb::World, consumer: &brdb::Brick, port: &str) -> 
         );
         let source = find_brick(w, feeds[0].source.brick_id);
         let is_carrier = source.components.iter().any(|c| {
-            component_is(c, CHIP_IN) || component_is(c, CHIP_OUT) || component_is(c, REROUTER)
+            component_is(c.as_ref(), CHIP_IN)
+                || component_is(c.as_ref(), CHIP_OUT)
+                || component_is(c.as_ref(), REROUTER)
         });
         if !is_carrier {
             return source;
@@ -589,9 +564,9 @@ enum Const {
 impl From<WireValue> for Const {
     fn from(v: WireValue) -> Self {
         match v {
-            WireValue::Int(n) => Const::Num(n as f64),
-            WireValue::Number(f) => Const::Num(f),
-            WireValue::Str(s) => Const::Str(s),
+            WireValue::Int(n) => Self::Num(n as f64),
+            WireValue::Number(f) => Self::Num(f),
+            WireValue::Str(s) => Self::Str(s),
             other => panic!("unexpected constant {other:?}"),
         }
     }
@@ -604,7 +579,7 @@ fn baked_field(b: &brdb::Brick, component_type: &str, field: &str) -> Option<Con
     let comp = b
         .components
         .iter()
-        .find(|c| component_is(c, component_type))?;
+        .find(|c| component_is(c.as_ref(), component_type))?;
     let fid = schema.intern.get(field)?;
     let v = comp.as_brdb_struct_prop_value(schema, fid, fid).ok()?;
     match as_wire_value(v) {
@@ -677,7 +652,7 @@ fn assert_consumers_read(
     class: &str,
     const_port: &str,
     input_port: &str,
-    expected: Const,
+    expected: &Const,
     count: usize,
 ) {
     for fold_mode in [FoldMode::ForceOn, FoldMode::ForceOff] {
@@ -686,7 +661,7 @@ fn assert_consumers_read(
             .bricks
             .iter()
             .chain(w.grids.iter().flat_map(|(_, bricks)| bricks.iter()))
-            .filter(|b| b.components.iter().any(|c| component_is(c, class)))
+            .filter(|b| b.components.iter().any(|c| component_is(c.as_ref(), class)))
             .filter(|b| !incoming(&w, b.id.expect("brick has an id"), input_port).is_empty())
             .collect();
         assert_eq!(
@@ -697,7 +672,7 @@ fn assert_consumers_read(
         for consumer in consumers {
             assert_eq!(
                 port_value(&w, consumer, class, const_port),
-                expected,
+                *expected,
                 "{what} ({fold_mode:?}): {class}.{const_port} must read the constant"
             );
         }
@@ -705,13 +680,13 @@ fn assert_consumers_read(
 }
 
 /// A top-level string constant read by the root module and by a named chip:
-/// the chip's reads are wires stored in the chip's module whose source lives
-/// in the root. Folding `"${CUR}${5}"` away left the root with one consumer of
-/// `CUR`, so literal inlining took it for single-use, baked it into that
-/// consumer and deleted it, stranding the chip's wire (a `dropped wire` emit
-/// error). The other two shapes reach the same state without folding: one
-/// root consumer to begin with, or a root consumer that bakes the string into
-/// a native `str` field before folding runs.
+/// the chip's reads are wires stored in the chip's module whose source lives in
+/// the root. Folding `"${CUR}${5}"` away leaves the root with one consumer of
+/// `CUR`; literal inlining must not treat it as single-use, bake it into that
+/// consumer and delete it, or the chip's wire is stranded (a `dropped wire` emit
+/// error). The other two shapes reach the same state without folding: one root
+/// consumer to begin with, or a root consumer that bakes the string into a
+/// native `str` field before folding runs.
 const SHARED_CONST_FOLDED_TO_ONE_USE: &str = "let CUR = \"$\"\n\
      in n: int\n\
      chip show(s: int) -> string {\n  return \"${CUR}${s}\"\n}\n\
@@ -740,7 +715,7 @@ fn shared_string_constant_still_reaches_named_chip() {
         FORMAT_TEXT,
         "InputA",
         "InputB",
-        s("$"),
+        &s("$"),
         2,
     );
     assert_consumers_read(
@@ -749,7 +724,7 @@ fn shared_string_constant_still_reaches_named_chip() {
         FORMAT_TEXT,
         "InputA",
         "InputB",
-        s("$"),
+        &s("$"),
         2,
     );
     assert_consumers_read(
@@ -758,23 +733,22 @@ fn shared_string_constant_still_reaches_named_chip() {
         STRING_CONCAT,
         "InputB",
         "InputA",
-        s("|"),
+        &s("|"),
         2,
     );
 }
 
-/// A top-level constant EXPRESSION read by a named chip. Folding turns it into
+/// A top-level constant expression read by a named chip. Folding turns it into
 /// a `_Literal` in the root, and a literal reaches only its own module's
-/// consumers (emit inlines it; a boundary pin never carries one), so the
-/// chip's gate read its port default (0 or "") unless the chip gets its own
-/// copy.
+/// consumers (emit inlines it; a boundary pin never carries one), so the chip
+/// needs its own copy or its gate reads the port default (0 or "").
 #[test]
 fn folded_constant_expression_reaches_named_chip() {
     let n = Const::Num;
     // Read by the root and the chip.
     let k1 = "let K = 3 + 4\nin n: int\nchip show(s: int) -> int {\n  return s + K\n}\n\
               out a = n + K\nout b = show(n)\n";
-    assert_consumers_read("int", k1, MATH_ADD, "InputB", "InputA", n(7.0), 2);
+    assert_consumers_read("int", k1, MATH_ADD, "InputB", "InputA", &n(7.0), 2);
     // Two root reads, so the root keeps its literal.
     let k2 = "let K = 3 + 4\nin n: int\nin m: int\nchip show(s: int) -> int {\n  return s * K\n}\n\
               out a = n + K\nout c = m - K\nout b = show(n)\n";
@@ -784,7 +758,7 @@ fn folded_constant_expression_reaches_named_chip() {
         MATH_MULTIPLY,
         "InputB",
         "InputA",
-        n(7.0),
+        &n(7.0),
         1,
     );
     let k3 = "let CUR = \"a\" .. \"b\"\nin n: int\nchip show(s: int) -> string {\n  return \"${CUR}${s}\"\n}\n\
@@ -795,13 +769,21 @@ fn folded_constant_expression_reaches_named_chip() {
         FORMAT_TEXT,
         "InputA",
         "InputB",
-        Const::Str("ab".into()),
+        &Const::Str("ab".into()),
         2,
     );
     // A constant built on another constant.
     let k4 = "let K = 7\nlet J = K * 2\nin n: int\nchip show(s: int) -> int {\n  return s * J\n}\n\
               out a = n + J\nout b = show(n)\n";
-    assert_consumers_read("chained", k4, MATH_MULTIPLY, "InputB", "InputA", n(14.0), 1);
+    assert_consumers_read(
+        "chained",
+        k4,
+        MATH_MULTIPLY,
+        "InputB",
+        "InputA",
+        &n(14.0),
+        1,
+    );
     // Read only by the chip.
     let k6 = "let K = 3 + 4\nin n: int\nchip show(s: int) -> int {\n  return s * K\n}\nout b = show(n)\n";
     assert_consumers_read(
@@ -810,13 +792,13 @@ fn folded_constant_expression_reaches_named_chip() {
         MATH_MULTIPLY,
         "InputB",
         "InputA",
-        n(7.0),
+        &n(7.0),
         1,
     );
     let k7 = "const K = 3 + 4\nin n: int\nchip show(s: int) -> int {\n  return s * K\n}\n\
               out a = n + K\nout b = show(n)\n";
-    assert_consumers_read("const", k7, MATH_MULTIPLY, "InputB", "InputA", n(7.0), 1);
+    assert_consumers_read("const", k7, MATH_MULTIPLY, "InputB", "InputA", &n(7.0), 1);
     let k9 = "let K = 2.5 * 2.0\nin n: float\nchip show(s: float) -> float {\n  return s * K\n}\n\
               out a = n + K\nout c = n - K\nout b = show(n)\n";
-    assert_consumers_read("float", k9, MATH_MULTIPLY, "InputB", "InputA", n(5.0), 1);
+    assert_consumers_read("float", k9, MATH_MULTIPLY, "InputB", "InputA", &n(5.0), 1);
 }

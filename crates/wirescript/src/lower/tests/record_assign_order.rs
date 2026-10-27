@@ -189,7 +189,7 @@ on go { q = { a: { x: 1, y: 2 }, n: q.a.x } }
 }
 
 /// A record assignment that reads nothing it writes keeps each read next to
-/// its write, exactly as before the parallel-assignment rule.
+/// its write.
 #[test]
 fn non_aliasing_record_assign_reads_each_field_at_its_write() {
     for body in [
@@ -249,13 +249,13 @@ fn a_container_cycle_is_ws087() {
             ));
             continue;
         };
-        if let Some((a, b)) = names {
-            if !d.message.contains(a) || !d.message.contains(b) {
-                failures.push(format!(
-                    "WS087 does not name {a} and {b}: {}\n{src}",
-                    d.message
-                ));
-            }
+        if let Some((a, b)) = names
+            && (!d.message.contains(a) || !d.message.contains(b))
+        {
+            failures.push(format!(
+                "WS087 does not name {a} and {b}: {}\n{src}",
+                d.message
+            ));
         }
     }
     crate::test_support::report_failures(&failures, rows.len());
@@ -743,7 +743,7 @@ fn aliases_through_namespace_mod_and_if_read_first() {
 }
 
 /// With nothing to reorder, a container element is still evaluated during its
-/// rebuild, exactly as before.
+/// rebuild.
 #[test]
 fn non_aliasing_container_element_keeps_its_place() {
     let r = compile_ok(

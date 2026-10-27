@@ -15,36 +15,34 @@
 //! This module intentionally does NOT know about scope kinds (handler
 //! headers, chip I/O, loop feedback columns).
 
-use crate::collections::{HashMap, HashSet};
-
 use petgraph::algo::tarjan_scc;
 use petgraph::graphmap::GraphMap;
 use petgraph::unionfind::UnionFind;
 
-use crate::ir::{NodeId, Wire};
+use crate::collections::{HashMap, HashSet};
+use crate::ir::{Node, NodeId, Wire};
 
 use super::region::Region;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct LocalPlacement {
+pub(super) struct LocalPlacement {
     pub dx: i32,
     pub dy: i32,
 }
 
 #[derive(Debug)]
-pub struct RegionLayout {
+pub(super) struct RegionLayout {
     pub local: HashMap<NodeId, LocalPlacement>,
     /// (width, height) in cell units; `width = max(dx) + 1`, same for height.
     pub bbox: (i32, i32),
-    /// Edges dropped from the DAG for ordering purposes. Still emitted by
-    /// the brick emitter — these are just *not* used when assigning
-    /// longest-path levels. Reported for the cycle-breaking tests only;
-    /// `LayoutResult` has no diagnostics channel to carry it further.
+    /// Edges dropped from the DAG for ordering purposes. They are still emitted by the brick
+    /// emitter, just not used when assigning longest-path levels. Reported for the
+    /// cycle-breaking tests only; `LayoutResult` has no diagnostics channel to carry it further.
     #[cfg(test)]
     pub feedback_edges: Vec<(NodeId, NodeId)>,
-    /// Non-fatal warnings raised during layout (e.g., a non-trivial SCC
-    /// with no `is_buffer()` target — likely a typecheck bug). Asserted by
-    /// the cycle-breaking tests; nothing surfaces them to the user yet.
+    /// Non-fatal warnings raised during layout (e.g., a non-trivial SCC with no `is_buffer()`
+    /// target, likely a typecheck bug). Asserted by the cycle-breaking tests; nothing surfaces
+    /// them to the user.
     #[cfg(test)]
     pub warnings: Vec<String>,
 }
@@ -52,12 +50,12 @@ pub struct RegionLayout {
 /// Lay out a leaf region. `wires` should be the full module's wire list;
 /// this function filters to the subset with both endpoints inside
 /// `region.own_nodes`.
-pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
+pub(super) fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
     // Index the region's nodes for O(1) lookup during cycle breaking
     // (we need `is_buffer()` and source-range comparisons by node id).
     let node_ids: Vec<&NodeId> = region.own_nodes.iter().map(|n| &n.id).collect();
     let node_set: HashSet<&NodeId> = node_ids.iter().copied().collect();
-    let node_by_id: HashMap<&NodeId, &crate::ir::Node> =
+    let node_by_id: HashMap<&NodeId, &Node> =
         region.own_nodes.iter().map(|n| (&n.id, *n)).collect();
 
     // Restrict wires to edges fully inside this region. Preserve input
@@ -78,10 +76,9 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         g.add_edge(&w.source.node_id, &w.target.node_id, ());
     }
 
-    // SCC + feedback-edge selection. Drop one edge per non-trivial SCC and
-    // repeat until the graph is acyclic — an SCC can contain several distinct
-    // cycles (e.g. two emit/await loops sharing a chain), so a single removal
-    // per SCC isn't always enough.
+    // SCC + feedback-edge selection. Drop one edge per non-trivial SCC and repeat until the
+    // graph is acyclic: an SCC can contain several distinct cycles (e.g. two emit/await loops
+    // sharing a chain), so a single removal per SCC is not always enough.
     let mut feedback_edges: Vec<(NodeId, NodeId)> = Vec::new();
     #[cfg(test)]
     let mut warnings: Vec<String> = Vec::new();
@@ -186,7 +183,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
         idx.insert(*id, i);
     }
     let mut uf = UnionFind::<usize>::new(node_ids.len());
-    for (u, v, _) in g.all_edges() {
+    for (u, v, ()) in g.all_edges() {
         if let (Some(&ui), Some(&vi)) = (idx.get(&u), idx.get(&v)) {
             uf.union(ui, vi);
         }
@@ -242,7 +239,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
             by_level.entry(depth[&n]).or_default().push(n);
         }
         let mut levels: Vec<i32> = by_level.keys().copied().collect();
-        levels.sort();
+        levels.sort_unstable();
 
         let mut local_height = 0i32;
         for lvl in levels {
@@ -302,10 +299,7 @@ pub fn layout_leaf(region: &Region<'_>, wires: &[Wire]) -> RegionLayout {
     }
 }
 
-fn wcc_sort_key(
-    nodes: &[&NodeId],
-    node_by_id: &HashMap<&NodeId, &crate::ir::Node>,
-) -> (usize, NodeId) {
+fn wcc_sort_key(nodes: &[&NodeId], node_by_id: &HashMap<&NodeId, &Node>) -> (usize, NodeId) {
     let mut min_offset = usize::MAX;
     let mut min_id: Option<&NodeId> = None;
     for id in nodes {

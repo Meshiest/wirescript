@@ -11,7 +11,7 @@ fn empty_ctx() -> ConstCtx<'static> {
         Arc::new(crate::collections::HashMap::default()),
         Arc::default(),
         Arc::default(),
-        Default::default(),
+        Arc::default(),
         Arc::default(),
         None,
     )
@@ -27,12 +27,12 @@ fn eval_str(src_expr: &str) -> Result<Literal, ConstError> {
 }
 
 /// The whole-module `ConstEnv` of `src`, built the way a real compile builds
-/// it (`lower::build_const_env`, including the enum registry).
-fn const_env(src: &str) -> crate::lower::ConstEnv {
+/// it (`const_eval::build_const_env`, including the enum registry).
+fn const_env(src: &str) -> crate::const_eval::ConstEnv {
     let p = crate::parse(src, "test");
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
     let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
-    crate::lower::build_const_env(&p.ast.decls, &enum_defs)
+    crate::const_eval::build_const_env(&p.ast.decls, &enum_defs)
 }
 
 /// Parses `src` (a whole script, typically an `enum` declaration plus a
@@ -47,11 +47,9 @@ fn eval_ok(src: &str, name: &str) -> Literal {
         .clone()
 }
 
-/// Parses `src`, takes its first `mod`/`chip` declaration, and calls it with
-/// `args` through the interpreter using a fresh [`Budget`]. Any top-level
-/// `const`/`let` in `src` becomes the MODULE constant environment, exactly as
-/// `TypeCheckCtx`/`LowerCtx` build it — so a body referencing a module
-/// constant resolves it here the same way it would in a real compile.
+/// Call the first `mod`/`chip` in `src` with `args` through the interpreter
+/// and a fresh [`Budget`]. The top-level `const`/`let`s of `src` are the
+/// module constants, built as a real compile builds them.
 fn eval_mod_call(src: &str, args: &[Literal]) -> Result<Literal, ConstError> {
     eval_mod_call_with(
         src,
@@ -68,15 +66,15 @@ fn eval_mod_call_with_budget(
     args: &[Literal],
     depth: u32,
 ) -> Result<Literal, ConstError> {
-    let mut budget = Budget::default();
-    budget.depth = depth;
+    let budget = Budget {
+        depth,
+        ..Budget::default()
+    };
     eval_mod_call_with(src, args, budget, crate::collections::HashMap::default())
 }
 
-/// Same as [`eval_mod_call`], but with extra CALLER-scope-local constants
-/// (the `scoped_consts` frames a real call site would have open) merged into
-/// `consts` and deliberately absent from `module_consts` — the shape that
-/// proves a callee cannot read the caller's locals.
+/// [`eval_mod_call`] with caller-local constants in `consts` but not in
+/// `module_consts`, to show a callee cannot read the caller's locals.
 fn eval_mod_call_with_caller_locals(
     src: &str,
     args: &[Literal],
@@ -106,11 +104,10 @@ fn eval_mod_call_with(
             _ => None,
         })
         .expect("expected a mod/chip declaration");
-    // Mirrors `TypeCheckCtx::const_ctx`: `module_consts` is the top-level env
-    // alone, `consts` is that env with the caller's open scope frames merged
-    // on top.
+    // As in `TypeCheckCtx::const_ctx`: `module_consts` is the top-level env,
+    // `consts` adds the caller's open scope frames.
     let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
-    let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
+    let module_consts = crate::const_eval::build_const_env(&p.ast.decls, &enum_defs);
     let mut consts = module_consts.clone();
     for (name, lit) in caller_locals {
         consts.insert(name, lit);
@@ -119,8 +116,8 @@ fn eval_mod_call_with(
         crate::const_scope::ConstNames::of(Arc::new(consts)),
         Arc::new(module_consts),
         Arc::default(),
-        enum_defs.clone(),
-        Default::default(),
+        Arc::clone(&enum_defs),
+        Arc::default(),
         Arc::new(super::DeclaredTypes::for_program(&p.ast.decls, &enum_defs)),
         None,
     );
@@ -237,8 +234,8 @@ fn eval_str_folds() {
         ("a record field", "{ rooms: 2, timer: 60 }.timer", int(60)),
         // `.a` yields the inner record, `.b` reads its field.
         ("a nested record field", "{ a: { b: 1 } }.a.b", int(1)),
-        // Named constructor arguments bind by PARAMETER NAME, as the runtime
-        // path does; binding positionally baked `Vector { x: 3.0, y: 1.0, z: 2.0 }`.
+        // Named constructor arguments bind by parameter name, as the runtime
+        // path does, not by position.
         (
             "constructor named arguments bind by name",
             "Vec(z = 3.0, x = 1.0, y = 2.0)",
@@ -517,8 +514,8 @@ fn const_mod_call_values() {
             vec![ints(&[5])],
             ints(&[5, 9]),
         ),
-        // A shadow confines only itself: the push before it mutated the OUTER
-        // `t`. Skipping every branch-declared name silently returned `[1]`.
+        // A shadow confines only itself: the push before it mutated the outer
+        // `t`, which keeps that push.
         (
             "a shadow declared after a mutation keeps the mutation",
             "const mod f() -> int[] {\n const t = [1]\n if true {\n t.push(2)\n const t = [9]\n t.push(10)\n }\n return t\n }",
@@ -579,8 +576,8 @@ fn const_mod_call_values() {
             vec![int(2)],
             record(&[("a", int(2)), ("b", int(3))]),
         ),
-        // ONE named output is not a record: typecheck types it as the bare
-        // value, and wrapping it here miscompiled three ways.
+        // One named output is not a record: typecheck types it as the bare
+        // value.
         ("a single named output yields a bare value", "const mod C(v: int) -> (r: int) { out r = v }", vec![int(7)], int(7)),
         // A RECORD `return` is the documented multi-output mechanism.
         (
@@ -910,11 +907,8 @@ fn a_runaway_call_chain_reports_ws048() {
     assert_eq!(err.unwrap_err().code(), "WS048");
 }
 
-/// The hygiene property, and the guard against over-correcting the fix above
-/// into a blanket `cx.consts` merge: a constant bound in the CALLER's local
-/// scope is not a module constant, so the callee's body must not resolve it.
-/// A mod body is its own scope — an ordinary `mod` body could not read a
-/// caller's local `const` either.
+/// A constant local to the caller's scope is not a module constant, so the
+/// callee's body must not resolve it, just as an ordinary `mod` body cannot.
 #[test]
 fn a_const_mod_body_cannot_see_the_callers_local_constants() {
     let src = "const mod peek(x: int) -> int { return x + callerLocal }";
@@ -928,25 +922,9 @@ fn a_const_mod_body_cannot_see_the_callers_local_constants() {
     assert_eq!(err.reason, ConstReason::NotConstant("callerLocal".into()));
 }
 
-/// Guards `FOLDABLE_CONSTRUCTORS` against drifting from the constructor match
-/// in `lower::predeclare::expr_to_literal_lit` — a name listed there that no
-/// longer folds would be reported as `Refused` forever instead of as a real
-/// unknown-mod error.
-///
-/// Also guards the two CATALOG properties `bind_constructor_args` depends on,
-/// neither of which is visible from the fold itself:
-///
-/// 1. Every listed name IS a `catalog::calls` entry — that is where the
-///    parameter names for named-argument binding come from. A miss there
-///    silently degrades every `Vec(x = …)` to a refusal.
-/// 2. Every OPTIONAL parameter is in LAST position. This is what makes
-///    `bind_constructor_args`' stop-at-the-first-unbound-parameter `break`
-///    sound: a fold requires a list length of 3 or 4, and with optionals
-///    trailing, any such length forces every earlier parameter to have been
-///    bound — so a hole can never fold with values shifted onto the wrong
-///    slots. A future constructor with an optional param in the MIDDLE would
-///    silently break that argument, and nothing else in the suite would
-///    notice.
+/// Every `FOLDABLE_CONSTRUCTORS` name still folds, has a `catalog::calls` entry
+/// to bind named arguments through, and has only trailing optional parameters,
+/// which `bind_constructor_args` stopping at the first unbound one relies on.
 #[test]
 fn foldable_constructors_are_all_really_foldable() {
     for name in super::expr::FOLDABLE_CONSTRUCTORS {
@@ -975,10 +953,8 @@ fn foldable_constructors_are_all_really_foldable() {
     }
 }
 
-/// The reported range must cover the offending sub-expression the message
-/// names, not the whole enclosing call — otherwise `Vec(someRuntimeThing, 1.0,
-/// 2.0)` correctly names `someRuntimeThing` in the message but underlines the
-/// entire `Vec(...)` call in the editor.
+/// The reported range covers the sub-expression the message names, so the
+/// editor underlines `someRuntimeThing`, not the whole `Vec(...)` call.
 #[test]
 fn the_reported_range_blames_the_offending_sub_expression_not_the_whole_call() {
     let src_expr = "Vec(someRuntimeThing, 1.0, 2.0)";
@@ -998,10 +974,9 @@ fn the_reported_range_blames_the_offending_sub_expression_not_the_whole_call() {
     );
 }
 
-/// The layering seam in `expr.rs`'s top-of-file NOTE is only safe while the
-/// two evaluators agree on their overlap. Each case is evaluated by
-/// const_eval and by the fold pass's certified evaluator directly; a
-/// divergence here is a correctness bug in one of them.
+/// The two evaluators `expr.rs` uses agree where both are defined. Each case
+/// runs through `const_eval` and the certified fold evaluator; a divergence is
+/// a bug in one of them.
 #[test]
 fn both_evaluators_agree_where_both_are_defined() {
     use crate::lower::fold::eval::Value;
@@ -1017,13 +992,9 @@ fn both_evaluators_agree_where_both_are_defined() {
         let crate::ast::Expr::BinOp { left, right, .. } = &l.value else {
             panic!("expected a binary expression")
         };
-        let env = crate::lower::ConstEnv::default();
-        let a = Value::from_literal(&crate::lower::expr_to_literal_in(left, &env).unwrap())?;
-        let b = Value::from_literal(&crate::lower::expr_to_literal_in(right, &env).unwrap())?;
-        // `fold::eval::eval` is a pure table lookup over already-evaluated
-        // `Value`s (one certified wire-gate law per gate class) — not a
-        // code/string evaluator, despite the name. See the identical note in
-        // `expr.rs` at its own call site.
+        let env = crate::const_eval::ConstEnv::default();
+        let a = Value::from_literal(&crate::const_eval::expr_to_literal_in(left, &env).unwrap())?;
+        let b = Value::from_literal(&crate::const_eval::expr_to_literal_in(right, &env).unwrap())?;
         crate::lower::fold::eval::eval(gate_class, &[Some(a), Some(b)]).map(|v| v.to_literal())
     }
 
@@ -1031,9 +1002,7 @@ fn both_evaluators_agree_where_both_are_defined() {
         ("2 + 3", "BrickComponentType_Expr_MathAdd"),
         ("7 - 2", "BrickComponentType_Expr_MathSubtract"),
         ("\"a\" .. \"b\"", crate::ir::gate_class::STRING_CONCATENATE),
-        // Mixed operands: the certified table answers these and the AST law
-        // did not, so `static var x: int = 1 + true` dropped its initializer
-        // while the same expression in a wired position baked `2`.
+        // Mixed operands, which both evaluators must answer alike.
         ("1 + true", "BrickComponentType_Expr_MathAdd"),
         ("1 == true", "BrickComponentType_Expr_CompareEqual"),
         ("10 > \"9\"", "BrickComponentType_Expr_CompareGreater"),
@@ -1301,13 +1270,10 @@ fn a_const_value_match_takes_the_first_arm_that_matches() {
             Literal::String("two and a half".into()),
         ),
         (
-            r#"const R = match true { true => 1, false => 0 }"#,
+            r"const R = match true { true => 1, false => 0 }",
             Literal::Int(1),
         ),
-        (
-            r#"const R = match 5 { :red => 1, _ => 0 }"#,
-            Literal::Int(0),
-        ),
+        (r"const R = match 5 { :red => 1, _ => 0 }", Literal::Int(0)),
         (
             r#"const R = match "give sword to bob" { "give ${item} to ${who}" => who .. ":" .. item, _ => "" }"#,
             Literal::String("bob:sword".into()),
@@ -1369,14 +1335,8 @@ fn module_consts_that_do_not_fold() {
     crate::test_support::report_failures(&failures, rows.len());
 }
 
-/// Same shape as [`eval_mod_call`], but resolves NESTED const-mod calls too:
-/// `lookup_mod` scans every top-level `chip`/`mod` decl in `src` by name,
-/// mirroring how `LowerCtx::resolve_mod`/`TypeCheckCtx::const_ctx` build
-/// their own closures over the real decl table. `eval_mod_call`'s
-/// `lookup_mod: None` is deliberate everywhere else — those tests probe a
-/// single mod body in isolation — but a test proving one const mod's call
-/// reaches ANOTHER (not just a named constant) needs a callee that can
-/// actually resolve.
+/// [`eval_mod_call`] calling `callee_name`, with `lookup_mod` resolving every
+/// top-level `chip`/`mod` in `src` by name, so nested const mod calls resolve.
 fn eval_mod_call_resolving(
     src: &str,
     callee_name: &str,
@@ -1398,30 +1358,24 @@ fn eval_mod_call_resolving(
         .find(|c| c.name == callee_name)
         .unwrap_or_else(|| panic!("no decl named '{callee_name}'"));
     let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
-    let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
+    let module_consts = crate::const_eval::build_const_env(&p.ast.decls, &enum_defs);
     let lookup = |name: &str| chips.iter().find(|c| c.name == name).cloned();
     let module_consts = Arc::new(module_consts);
     let cx = ConstCtx::new(
-        crate::const_scope::ConstNames::of(module_consts.clone()),
+        crate::const_scope::ConstNames::of(Arc::clone(&module_consts)),
         module_consts,
         Arc::default(),
-        enum_defs.clone(),
-        Default::default(),
+        Arc::clone(&enum_defs),
+        Arc::default(),
         Arc::new(super::DeclaredTypes::for_program(&p.ast.decls, &enum_defs)),
         Some(&lookup),
     );
     eval_call(decl, args, &[], &cx, &mut Budget::default())
 }
 
-/// Evaluates `probe_expr` (as a top-level `let probe = <probe_expr>`)
-/// appended after `mods_src`, with `lookup_mod` wired to resolve any
-/// `chip`/`mod` declared in `mods_src` — mirrors [`eval_mod_call_resolving`]'s
-/// closure-over-parsed-decls approach, but evaluates a bare EXPRESSION
-/// through [`eval_expr`] rather than calling a specific decl through
-/// [`eval_call`]. [`eval_str`]'s permanently-`None` `lookup_mod` can't be used
-/// for the nested-call tests below: it would report every `const mod` call as
-/// `NotAConstMod`, hiding the exact bug (`NestedConstModCall`) they exist to
-/// catch.
+/// Evaluate `probe_expr`, written as `let probe = <probe_expr>` after
+/// `mods_src`, with `lookup_mod` resolving every `chip`/`mod` in `mods_src`.
+/// [`eval_str`] has no `lookup_mod`, so it reports every call `NotAConstMod`.
 fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, ConstError> {
     let src = format!("{mods_src}\nlet probe = {probe_expr}");
     let p = crate::parse(&src, "test");
@@ -1437,18 +1391,18 @@ fn eval_str_resolving(mods_src: &str, probe_expr: &str) -> Result<Literal, Const
         .collect();
     let lookup = |name: &str| chips.iter().find(|c| c.name == name).cloned();
     let enum_defs = Arc::new(crate::typecheck::enums::build_registry(&p.ast.decls));
-    let module_consts = crate::lower::build_const_env(&p.ast.decls, &enum_defs);
+    let module_consts = crate::const_eval::build_const_env(&p.ast.decls, &enum_defs);
     let crate::ast::TopDecl::Let(probe) = p.ast.decls.last().expect("expected at least one decl")
     else {
         panic!("expected the last decl to be `let probe = ...`")
     };
     let module_consts = Arc::new(module_consts);
     let cx = ConstCtx::new(
-        crate::const_scope::ConstNames::of(module_consts.clone()),
+        crate::const_scope::ConstNames::of(Arc::clone(&module_consts)),
         module_consts,
         Arc::default(),
-        enum_defs.clone(),
-        Default::default(),
+        Arc::clone(&enum_defs),
+        Arc::default(),
         Arc::new(super::DeclaredTypes::for_program(&p.ast.decls, &enum_defs)),
         Some(&lookup),
     );
@@ -1540,13 +1494,10 @@ fn nested_const_mod_calls() {
     crate::test_support::report_failures(&failures, n);
 }
 
-// ---------- compile-time record destructuring ----------
+// Compile-time record destructuring
 
-/// Parses `let <pattern_src> = <value_src>`, evaluates the value half
-/// through `eval_expr` (against an empty environment — every case below is a
-/// self-contained literal), and splits the result via `bind_destructured`.
-/// Mirrors [`eval_str`]'s parse-one-declaration approach, but returns the
-/// destructured `(name, value)` pairs rather than a single value.
+/// Parse `let <pattern_src> = <value_src>`, evaluate the value in an empty
+/// environment, and split it with `bind_destructured`.
 fn bind_str(pattern_src: &str, value_src: &str) -> Result<Vec<(String, Literal)>, ConstError> {
     let src = format!("let {pattern_src} = {value_src}");
     let p = crate::parse(&src, "test");
@@ -1667,14 +1618,12 @@ fn bind_destructured_refusals() {
     crate::test_support::report_failures(&failures, rows.len());
 }
 
-/// A name with no matching field is `RecordFieldNotFound`, blamed on THAT
-/// NAME's own range — not the whole pattern/statement.
+/// A name with no matching field is `RecordFieldNotFound`, blamed on that
+/// name's own range, not the whole pattern.
 #[test]
 fn bind_destructured_a_missing_field_blames_the_names_own_range() {
-    // `missing` is written FIRST (not last) so its field range ends at the
-    // following comma, not at `}` — a trailing field's range extends to
-    // swallow the whitespace before the closing brace, which is an
-    // unrelated parser quirk this test must not couple itself to.
+    // `missing` comes first: a trailing field's range also covers the
+    // whitespace before `}`, which this test should not depend on.
     let src = "let { missing, x } = { x: 1 }";
     let err = bind_str("{ missing, x }", "{ x: 1 }").unwrap_err();
     assert_eq!(err.code(), "WS046");
@@ -1692,43 +1641,9 @@ fn bind_destructured_a_missing_field_blames_the_names_own_range() {
     assert_eq!(err.range.end.offset, want_end);
 }
 
-/// `LetBinding::Record { names }` (the plain, no-alias/no-rest destructure
-/// shape) is unreachable from the current parser — `let { x, y } = …` always
-/// produces `RecordDestruct` with plain `Named` fields — but
-/// `bind_destructured` still has to handle it correctly, so it is
-/// constructed directly here rather than left as untested dead code.
-#[test]
-fn bind_destructured_handles_the_plain_record_binding_form_directly() {
-    let binding = crate::ast::LetBinding::Record {
-        names: vec!["x".to_string(), "y".to_string()],
-        range: crate::diagnostic::SourceRange::default(),
-    };
-    let value = Literal::Record(vec![
-        ("x".to_string(), Literal::Int(11)),
-        ("y".to_string(), Literal::Int(22)),
-    ]);
-    assert_eq!(
-        bind_destructured(&binding, value).unwrap(),
-        vec![
-            ("x".to_string(), Literal::Int(11)),
-            ("y".to_string(), Literal::Int(22))
-        ]
-    );
-}
-
-/// `bound_names` (syntactic, used by
-/// `lower::predeclare::build_const_declared_names`, which has no value to
-/// destructure) must list EXACTLY the names `bind_destructured` (semantic)
-/// produces, in the same order. They are two functions answering "which
-/// names does this binding introduce?", so nothing but a test keeps them
-/// from drifting — and a drift is silent in the worst way: a name
-/// `bound_names` omits is registered as a runtime value while
-/// `bind_destructured` happily binds a constant to it, and a name
-/// `bound_names` invents is marked const-declared with no value behind it.
-///
-/// Each case uses DISTINGUISHABLE field values so this also fails if the
-/// two disagree about which field feeds which name, not merely about the
-/// name set.
+/// `bound_names` (read from the pattern alone) lists exactly the names
+/// `bind_destructured` binds, in order. A drift silently treats a constant as
+/// a runtime value or marks a name const with no value behind it.
 #[test]
 fn bound_names_agrees_with_bind_destructured() {
     for (pattern, value_src) in [
@@ -1802,6 +1717,6 @@ fn a_float_made_an_int_truncates_or_has_no_int() {
     );
     assert_eq!(written_float(1e10), "1e10");
     assert_eq!(written_float(1e30), "1e30");
-    assert_eq!(written_float(2147483648.0), "2147483648.0");
+    assert_eq!(written_float(2_147_483_648.0), "2147483648.0");
     assert_eq!(written_float(2.5), "2.5");
 }

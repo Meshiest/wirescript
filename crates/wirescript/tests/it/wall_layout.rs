@@ -22,8 +22,8 @@ fn grids_are_upright_and_stacked() {
     let r = compile_to_world(common::input(SRC, "wall.ws"), EmitOptions::default())
         .expect("should compile");
 
-    // WALL_ROT: pure −90° about Y, in-game pinned via a quat sampler — see
-    // emit.rs WALL_ROT for the axis mapping.
+    // WALL_ROT is a pure -90 degree rotation about Y, measured in game with a
+    // quat sampler; see emit.rs WALL_ROT for the axis mapping.
     let f = std::f32::consts::FRAC_1_SQRT_2;
     assert!(!r.world.grids.is_empty());
     for (entity, _bricks) in &r.world.grids {
@@ -48,8 +48,8 @@ fn grids_are_upright_and_stacked() {
         );
     }
 
-    // All planes sit in the wall's plane: they share the chip brick's X
-    // (0 by default) — the wall faces −X and the board runs along world Y.
+    // All planes sit in the wall's plane: they share the chip brick's X (0 by
+    // default). The wall faces -X and the board runs along world Y.
     for (entity, _) in &r.world.grids {
         assert_eq!(entity.location.x, 0.0);
     }
@@ -70,14 +70,18 @@ out total = a.n\n";
     let r = compile_to_world(common::input(src, "wall.ws"), EmitOptions::default())
         .expect("should compile");
 
+    #[expect(
+        clippy::borrowed_box,
+        reason = "called on the items of a brick's component list"
+    )]
     let is_text_display = |c: &Box<dyn brdb::BrdbComponent>| {
         c.component_type()
             .map(|t| t.to_string() == "Component_TextDisplay")
             .unwrap_or(false)
     };
 
-    // Exactly two header bricks: root plane + Counter plane. Headers are the
-    // only INVISIBLE bricks in the output.
+    // Exactly two header bricks: root plane and Counter plane. Headers are the
+    // only invisible bricks in the output.
     let headers: Vec<_> = r
         .world
         .grids
@@ -94,10 +98,10 @@ out total = a.n\n";
         assert_eq!(h.components.len(), 1, "header carries ONLY the text");
     }
 
-    // The header must sit ABOVE the plane's gate area: the game DROPS
-    // overlapping bricks at load (orphaning their components and dangling
-    // their wires), and a gate can occupy the layout's top-centre. Cheap
-    // guard: no two bricks on any grid share an exact position.
+    // The header must sit above the plane's gate area: the game drops
+    // overlapping bricks at load (orphaning their components and dangling their
+    // wires), and a gate can occupy the layout's top-centre. Guard: no two
+    // bricks on any grid share an exact position.
     for (entity, bricks) in &r.world.grids {
         let mut seen = std::collections::HashSet::new();
         for b in bricks {

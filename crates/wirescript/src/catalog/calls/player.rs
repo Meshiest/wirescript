@@ -1,15 +1,13 @@
-//! PlayerState and character calls: UI, identity, permissions, and damage.
+//! `PlayerState` and character calls: UI, identity, permissions, and damage.
 
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- PlayerState --------------------------------------------------------
-    // DisplayText's position/anchor/scale are composite `Position`/`Anchor`/
-    // `Scale` struct ports, which the call form can't feed directly, so each
-    // axis is exposed as its own float param, alongside per-axis styling
-    // (colors, spacing, skew, wrap, z-order). `fontSize`/`justify`/`easing`
-    // are constant-only data fields. `target` is the entity-typed
-    // `PlayerState` port — a `controller` wires straight in.
+    // PlayerState
+    // DisplayText's position/anchor/scale are composite struct ports, so each
+    // axis is its own float param. `fontSize`/`justify`/`easing` are
+    // constant-only data fields. `target` is the entity-typed `PlayerState`
+    // port, which a `controller` wires straight into.
     m.insert(
         "DisplayText",
         CallSpec {
@@ -18,11 +16,9 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             params: vec![
                 CallParam::req("target", WirePort::PlayerState, Type::Controller),
                 CallParam::req("text", WirePort::Text, Type::String),
-                // 2D layout ports are Vector2D composites (X/Y sub-ports): set
-                // each axis with a float. A constant axis bakes the parent
-                // Vector2D data field (unset axis from STRUCT_DEFAULTS); a
-                // runtime value wires the `Position.X` / `Position.Y` sub-port.
-                // (Assembly + wiring in lower/call.rs.)
+                // 2D layout ports are Vector2D composites with X/Y sub-ports. A
+                // constant axis bakes the parent data field (an unset axis from
+                // STRUCT_DEFAULTS); a runtime value wires the `Position.X` sub-port.
                 CallParam::opt("positionX", WirePort::PositionX, Type::Float),
                 CallParam::opt("positionY", WirePort::PositionY, Type::Float),
                 CallParam::opt("anchorX", WirePort::AnchorX, Type::Float),
@@ -47,13 +43,13 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("lifetime", WirePort::Lifetime, Type::Float),
                 CallParam::opt("transition", WirePort::Transition, Type::Float),
                 CallParam::opt("textId", WirePort::TextId, Type::Int),
-                // Constant-only data fields (not wire inputs) — see DATA_ONLY_PARAMS.
+                // Constant-only data fields, not wire inputs (see DATA_ONLY_PARAMS).
                 CallParam::opt("fontSize", WirePort::FontSize, Type::Int),
                 CallParam::opt("justify", WirePort::Justification, Type::Int),
                 CallParam::opt("easing", WirePort::Easing, Type::Int),
-                // `typeface` is an EBRTextTypeface enum member; `font` is a
-                // font asset ref (`$BrickFontDescriptor/…`) — an object reference (typed
-                // `entity`, like every asset ref).
+                // `typeface` is an EBRTextTypeface enum member; `font` is a font
+                // asset ref (`$BrickFontDescriptor/...`), typed `entity` like every
+                // asset ref.
                 CallParam::opt("typeface", WirePort::Typeface, Type::Int),
                 CallParam::opt("font", WirePort::Font, Type::Entity),
             ],
@@ -65,7 +61,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Character / Controller conversions ------------------------------
+    // Character / Controller conversions
     // `ControllerOf` lowers to `PlayerState_GetFromEntity` ("Get Player
     // (Persistent)"), whose player output is the entity-typed `PlayerState`.
     m.insert(
@@ -93,7 +89,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Camera / aim ---------------------------------------------------
+    // Camera / aim
     // Single GetAim gate exposing both outputs as a record:
     // `char.GetAim().Origin` / `.Direction`.
     m.insert(
@@ -146,14 +142,10 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             receiver: Some(Type::Character),
         },
     );
-    // The exec-form counterpart of `InputReader`: same twelve controls, sampled
-    // once when the exec chain reaches it instead of read continuously. The
-    // field names are deliberately identical to the splitter's, so the two read
-    // the same at a call site and only the context differs. Its operand port is
-    // `Player` rather than `Character` (the gate accepts a character or a
-    // persistent player), while the surface type stays `Character`: a
-    // controller wires straight into a character param, so the permissive port
-    // costs no expressiveness here.
+    // The exec form of `InputReader`: the same twelve controls under the same
+    // field names, sampled once when the exec chain reaches it. Its `Player` port
+    // takes a character or a player; the param is typed `Character`, which a
+    // controller also wires into.
     m.insert(
         "GetInputs",
         character_exec(
@@ -180,8 +172,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- PlayerState role check -----------------------------
-    // `ctrl.HasRole("Admin")` — RoleName is a config string, returns a bool.
+    // PlayerState role check
+    // `ctrl.HasRole("Admin")`: RoleName is a config string; returns a bool.
     m.insert(
         "HasRole",
         controller_exec(
@@ -195,7 +187,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Character (additional) ------------------------------------------
+    // Character (additional)
     m.insert(
         "ShowHint",
         character_exec(
@@ -254,7 +246,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- PlayerState (additional) -----------------------------------------
+    // PlayerState (additional)
     m.insert(
         "ShowStatusMessage",
         controller_exec(
@@ -331,8 +323,8 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![],
         ),
     );
-    // Force Respawn Player — immediately respawns the player. Exec, no outputs
-    // beyond ExecOut; the gate takes only the persistent player-state ref.
+    // Force Respawn Player: respawns the player immediately. The gate takes only
+    // the persistent player-state ref and has no output beyond ExecOut.
     m.insert(
         "ForceRespawn",
         controller_exec(

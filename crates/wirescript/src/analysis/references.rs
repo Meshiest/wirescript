@@ -10,11 +10,10 @@ pub struct TextRange {
     pub is_shorthand: bool,
 }
 
-/// The replacement text for one rename site. Rename must consume exactly the
-/// site set the scoped resolver (`analysis::scoped_refs::references_at`)
-/// returns; this maps each site to its new text. A record-literal shorthand
-/// (`{ name }`) keeps its field name and binds the renamed value —
-/// `{ name }` -> `{ name: new_name }` — every other site is replaced outright.
+/// The replacement text for one rename site from the scoped resolver
+/// (`analysis::scoped_refs::references_at`). A record-literal shorthand keeps
+/// its field name and binds the renamed value (`{ name }` becomes
+/// `{ name: new_name }`); every other site is replaced outright.
 pub fn rename_edit_text(site: &TextRange, old_name: &str, new_name: &str) -> String {
     if site.is_shorthand {
         format!("{old_name}: {new_name}")
@@ -23,24 +22,19 @@ pub fn rename_edit_text(site: &TextRange, old_name: &str, new_name: &str) -> Str
     }
 }
 
-/// True for the ASCII identifier characters `name` (always a Wirescript
-/// identifier — see `lexer::is_ident_cont`) is made of. Used to bound-check a
-/// candidate match so `helper` inside `helper2`/`myhelper`, or `help` as a
-/// prefix of `help`/`helper` in `import { helper, help }`, is never mistaken
-/// for a whole-token match.
+/// True for the ASCII characters an identifier is made of
+/// (`lexer::is_ident_cont`). Bounds a candidate match so `helper` inside
+/// `helper2` or `myhelper`, or `help` as a prefix of `helper` in
+/// `import { helper, help }`, is not taken for a whole token.
 fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-/// Find the first WHOLE-TOKEN occurrence of identifier `name` inside
-/// `decl_range`, searching every line the range spans (not just its first
-/// line) — a coarse declaration/import range can cover several lines (a
-/// multi-line `import {\n  helper\n} from "…"`), and narrowing against only
-/// `decl_range.start.line` would silently fail to find the name and fall back
-/// to the whole coarse range, over-replacing it. A plain substring search
-/// would also mismatch a same-named prefix/suffix (`help` inside `helper`),
-/// so each candidate is checked for identifier-boundary neighbors on both
-/// sides before it's accepted.
+/// The first whole-token occurrence of the identifier `name` inside
+/// `decl_range`, searching every line the range spans: a coarse range can cover
+/// several lines (a multi-line `import { ... } from "..."`), and a miss falls
+/// back to replacing the whole range. Each candidate needs identifier
+/// boundaries on both sides, so `help` inside `helper` does not match.
 pub fn find_name_range(source: &str, decl_range: &SourceRange, name: &str) -> Option<SourceRange> {
     // The range's first line starts at the line break before its byte offset,
     // so the search reads only the range's own lines. A range with no offset
@@ -119,7 +113,7 @@ fn name_range_in_lines<'a>(
                 .is_none_or(|c| !is_ident_char(c));
             if before_ok && after_ok {
                 return Some(SourceRange {
-                    file: decl_range.file.clone(),
+                    file: std::sync::Arc::clone(&decl_range.file),
                     start: crate::diagnostic::Pos {
                         offset: 0,
                         line: line_no as u32,
@@ -132,8 +126,8 @@ fn name_range_in_lines<'a>(
                     },
                 });
             }
-            // Advance past this candidate's start byte — `name` is ASCII, so
-            // every byte in the match is its own char boundary.
+            // Advance past this candidate's first byte: `name` is ASCII, so every byte
+            // of a match is a char boundary.
             search_from = abs_col + 1;
         }
     }

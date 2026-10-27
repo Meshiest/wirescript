@@ -7,15 +7,16 @@
 
 use std::io::{self, Write};
 
-use super::defaults::{self, AnnValue, is_ident, word};
 use crate::collections::{HashMap, HashSet};
-use crate::intern::{resolve, sym};
+use crate::intern::{Sym, resolve, sym};
 use crate::ir::module_tree::ModuleTree;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{
-    GateIO, LayoutMode, Literal, Module, Node, NodeId, NodeKind, PortSpec, Program, ScopeInfo,
-    ScopeKind, SourceRange, StyleValue, Type, Wire,
+    GateIO, LayoutMode, Literal, Module, Node, NodeId, NodeKind, PortSpec, Program, ROOT_SCOPE_ID,
+    ScopeInfo, ScopeKind, SourceRange, StyleValue, Type, Wire,
 };
+
+use super::defaults::{self, AnnValue, is_ident, word};
 
 /// Write `program` as `.wsir` text.
 pub fn write_program<W: Write>(program: &Program, out: &mut W) -> io::Result<()> {
@@ -28,7 +29,6 @@ pub fn write_program<W: Write>(program: &Program, out: &mut W) -> io::Result<()>
     w.file(program)
 }
 
-/// [`write_program`] into a string.
 /// Whether writing `program` gives `text` back, line endings aside: a
 /// canonical file is a fixed point of parse then write. `Err` names the first
 /// line that differs.
@@ -50,6 +50,7 @@ pub fn check_fixed_point(program: &Program, text: &str) -> Result<(), String> {
     ))
 }
 
+/// [`write_program`] into a string.
 pub fn program_to_string(program: &Program) -> io::Result<String> {
     let mut buf = Vec::new();
     write_program(program, &mut buf)?;
@@ -186,19 +187,19 @@ impl<'p> Plan<'p> {
             for op in &np.operands {
                 if let Operand::Wire { wire, .. } = op {
                     let n = number.len();
-                    number.insert(*wire as *const Wire, n);
+                    number.insert(std::ptr::from_ref::<Wire>(*wire), n);
                 }
             }
             for wire in &np.layout_after {
                 let n = number.len();
-                number.insert(*wire as *const Wire, n);
+                number.insert(std::ptr::from_ref::<Wire>(*wire), n);
             }
         }
         let mut default_lists: Vec<Vec<usize>> = vec![Vec::new(); plan.mods.len()];
         let mut by_number: Vec<Option<&Wire>> = vec![None; number.len()];
         for m in &plan.mods {
             for w in &m.module.wires {
-                by_number[number[&(w as *const Wire)]] = Some(w);
+                by_number[number[&std::ptr::from_ref::<Wire>(w)]] = Some(w);
             }
         }
         for (n, w) in by_number.iter().enumerate() {
@@ -235,7 +236,7 @@ impl<'p> Plan<'p> {
                 .module
                 .wires
                 .iter()
-                .map(|w| number[&(w as *const Wire)])
+                .map(|w| number[&std::ptr::from_ref::<Wire>(w)])
                 .collect();
             plan.wire_order
                 .push((actual != default_lists[mi]).then_some(actual));
@@ -301,7 +302,7 @@ impl<'p> Plan<'p> {
         layout_after.sort_by_key(|w| w.source.node_id);
 
         let mut operands = Vec::new();
-        let mut used_props: HashSet<crate::intern::Sym> = HashSet::default();
+        let mut used_props: HashSet<Sym> = HashSet::default();
         for p in &node.ports.inputs {
             let name = resolve(p.name);
             match WirePort::try_from_name(name).and_then(|wp| by_port.remove(&wp).map(|w| (wp, w)))
@@ -367,7 +368,7 @@ fn pin_pattern(ports: &GateIO) -> Option<Type> {
 /// The name a node's source gave it, made into a value name.
 fn source_name(node: &Node) -> Option<String> {
     let props = &node.properties;
-    let pick = |s: crate::intern::Sym| match props.get(&s) {
+    let pick = |s: Sym| match props.get(&s) {
         Some(Literal::String(t)) if !t.is_empty() => Some(t.clone()),
         _ => None,
     };
@@ -520,7 +521,7 @@ impl<W: Write> Writer<'_, '_, W> {
         let mut scope_ids: Vec<&u32> = m.scopes.keys().collect();
         scope_ids.sort();
         let default_root = ScopeInfo::root(ScopeKind::ModuleRoot);
-        if !m.scopes.contains_key(&crate::ir::ROOT_SCOPE_ID) {
+        if !m.scopes.contains_key(&ROOT_SCOPE_ID) {
             return Err(invalid(format!(
                 "module {} has no root scope",
                 resolve(m.name)
@@ -528,7 +529,7 @@ impl<W: Write> Writer<'_, '_, W> {
         }
         for sid in scope_ids {
             let s = &m.scopes[sid];
-            if *sid == crate::ir::ROOT_SCOPE_ID && *s == default_root {
+            if *sid == ROOT_SCOPE_ID && *s == default_root {
                 continue;
             }
             self.indent(depth)?;
@@ -772,7 +773,7 @@ impl<W: Write> Writer<'_, '_, W> {
         if node.kind != default_kind {
             write!(self.out, " !kind {}", kind_name(node.kind))?;
         }
-        if node.scope_id != crate::ir::ROOT_SCOPE_ID {
+        if node.scope_id != ROOT_SCOPE_ID {
             write!(self.out, " !scope !{}", node.scope_id)?;
         }
         if let Some(c) = node.chain_id {
@@ -1167,7 +1168,7 @@ pub(super) fn loc<W: Write>(
     write!(out, ")")
 }
 
-/// A port name: bare when it is an identifier, quoted otherwise (DisplayText's
+/// A port name: bare when it is an identifier, quoted otherwise (`DisplayText`'s
 /// `Position.X` sub-ports are not).
 fn port_name<W: Write>(out: &mut W, name: &str) -> io::Result<()> {
     if is_ident(name) {

@@ -38,7 +38,7 @@ pub enum TokenKind {
     /// Asset reference literal `$AssetType/AssetName`. The `Str` value holds the
     /// path without the leading `$`.
     AssetRef,
-    /// Inline nested-prefab block `` $```…``` ``. The `Str` value holds the
+    /// Inline nested-prefab block `` $```...``` ``. The `Str` value holds the
     /// verbatim inner source (between the fences), for a later compile stage
     /// to lex/parse as its own program.
     NestedPrefab,
@@ -71,8 +71,8 @@ pub enum TokenValue {
 #[derive(Clone, Debug)]
 pub enum InterpPart {
     Lit(String),
-    /// Embedded expression — captured as raw source + its range; the
-    /// parser re-lexes & re-parses this slice at parse time.
+    /// Embedded expression, captured as raw source and its range; the
+    /// parser re-lexes and re-parses this slice.
     Expr {
         source: String,
         start: Pos,
@@ -81,8 +81,8 @@ pub enum InterpPart {
 }
 
 // `enum` is deliberately absent: it is CONTEXTUAL, recognised by the parser
-// only when it opens a declaration (`enum Name {`), so existing code may go on
-// using `enum` as a variable, parameter, or field name.
+// only when it opens a declaration (`enum Name {`), so `enum` stays usable as
+// a variable, parameter, or field name.
 pub const KEYWORDS: &[&str] = &[
     "var", "array", "map", "buffer", "chip", "fn", "on", "in", "out", "emit", "let", "if", "else",
     "then", "match", "return", "true", "false", "null", "ref", "mod", "import", "from", "as",
@@ -126,10 +126,9 @@ pub fn lex(source: &str, file: &str) -> LexResult {
 /// containing file's coordinates.
 ///
 /// The one fragment is a `${...}` interpolation body, which the parser lexes
-/// and parses on its own. Seeding the lexer is what makes every span in that
-/// sub-tree right by construction; shifting them afterwards needs a walker
-/// over every expression shape, and a shape it misses reports at line 1.
-pub fn lex_at(source: &str, file: &str, origin: Pos) -> LexResult {
+/// and parses on its own; seeding the lexer makes every span in that sub-tree
+/// right by construction.
+pub(crate) fn lex_at(source: &str, file: &str, origin: Pos) -> LexResult {
     Lexer::new(source, file, origin).run()
 }
 
@@ -208,10 +207,9 @@ impl<'a> Lexer<'a> {
                     while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
                         self.advance();
                     }
-                    // `trim_end`, as the plain-comment path below already
-                    // does: the scan stops at `\n`, so on a CRLF file the text
-                    // would keep its `\r`, and a doc comment is baked into the
-                    // world as a chip's header text.
+                    // `trim_end`, as the plain-comment path below does: the
+                    // scan stops at `\n`, so on a CRLF file the text would keep
+                    // its `\r`, and a doc comment is baked in as a chip header.
                     let text = self.source[content_start..self.pos].trim_end().to_string();
                     let end = self.snapshot();
                     self.emit(TokenKind::DocComment, text, start, end, None);
@@ -276,8 +274,8 @@ impl<'a> Lexer<'a> {
                 self.read_ident();
                 continue;
             }
-            // Inline nested-prefab block `$```…```` — checked before the asset-
-            // ref branch below since both start with `$`.
+            // Inline nested-prefab block `$```...````, checked before the
+            // asset-ref branch below since both start with `$`.
             if c == '$'
                 && self.peek_char(1) == Some('`')
                 && self.peek_char(2) == Some('`')
@@ -310,7 +308,7 @@ impl<'a> Lexer<'a> {
                 self.emit(TokenKind::Annotation, text, start, end, None);
                 continue;
             }
-            // `:name` atom — only in value position. A `:` that follows a
+            // `:name` atom, only in value position. A `:` that follows a
             // value-completing token (an annotation / record-field / map-key
             // separator) stays a plain Colon.
             if c == ':'
@@ -330,11 +328,9 @@ impl<'a> Lexer<'a> {
             self.diag("WSP001", format!("unexpected character '{c}'"), start, end);
         }
 
-        // `abs` by hand: this is the one token that does not go through
-        // `emit`, and leaving it fragment-local put every "expected an
-        // expression, got nothing" inside a `${...}` slot on line 1 of the
-        // containing file. Whole-file lexing has the identity origin, so
-        // nothing else moves.
+        // `abs` by hand: EOF is the one token that does not go through `emit`,
+        // and a fragment-local EOF would report an empty `${...}` slot at
+        // line 1 of the containing file.
         let p = self.abs(self.snapshot());
         self.tokens.push(Token {
             kind: TokenKind::Eof,
@@ -433,9 +429,9 @@ impl<'a> Lexer<'a> {
 
     /// Read an asset reference into a [`TokenKind::AssetRef`] token. Two forms
     /// share the token; the parser distinguishes them by the leading char:
-    /// - `$AssetType/AssetName` — an embedded external asset (a single `/`
+    /// - `$AssetType/AssetName`: an embedded external asset (a single `/`
     ///   separates type from name).
-    /// - `$./rel/path.brz` or `$/abs/path.brz` — a prefab file reference (path
+    /// - `$./rel/path.brz` or `$/abs/path.brz`: a prefab file reference (path
     ///   begins with `.` or `/`). `.` and `-` are allowed so file names and
     ///   relative segments lex.
     fn read_asset_ref(&mut self) {
@@ -462,13 +458,12 @@ impl<'a> Lexer<'a> {
         );
     }
 
-    /// Read an inline nested-prefab block `` $```…``` `` into a
-    /// [`TokenKind::NestedPrefab`] token. The inner text (between the
-    /// fences) is captured verbatim for a later compile stage to lex/parse
-    /// as its own program. The scan is string- and line-comment-aware so a
-    /// backtick inside a string or `//` comment can't miscount, and a
-    /// nested `` $``` `` block is tracked via depth so the outer fence owns
-    /// the whole span.
+    /// Read an inline nested-prefab block `` $```...``` `` into a
+    /// [`TokenKind::NestedPrefab`] token. The inner text (between the fences)
+    /// is captured verbatim for a later compile stage to lex/parse as its own
+    /// program. The scan is string- and line-comment-aware so a backtick inside
+    /// a string or `//` comment can't miscount, and a nested `` $``` `` block is
+    /// tracked via depth so the outer fence owns the whole span.
     fn read_nested_prefab(&mut self) {
         let start = self.snapshot();
         self.advance(); // '$'
@@ -479,7 +474,7 @@ impl<'a> Lexer<'a> {
         let mut depth: i32 = 1;
         while self.pos < self.bytes.len() {
             let c = self.bytes[self.pos] as char;
-            // String literal — skip verbatim (honoring `\` escapes) so a
+            // String literal: skip verbatim (honoring `\` escapes) so a
             // backtick inside it can't be mistaken for a fence.
             if c == '"' || c == '\'' {
                 let quote = c;
@@ -498,7 +493,7 @@ impl<'a> Lexer<'a> {
                 }
                 continue;
             }
-            // `//` line comment — may itself contain backticks.
+            // `//` line comment, which may itself contain backticks.
             if c == '/' && self.peek_char(1) == Some('/') {
                 while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
                     self.advance();
@@ -727,10 +722,9 @@ impl<'a> Lexer<'a> {
                 return;
             }
             // Literal content char. `c` is only the first byte cast to char, so
-            // read the real UTF-8 char from the source — otherwise a multi-byte
-            // char (e.g. `█` = E2 96 88) would be split into three Latin-1 chars
-            // and re-encoded as garbage on emit. Structural chars above are all
-            // ASCII, so only this branch can see a multi-byte char.
+            // read the real UTF-8 char from the source; otherwise a multi-byte
+            // char would split into Latin-1 chars. Structural chars above are
+            // all ASCII, so only this branch can see a multi-byte char.
             let real = self.source[self.pos..].chars().next().unwrap_or(c);
             literal.push(real);
             for _ in 0..real.len_utf8() {
@@ -874,10 +868,9 @@ impl<'a> Lexer<'a> {
                 return;
             }
             // Literal content char. `c` is only the first byte cast to char, so
-            // read the real UTF-8 char from the source — otherwise a multi-byte
-            // char (e.g. `█` = E2 96 88) would be split into three Latin-1 chars
-            // and re-encoded as garbage on emit. Structural chars above are all
-            // ASCII, so only this branch can see a multi-byte char.
+            // read the real UTF-8 char from the source; otherwise a multi-byte
+            // char would split into Latin-1 chars. Structural chars above are
+            // all ASCII, so only this branch can see a multi-byte char.
             let real = self.source[self.pos..].chars().next().unwrap_or(c);
             literal.push(real);
             for _ in 0..real.len_utf8() {
@@ -896,16 +889,12 @@ impl<'a> Lexer<'a> {
         let start = self.snapshot();
         let mut text = String::new();
         let mut is_float = false;
-        let mut is_hex = false;
-        let mut is_bin = false;
-        let mut is_oct = false;
 
-        if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('x') | Some('X')) {
+        if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('x' | 'X')) {
             text.push(self.bytes[self.pos] as char);
             self.advance();
             text.push(self.bytes[self.pos] as char);
             self.advance();
-            is_hex = true;
             while self.pos < self.bytes.len() {
                 let c = self.bytes[self.pos] as char;
                 if c.is_ascii_hexdigit() || c == '_' {
@@ -915,13 +904,11 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
-        } else if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('b') | Some('B'))
-        {
+        } else if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('b' | 'B')) {
             text.push(self.bytes[self.pos] as char);
             self.advance();
             text.push(self.bytes[self.pos] as char);
             self.advance();
-            is_bin = true;
             while self.pos < self.bytes.len() {
                 let c = self.bytes[self.pos] as char;
                 if c == '0' || c == '1' || c == '_' {
@@ -931,13 +918,11 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
-        } else if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('o') | Some('O'))
-        {
+        } else if self.bytes[self.pos] == b'0' && matches!(self.peek_char(1), Some('o' | 'O')) {
             text.push(self.bytes[self.pos] as char);
             self.advance();
             text.push(self.bytes[self.pos] as char);
             self.advance();
-            is_oct = true;
             while self.pos < self.bytes.len() {
                 let c = self.bytes[self.pos] as char;
                 if ('0'..='7').contains(&c) || c == '_' {
@@ -978,17 +963,16 @@ impl<'a> Lexer<'a> {
                 }
             }
             // exponent
-            if matches!(self.bytes.get(self.pos).copied(), Some(b'e') | Some(b'E')) {
+            if matches!(self.bytes.get(self.pos).copied(), Some(b'e' | b'E')) {
                 is_float = true;
                 text.push(self.bytes[self.pos] as char);
                 self.advance();
-                if matches!(self.bytes.get(self.pos).copied(), Some(b'+') | Some(b'-')) {
+                if matches!(self.bytes.get(self.pos).copied(), Some(b'+' | b'-')) {
                     text.push(self.bytes[self.pos] as char);
                     self.advance();
                 }
-                // `_` is a digit separator in the exponent too. Without this
-                // `2.5e1_0` lexed as `2.5e1` followed by the identifier `_0`,
-                // silently changing the value by nine orders of magnitude.
+                // `_` is a digit separator in the exponent too, so `2.5e1_0`
+                // is one literal rather than `2.5e1` and the identifier `_0`.
                 while self.pos < self.bytes.len() {
                     let c = self.bytes[self.pos] as char;
                     if c.is_ascii_digit() || c == '_' {
@@ -1009,7 +993,6 @@ impl<'a> Lexer<'a> {
         };
         // Note: value validation (parse to f64/i64/u64) is deferred to the parser,
         // which knows the literal's sign context and base.
-        let _ = (is_hex, is_bin, is_oct);
         self.emit(kind, text, start, end, None);
     }
 
@@ -1049,7 +1032,7 @@ impl<'a> Lexer<'a> {
             .unwrap_or("");
         let c = self.bytes[self.pos] as char;
 
-        // `->` and `=>` first — they'd otherwise be caught by the two-char-op list as invalid.
+        // `->` and `=>` first, or the two-char-op list would reject them.
         if slice2 == "->" {
             self.advance();
             self.advance();

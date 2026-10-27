@@ -2,17 +2,16 @@
 //! single-output alias it may carry, and which record fields hold ref values.
 
 use super::*;
+use crate::analysis::types::{type_expr_str, type_str};
+use crate::ir::RefKind;
+use crate::types::mono::unwrap_ref;
 
-/// The element types of `t` viewed as a tuple, POSITIONALLY.
-///
-/// A tuple literal desugars to a record keyed by element index, so
-/// `Record([("0", T0), ("1", T1)])` describes the same shape as
-/// `Tuple([T0, T1])`. A multi-output `mod`'s result types as a NAME-keyed
-/// record instead (`output_record_type` in `typecheck::call`, keyed by the
-/// signature's own output names) — but its fields are in the signature's
-/// DECLARATION order, which is exactly what a positional pattern means, so a
-/// tuple pattern reads it the same way. Field NAMES are ignored here on
-/// purpose: `(a, b)` says "the first two, in order", and nothing else.
+/// The element types of `t` as a tuple, by position. A tuple literal is a
+/// record keyed by index, so `Record([("0", T0), ("1", T1)])` is
+/// `Tuple([T0, T1])`. A multi-output mod's result is a name-keyed record
+/// (`output_record_type` in `typecheck::call`) in the signature's declaration
+/// order, which is what a positional pattern means, so it reads the same way;
+/// field names are ignored.
 fn as_tuple_fields(t: &Type) -> Option<Vec<Type>> {
     match t {
         Type::Tuple(fields) => Some(fields.clone()),
@@ -37,15 +36,15 @@ pub(crate) enum LetRefValues {
     /// A record literal: the dotted field paths whose initializer names no
     /// storage (`p: &a`, `n: 1`). Never empty and never the empty path, which
     /// `normalized` turns into `None` and `All`.
-    Fields(crate::collections::HashSet<String>),
+    Fields(HashSet<String>),
 }
 
 impl LetRefValues {
     /// Whether the field at `path` (its segments below the binding) is a value.
     pub(crate) fn covers(&self, path: &[String]) -> bool {
         match self {
-            LetRefValues::All => true,
-            LetRefValues::Fields(set) => {
+            Self::All => true,
+            Self::Fields(set) => {
                 let joined = path.join(".");
                 set.iter().any(|p| {
                     p.is_empty()
@@ -59,18 +58,18 @@ impl LetRefValues {
     }
 
     /// The classification of the record at `path` below this one.
-    fn below(&self, path: &[String]) -> Option<LetRefValues> {
+    fn below(&self, path: &[String]) -> Option<Self> {
         if path.is_empty() {
             return normalized(self.clone());
         }
         if self.covers(path) {
-            return Some(LetRefValues::All);
+            return Some(Self::All);
         }
-        let LetRefValues::Fields(set) = self else {
-            return Some(LetRefValues::All);
+        let Self::Fields(set) = self else {
+            return Some(Self::All);
         };
         let prefix = format!("{}.", path.join("."));
-        normalized(LetRefValues::Fields(
+        normalized(Self::Fields(
             set.iter()
                 .filter_map(|p| p.strip_prefix(prefix.as_str()).map(str::to_string))
                 .collect(),
@@ -84,7 +83,11 @@ impl LetRefValues {
 pub(crate) type LetKey = (Arc<str>, usize, String);
 
 pub(super) fn let_key(range: &SourceRange, name: &str) -> LetKey {
-    (range.file.clone(), range.start.offset, name.to_string())
+    (
+        std::sync::Arc::clone(&range.file),
+        range.start.offset,
+        name.to_string(),
+    )
 }
 
 fn normalized(v: LetRefValues) -> Option<LetRefValues> {
@@ -97,7 +100,7 @@ fn normalized(v: LetRefValues) -> Option<LetRefValues> {
 
 /// Record, for `let <name> = value`, which of its ref fields are values. A
 /// binding with no entry bundles places, like the `{ cpsr, skip }` idiom.
-pub(super) fn record_let_ref_values(ctx: &mut TypeCheckCtx, b: &LetBinding, value: &Expr) {
+pub(super) fn record_let_ref_values(ctx: &mut TypeCheckCtx<'_>, b: &LetBinding, value: &Expr) {
     let LetBinding::Ident { name, range } = b else {
         return;
     };
@@ -105,7 +108,7 @@ pub(super) fn record_let_ref_values(ctx: &mut TypeCheckCtx, b: &LetBinding, valu
     set_let_ref_values(ctx, let_key(range, name), v);
 }
 
-fn set_let_ref_values(ctx: &mut TypeCheckCtx, key: LetKey, v: Option<LetRefValues>) {
+fn set_let_ref_values(ctx: &mut TypeCheckCtx<'_>, key: LetKey, v: Option<LetRefValues>) {
     match v {
         Some(v) => {
             ctx.let_ref_values.insert(key, v);
@@ -117,10 +120,10 @@ fn set_let_ref_values(ctx: &mut TypeCheckCtx, key: LetKey, v: Option<LetRefValue
 }
 
 /// Which fields of the record `value` evaluates to are ref values.
-pub(crate) fn ref_values_of(ctx: &TypeCheckCtx, value: &Expr) -> Option<LetRefValues> {
+pub(crate) fn ref_values_of(ctx: &TypeCheckCtx<'_>, value: &Expr) -> Option<LetRefValues> {
     match value {
         Expr::RecordLit { fields, .. } => {
-            let mut set = crate::collections::HashSet::default();
+            let mut set = HashSet::default();
             collect_value_fields(ctx, fields, "", &mut set);
             normalized(LetRefValues::Fields(set))
         }
@@ -137,7 +140,7 @@ pub(crate) fn ref_values_of(ctx: &TypeCheckCtx, value: &Expr) -> Option<LetRefVa
 /// returned, as a chip's output pins are: a place it returns leaves as that
 /// place's ref.
 pub(crate) fn ref_values_at(
-    ctx: &TypeCheckCtx,
+    ctx: &TypeCheckCtx<'_>,
     root: &Expr,
     segs: &[String],
 ) -> Option<LetRefValues> {
@@ -147,7 +150,7 @@ pub(crate) fn ref_values_at(
     let sym = ctx.scope.lookup(name)?;
     let whole = segs.is_empty();
     let record = matches!(
-        crate::types::mono::unwrap_ref(&sym.ty),
+        unwrap_ref(&sym.ty),
         Type::Record(_) | Type::Outputs(_) | Type::Tuple(_)
     );
     let of_let =
@@ -155,9 +158,7 @@ pub(crate) fn ref_values_at(
     match sym.kind {
         // A var holding a ref is a value; any other var (a `*T` parameter is
         // bound as one) names storage, as each field of a record var does.
-        SymbolKind::Var
-            if whole && matches!(crate::types::mono::unwrap_ref(&sym.ty), Type::Ref(_)) =>
-        {
+        SymbolKind::Var if whole && matches!(unwrap_ref(&sym.ty), Type::Ref(_)) => {
             Some(LetRefValues::All)
         }
         SymbolKind::Var => None,
@@ -209,19 +210,18 @@ fn join_path(prefix: &str, name: &str) -> String {
 }
 
 fn collect_value_fields(
-    ctx: &TypeCheckCtx,
-    fields: &[crate::ast::RecordLitField],
+    ctx: &TypeCheckCtx<'_>,
+    fields: &[RecordLitField],
     prefix: &str,
-    set: &mut crate::collections::HashSet<String>,
+    set: &mut HashSet<String>,
 ) {
-    use crate::ast::RecordLitField;
     for f in fields {
         match f {
             RecordLitField::Named { name, value, .. } => {
                 let path = join_path(prefix, name);
                 match value {
                     Expr::RecordLit { fields: inner, .. } => {
-                        collect_value_fields(ctx, inner, &path, set)
+                        collect_value_fields(ctx, inner, &path, set);
                     }
                     _ => merge_field_source(ref_values_of(ctx, value), &path, set),
                 }
@@ -238,7 +238,7 @@ fn collect_value_fields(
                 set,
             ),
             RecordLitField::Spread { value, .. } => {
-                merge_field_source(ref_values_of(ctx, value), prefix, set)
+                merge_field_source(ref_values_of(ctx, value), prefix, set);
             }
         }
     }
@@ -247,11 +247,7 @@ fn collect_value_fields(
 /// One literal field's source, as `ref_values_of` classified it, filed under
 /// `path`: a place adds nothing, a value adds the path, and a record-valued
 /// source adds its own value paths below it.
-fn merge_field_source(
-    kinds: Option<LetRefValues>,
-    path: &str,
-    set: &mut crate::collections::HashSet<String>,
-) {
+fn merge_field_source(kinds: Option<LetRefValues>, path: &str, set: &mut HashSet<String>) {
     match kinds {
         Some(LetRefValues::All) => {
             set.insert(path.to_string());
@@ -263,20 +259,20 @@ fn merge_field_source(
     }
 }
 
-/// Record `let f = Foo(…)` -> the sole output's name, when `Foo` is a user
+/// Record `let f = Foo(...)` -> the sole output's name, when `Foo` is a user
 /// chip/mod (plain or namespaced) with exactly one output. A single-output call
 /// types as the bare output value, so `f.result` would otherwise be
 /// indistinguishable from a typo; see `TypeCheckCtx::single_output_alias`.
 /// Also propagates through a plain re-binding (`let g = f`) so an aliased
 /// result keeps its projectable name.
-pub(super) fn record_single_output_alias(ctx: &mut TypeCheckCtx, b: &LetBinding, value: &Expr) {
+pub(super) fn record_single_output_alias(ctx: &mut TypeCheckCtx<'_>, b: &LetBinding, value: &Expr) {
     let LetBinding::Ident { name, .. } = b else {
         return;
     };
     // `Some(entry)` = this binding IS a single-output call result;
     // `entry` names the one legal projection, or `None` if unindexed.
     let entry: Option<Option<String>> = match value {
-        // `let g = f` — inherit whatever `f` may be projected by.
+        // `let g = f`: inherit whatever `f` may be projected by.
         Expr::Ident { name: src, .. } => ctx.single_output_alias.get(src).cloned(),
         Expr::Call { callee, .. } => match callee.as_ref() {
             Expr::Ident {
@@ -287,11 +283,9 @@ pub(super) fn record_single_output_alias(ctx: &mut TypeCheckCtx, b: &LetBinding,
                 .and_then(|s| s.signature.as_ref())
                 .filter(|sig| sig.outputs.len() == 1)
                 .map(|sig| Some(sig.outputs[0].name.clone())),
-            // `let r = ns.Foo(…)`. A multi-output member's return type is a
-            // record (its fields are checked the normal way); a single-output
-            // member's is the output type itself, whose NAME isn't indexed —
-            // so mark it unindexed rather than risk calling a valid
-            // projection a typo.
+            // `let r = ns.Foo(...)`: a multi-output member returns a record, whose fields
+            // are checked normally; a single-output member returns the output type, whose
+            // name is not indexed, so it is marked unindexed.
             Expr::FieldAccess { obj, field, .. } => match obj.as_ref() {
                 Expr::Ident {
                     name: ns,
@@ -315,51 +309,24 @@ pub(super) fn record_single_output_alias(ctx: &mut TypeCheckCtx, b: &LetBinding,
     }
 }
 
-/// The `const` post-binding assertion: after a `const` declaration's
-/// initializer has evaluated AND been recorded, every name it introduced must
-/// READ BACK as a compile-time constant at this point. If one does not, say so
-/// HERE, at the binding — reusing WS046.
+/// After a `const` declaration's initializer evaluated and was recorded, every
+/// name it introduced must read back as a constant here; if one does not, that
+/// is WS046 at the binding. This is not the evaluation-failure check (the
+/// `Err(err) if l.is_const` arms in `typecheck::decl` and `typecheck::stmt`
+/// run first) but its opposite: a value that evaluated and landed nowhere a
+/// later statement can see, which would otherwise surface at a use, blamed on
+/// another binding, or not at all in a constant-only slot.
 ///
-/// This is deliberately NOT the "initializer failed to evaluate" check (the
-/// `Err(err) if l.is_const` arms in `typecheck::decl`/`typecheck::stmt` already
-/// do that, and run before this). It is the OPPOSITE failure: an initializer
-/// that evaluates perfectly well, whose value then lands nowhere any later
-/// statement can see, because no environment in scope accepted it.
+/// The test is plain `const_lookup` ("is a value readable here"), not a
+/// const-declared read: `typecheck::decl`'s `TopDecl::Let` arm records without
+/// the `const` mark, which is harmless at the top level but not inside the scope
+/// `TopDecl::Namespace` checks members in, where the strict test would reject
+/// every namespace import of a module with a top-level `const`.
 ///
-/// That failure used to be invisible at the declaration and surfaced later, at
-/// some USE, blamed on a DIFFERENT binding — `const a = 1` recorded nowhere is
-/// silent, and only the `const b = a + 1` that reads it reports "'a' is a
-/// runtime value". Worse, a `const` whose only use is a constant-only slot
-/// (a custom-event channel name, gate config) reported nothing at all and
-/// baked an empty value; two silent miscompiles in this feature's history had
-/// exactly that shape.
-///
-/// The oracle is plain `const_lookup` ("is a value for this name readable
-/// here at all"), NOT a declared-only read. The stronger question ("is it
-/// marked const-DECLARED in this frame") looks like the better fit and is not:
-/// `typecheck::decl`'s `TopDecl::Let` arm records a value without the
-/// `const` mark, which is harmless at the top level (no frame is open there,
-/// so the record is a no-op and the marks come from `build_const_declared_names`) but
-/// NOT inside the pushed scope `TopDecl::Namespace` checks a namespaced
-/// module's members in. Under the strict oracle every `import * as ns` of a
-/// module containing a top-level `const` reported here — measured: it made
-/// `compile` fail on programs `check` passed, the exact check-vs-compile split
-/// this feature is supposed to close.
-///
-/// The weaker oracle still catches every failure this assertion exists for,
-/// because those record the name NOWHERE at all rather than recording it
-/// without a mark. That asymmetry between the two recording sites is real and
-/// pre-existing; it errs in the safe direction (typecheck over-checks a block
-/// lowering elides) and is left alone here rather than fixed blind.
-///
-/// Ordering requirement: call this only AFTER the success arm has done its
-/// recording, and only on the success path (an initializer that failed to
-/// evaluate has already been reported, and would otherwise be reported twice).
-/// At the TOP level the recording that matters is not the local one — it is
-/// `build_const_env`'s whole-program fixpoint, which has already converged
-/// before any decl is checked, so a name still missing from it here is settled
-/// and not merely unresolved yet.
-pub(super) fn check_const_recorded(ctx: &mut TypeCheckCtx, l: &LetDecl) {
+/// Call it only after the success arm recorded, on the success path. At the top
+/// level the recording that counts is `build_const_env`'s fixpoint, already
+/// converged, so a name missing from it is settled.
+pub(super) fn check_const_recorded(ctx: &mut TypeCheckCtx<'_>, l: &LetDecl) {
     // A `const` written with no value was reported where it was declared.
     if !l.is_const || !l.has_initializer() {
         return;
@@ -388,24 +355,14 @@ pub(super) fn check_const_recorded(ctx: &mut TypeCheckCtx, l: &LetDecl) {
 /// the annotation's shape (`infer::literal_fits`); the value's own type
 /// otherwise. `let L: float = 9` binds a float and `let I: int = 2.5` an
 /// integer, as `var` does.
-pub(super) fn let_binding_type(
-    ctx: &mut TypeCheckCtx,
-    l: &crate::ast::LetDecl,
-    inferred: &Type,
-) -> Type {
+pub(super) fn let_binding_type(ctx: &mut TypeCheckCtx<'_>, l: &LetDecl, inferred: &Type) -> Type {
     let Some(te) = &l.typ else {
         return inferred.clone();
     };
-    let before = ctx.diagnostics.len();
-    let annotated = resolve_type_expr(ctx, te);
-    ctx.diagnostics.truncate(before);
-    let r = l.value.range();
-    let annotated_number = crate::types::mono::unwrap_ref(&annotated);
+    let annotated = ctx.discarding_diagnostics(|ctx| resolve_type_expr(ctx, te));
+    let annotated_number = unwrap_ref(&annotated);
     let number_constant = matches!(annotated_number, Type::Float | Type::Int)
-        && ctx
-            .type_of_expr
-            .get(&(r.file.clone(), r.start.offset, r.end.offset))
-            == Some(&annotated_number);
+        && ctx.recorded_type(l.value.range()) == Some(&annotated_number);
     let fitted_literal = coerce(inferred, &annotated) == CoerceRule::Mismatch
         && infer::literal_fits(ctx, &l.value, &annotated);
     // A record the annotation rejects is reported there, once.
@@ -417,14 +374,14 @@ pub(super) fn let_binding_type(
     }
 }
 
-pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: &Expr) {
+pub(super) fn bind_let(ctx: &mut TypeCheckCtx<'_>, b: &LetBinding, t: &Type, value: &Expr) {
     // Which fields of a destructured source are ref values, taken before any
     // name the pattern binds can shadow one the source names.
     let src = match b {
         LetBinding::Ident { .. } => None,
         _ => ref_values_of(ctx, value),
     };
-    let src = &src;
+    let src = src.as_ref();
     // A record parameter's plain fields are values bound by the caller, so
     // only a `*T` field of one is a place (as `field_names_storage` has it).
     let scalar_places = !matches!(
@@ -433,14 +390,11 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
     );
     match b {
         LetBinding::Ident { name, range } => {
-            // A `let` may shadow another VALUE binding in the same scope
-            // (Rust-style: `const a = 1` then `let a = …` re-binds `a`). But a
-            // `let` that shadows an in/out PORT of the same name is the silent
-            // hijack bug: `in go: exec` then `let go = 5` made `on go` bind to
-            // the constant and left the exec input dead. `declare` returns the
-            // previous symbol only when it was in the SAME frame (child-scope
-            // shadowing stays legal), so gating on a port kind flags exactly the
-            // collision without touching value shadowing.
+            // A `let` may shadow another value in the same scope (`const a = 1` then
+            // `let a = ...`), but not an `in`/`out` port of the same name: `in go: exec`
+            // then `let go = 5` would make `on go` bind the constant and leave the exec
+            // input dead. `declare` returns the previous symbol only from the same frame,
+            // so child-scope shadowing stays legal.
             declare_let(ctx, name, t.clone(), range);
         }
         LetBinding::Tuple { names, rest, range } => {
@@ -488,36 +442,15 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
                 declare_let(ctx, n, Type::Any, range);
             }
         }
-        LetBinding::Record { names, range } => {
-            for n in names {
-                let ty = if let Type::Record(fields) | Type::Outputs(fields) = t {
-                    fields
-                        .iter()
-                        .find(|(k, _)| k == n)
-                        .map(|(_, t)| t.clone())
-                        .unwrap_or(Type::Any)
-                } else {
-                    Type::Any
-                };
-                declare_field(ctx, n, n, ty, range, src, scalar_places);
-            }
-        }
         LetBinding::RecordDestruct { fields, range } => {
-            // Field names consumed by a `Named` SO FAR, grown as the pattern
-            // is walked. Incremental (prefix) rather than whole-pattern
-            // precisely so this stays a true mirror of
-            // `const_eval::bind_destructured`, which builds its own `consumed`
-            // the same way: a `Named` appearing AFTER a `Rest` is not excluded
-            // from that rest by either side. The parser currently forces
-            // `...rest` last (`parser/decl.rs`), so the two forms agree on
-            // every pattern that can be written today — but agreeing only by
-            // accident of the grammar is exactly the latent divergence that
-            // bites when the grammar relaxes.
-            let mut consumed: crate::collections::HashSet<&str> =
-                crate::collections::HashSet::default();
+            // The field names a `Named` has consumed so far, grown as the pattern is
+            // walked, as `const_eval::bind_destructured` builds its own `consumed`: a
+            // `Named` after a `Rest` is not excluded from that rest by either. The parser
+            // forces `...rest` last today, but the two must agree on any pattern.
+            let mut consumed: HashSet<&str> = HashSet::default();
             for field in fields {
                 let (name, ty, path) = match field {
-                    crate::ast::RecordDestructField::Named { name, alias, .. } => {
+                    RecordDestructField::Named { name, alias, .. } => {
                         let bind_name = alias.as_ref().unwrap_or(name);
                         let field_ty =
                             if let Type::Record(rec_fields) | Type::Outputs(rec_fields) = t {
@@ -532,18 +465,11 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
                         consumed.insert(name.as_str());
                         (bind_name.clone(), field_ty, name.as_str())
                     }
-                    crate::ast::RecordDestructField::Rest { name, .. } => {
-                        // `...rest` collects every field no `Named` consumed,
-                        // so its type is the record of exactly those fields —
-                        // the type-level mirror of `bind_destructured`'s
-                        // value-level rest rule, down to preserving the SOURCE
-                        // record's field order. Typing it `Any` would make
-                        // `rest.y` type as `Any` too, so any use of it —
-                        // `rest.y == 222` — would fail with WS004 "no
-                        // overload on Any, Int": `...rest` would bind a value
-                        // that could not actually be read. Only a known
-                        // `Type::Record` source yields a precise type;
-                        // anything else stays `Any`.
+                    RecordDestructField::Rest { name, .. } => {
+                        // `...rest` collects every field no `Named` consumed, so its type is the record
+                        // of exactly those fields in the source's order, as `bind_destructured`'s value
+                        // rule has it; as `Any`, `rest.y == 222` would be WS004. Only a known
+                        // `Type::Record` source gives a precise type; anything else stays `Any`.
                         let rest_ty =
                             if let Type::Record(rec_fields) | Type::Outputs(rec_fields) = t {
                                 Type::Record(
@@ -557,7 +483,7 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
                                 Type::Any
                             };
                         declare_let(ctx, name, rest_ty, range);
-                        set_let_ref_values(ctx, let_key(range, name), src.clone());
+                        set_let_ref_values(ctx, let_key(range, name), src.cloned());
                         continue;
                     }
                 };
@@ -574,16 +500,16 @@ pub(super) fn bind_let(ctx: &mut TypeCheckCtx, b: &LetBinding, t: &Type, value: 
 /// destructured `*T` parameter does; a record-valued field keeps its own
 /// fields' classification.
 fn declare_field(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     name: &str,
     path: &str,
     ty: Type,
     range: &SourceRange,
-    src: &Option<LetRefValues>,
+    src: Option<&LetRefValues>,
     scalar_places: bool,
 ) {
-    let sub = src.as_ref().and_then(|v| v.below(&[path.to_string()]));
-    let ref_place = ty.ref_kind() == Some(crate::ir::RefKind::Var);
+    let sub = src.and_then(|v| v.below(&[path.to_string()]));
+    let ref_place = ty.ref_kind() == Some(RefKind::Var);
     if sub.is_none() && (ref_place || (scalar_places && ty.is_ref_target())) {
         ctx.let_places.insert(let_key(range, name));
         let ty = if ref_place {
@@ -604,7 +530,7 @@ fn declare_field(
         return;
     }
     let record = matches!(
-        crate::types::mono::unwrap_ref(&ty),
+        unwrap_ref(&ty),
         Type::Record(_) | Type::Outputs(_) | Type::Tuple(_)
     );
     declare_let(ctx, name, ty, range);
@@ -615,31 +541,23 @@ fn declare_field(
 
 /// `src` with each `(from, to)` field moved to key `to`, for a pattern that
 /// re-keys what it collects (a tuple `...rest` counts from 0).
-fn rekeyed(src: &Option<LetRefValues>, moved: &[(String, String)]) -> Option<LetRefValues> {
-    let src = src.as_ref()?;
-    let mut set = crate::collections::HashSet::default();
+fn rekeyed(src: Option<&LetRefValues>, moved: &[(String, String)]) -> Option<LetRefValues> {
+    let src = src?;
+    let mut set = HashSet::default();
     for (from, to) in moved {
         merge_field_source(src.below(std::slice::from_ref(from)), to, &mut set);
     }
     normalized(LetRefValues::Fields(set))
 }
 
-/// Bind one `let` name and report the collisions the plain `let x = …` arm has
+/// Bind one `let` name and report the collisions the plain `let x = ...` arm has
 /// always reported. Every `LetBinding` shape reaches this, so a destructuring
 /// pattern cannot hijack an in/out port or silently replace another file's
-/// top-level binding the way `let (go, r) = …` did while `let go = …` errored.
-fn declare_let(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &SourceRange) {
-    let prev = ctx.scope.declare(
-        name,
-        SymbolInfo {
-            kind: SymbolKind::LetBinding,
-            name: name.to_string(),
-            ty,
-            decl_range: range.clone(),
-            signature: None,
-            event_data: None,
-        },
-    );
+/// top-level binding the way `let (go, r) = ...` did while `let go = ...` errored.
+fn declare_let(ctx: &mut TypeCheckCtx<'_>, name: &str, ty: Type, range: &SourceRange) {
+    let prev = ctx
+        .scope
+        .declare_new(SymbolKind::LetBinding, name, ty, range.clone());
     match &prev {
         Some(p) if matches!(p.kind, SymbolKind::In | SymbolKind::Out) => {
             ctx.emit(
@@ -671,23 +589,13 @@ fn declare_let(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &SourceRange
                 range.clone(),
             );
         }
-        // Shadowing is a same-file idiom, deliberately allowed above.
-        // Two DIFFERENT files each binding `name` at top level is not
-        // shadowing at all: imports merge into one flat scope, so one
-        // module's constant replaces the other's and every reference in
-        // both reads whichever came last. `mod`/`chip` report the same
-        // collision.
-        // ...but NOT for a name the compiler generated. `on Foo(...)`
-        // over a non-event desugars to `let _on_expr_N = Foo(...)` +
-        // `on _on_expr_N`, and the counter restarts per file, so two
-        // modules that each write one both get `_on_expr_0`. Lowering
-        // pairs each `on` with the `let` from its own file
-        // structurally, so the shared name resolves correctly and this
-        // is purely nominal: verified by building the commit before
-        // this check and confirming both handlers lower independently,
-        // each driving its own gate. Reporting it told the user to
-        // rename an identifier they never wrote, and bare `import`
-        // takes no `as`, so neither half of the advice was followable.
+        // Shadowing is a same-file idiom. Two files each binding `name` at the top
+        // level is not shadowing: imports merge into one flat scope, so one module's
+        // constant replaces the other's in both (`mod`/`chip` report the same
+        // collision). Compiler-generated names are exempt: `on Foo(...)` over a
+        // non-event desugars to `let _on_expr_N = Foo(...)`, the counter restarts per
+        // file, and lowering pairs each `on` with its own file's `let`, so a shared
+        // `_on_expr_0` resolves correctly.
         Some(p)
             if !p.decl_range.file.is_empty()
                 && !range.file.is_empty()
@@ -708,13 +616,12 @@ fn declare_let(ctx: &mut TypeCheckCtx, name: &str, ty: Type, range: &SourceRange
     }
 }
 
-/// A binding whose initializer has no value (`Type::Never` — a void container
-/// mutation like `a.push(x)` / `m.set(k, v)` used as a value) has nothing to
-/// bind. Report it and return `true`. Only two things produce `Never` - a void
-/// container mutation (`a.push(x)` / `m.set(k, v)`) and a `mod`/`chip` call
-/// with no output - so this can't fire spuriously. Shared by `let`/`var`/`out`.
+/// A binding whose initializer has no value (`Type::Never`) has nothing to
+/// bind: report it and return `true`. Only a void container mutation
+/// (`a.push(x)`, `m.set(k, v)`) and a mod or chip call with no output produce
+/// `Never`. Shared by `let`, `var` and `out`.
 pub(super) fn reject_never_value(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     inferred: &Type,
     range: &SourceRange,
     name: &str,
@@ -730,7 +637,7 @@ pub(super) fn reject_never_value(
 /// naming the binding when there is one. Also the sink `infer::coerce_or_emit`
 /// routes a `Never` source to, so the assignment / argument / output spellings
 /// report the same thing as a binding rather than a bare type mismatch.
-pub(crate) fn emit_no_value(ctx: &mut TypeCheckCtx, name: Option<&str>, range: &SourceRange) {
+pub(crate) fn emit_no_value(ctx: &mut TypeCheckCtx<'_>, name: Option<&str>, range: &SourceRange) {
     let subject = match name {
         Some(n) => format!("`{n}` is bound to an expression that"),
         None => "this expression".to_string(),
@@ -747,26 +654,21 @@ pub(crate) fn emit_no_value(ctx: &mut TypeCheckCtx, name: Option<&str>, range: &
     );
 }
 
-/// `reject_never_value` for a `let` binding: returning `true` lets the caller
-/// skip the ordinary annotation check, which would only add a redundant WS016.
-///
-/// One exemption: `let inst = SomeChip(trigger)` on a chip with NO outputs.
-/// A top-level `let` is the documented way to INSTANTIATE a named chip (see
-/// `docs/src/chips.md`, "Exec Chips"), and an output-less one has
-/// nothing to give the binding, so the `let` is a placement, not a read. The
-/// name still carries `Never`, so any later USE of it reports through the
-/// ordinary value-position checks. A void container mutation has no such
-/// spelling and stays rejected.
+/// `reject_never_value` for a `let`; `true` lets the caller skip the annotation
+/// check, which would add a redundant WS016. Exempt: `let inst = SomeChip(t)` on
+/// a chip with no outputs, the documented way to place a named chip
+/// (`docs/src/chips.md`, "Exec Chips"). The name still carries `Never`, so a later
+/// use is checked.
 pub(super) fn reject_never_binding(
-    ctx: &mut TypeCheckCtx,
-    l: &crate::ast::LetDecl,
+    ctx: &mut TypeCheckCtx<'_>,
+    l: &LetDecl,
     inferred: &Type,
 ) -> bool {
     if is_user_chip_call(ctx, &l.value) {
         return false;
     }
     let name = match &l.binding {
-        crate::ast::LetBinding::Ident { name, .. } => name.as_str(),
+        LetBinding::Ident { name, .. } => name.as_str(),
         _ => "<binding>",
     };
     reject_never_value(ctx, inferred, l.value.range(), name)
@@ -775,23 +677,18 @@ pub(super) fn reject_never_binding(
 /// Is `e` a direct call to a user `mod`/`chip` by name (`Foo(...)`, not a
 /// method call, builtin, or namespaced member)? Used only for the
 /// instantiation exemption above.
-fn is_user_chip_call(ctx: &TypeCheckCtx, e: &crate::ast::Expr) -> bool {
-    matches!(e, crate::ast::Expr::Call { callee, .. }
-        if matches!(callee.as_ref(), crate::ast::Expr::Ident { name, range }
+fn is_user_chip_call(ctx: &TypeCheckCtx<'_>, e: &Expr) -> bool {
+    matches!(e, Expr::Call { callee, .. }
+        if matches!(callee.as_ref(), Expr::Ident { name, range }
             if ctx.calls_user_mod(name, &range.file)))
 }
 
-pub(super) fn check_let_type_annotation(
-    ctx: &mut TypeCheckCtx,
-    l: &crate::ast::LetDecl,
-    inferred: &Type,
-) {
+pub(super) fn check_let_type_annotation(ctx: &mut TypeCheckCtx<'_>, l: &LetDecl, inferred: &Type) {
     if let Some(ref te) = l.typ {
         // Record literals: validate field names against the expected record type.
         // Point errors at the specific field/spread that introduced the mismatch.
         if let Expr::RecordLit { fields, .. } = &l.value {
-            let expected = resolve_type_expr(ctx, te);
-            warn_any_annotation(ctx, &expected, type_expr_range(te));
+            let expected = resolve_annotation(ctx, te);
             // `{}` for a map is the empty map literal, which no `let` binds.
             if fields.is_empty() && matches!(expected, Type::Map(..)) {
                 ctx.emit(
@@ -803,14 +700,14 @@ pub(super) fn check_let_type_annotation(
             }
             let before = ctx.diagnostics.len();
             if let Type::Record(expected_fields) = &expected {
-                let type_name = crate::analysis::types::type_expr_str(te);
+                let type_name = type_expr_str(te);
                 for f in fields {
                     match f {
                         RecordLitField::Named { name, range, .. } => {
                             if !expected_fields.iter().any(|(n, _)| n == name) {
                                 ctx.emit(
                                     "WS003",
-                                    format!("field '{}' not in type {}", name, type_name),
+                                    format!("field '{name}' not in type {type_name}"),
                                     range.clone(),
                                 );
                             }
@@ -819,7 +716,7 @@ pub(super) fn check_let_type_annotation(
                             if !expected_fields.iter().any(|(n, _)| n == name) {
                                 ctx.emit(
                                     "WS003",
-                                    format!("field '{}' not in type {}", name, type_name),
+                                    format!("field '{name}' not in type {type_name}"),
                                     range.clone(),
                                 );
                             }
@@ -856,22 +753,19 @@ pub(super) fn check_let_type_annotation(
                         if !inferred_fields.iter().any(|(n, _)| n == fname) {
                             ctx.emit(
                                 "WS003",
-                                format!("missing field '{}' for type {}", fname, type_name),
+                                format!("missing field '{fname}' for type {type_name}"),
                                 l.range.clone(),
                             );
                         }
                     }
                 }
             }
-            // A record literal is also how a tuple literal parses (index-keyed
-            // fields `{"0": …, "1": …}`), so `expected` may be a `Type::Tuple`
-            // the checks above skip entirely; and for a record target those
-            // checks only cover field PRESENCE, not value types. If none fired,
-            // run the full structural coercion so a wrong element/field value
-            // type, a wrong tuple arity, or a record literal against a
-            // non-record target is caught (WS003, like every other annotated
-            // position). Guarded on the diag count so a missing/extra-field
-            // error isn't duplicated by a whole-type mismatch.
+            // A record literal is also how a tuple literal parses (index-keyed fields), so
+            // `expected` may be a `Type::Tuple` the checks above skip, and for a record
+            // target they cover only field presence. If none fired, the full structural
+            // coercion runs, catching a wrong field or element type, a tuple arity, or a
+            // record against a non-record target (WS003); the diagnostic count guard keeps
+            // a field error from being repeated as a whole-type mismatch.
             if ctx.diagnostics.len() == before {
                 if infer::literal_fits(ctx, &l.value, &expected) {
                     infer::coerce_value_or_emit(ctx, &l.value, inferred, &expected);
@@ -881,8 +775,7 @@ pub(super) fn check_let_type_annotation(
             }
             return;
         }
-        let expected = resolve_type_expr(ctx, te);
-        warn_any_annotation(ctx, &expected, type_expr_range(te));
+        let expected = resolve_annotation(ctx, te);
         if infer::record_into_one_value(ctx, &l.value, inferred, &expected) {
             return;
         }
@@ -897,33 +790,27 @@ pub(super) fn check_let_type_annotation(
         // `let s: string = 5` is an intentional format, not a type lie.
         if rule == CoerceRule::Mismatch {
             let name = match &l.binding {
-                crate::ast::LetBinding::Ident { name, .. } => name.clone(),
+                LetBinding::Ident { name, .. } => name.clone(),
                 _ => "<binding>".into(),
             };
             let message = format!(
                 "let '{}' annotated as {}, but expression has type {}",
                 name,
-                crate::analysis::types::type_expr_str(te),
-                crate::analysis::types::type_str(inferred),
+                type_expr_str(te),
+                type_str(inferred),
             );
-            // A `*T` var-ref or a `brick` on either side has no conversion
-            // into a mismatched annotation (`coerce`'s ref invariance: no
-            // coercion through ref types) — unlike a primitive "type lie"
-            // (`let n: int = someString`), which stays the lenient warning
-            // below, this can never wire, so it is a hard error. An
-            // array/map ref (`let a1: float[] = row0`) keeps the existing
-            // WS016: the spec's no-conversion rule covers `*T`/`brick` only.
-            let is_var_or_brick_ref = |t: &Type| {
-                matches!(
-                    t.ref_kind(),
-                    Some(crate::ir::RefKind::Var | crate::ir::RefKind::Brick)
-                )
-            };
+            // A `*T` var ref or a `brick` on either side has no conversion into a
+            // mismatched annotation (refs are invariant), so this can never wire: a hard
+            // error, unlike a primitive mismatch (`let n: int = someString`), which stays
+            // the lenient warning below. An array or map ref (`let a1: float[] = row0`)
+            // keeps WS016.
+            let is_var_or_brick_ref =
+                |t: &Type| matches!(t.ref_kind(), Some(RefKind::Var | RefKind::Brick));
             if is_var_or_brick_ref(inferred) || is_var_or_brick_ref(&expected) {
                 ctx.emit("WS003", message, l.range.clone());
             } else {
                 ctx.diagnostics.push(crate::Diagnostic {
-                    severity: crate::diagnostic::Severity::Warning,
+                    severity: Severity::Warning,
                     code: "WS016".into(),
                     message,
                     range: l.range.clone(),

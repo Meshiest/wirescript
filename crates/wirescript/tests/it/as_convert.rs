@@ -92,7 +92,7 @@ fn a_composite_has_no_number_form() {
 
 /// Two conversions of one value to different types are two gates: the target
 /// type lives on the gate's output port, which merging identical gates must
-/// count. Merged, `x as string` printed `x as int`'s result in game.
+/// count, or `x as string` would read `x as int`'s result.
 #[test]
 fn conversions_to_different_types_are_not_merged() {
     assert_eq!(

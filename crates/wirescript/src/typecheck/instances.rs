@@ -16,15 +16,11 @@ use super::*;
 use std::collections::VecDeque;
 
 /// A mod or chip declaration, by its range.
-pub(crate) type DeclId = (Arc<str>, usize, usize);
+pub(crate) type DeclId = RangeKey;
 
 /// The most instantiations calls may demand beyond the combinations each
 /// generic's bounds already check.
 pub(crate) const MAX_DEMANDED_INSTANTIATIONS: usize = 1024;
-
-fn decl_id(r: &SourceRange) -> DeclId {
-    (r.file.clone(), r.start.offset, r.end.offset)
-}
 
 /// Everything a generic declaration's body check reads from around it, as it
 /// stood where the declaration was checked.
@@ -52,7 +48,7 @@ pub(crate) struct Instances {
     /// it.
     envs: HashMap<(DeclId, Arc<[Type]>), Arc<DeclEnv>>,
     queue: VecDeque<(DeclId, Arc<[Type]>, SourceRange)>,
-    queued: crate::collections::HashSet<(DeclId, Arc<[Type]>)>,
+    queued: HashSet<(DeclId, Arc<[Type]>)>,
     /// Instantiations checked because a call demanded them.
     demanded: Vec<ResolutionKey>,
 }
@@ -67,9 +63,9 @@ impl Instances {
 /// Record where generic `c` is being checked, so an instantiation a call
 /// demands is checked in the same surroundings. Called once per key of the
 /// bodies around `c`, before its own combinations are checked.
-pub(super) fn capture_env(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
-    let id = decl_id(&c.range);
-    let prefix = ctx.resolution_subst.clone();
+pub(super) fn capture_env(ctx: &mut TypeCheckCtx<'_>, c: &ChipDecl) {
+    let id = c.range.key();
+    let prefix = std::sync::Arc::clone(&ctx.resolution_subst);
     ctx.instances
         .decls
         .entry(id.clone())
@@ -94,7 +90,7 @@ pub(super) fn capture_env(ctx: &mut TypeCheckCtx, c: &ChipDecl) {
 /// `type_args`: record them for lowering, and queue that body unless it has
 /// been checked already.
 pub(super) fn demand(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     decl: &SourceRange,
     type_args: Vec<Type>,
     call: &SourceRange,
@@ -103,7 +99,7 @@ pub(super) fn demand(
     ctx.resolutions
         .call_type_args
         .insert(call_key, type_args.clone());
-    let id = decl_id(decl);
+    let id = decl.key();
     // A declaration not checked yet is a top-level one, whose key has no
     // prefix: a declaration inside a body is checked before any call to it.
     let len = ctx
@@ -116,9 +112,17 @@ pub(super) fn demand(
     let mut key = ctx.resolution_subst[..len].to_vec();
     key.extend(type_args);
     let key: Arc<[Type]> = key.into();
-    let body = (id.0.clone(), id.1, id.2, key.clone());
+    let body = (
+        std::sync::Arc::clone(&id.0),
+        id.1,
+        id.2,
+        std::sync::Arc::clone(&key),
+    );
     if !ctx.resolutions.checked_bodies.contains(&body)
-        && ctx.instances.queued.insert((id.clone(), key.clone()))
+        && ctx
+            .instances
+            .queued
+            .insert((id.clone(), std::sync::Arc::clone(&key)))
     {
         ctx.instances.queue.push_back((id, key, call.clone()));
     }
@@ -127,14 +131,15 @@ pub(super) fn demand(
 /// Check every queued instantiation no check has covered, and the ones they
 /// demand in turn, until the queue is empty. Past
 /// [`MAX_DEMANDED_INSTANTIATIONS`] the rest are reported (WS096), not checked.
-pub(super) fn check_demanded(ctx: &mut TypeCheckCtx) {
-    let mut reported: Option<crate::collections::HashSet<(String, Arc<str>, usize)>> = None;
+pub(super) fn check_demanded(ctx: &mut TypeCheckCtx<'_>) {
+    let mut reported: Option<HashSet<(String, Arc<str>, usize)>> = None;
     while let Some((id, key, call)) = ctx.instances.queue.pop_front() {
-        if ctx
-            .resolutions
-            .checked_bodies
-            .contains(&(id.0.clone(), id.1, id.2, key.clone()))
-        {
+        if ctx.resolutions.checked_bodies.contains(&(
+            std::sync::Arc::clone(&id.0),
+            id.1,
+            id.2,
+            std::sync::Arc::clone(&key),
+        )) {
             continue;
         }
         let len = ctx
@@ -159,13 +164,22 @@ pub(super) fn check_demanded(ctx: &mut TypeCheckCtx) {
             ctx.instances.queue.clear();
             return;
         }
-        ctx.instances
-            .demanded
-            .push((id.0.clone(), id.1, id.2, key.clone()));
+        ctx.instances.demanded.push((
+            std::sync::Arc::clone(&id.0),
+            id.1,
+            id.2,
+            std::sync::Arc::clone(&key),
+        ));
         let reported = reported.get_or_insert_with(|| {
             ctx.diagnostics
                 .iter()
-                .map(|d| (d.code.clone(), d.range.file.clone(), d.range.start.offset))
+                .map(|d| {
+                    (
+                        d.code.clone(),
+                        std::sync::Arc::clone(&d.range.file),
+                        d.range.start.offset,
+                    )
+                })
                 .collect()
         });
         check_instantiation(
@@ -183,20 +197,19 @@ pub(super) fn check_demanded(ctx: &mut TypeCheckCtx) {
 /// instantiation left out: how many instantiations the calls demand so far
 /// (the checked ones, `next`, and the rest still queued), and the generics
 /// that demand the most of them.
-fn over_budget_message(ctx: &TypeCheckCtx, next: (DeclId, Arc<[Type]>)) -> String {
+fn over_budget_message(ctx: &TypeCheckCtx<'_>, next: (DeclId, Arc<[Type]>)) -> String {
     let mut per_decl: HashMap<DeclId, usize> = HashMap::default();
-    let mut seen: crate::collections::HashSet<(DeclId, Arc<[Type]>)> =
-        crate::collections::HashSet::default();
+    let mut seen: HashSet<(DeclId, Arc<[Type]>)> = HashSet::default();
     let checked = ctx
         .instances
         .demanded
         .iter()
-        .map(|(f, s, e, k)| ((f.clone(), *s, *e), k.clone()));
+        .map(|(f, s, e, k)| ((std::sync::Arc::clone(f), *s, *e), std::sync::Arc::clone(k)));
     let pending = std::iter::once(next).chain(
         ctx.instances
             .queue
             .iter()
-            .map(|(id, k, _)| (id.clone(), k.clone())),
+            .map(|(id, k, _)| (id.clone(), std::sync::Arc::clone(k))),
     );
     for (id, key) in checked.chain(pending) {
         if seen.insert((id.clone(), key)) {
@@ -237,12 +250,12 @@ fn over_budget_message(ctx: &TypeCheckCtx, next: (DeclId, Arc<[Type]>)) -> Strin
 /// key `prefix` of the bodies around it, in the surroundings `env`. A
 /// diagnostic already reported at the same place is not repeated.
 fn check_instantiation(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     decl: &ChipDecl,
     env: &DeclEnv,
     prefix: Arc<[Type]>,
     combo: &[Type],
-    reported: &mut crate::collections::HashSet<(String, Arc<str>, usize)>,
+    reported: &mut HashSet<(String, Arc<str>, usize)>,
 ) {
     let scope = ctx.scope.enter_view(&env.view);
     let mod_decls = ctx.mod_decls.split_off(1);
@@ -260,16 +273,18 @@ fn check_instantiation(
     let expected_ty = ctx.expected_ty.take();
     ctx.exec_stack.push(env.exec_mode);
 
-    let before = ctx.diagnostics.len();
-    super::shadow::open_body(ctx, decl);
-    super::decl::check_chip_body(ctx, decl, combo);
-    super::shadow::close_body(ctx, decl);
-    let new = ctx.diagnostics.split_off(before);
-    ctx.diagnostics.extend(
-        new.into_iter().filter(|d| {
-            reported.insert((d.code.clone(), d.range.file.clone(), d.range.start.offset))
-        }),
-    );
+    let ((), new) = ctx.speculate(|ctx| {
+        super::shadow::open_body(ctx, decl);
+        super::decl::check_chip_body(ctx, decl, combo);
+        super::shadow::close_body(ctx, decl);
+    });
+    ctx.diagnostics.extend(new.into_iter().filter(|d| {
+        reported.insert((
+            d.code.clone(),
+            std::sync::Arc::clone(&d.range.file),
+            d.range.start.offset,
+        ))
+    }));
 
     ctx.exec_stack.pop();
     ctx.expected_ty = expected_ty;

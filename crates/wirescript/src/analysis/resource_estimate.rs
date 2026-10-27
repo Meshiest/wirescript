@@ -1,4 +1,4 @@
-use crate::collections::HashMap;
+use crate::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::{AnonChipDecl, Block, CallArg, ChipDecl, Expr, Handler, Script, Stmt, TopDecl};
@@ -18,18 +18,12 @@ pub struct ResourceEstimate {
     /// True for a `fn`: its body is one function definition plane built once,
     /// and each call is a single Function Call gate.
     pub is_fn: bool,
-    /// True for a `const mod`'s own estimate: a call to it in a
-    /// const-required position is answered entirely by the compile-time
-    /// interpreter and emits no gates at all, so `gates`/`wires`/
-    /// `total_microchips` are forced to 0 rather than derived from compiling
-    /// its body as ordinary runtime code. Hover renders this with a dedicated
-    /// "evaluated at compile time" message instead of the usual gate count
-    /// (see `hover::format_estimate`) — a bare `~0 gates` would read like a
-    /// bug, not a feature. A call from a NON-const position falls back to an
-    /// ordinary inlined mod and DOES emit gates; this flag can't cheaply tell
-    /// the two apart (that would need per-call-site const-position analysis
-    /// this AST-level estimator doesn't have), so it always reports the
-    /// compile-time answer — the assumption the hover text states plainly.
+    /// True for a `const mod`'s own estimate. A call from a const-required position
+    /// is answered by the compile-time interpreter and emits no gates, so `gates`,
+    /// `wires` and `total_microchips` are 0 and hover says "evaluated at compile
+    /// time" (`hover::format_estimate`). A call from a non-const position does emit
+    /// gates, which this AST-level estimator cannot tell apart, so it always reports
+    /// the compile-time answer, as the hover text states.
     pub is_const_eval: bool,
 }
 
@@ -38,7 +32,7 @@ fn is_spawnable(kind: NodeKind, gate_class: &str) -> bool {
 }
 
 pub fn estimate_module(module: &Module) -> ResourceEstimate {
-    let non_spawnable: std::collections::HashSet<_> = module
+    let non_spawnable: HashSet<_> = module
         .nodes
         .iter()
         .filter(|(_, n)| !is_spawnable(n.kind, n.gate_class))
@@ -78,10 +72,11 @@ pub fn lookup_estimate<'a>(
     name: &str,
     offset: usize,
 ) -> Option<&'a ResourceEstimate> {
-    if !name.is_empty() && !name.starts_with('_') {
-        if let Some(est) = estimates.get(name) {
-            return Some(est);
-        }
+    if !name.is_empty()
+        && !name.starts_with('_')
+        && let Some(est) = estimates.get(name)
+    {
+        return Some(est);
     }
     estimates.get(&estimate_key_offset(offset))
 }
@@ -95,12 +90,12 @@ pub fn collect_estimates(
     let mut base_estimates: HashMap<String, ResourceEstimate> = HashMap::default();
     let mut call_graph: HashMap<String, Vec<String>> = HashMap::default();
 
-    // Phase 1: compile templates for base estimates + build call graph
+    // Compile templates for the base estimates and build the call graph.
     for decl in &ast.decls {
         collect_from_decl(decl, tc, file, &cache, &mut base_estimates, &mut call_graph);
     }
 
-    // Phase 2: expand estimates by following the call graph
+    // Expand the estimates along the call graph.
     let mut expanded: HashMap<String, ResourceEstimate> = HashMap::default();
     let keys: Vec<String> = base_estimates.keys().cloned().collect();
     for key in &keys {
@@ -114,12 +109,10 @@ pub fn collect_estimates(
         expanded.insert(key.clone(), est);
     }
 
-    // Phase 3: alias each `import * as ns` member under its qualified name.
-    // Members are collected (and call-graph-keyed) by their BARE name, but a
-    // namespaced symbol is stored — and looked up by hover — as `ns.member`,
-    // so without this alias every `ns.f()` rendered its signature with no gate
-    // count. Aliased after expansion so the qualified key carries the callee
-    // totals too, not just the member's own body.
+    // Alias each `import * as ns` member under its qualified name: members are
+    // collected by bare name, but hover looks a namespaced symbol up as
+    // `ns.member`. Aliased after expansion, so the alias carries the callees'
+    // totals too.
     for decl in &ast.decls {
         let TopDecl::Namespace(ns) = decl else {
             continue;
@@ -189,11 +182,9 @@ fn collect_from_decl(
         TopDecl::Chip(chip) => {
             let key = chip_key(chip);
             estimate_chip(chip, tc, file, cache, estimates);
-            // A `const mod`'s own body is never lowered as runtime code when
-            // called from a const-required position — it's answered entirely
-            // by the compile-time interpreter (see `ResourceEstimate::is_const_eval`)
-            // — so its callees must NOT add their gate counts on top of the
-            // forced-0 base estimate `estimate_chip` just gave it.
+            // A `const mod` called from a const-required position is answered by the
+            // compile-time interpreter (see `ResourceEstimate::is_const_eval`), so its
+            // callees add nothing to the zero estimate `estimate_chip` gave it.
             if !chip.is_const {
                 let calls = collect_calls_in_block(&chip.body);
                 if !calls.is_empty() {
@@ -236,9 +227,8 @@ fn collect_from_block(
             Stmt::ChipDecl(chip) => {
                 let key = chip_key(chip);
                 estimate_chip(chip, tc, file, cache, estimates);
-                // See the matching comment in `collect_from_decl`'s
-                // `TopDecl::Chip` arm — a `const mod`'s callees don't add to
-                // its own forced-0 estimate.
+                // As in `collect_from_decl`'s `TopDecl::Chip` arm, a `const mod`'s callees
+                // add nothing to its zero estimate.
                 if !chip.is_const {
                     let calls = collect_calls_in_block(&chip.body);
                     if !calls.is_empty() {
@@ -353,16 +343,12 @@ fn collect_calls_in_block(block: &Block) -> Vec<String> {
     let mut calls = Vec::new();
     crate::ast::walk::walk(
         crate::ast::walk::Node::Block(block),
-        Default::default(),
+        crate::ast::walk::Ctx::default(),
         &mut |node, _| {
-            // Only USER mod/chip calls belong in the call graph. A builtin call
-            // is a single gate (already counted by the template/gate heuristic),
-            // NOT a microchip — the same distinction `count_gates_in_expr` makes.
-            // Without this guard, `expand_estimate` treats every builtin callee
-            // (absent from `base_estimates`, so its default `is_inline` is
-            // `false`) as a non-inline chip and fabricates one phantom microchip
-            // per call: a `mod` whose only call was `BroadcastChatMessage`
-            // reported "1 chip per call" for a gate that never was one.
+            // Only user mod and chip calls belong in the call graph: a builtin call is one
+            // gate (counted by the template heuristic), not a microchip, as in
+            // `count_gates_in_expr`. A builtin callee has no base estimate, so
+            // `expand_estimate` would count it as a non-inline chip.
             if let crate::ast::walk::Node::Expr(Expr::Call { callee, .. }) = node
                 && let Expr::Ident { name, .. } = callee.as_ref()
                 && !crate::catalog::calls::calls().contains_key(name.as_str())
@@ -407,16 +393,12 @@ fn count_gates_in_stmt(stmt: &Stmt) -> usize {
 fn count_gates_in_expr(expr: &Expr) -> usize {
     match expr {
         Expr::Call { callee, args, .. } => {
-            // User-defined mod/chip calls (plain ident not in builtin catalog)
-            // are handled by the call graph — don't count the call itself.
-            // Builtins and method calls each produce ~1 gate.
+            // User mod and chip calls (an identifier not in the builtin catalog) are
+            // counted through the call graph, not here; builtins and method calls are
+            // about one gate each.
             let self_cost = match callee.as_ref() {
                 Expr::Ident { name, .. } => {
-                    if crate::catalog::calls::calls().contains_key(name.as_str()) {
-                        1
-                    } else {
-                        0
-                    }
+                    usize::from(crate::catalog::calls::calls().contains_key(name.as_str()))
                 }
                 _ => 1,
             };
@@ -479,13 +461,10 @@ fn estimate_chip(
     if estimates.contains_key(&key) {
         return;
     }
-    // A `const mod` called from a const-required position is answered
-    // entirely by the compile-time interpreter (`const_eval`) and emits NO
-    // gates — compiling its body as an ordinary runtime template (as below)
-    // would count gates for code that never actually gets lowered. Report
-    // the compile-time answer unconditionally rather than the runtime
-    // fallback's cost: see `ResourceEstimate::is_const_eval` for why this
-    // estimator can't cheaply tell a const-position call from a non-const one.
+    // A `const mod` called from a const-required position emits no gates (the
+    // interpreter answers it), so its estimate is the compile-time answer rather
+    // than its body compiled as runtime code; see `ResourceEstimate::is_const_eval`
+    // for why the two kinds of call are not told apart.
     if chip.is_const {
         estimates.insert(
             key,

@@ -39,7 +39,7 @@ thread_local! {
 
 /// Called by `lower_call` for every `recv.name(..)`; records only while
 /// [`probed`] is collecting on this thread.
-pub(in crate::lower) fn probe_method_call(ctx: &LowerCtx, call: &Expr) {
+pub(in crate::lower) fn probe_method_call(ctx: &LowerCtx<'_>, call: &Expr) {
     let collecting = PROBES.with(|p| p.borrow().is_some());
     if !collecting {
         return;
@@ -52,7 +52,7 @@ pub(in crate::lower) fn probe_method_call(ctx: &LowerCtx, call: &Expr) {
     };
     let probe = Probe {
         start: call.range().start.offset,
-        subst: ctx.resolution_subst.clone(),
+        subst: std::sync::Arc::clone(&ctx.resolution_subst),
         target: ctx
             .resolutions
             .method_targets
@@ -267,7 +267,7 @@ fn an_estimated_generic_chip_body_resolves_through_the_fallback() {
                }\n\
                let a = Acc(1)";
     let parsed = parse(src, "test");
-    let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let tc = typecheck(&parsed.ast, &crate::typecheck::CeSlotMap::default());
     let Some(TopDecl::Chip(chip)) = parsed.ast.decls.first() else {
         panic!("expected the chip first")
     };
@@ -575,7 +575,7 @@ fn a_record_column_write_uses_the_column() {
                 .properties
                 .get(&crate::intern::sym::NAME_LABEL)
             {
-                Some(crate::ir::Literal::String(l)) => Some(l.to_string()),
+                Some(crate::ir::Literal::String(l)) => Some(l.clone()),
                 _ => None,
             }
         });
@@ -638,7 +638,7 @@ fn array_literal_spreads_resolve_through_the_record() {
                 .properties
                 .get(&crate::intern::sym::NAME_LABEL)
             {
-                Some(crate::ir::Literal::String(l)) => l.to_string(),
+                Some(crate::ir::Literal::String(l)) => l.clone(),
                 other => panic!("unlabelled spread source: {other:?}"),
             }
         })

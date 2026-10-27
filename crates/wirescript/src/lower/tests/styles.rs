@@ -327,13 +327,13 @@ fn an_unstyled_program_carries_no_style() {
         any |= sub.nodes.values().any(|n| {
             n.properties.contains_key(&*sym::BRICK_COLOR)
                 || n.properties.contains_key(&*sym::BRICK_MATERIAL)
-        })
+        });
     });
     assert!(!any);
 }
 
-/// A `BrickMaterial` member is bare only as a `@material` argument, so the
-/// names it shares with `TextMaterial` still resolve there as before.
+/// A `BrickMaterial` member is bare only as a `@material` argument; elsewhere
+/// a bare name it shares with `TextMaterial` resolves to the `TextMaterial` one.
 #[test]
 fn material_members_are_bare_only_inside_the_annotation() {
     let fe = front("let t = Plastic\nout o = t.Discriminant\n");

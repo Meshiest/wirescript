@@ -7,7 +7,7 @@
 use crate::ir::Type;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CoerceRule {
+pub(crate) enum CoerceRule {
     /// Wire-compatible without a coercion gate.
     Same,
     /// Accepted but with an implicit coercion (e.g. int -> float).
@@ -16,10 +16,6 @@ pub enum CoerceRule {
     ViaString,
     /// Not assignable.
     Mismatch,
-}
-
-fn same_ref_inner(a: &Type, b: &Type) -> bool {
-    std::mem::discriminant(a) == std::mem::discriminant(b) && type_eq(a, b)
 }
 
 /// Strip one layer of `Ref`, so ref-ness compares as an exposure mode rather
@@ -32,8 +28,8 @@ fn peel_ref(t: &Type) -> &Type {
 }
 
 /// The ordered element types of `t` viewed as a tuple: `Tuple([T0,T1])`
-/// directly, or an index-keyed `Record([("0",T0),("1",T1)])` — the form a tuple
-/// LITERAL desugars to (a tuple annotation resolves to `Tuple`). Field names
+/// directly, or an index-keyed `Record([("0",T0),("1",T1)])`, the form a tuple
+/// literal desugars to (a tuple annotation resolves to `Tuple`). Field names
 /// can't begin with a digit, so an all-index-keyed record is unambiguously a
 /// tuple, never a user record.
 fn as_tuple_elems(t: &Type) -> Option<Vec<&Type>> {
@@ -49,7 +45,11 @@ fn as_tuple_elems(t: &Type) -> Option<Vec<&Type>> {
 }
 
 pub(crate) fn type_eq(a: &Type, b: &Type) -> bool {
-    use Type::*;
+    use Type::{
+        Any, Array, Bool, Brick, Character, Color, Component, Controller, Entity, Enum, Exec,
+        Float, Int, Map, Never, Opaque, Outputs, Param, PrefabRef, Quat, Record, Ref, Rotator,
+        String, Teleport, Tuple, Union, Vector, Zone,
+    };
     match (a, b) {
         (Bool, Bool)
         | (Int, Int)
@@ -86,9 +86,8 @@ pub(crate) fn type_eq(a: &Type, b: &Type) -> bool {
                     .iter()
                     .all(|(k1, t1)| bx.iter().any(|(k2, t2)| k1 == k2 && type_eq(t1, t2)))
         }
-        // A param is invariant/nominal — it doesn't coerce to anything; this
-        // arm is defensive since substitution normally removes params before
-        // coercion.
+        // A param is invariant/nominal and coerces to nothing; this arm is
+        // defensive since substitution normally removes params before coercion.
         (Param(a), Param(b)) => a == b,
         // Enums are nominal: same declaration name, and their generic args
         // (e.g. `Option<int>`'s `[Int]`) compare pairwise equal.
@@ -99,8 +98,8 @@ pub(crate) fn type_eq(a: &Type, b: &Type) -> bool {
     }
 }
 
-/// Is `from` pulsing — i.e. does a value-changed edge on this wire trip
-/// downstream execs?
+/// Whether a value of type `t` pulses: a value-changed edge on a wire of this
+/// type trips downstream execs.
 pub(crate) fn is_pulsing(t: &Type) -> bool {
     matches!(
         t,
@@ -115,7 +114,7 @@ pub(crate) fn is_pulsing(t: &Type) -> bool {
 }
 
 /// Narrower than the `Numeric` constraint class (`class_mask("Numeric")` also
-/// includes vector/rotator/quat/color) — just the three primitive scalars
+/// includes vector/rotator/quat/color): just the three primitive scalars
 /// that widen/coerce numerically among themselves.
 fn is_prim_number(t: &Type) -> bool {
     matches!(t, Type::Bool | Type::Int | Type::Float)
@@ -139,8 +138,11 @@ fn formats_to_string(t: &Type) -> bool {
     )
 }
 
-pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
-    use Type::*;
+pub(crate) fn coerce(from: &Type, to: &Type) -> CoerceRule {
+    use Type::{
+        Any, Array, Bool, Character, Component, Controller, Entity, Exec, Map, Opaque, Outputs,
+        Quat, Record, Ref, Rotator, String, Union,
+    };
     // `any` (and `Opaque`, which behaves exactly like `any` outside of
     // operator resolution) is the universal target and source.
     if matches!(from, Any | Opaque) || matches!(to, Any | Opaque) {
@@ -173,7 +175,7 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return best;
     }
 
-    // Ref invariance — no coercion through ref types.
+    // Ref invariance: no coercion through ref types.
     if let (Ref(fi), Ref(ti)) = (from, to) {
         return if type_eq(fi, ti) {
             CoerceRule::Same
@@ -215,8 +217,8 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     }
     // Entity -> Character/Controller: wires carry plain object refs and an
     // entity can be a player (e.g. Sweep's HitEntity), so the downcast is
-    // implicit — it wires directly, like character <-> controller (no adapter).
-    if matches!((from, to), (Entity, Character) | (Entity, Controller)) {
+    // implicit and wires directly, like character <-> controller (no adapter).
+    if matches!((from, to), (Entity, Character | Controller)) {
         return CoerceRule::Coerce;
     }
 
@@ -233,17 +235,15 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         return CoerceRule::Coerce;
     }
 
-    // String -> Bool: the language-level coercion means exactly `s != ""` —
-    // lowering inserts a `CompareNotEqual(s, "")` gate wherever a
-    // string-typed source wires into a bool-typed destination (see
-    // `LowerCtx::wrap_string_to_bool` in lower/context.rs). Empty is false,
-    // EVERYTHING else is true — deliberately NOT the game's native
-    // content-aware port truthiness (where "0" and "false" are also falsy;
-    // certified in `data/gate_semantics.json`'s Branch/Select/AND chapters),
-    // which stays reachable by wiring through `any` or the logical
-    // operators' native string overloads. Unidirectional: bool -> string
-    // stays the existing `ViaString` format-text path below (renders
-    // "true"/"false" text).
+    // String -> Bool means exactly `s != ""`: lowering inserts a
+    // `CompareNotEqual(s, "")` gate wherever a string-typed source wires into
+    // a bool-typed destination (see `LowerCtx::wrap_string_to_bool`). Empty is
+    // false, everything else is true. This is deliberately not the game's
+    // native content-aware port truthiness (where "0" and "false" are also
+    // falsy; certified in `data/gate_semantics.json`'s Branch/Select/AND
+    // chapters), which stays reachable by wiring through `any` or the logical
+    // operators' native string overloads. Unidirectional: bool -> string is
+    // the `ViaString` format-text path below (renders "true"/"false" text).
     if matches!((from, to), (String, Bool)) {
         return CoerceRule::Coerce;
     }
@@ -255,15 +255,14 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
 
     // "numeric -> vector" is explicitly disallowed (broadcast only happens
     // inside specific gates at the wire level, not at the type-coercion level).
-    let _ = same_ref_inner; // keep helper alive for future extensions
 
     // Two records match field-wise treating ref-ness as an exposure mode, the
     // same way a `*T` parameter binds a `T` var by alias (`bump(x)` for
     // `bump(p: *int)`). A record literal built from vars exposes scalar
     // fields as refs and array fields plainly, so a `*T` field and a plain `T`
-    // field are interchangeable at the boundary — this is what lets a
+    // field are interchangeable at the boundary: this is what lets a
     // `let cpu: Cpu = { regs, cpsr }` (mixed plain-array + ref-scalar) pass to a
-    // mod taking `Cpu`. Field sets must match and each pair must be equal AFTER
+    // mod taking `Cpu`. Field sets must match and each pair must be equal after
     // unwrapping refs, so genuine value-type mismatches (`int` vs `string`
     // fields) are still rejected. Reached only when the exact `type_eq` above
     // already failed, i.e. some field differs solely in ref exposure.
@@ -282,31 +281,30 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
         }
     }
 
-    // Tuples match by position, ref-insensitively — and a tuple LITERAL (an
-    // index-keyed record `{"0":T0,"1":T1}`) is interchangeable with a tuple TYPE
+    // Tuples match by position, ref-insensitively, and a tuple literal (an
+    // index-keyed record `{"0":T0,"1":T1}`) is interchangeable with a tuple type
     // annotation (`Tuple([T0,T1])`), which `type_str` renders identically. Both
     // sides normalize to their element list; lengths and element types (after
     // unwrapping refs) must match, so a genuine arity/element mismatch still
     // fails.
-    if let (Some(ea), Some(eb)) = (as_tuple_elems(from), as_tuple_elems(to)) {
-        if ea.len() == eb.len()
-            && ea
-                .iter()
-                .zip(&eb)
-                .all(|(a, b)| type_eq(peel_ref(a), peel_ref(b)))
-        {
-            return CoerceRule::Same;
-        }
+    if let (Some(ea), Some(eb)) = (as_tuple_elems(from), as_tuple_elems(to))
+        && ea.len() == eb.len()
+        && ea
+            .iter()
+            .zip(&eb)
+            .all(|(a, b)| type_eq(peel_ref(a), peel_ref(b)))
+    {
+        return CoerceRule::Same;
     }
 
     // Container congruence for `any`-parameterized containers: an `any[]` /
-    // `Map<any, …>` parameter accepts any concrete array/map of the matching
-    // shape, because `any`/`Opaque` inside a container is a wildcard — the same
+    // `Map<any, ...>` parameter accepts any concrete array/map of the matching
+    // shape, because `any`/`Opaque` inside a container is a wildcard, the same
     // universality it has at top level (see the early return above). This is the
-    // ONLY element coercion a container allows: a concrete `int[]` still may NOT
-    // flow into a concrete `float[]` (their backing wire variants differ, so it
-    // would miscompile at load), and the wildcard must be on the TARGET side
-    // (a concrete arg into an `any[]` sink) — the reverse narrowing stays a
+    // only element coercion a container allows: a concrete `int[]` may not flow
+    // into a concrete `float[]` (their backing wire variants differ, so it would
+    // miscompile at load), and the wildcard must be on the target side (a
+    // concrete arg into an `any[]` sink); the reverse narrowing stays a
     // Mismatch. Recurse so `any[][]` etc. also match.
     if let (Array(_), Array(te)) = (from, to)
         && matches!(**te, Any | Opaque)
@@ -323,12 +321,12 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     }
 
     // A record auto-unwraps to a member when used where a non-record value is
-    // expected. Only the FIRST field may drive the unwrap, because lowering
+    // expected. Only the first field may drive the unwrap, because lowering
     // always wires the multi-output gate's `outputs[0]` port into the scalar
-    // sink (`lower/call.rs`), and the record's field order mirrors that port
-    // order. Letting a LATER field satisfy the coercion here accepts a program
-    // the wire layer then miscompiles — e.g. `let r: rotator = e.GetVelocity()`
-    // ({Vector, Rotation}) coerces via `.Rotation`, but `.Vector` gets wired
+    // sink (`lower::call::builtin`), and the record's field order mirrors that
+    // port order. Letting a later field satisfy the coercion would accept a
+    // program the wire layer then miscompiles: `let r: rotator = e.GetVelocity()`
+    // ({Vector, Rotation}) would coerce via `.Rotation`, but `.Vector` gets wired
     // into `SetRotation`. A tuple literal (an index-keyed record) never
     // scalar-unwraps: `(1, "x")` is not an `int`, it has no primary member.
     // A gate read gives one value its first output once: a record there is
@@ -348,7 +346,7 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
     CoerceRule::Mismatch
 }
 
-/// The least-upper-bound of `a` and `b` over a **widening-only** lattice —
+/// The least-upper-bound of `a` and `b` over a **widening-only** lattice,
 /// used by generic-inference joins (`types::infer::solve`): both `a` and
 /// `b` cast into the result via a single non-lossy widening, never a
 /// narrowing. Returns `None` when there's no common widening (a genuine
@@ -356,10 +354,13 @@ pub fn coerce(from: &Type, to: &Type) -> CoerceRule {
 ///
 /// Only the leaf/value variants below widen; compound types (`Ref`/`Array`/
 /// `Map`/`Union`/`Tuple`/`Record`) only join with themselves via the `a == b`
-/// fast path — a mismatched compound pair returns `None`, this function
-/// never tries to widen through a compound's structure.
-pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
-    use Type::*;
+/// fast path, and a mismatched compound pair returns `None` (no widening
+/// through a compound's structure).
+pub(crate) fn widening_join(a: &Type, b: &Type) -> Option<Type> {
+    use Type::{
+        Any, Bool, Character, Controller, Entity, Float, Int, Opaque, Outputs, Quat, Record,
+        Rotator, Tuple,
+    };
     // Two gate reads naming the same outputs in another order are equal as
     // records but not as reads: a place for one value takes each one's first.
     let reordered = matches!((a, b), (Outputs(fa), Outputs(fb)) if fa.iter().zip(fb).any(|((na, _), (nb, _))| na != nb));
@@ -372,7 +373,7 @@ pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
     {
         return Some(record.clone());
     }
-    // `any`/`Opaque` is neutral — it widens to whatever the other side is.
+    // `any`/`Opaque` is neutral: it widens to whatever the other side is.
     if matches!(a, Any | Opaque) {
         return Some(b.clone());
     }
@@ -428,16 +429,16 @@ pub fn widening_join(a: &Type, b: &Type) -> Option<Type> {
     None
 }
 
-/// Left-to-right fold of [`widening_join`] over `types` — each item widens
+/// Left-to-right fold of [`widening_join`] over `types`: each item widens
 /// into the running accumulator, so the result is the least-upper-bound of
 /// the whole sequence. `None` if `types` is empty (there's no join of
 /// nothing), or if any step has no common widening with the accumulator so
-/// far (mirrors `widening_join`'s own `None` — a genuine incompatibility).
+/// far (mirrors `widening_join`'s own `None`, a genuine incompatibility).
 /// Shared by the two call-site folds that need this (`types::infer::solve`
 /// joining a type param's constraint types; `typecheck::union_output_type`
 /// joining a builtin's union-typed operand/arg types) so the widening
 /// semantics can't drift between them.
-pub fn widening_join_all(types: impl IntoIterator<Item = Type>) -> Option<Type> {
+pub(crate) fn widening_join_all(types: impl IntoIterator<Item = Type>) -> Option<Type> {
     let mut iter = types.into_iter();
     let first = iter.next()?;
     iter.try_fold(first, |acc, t| widening_join(&acc, &t))

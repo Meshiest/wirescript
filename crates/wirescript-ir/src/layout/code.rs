@@ -2,8 +2,8 @@
 //!
 //! Nodes with a real range in the module's most common source file place
 //! literally: earlier lines sit higher, deeper columns sit further right.
-//! Nodes without a usable range in that file — foreign-file operands and
-//! synthetic default-range nodes — adopt the row of whichever node
+//! Nodes without a usable range in that file (foreign-file operands and
+//! synthetic default-range nodes) adopt the row of whichever node
 //! consumes or produces them, transitively through other homeless nodes.
 //! Anything unreachable lands on an overflow row below the last source
 //! line. Within one line, nodes order by dependency depth over that
@@ -21,35 +21,30 @@
 //! flipped and centered independently so it reads top-down on its own.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
-use crate::collections::{HashMap, HashSet};
+use crate::collections::HashMap;
 use crate::emit::Placement;
-use crate::intern::sym;
-use crate::ir::port_registry::WirePort;
-use crate::ir::{
-    Literal, Module, Node, NodeId, NodeKind, PortRef, SourceComment, Type, gate_class,
-};
+use crate::ir::{Module, Node, NodeId};
 
-use super::bus::{BusDemand, allocate_lanes};
 use super::{
-    BusEnd, BusLayout, BusNode, BusNodeId, BusRole, BusWire, Extent, LayoutOptions, LayoutResult,
-    NodeRotation, TextAnnotation, Z_PLANE, brick_half_size, chip_layouts_of,
+    BusLayout, Extent, LayoutOptions, LayoutResult, NodeRotation, TextAnnotation, Z_PLANE,
+    chip_layouts_of,
 };
 
-mod nodes;
-use nodes::*;
 mod adjacency;
-use adjacency::*;
 mod comments;
-use comments::*;
-mod lines;
-use lines::*;
-mod pages;
-use pages::*;
 mod gutter;
-use gutter::*;
+mod lines;
+mod nodes;
+mod pages;
+
+use adjacency::{adopt_line, build_adjacency};
+use comments::{assign_comment_owners, claimed_comments, source_indent};
+use gutter::{Body, chip_owners, lay_bus, lay_mini_bus, plan_bus};
+use lines::{LinePlan, plan_line};
+use nodes::{anchor_file, cell_half_size, has_range, is_edge_pin, is_spawnable, rotation_of};
+use pages::{PageInfo, assemble_bands, assemble_pages, place_edge_pins};
 
 /// Horizontal shift applied per source column of a line's head node.
 pub const INDENT_UNIT: i32 = 5;
@@ -65,8 +60,8 @@ pub const PAGE_Z_STEP: i32 = 50;
 pub const CONTINUATION_INDENT: i32 = 2 * INDENT_UNIT;
 /// Blank-line runs longer than this contribute the same gap as this many.
 const MAX_BLANK_RUN_ROWS: i32 = 2;
-/// Footprint of a comment label's carrier brick — a 1×1 plate, so the same
-/// 10 units along the row and the column axis.
+/// Footprint of a comment label's carrier brick: a 1×1 plate, 10 units along
+/// both axes.
 pub const ANNOTATION_SIZE: i32 = 10;
 /// Half-extent of a rerouter brick (`B_1x1_Reroute_Node` is 2×2×2).
 pub const REROUTER_HALF: i32 = 1;
@@ -75,11 +70,9 @@ pub const REROUTER_HALF: i32 = 1;
 pub const LANE_PITCH: i32 = 2 * REROUTER_HALF;
 /// Gap between the bus band and the code body.
 ///
-/// Must stay `>= TAP_RESERVE`. The innermost lane sits at
-/// `body_min_y - BUS_BAND_GUTTER - LANE_PITCH`, and a gate-side tap rerouter
-/// reaches back to `y - TAP_RESERVE` from its column, so a smaller gutter
-/// stands the two in the same cell on the leftmost brick of a row. Today
-/// that holds with one unit of slack.
+/// Must stay `>= TAP_RESERVE`: a gate-side tap rerouter reaches back to
+/// `y - TAP_RESERVE` from its column, so a smaller gutter puts it in the
+/// innermost lane's cell on the leftmost brick of a row.
 pub const BUS_BAND_GUTTER: i32 = 6;
 /// Gap between a gate-side tap rerouter and the gate it feeds.
 pub const TAP_GAP: i32 = 3;
@@ -87,50 +80,24 @@ pub const TAP_GAP: i32 = 3;
 /// down-pointing lane rerouter stacked on the right-pointing tap rerouter
 /// that carries the value out to the row.
 pub const LANE_PAIR_HEIGHT: i32 = 4 * REROUTER_HALF;
-/// Body rows a module must occupy before its bus is kept on size alone.
-///
-/// Paired with [`BUS_MIN_GROUPS`]: a body this tall carrying this many bussed
-/// values is one where the lanes are doing real work, and it keeps them
-/// whatever they cost. Below it the bus has to pay for itself brick by brick.
+/// Body rows a module must occupy before its bus is kept on size alone
+/// (together with [`BUS_MIN_GROUPS`]).
 const BUS_MIN_ROWS: usize = 8;
-/// Bussable values a module must carry before its bus is kept on size alone.
-/// See [`BUS_MIN_ROWS`] — a tall body carrying one value is a long lane, not a
-/// bus, and it is the several-values case the band exists to untangle.
+/// Bussed values a module must carry before its bus is kept on size alone
+/// (together with [`BUS_MIN_ROWS`]).
 const BUS_MIN_GROUPS: usize = 3;
 
-/// Is a module's bus worth the bricks it costs?
+/// Is a module's bus worth the bricks it costs? Kept on SIZE (at least
+/// [`BUS_MIN_ROWS`] rows and [`BUS_MIN_GROUPS`] bussed values) or on COST (no
+/// more rerouters than the module has gates).
 ///
-/// A lane replaces one long diagonal per consumer with a chain of rerouters,
-/// which is a clear win on a body with many rows and many values crossing
-/// them. On a handful of gates it is the opposite: the rerouters outnumber the
-/// gates they serve and the plane reads worse for having them.
+/// The caller must treat the answer as ALL-OR-NOTHING: a dropped bus must
+/// leave an entirely empty [`BusLayout`], suppression included, or emit drops
+/// the suppressed wires and strands their consumers. The spacing reserved for
+/// it (`TAP_RESERVE`, the pin stack's offset) stays either way.
 ///
-/// Two ways to keep it, checked in order:
-///
-/// 1. SIZE. A body of at least [`BUS_MIN_ROWS`] rows carrying at least
-///    [`BUS_MIN_GROUPS`] bussed values keeps its bus regardless of cost —
-///    that is the shape the band was built for, and the diagonals it removes
-///    there are exactly the ones that make a big plane unreadable.
-/// 2. COST. Otherwise the bus is kept only while it adds no more rerouters
-///    than the module has real gates. One brick of routing per brick of logic
-///    is the most a small body can carry before the routing IS the picture.
-///
-/// The caller must treat the answer as ALL-OR-NOTHING: a module that drops its
-/// bus has to end up with an entirely empty [`BusLayout`], suppression
-/// included. Suppression left behind without the lanes to honour it would drop
-/// those wires at emit and strand their consumers silently.
-///
-/// The BUS is fully undone; the module is not byte-identical to one laid out
-/// before the feature existed. `TAP_RESERVE` has already widened every column
-/// and `place_edge_pins` has already shifted the pin stack clear of a band
-/// that will not be built, and both happen before the cost is knowable.
-/// Nothing is stranded by that — it is spacing, not routing — but the plane is
-/// a little wider than it needs to be.
-///
-/// `rows` is the module's total row count across ALL pages, while a bus is
-/// allocated per page: a module of three short pages can clear [`BUS_MIN_ROWS`]
-/// without any single page being that deep. `gates` likewise counts every
-/// spawnable node, chip bricks and edge pins included.
+/// `rows` counts rows across ALL pages and `gates` counts every spawnable
+/// node, chip bricks and edge pins included.
 fn bus_is_worth_its_bricks(rows: usize, groups: usize, gates: usize, nodes: usize) -> bool {
     if rows >= BUS_MIN_ROWS && groups >= BUS_MIN_GROUPS {
         return true;
@@ -138,40 +105,19 @@ fn bus_is_worth_its_bricks(rows: usize, groups: usize, gates: usize, nodes: usiz
     nodes <= gates
 }
 
-/// The vertical distance a lane must cover to be worth building.
-///
-/// A lane costs a rerouter out in the gutter and another coming back to the
-/// gate, stacked as a pair `LANE_PAIR_HEIGHT` tall. If the value travels less
-/// than those bricks span, the lane is taller than the journey it makes: the
-/// wire it replaced was already an inline hop, and routing it through the
-/// gutter is strictly more bricks over a strictly longer path.
-///
-/// Measured rather than guessed. Lane extents are sharply bimodal — on a large
-/// program 40% of groups travel EXACTLY 0 and the next populated extent is 8,
-/// with three groups in between — so any floor in 1..=7 gives the same answer
-/// and the exact value is not load-bearing.
+/// The vertical distance a lane must cover to be worth building: a value
+/// travelling less than its own lane bricks span was already an inline hop.
 pub const MIN_LANE_TRAVEL: i32 = LANE_PAIR_HEIGHT + 2 * REROUTER_HALF;
 
 /// Vertical step between two runs that would otherwise leave at the same
-/// level. One rerouter tall, so staggered runs stack flush — legal, since
-/// brick separation is a strict inequality — while still giving each run a
-/// line of its own to be drawn on.
+/// level. One rerouter tall, so staggered runs stack flush (touching bricks
+/// are legal) while each run gets its own line.
 const STAGGER_STEP: i32 = 2 * REROUTER_HALF;
 /// Space held open in front of every column of a line for the gutter bus's
-/// gate-side rerouter — the tap gap plus the rerouter's own footprint.
+/// gate-side rerouter: the tap gap plus the rerouter's own footprint.
 ///
-/// Without it a row packs its columns flush and the cell a tap needs is the
-/// cell its left-hand neighbour already stands in, so most taps would be
-/// left out and their consumers would read from further back along the row
-/// instead. Reserving it makes the cell exist by construction, on every
-/// column, whether or not the bus ends up using it.
-///
-/// The cost is paid by every column of every line: a code-layout line runs
-/// roughly 30–50% wider than the bricks on it need, since a 5-unit gate
-/// column becomes a 10-unit one. That is accepted deliberately — a reserve
-/// handed out only where a tap turns out to land cannot be computed before
-/// the body is placed, and the body's width is what decides where the taps
-/// land. Paying it everywhere is what makes per-column taps land at all.
+/// Reserved on every column, used or not: where taps land depends on the
+/// body's width, so the reserve cannot be placed only where it is needed.
 pub const TAP_RESERVE: i32 = TAP_GAP + 2 * REROUTER_HALF;
 
 /// Width/height budgets driving line, band, and page wrapping.
@@ -282,7 +228,7 @@ pub fn layout_code_with_budgets(
         ado.sort_by_key(|id| {
             let n = &module.nodes[id];
             (
-                n.source_range.file.clone(),
+                Arc::clone(&n.source_range.file),
                 n.source_range.start.offset,
                 *id,
             )
@@ -378,7 +324,7 @@ pub fn layout_code_with_budgets(
         overflow.sort_by_key(|id| {
             let n = &module.nodes[id];
             (
-                n.source_range.file.clone(),
+                Arc::clone(&n.source_range.file),
                 n.source_range.start.offset,
                 *id,
             )
@@ -405,11 +351,9 @@ pub fn layout_code_with_budgets(
     // its own extents, stepping z per page.
     let mut placements: HashMap<NodeId, Placement> = HashMap::default();
     let mut annotations: Vec<TextAnnotation> = Vec::new();
-    // The row a body node sits in, named by `(page, sub-row offset)` — the
-    // assignment the bus taps into.
-    // `page_w`/`page_h` and the `PageInfo`s built here are final: the bus is
-    // planned after this and never widens them. See the KNOWN DEVIATION note
-    // on [`gutter::plan_bus`] for what that costs.
+    // The row a body node sits in, as `(page, sub-row offset)`, which the bus
+    // taps into. Page sizes and `PageInfo`s are final here; the bus never
+    // widens them (see KNOWN DEVIATION on `gutter::plan_bus`).
     let mut node_row: HashMap<NodeId, (usize, i32)> = HashMap::default();
     let mut page_infos: Vec<PageInfo> = Vec::new();
     for (pi, page) in pages.iter().enumerate() {
@@ -417,7 +361,7 @@ pub fn layout_code_with_budgets(
         let mut page_h = 0i32;
         let mut page_w = 0i32;
         for &(id, right, down) in &page.nodes {
-            let (hsx, hsy) = cell_half_size(&module.nodes[&id], rotation_of(&rotations, &id));
+            let (hsx, hsy) = cell_half_size(&module.nodes[&id], rotation_of(&rotations, id));
             page_h = page_h.max(down + hsx * 2);
             page_w = page_w.max(right + hsy * 2);
         }
@@ -432,7 +376,7 @@ pub fn layout_code_with_budgets(
             z,
         };
         for &(id, right, down) in &page.nodes {
-            let (hsx, hsy) = cell_half_size(&module.nodes[&id], rotation_of(&rotations, &id));
+            let (hsx, hsy) = cell_half_size(&module.nodes[&id], rotation_of(&rotations, id));
             let x = page_h - down - hsx * 2 - page_h / 2;
             let y = right - page_w / 2;
             placements.insert(id, Placement { x, y, z });
@@ -457,10 +401,9 @@ pub fn layout_code_with_budgets(
         page_infos.push(info);
     }
 
-    // The gutter lanes read the body's placement, so they are planned once
-    // the body is final. They also claim the band the input-pin stack has to
-    // clear, so the plan precedes the edge pins — and the lanes themselves
-    // follow, since a lane headed by an edge pin stands at that pin's row.
+    // The bus is planned once the body is final and before the edge pins,
+    // whose stack must clear the band; it is laid after them, since a lane
+    // headed by an edge pin stands at that pin's row.
     let owners = chip_owners(module);
     let body = Body {
         module,
@@ -490,20 +433,14 @@ pub fn layout_code_with_budgets(
         owners: &owners,
     };
 
-    // Counted by `lay_bus`, which is where the zero-travel filter runs, so
-    // the size override weighs the lanes actually laid rather than the
-    // groups that merely applied for one.
+    // Counted by `lay_bus` after its travel filter, so the size check weighs
+    // the lanes actually laid.
     let (mut bus, bussable_groups) = lay_bus(&body, &mut plan);
     lay_mini_bus(&mut bus, &body, &node_line, &mut plan);
 
-    // ...and now decide whether it was worth building. The plan is what makes
-    // the cost knowable — the node count is not estimable from the module
-    // alone, since a lane's length depends on where the body landed — so the
-    // bus is built and then discarded whole if it did not earn its bricks.
-    //
-    // Discarding is all-or-nothing by construction: replacing the layout drops
-    // its nodes, its wires AND its suppression together, which is what leaves
-    // the module byte-identical to one laid out before the bus existed.
+    // The bus's cost is only known once it is built, so it is built and then
+    // discarded whole if it did not earn its bricks. Replacing the layout
+    // drops its nodes, wires and suppression together.
     if !bus_is_worth_its_bricks(
         plan.row_index.len(),
         bussable_groups,
@@ -520,7 +457,7 @@ pub fn layout_code_with_budgets(
     // everything else.
     let mut extent = Extent::EMPTY;
     for (id, p) in &placements {
-        let (hsx, hsy) = cell_half_size(&module.nodes[id], rotation_of(&rotations, id));
+        let (hsx, hsy) = cell_half_size(&module.nodes[id], rotation_of(&rotations, *id));
         extent.add((p.x, p.y, p.z), (hsx * 2, hsy * 2, 0));
     }
     for a in &annotations {
@@ -537,11 +474,11 @@ pub fn layout_code_with_budgets(
                 p.x += shift_x;
                 p.y += shift_y;
             }
-            for a in annotations.iter_mut() {
+            for a in &mut annotations {
                 a.x += shift_x;
                 a.y += shift_y;
             }
-            for n in bus.nodes.iter_mut() {
+            for n in &mut bus.nodes {
                 n.x += shift_x;
                 n.y += shift_y;
             }

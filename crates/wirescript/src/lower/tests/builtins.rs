@@ -38,8 +38,8 @@ fn vector_arithmetic_lowers_to_math_gates() {
 
 #[test]
 fn constant_vec_inlines_into_var_set() {
-    // `v = Vec(…)` in a handler folds to component data on the Var_Set gate —
-    // no MakeVector gate needed.
+    // `v = Vec(...)` in a handler folds to component data on the Var_Set gate, with
+    // no MakeVector gate.
     let r = compile_ok("var v: vector\nin t: exec\non t { v = Vec(1.0, 2.0, 3.0) }");
     assert!(
         !has_gate_deep(&r, gc::MAKE_VECTOR),
@@ -60,8 +60,8 @@ fn constant_vec_inlines_into_math() {
 
 #[test]
 fn constant_vec_materializes_for_split_vector() {
-    // `.x` lowers to SplitVector, whose Input is a plain struct field — the
-    // constant must stay a wired MakeVector, not silently zero out.
+    // `.x` lowers to SplitVector, whose Input is a plain struct field: the constant
+    // stays a wired MakeVector rather than silently zeroing out.
     let r = compile_ok("let p = Vec(1.0, 2.0, 3.0)\nout x = p.x");
     assert!(has_gate(&r, gc::SPLIT_VECTOR));
     assert!(
@@ -138,7 +138,7 @@ fn messaging_builtins_lower_to_their_gates() {
 
 #[test]
 fn play_audio_builtins_carry_audio_asset() {
-    // The `$BrickOneShotAudioDescriptor/…` ref inlines into the gate's
+    // The `$BrickOneShotAudioDescriptor/...` ref inlines into the gate's
     // AudioDescriptor data field (registered as an external asset at emit).
     let r = compile_ok(
         "in p: character\non p {\n  p.PlayAudioAt($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press, volume = 0.5)\n  PlayGlobalAudio($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press)\n  p.PlayClientAudio($BrickOneShotAudioDescriptor/BOSA_Buttons_Button_1_Press, volume = 0.5, pitch = 1.2)\n}",
@@ -262,12 +262,10 @@ fn has_role_lowers_with_config_role_name() {
 
 #[test]
 fn inline_multi_output_call_reads_its_own_port() {
-    // A swizzle-named field on an INLINE call reads that call's own output
-    // port. Only a let-bound result used to get the port lookup; written
-    // inline, `.Yaw`/`.y` was claimed by the Split* synthesis, which split the
-    // call's PRIMARY output a SECOND time - an extra gate wired to the wrong
-    // component (SplitRotation's `Pitch` fed back into a SplitRotation, read
-    // as `Yaw`).
+    // A swizzle-named field on an INLINE call reads that call's own output port,
+    // as a let-bound result does. Claimed by the Split* synthesis instead, `.Yaw`/`.y`
+    // would split the call's PRIMARY output a second time and read the wrong
+    // component.
     let src = "in d: vector\n\
                out yaw = d.ToRotation().ToEuler().Yaw\n\
                out y = d.SplitVec().y";
@@ -381,10 +379,9 @@ fn rotator_constant_bakes_into_a_quat_port() {
 
 #[test]
 fn rotator_and_quat_components_split_like_a_vector_does() {
-    // A rotation's Pitch/Yaw/Roll and a quaternion's X/Y/Z/W are only readable
-    // through their Split gates, exactly as a vector's X/Y/Z are. `.pitch`
-    // used to type-check and then lower to a placeholder, and `.x` on a quat
-    // was rejected outright.
+    // A rotation's Pitch/Yaw/Roll and a quaternion's X/Y/Z/W are readable through
+    // their Split gates, exactly as a vector's X/Y/Z are: `.pitch` lowers to a real
+    // split, and `.x` on a quat is accepted.
     let r = compile_ok(
         "in v: vector\nin r: rotator\nin q: quat\n\
          out a = v.x\nout b = r.pitch\nout c = r.roll\nout d = q.x\nout e = q.w",
@@ -424,8 +421,8 @@ fn rotator_and_quat_components_split_like_a_vector_does() {
 
 #[test]
 fn field_access_vector_component_on_local_creates_split() {
-    // `let a = ...; a.x` goes through the local-binding path, which previously
-    // returned the whole vector port instead of splitting out the component.
+    // `let a = ...; a.x` goes through the local-binding path, which splits out the
+    // component rather than returning the whole vector port.
     let r = compile_ok(
         "in p: character\non p {\n  let a = Vec(1.0, 2.0, 3.0) + Vec(4.0, 5.0, 6.0)\n  let cx = a.x\n  p.DisplayText(\"${cx}\")\n}",
     );
@@ -438,9 +435,8 @@ fn field_access_vector_component_on_local_creates_split() {
 
 #[test]
 fn splitvec_record_fields_reuse_single_split() {
-    // Regression: `let p = v.SplitVec(); p.x / p.y / p.z` must read the X/Y/Z
-    // ports of the one split. Previously the swizzle fallthrough re-split p's
-    // first field (a scalar), so y/z read garbage. Exactly one SplitVector.
+    // `let p = v.SplitVec(); p.x / p.y / p.z` reads the X/Y/Z ports of the one
+    // split, not a re-split of p's first (scalar) field. Exactly one SplitVector.
     let r = compile_ok(
         "in pl: character\non pl {\n  let v = Vec(11.0, 22.0, 33.0)\n  let p = v.SplitVec()\n  let s = p.x + p.y + p.z\n  pl.DisplayText(\"${s}\")\n}",
     );

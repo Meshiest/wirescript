@@ -1,6 +1,17 @@
 //! The `@side` outer rerouters: geometry and emission.
 
-use super::*;
+use brdb::{Position, WireConnection, World};
+
+use crate::collections::HashMap;
+use crate::intern::sym;
+use crate::ir::{Literal, Module, NodeId, gate_class as gc};
+
+use super::colors::io_node_color;
+use super::labels::{microchip_io_label, text_label};
+use super::module::EmitContext;
+use super::no_collision;
+use super::options::{EmitError, EmitOptions};
+use super::wires::{RER_INPUT, RER_OUTPUT, brick_port, rerouter_brick};
 
 /// Grid-unit offset from the chip brick's centre to a flush outer rerouter's
 /// centre: chip half-extent (5) + rerouter half-extent (1).
@@ -9,9 +20,9 @@ const REROUTER_EDGE_OFFSET: i32 = 6;
 /// Spacing between adjacent rerouter centres along a side.
 const REROUTER_PITCH: i32 = 2;
 
-/// Along-edge coordinate of the first pin: flush at the top/left corner of the
-/// chip's 10-wide edge (chip half-extent 5 − rerouter half-extent 1). Pins run
-/// inward from here (top->bottom, left->right) rather than centred on the edge.
+/// Along-edge coordinate of the first pin: flush at the top/left corner of the chip's
+/// 10-wide edge (chip half-extent 5 - rerouter half-extent 1). Pins run inward from here
+/// (top->bottom, left->right) rather than centred on the edge.
 const REROUTER_RUN_START: i32 = 4;
 
 /// Rerouter centre sits 1 unit below the chip centre so both bases rest on
@@ -21,19 +32,18 @@ const REROUTER_Z_OFFSET: i32 = -1;
 /// Rerouter name labels use the smaller tag size, not the full gate-label size.
 const REROUTER_LABEL_LINE_HEIGHT: f32 = 1.2;
 
-/// Yaw applied to an outer rerouter brick so its wire nub faces away from the
-/// chip. Output pins face outward; input pins are flipped 180° so an input and
-/// an output on the same side read opposite ways (as requested). The reroute
-/// node's default yaw (`Deg0`) points +Y — "screen right" — so the sides step
-/// around from there. The floating text label rides the brick's yaw (its own
-/// TextDisplay rotation stays 0), giving the in/out 180° text flip for free.
+/// Yaw applied to an outer rerouter brick so its wire nub faces away from the chip. Output
+/// pins face outward; input pins are flipped 180 degrees so an input and an output on the
+/// same side read opposite ways. The reroute node's default yaw (`Deg0`) points +Y ("screen
+/// right"), and the sides step around from there. The floating text label rides the brick's
+/// yaw (its own `TextDisplay` rotation stays 0), which flips in/out text for free.
 ///
-/// World<->screen mapping, confirmed in-game: +X = up, +Y = right, and `Deg90`
-/// yaws toward −X — so the per-side values below point each output pin outward.
+/// World<->screen mapping, confirmed in game: +X = up, +Y = right, and `Deg90` yaws toward
+/// -X, so the per-side values below point each output pin outward.
 fn rerouter_orientation(side: &str, is_input: bool) -> brdb::Rotation {
-    use brdb::Rotation::*;
+    use brdb::Rotation::{Deg0, Deg90, Deg180, Deg270};
     // Outward-facing yaw per side (output pins).
-    // Deg0=+Y, Deg90=−X, Deg180=−Y, Deg270=+X.
+    // Deg0=+Y, Deg90=-X, Deg180=-Y, Deg270=+X.
     let outward = match side {
         "right" => Deg0,   // faces +Y (screen right)
         "bottom" => Deg90, // faces −X (screen down)
@@ -52,7 +62,7 @@ fn rerouter_orientation(side: &str, is_input: bool) -> brdb::Rotation {
     }
 }
 
-/// TextDisplay rotation (degrees) for a rerouter pin's name label. Calibrated
+/// `TextDisplay` rotation (degrees) for a rerouter pin's name label. Calibrated
 /// in-game: on each side the input and output labels read opposite ways.
 /// left/top edges -> input 0°, output 180°; right/bottom edges -> input 180°,
 /// output 0°.
@@ -61,7 +71,7 @@ fn rerouter_label_rotation(side: &str, is_input: bool) -> f32 {
     if left_or_top == is_input { 0.0 } else { 180.0 }
 }
 
-/// TextDisplay horizontal anchor for a rerouter pin's name label. Calibrated
+/// `TextDisplay` horizontal anchor for a rerouter pin's name label. Calibrated
 /// in-game: right/bottom edges anchor at 0, left/top at 1, so the name hangs
 /// off the pin's outer end on each edge.
 fn rerouter_label_anchor_x(side: &str) -> f32 {
@@ -84,11 +94,11 @@ pub(super) fn emit_port_rerouters(
 ) -> Result<(), EmitError> {
     let side_sym = *sym::REROUTE_SIDE;
 
-    // side -> [(source offset, node id, is_input)], later sorted per side so
-    // ins and outs interleave in declaration order (the spec's ordering rule).
+    // side -> [(source offset, node id, is_input)], later sorted per side so ins and outs
+    // interleave in declaration order.
     let mut by_side: HashMap<&'static str, Vec<(usize, NodeId, bool)>> = HashMap::default();
     for (ids, is_input) in [(&module.inputs, true), (&module.outputs, false)] {
-        for id in ids.iter() {
+        for id in ids {
             let Some(node) = module.nodes.get(id) else {
                 continue;
             };
@@ -124,10 +134,9 @@ pub(super) fn emit_port_rerouters(
             // first-declared first: `run` steps from REROUTER_RUN_START toward
             // the far end.
             let run = REROUTER_RUN_START - REROUTER_PITCH * i as i32;
-            // World<->screen pinned in-game: +X = up, +Y = right. Edges: left =
-            // −Y, right = +Y, top = +X, bottom = −X. Left/right pins run down
-            // the X axis from the top (+X); top/bottom pins run along Y from the
-            // left (−Y), so their `run` is negated.
+            // World<->screen pinned in game: +X = up, +Y = right. Edges: left = -Y, right = +Y,
+            // top = +X, bottom = -X. Left/right pins run down the X axis from the top (+X); top/bottom
+            // pins run along Y from the left (-Y), so their `run` is negated.
             let (dx, dy) = match side {
                 "left" => (run, -REROUTER_EDGE_OFFSET),
                 "right" => (run, REROUTER_EDGE_OFFSET),
@@ -140,7 +149,7 @@ pub(super) fn emit_port_rerouters(
                 z: opts.chip_pos.z + REROUTER_Z_OFFSET,
             };
 
-            // Coloured to match the inner chip-I/O gate.
+            // Colored to match the inner chip-I/O gate.
             let (mut brick, rer_brick_id) = rerouter_brick(
                 position,
                 rerouter_orientation(side, is_input),
@@ -158,51 +167,41 @@ pub(super) fn emit_port_rerouters(
                 brick.collision = no_collision();
             }
 
-            if !invisible {
-                if let Some(name) = microchip_io_label(node) {
-                    // Rotation + anchor are calibrated per side/direction (see
-                    // rerouter_label_rotation / rerouter_label_anchor_x).
-                    let label = text_label(
-                        world,
-                        &name,
-                        rerouter_label_rotation(side, is_input),
-                        0.5,
-                        REROUTER_LABEL_LINE_HEIGHT,
-                        rerouter_label_anchor_x(side),
-                        0.5,
-                    );
-                    brick.add_component_box(Box::new(label));
-                }
+            if !invisible && let Some(name) = microchip_io_label(node) {
+                // Rotation + anchor are calibrated per side/direction (see
+                // rerouter_label_rotation / rerouter_label_anchor_x).
+                let label = text_label(
+                    world,
+                    &name,
+                    rerouter_label_rotation(side, is_input),
+                    0.5,
+                    REROUTER_LABEL_LINE_HEIGHT,
+                    rerouter_label_anchor_x(side),
+                    0.5,
+                );
+                brick.add_component_box(Box::new(label));
             }
             world.bricks.push(brick);
 
             // in:  rerouter.RER_Output -> MicrochipInput.RER_Input
             // out: MicrochipOutput.RER_Output -> rerouter.RER_Input
             // (mirrors the chip-port remap in build_port_index)
-            let rer_port = |port: &'static str| BrdbWirePort {
-                brick_id: rer_brick_id,
-                component_type: BString::Static(gc::REROUTER),
-                port_name: BString::Static(port),
-            };
+            let rer_port = |port| brick_port(rer_brick_id, gc::REROUTER, port);
             let io_class = if is_input {
                 gc::MICROCHIP_INPUT
             } else {
                 gc::MICROCHIP_OUTPUT
             };
-            let io_port = |port: &'static str| BrdbWirePort {
-                brick_id: io_brick_id,
-                component_type: BString::Static(io_class),
-                port_name: BString::Static(port),
-            };
+            let io_port = |port| brick_port(io_brick_id, io_class, port);
             let conn = if is_input {
                 WireConnection {
-                    source: rer_port("RER_Output"),
-                    target: io_port("RER_Input"),
+                    source: rer_port(RER_OUTPUT),
+                    target: io_port(RER_INPUT),
                 }
             } else {
                 WireConnection {
-                    source: io_port("RER_Output"),
-                    target: rer_port("RER_Input"),
+                    source: io_port(RER_OUTPUT),
+                    target: rer_port(RER_INPUT),
                 }
             };
             ctx.add_wire(world, conn)?;

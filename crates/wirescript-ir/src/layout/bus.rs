@@ -19,24 +19,21 @@ pub type BusNodeId = usize;
 
 /// Which rerouter structure a node belongs to.
 ///
-/// All of them live in one [`BusLayout`] because they obey the same rules —
-/// one inbound wire per rerouter, `Deg0` leaves feeding ports, `Deg90`
-/// reserved for chaining — and emit materialises them identically.
+/// All of them live in one [`BusLayout`] because they obey the same rules (one inbound wire
+/// per rerouter, `Deg0` leaves feeding ports, `Deg90` reserved for chaining) and emit
+/// materialises them identically. They differ in scope and shape:
+/// - A [`Gutter`] node is one brick of a lane running the height of a page in the band left
+///   of the body. It shares a column with the rest of its chain and can be walked from a
+///   head down to a consumer.
+/// - A [`Line`] node belongs to no chain: it is a single brick inside one line's own block,
+///   turning that line's operand wire down into the statement below it.
+/// - A [`Source`] node belongs to no chain either: it stands beside a PRODUCER inside the
+///   body and hands that producer's value to the head of the lane carrying it, so it is
+///   where a lane begins rather than a link of one.
 ///
-/// What separates them is SCOPE, and with it shape. A [`Gutter`] node belongs
-/// to a lane running the height of a whole page in the band left of the body:
-/// it is one brick of a chain, it shares a column with the rest of that chain,
-/// and it can be walked from a head down to a consumer. A [`Line`] node
-/// belongs to no chain at all — it is a single brick inside one line's own
-/// block, turning that line's operand wire down into the statement below it.
-/// A [`Source`] node belongs to no chain either: it stands beside a PRODUCER
-/// inside the body and hands that producer's value to the head of the lane
-/// carrying it, so it is where a lane begins rather than a link of one.
-///
-/// So every claim about lanes — a shared column, a chain to walk, a band clear
-/// of the body — is false of a mini-bus corner and of a source-side rerouter
-/// by construction, and an assertion about one has to be able to say it does
-/// not mean the others.
+/// So a claim about lanes (a shared column, a chain to walk, a band clear of the body) is
+/// false of a mini-bus corner and of a source-side rerouter, and an assertion about one has
+/// to say it does not mean the others.
 ///
 /// [`Gutter`]: BusRole::Gutter
 /// [`Line`]: BusRole::Line
@@ -116,15 +113,12 @@ pub struct BusDemand {
     pub source_order: usize,
 }
 
-/// Lane index assigned to each demand, parallel to the input slice.
-/// Lane 0 is leftmost.
+/// Lane index assigned to each demand, parallel to the input slice. Lane 0 is leftmost.
 ///
 /// # Panics
 ///
-/// Every [`BusDemand`] must carry at least one row. Both halves below read
-/// `rows` the same way, so an empty demand fails here rather than being
-/// silently scored as a zero-span lane and then panicking on the same field
-/// during placement.
+/// Every [`BusDemand`] must carry at least one row; an empty demand fails here rather than
+/// being scored as a zero-span lane and then panicking during placement.
 pub fn allocate_lanes(demands: &[BusDemand]) -> Vec<usize> {
     // (first row, last row) per demand, read once so the ranking and the
     // packing below cannot disagree about what a demand spans.

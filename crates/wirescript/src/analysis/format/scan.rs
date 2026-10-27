@@ -12,7 +12,7 @@ pub(super) enum Class {
     LineComment,
     /// A `/* */` comment (they nest).
     BlockComment,
-    /// A nested-prefab block, `` $```…``` ``, fences included.
+    /// A nested-prefab block, `` $```...``` ``, fences included.
     Prefab,
 }
 

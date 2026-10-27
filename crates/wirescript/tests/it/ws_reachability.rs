@@ -1,17 +1,17 @@
 //! Reachability proof for every wirescript diagnostic code: one trigger
 //! program per code, asserting the code actually fires end-to-end.
 //!
-//! Each `reach!` test compiles a small `.ws` snippet through the FULL pipeline
-//! (parse -> resolve -> typecheck -> lower -> cycle-analyze) and asserts the
-//! expected `WSxxx` code is present in the resulting diagnostics. This is a
-//! reachability net, not a behavior spec: it only proves a code CAN fire,
-//! not everything about when.
+//! Each `reach!` test compiles a small `.ws` snippet through the full pipeline
+//! (parse, resolve, typecheck, lower, cycle-analyze) and asserts the expected
+//! `WSxxx` code is present in the resulting diagnostics. This is a
+//! reachability net, not a behavior spec: it proves a code can fire, not
+//! everything about when.
 //!
 //! `WS054` and `WS065` are proven by their tests in `diagnostic_regressions.rs`.
 //!
-//! Deliberate gaps (do not add tests for these — they are not reachable):
-//! - `WS009`, `WS018` — reserved codes, never assigned by any emit site in
-//!   the compiler.
+//! Deliberate gaps (not reachable, so no tests):
+//! - `WS009`, `WS018` - reserved codes, never assigned by any emit site in the
+//!   compiler.
 //! - `WS034` - a retired generic-chip guard.
 //! - `WS015` - a retired `fn`-deprecation warning.
 //! - `WS029` - a retired custom-event-param annotation lint; a slot's type is
@@ -20,10 +20,10 @@
 //!   check is exercised directly by
 //!   `lower::tests::regression_bugs::a_stranded_wire_is_an_internal_error`.
 //!
-//! Two codes (`WS012`, `WS014`) are RESOLVE-phase and fire only on
-//! multi-file programs (imports), so they can't go through the
-//! single-source `reach!` helper; they use `resolve()` with a
-//! `MemLoader` directly (see `resolve_phase` below).
+//! Two codes (`WS012`, `WS014`) are resolve-phase and fire only on multi-file
+//! programs (imports), so they can't go through the single-source `reach!`
+//! helper; they use `resolve()` with a `MemLoader` directly (see
+//! `resolve_phase` below).
 
 use crate::common;
 
@@ -57,8 +57,8 @@ reach!(ws002_is_reachable, "var x: Bogus = 0\n", "WS002");
 
 // WS003 - type mismatch on assignment (vector -> int, inside exec) [typecheck]
 // NOTE: bool -> int is an automatic coercion (CoerceRule::Coerce), not a
-// mismatch — a vector RHS is a genuine, unconditional mismatch
-// (numeric<->vector never coerces).
+// mismatch; a vector RHS is an unconditional mismatch (numeric<->vector never
+// coerces).
 reach!(
     ws003_is_reachable,
     "var x: int = 0\nin start: exec\non start {\n  x = Vec(1.0, 2.0, 3.0)\n}\n",
@@ -246,7 +246,7 @@ on go {
 }
 ";
     let resolved = wirescript::resolve(src, "t.ws", &wirescript::FsLoader);
-    let tc = wirescript::typecheck::typecheck_with_inference(&resolved.ast, "t.ws").0;
+    let tc = wirescript::typecheck_with_inference(&resolved.ast).0;
     assert!(
         tc.diagnostics
             .iter()
@@ -256,8 +256,8 @@ on go {
     );
 }
 
-// WS045 must NOT fire when every data arg carries a concrete type — otherwise it
-// would flag the correct spelling it is trying to steer people toward.
+// WS045 must not fire when every data arg carries a concrete type, or it would
+// flag the spelling it steers people toward.
 #[test]
 fn ws045_quiet_when_typed() {
     let src = "in go: exec
@@ -282,22 +282,21 @@ reach!(
 
 // WS047 - a `const` binding whose initializer IS a compile-time constant, but
 // the certified fold evaluator declines to compute it (here, `ToUpper` on a
-// non-ASCII string operand was never certified by the in-game probe) [typecheck]
+// non-ASCII string operand is not certified by the in-game probe) [typecheck]
 reach!(
     ws047_is_reachable,
     "mod f() { const s = \"café\".ToUpper() }\n",
     "WS047"
 );
 
-// WS048 - const-mod call-chain depth budget exceeded. A `const mod` that
-// calls ITSELF is perfectly legal to declare and type-check — WS020
-// (`lower/call.rs`) only guards recursion reached through LOWERING's
-// wire-expansion of an ORDINARY call (`lower_chip_call`); a call resolved
-// through `ConstCtx::lookup_mod` never goes through that function at all, so
-// nothing but the interpreter's own `Budget` depth counter stops it from
-// recursing forever. Reached here exactly like WS046/WS047 above: `f(1)`
-// sits in `SendCustomEvent`'s constant-only channel-name position, which
-// forces it to be const-evaluated. [typecheck]
+// WS048 - const-mod call-chain depth budget exceeded. A `const mod` that calls
+// itself declares and type-checks fine: WS020 (`lower/call.rs`) only guards
+// recursion through lowering's wire-expansion of an ordinary call
+// (`lower_chip_call`), and a call resolved through `ConstCtx::lookup_mod`
+// bypasses it, so only the interpreter's `Budget` depth counter stops the
+// recursion. Reached like WS046/WS047 above: `f(1)` sits in `SendCustomEvent`'s
+// constant-only channel-name position, which forces const evaluation.
+// [typecheck]
 reach!(
     ws048_is_reachable,
     "const mod f(n: int) -> string { return f(n) }\n\
@@ -308,8 +307,8 @@ reach!(
 // WS031 - a reference-only value (zone / teleport / prefab) used as an
 // if-then-else branch (Select routes a value, not a reference) [typecheck]
 // NOTE: a `*T` ref (or an array/map ref, or a `brick`) routes through Select
-// unchanged (measured), so it does NOT trip this — only the reference-only
-// types (which carry no value a Select could route) do.
+// unchanged (measured), so it does not trip this; only the reference-only types
+// (which carry no value a Select could route) do.
 reach!(
     ws031_is_reachable,
     "in z1: zone\nin z2: zone\nin c: bool\nlet y = if c then z1 else z2\n",
@@ -318,7 +317,7 @@ reach!(
 
 // WS032 - a type annotation resolves to `any` [typecheck, warning]
 // on a mod parameter or output; an `in`/`out` port takes no type parameter, so
-// it no longer warns.
+// it does not warn.
 #[test]
 fn ws032_is_reachable() {
     let src = "mod f(a: any) -> any { return a }\nin x: int\nout o = f(x)\n";

@@ -37,7 +37,7 @@ pub(super) fn without_names(o: Outcome) -> Outcome {
 pub(super) fn assert_no_fan_in(m: &crate::ir::Module, what: &str) {
     m.walk(&mut |path, sub| {
         let mut seen: crate::collections::HashSet<(crate::ir::NodeId, WirePort)> =
-            Default::default();
+            crate::collections::HashSet::default();
         for w in sub
             .wires
             .iter()

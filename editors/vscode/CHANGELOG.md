@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.7
+
+- Wirescript 2.3.1: compiler fixes (enum discriminants in hex, binary and octal,
+  float division in annotated `let`s, data from an event used as a value, array
+  and map vars initialized from a call, spreads into builtins).
+- Fixed: hovering a `static var` read now says whether it reads in exec or pure
+  context, and completion picks the right declaration of a shadowed name after
+  non-ASCII text on the same line.
+
 ## 0.1.6
 
 - Wirescript 2.3.0: `continue` in loops, highlighted as a keyword, with

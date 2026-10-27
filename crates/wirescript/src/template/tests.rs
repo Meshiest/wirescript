@@ -20,7 +20,7 @@ fn test_node(id: NodeId, kind: NodeKind, gate_class: &'static str) -> Node {
         gate_class,
         properties: Arc::new(HashMap::default()),
         ports: Arc::new(GateIO::default()),
-        source_range: Default::default(),
+        source_range: crate::diagnostic::SourceRange::default(),
         chip_id: None,
         chain_id: None,
         scope_id: 0,
@@ -54,9 +54,8 @@ fn rerouter_ports() -> Arc<GateIO> {
 /// Build a minimal module:
 ///
 /// ```text
-///  in_a (MicrochipInput)  ─┐
-///                          ├-> add (Gate) -> out_r (MicrochipOutput)
-///  in_b (MicrochipInput)  ─┘
+/// in_a (MicrochipInput) -> add (Gate) -> out_r (MicrochipOutput)
+/// in_b (MicrochipInput) -> add (Gate)
 /// ```
 fn simple_add_module() -> Module {
     use crate::intern::sym;
@@ -122,15 +121,13 @@ fn template_from_module_preserves_structure() {
     assert_eq!(t.module.wires.len(), wire_count);
     assert_eq!(t.module.inputs.len(), input_count);
     assert_eq!(t.module.outputs.len(), output_count);
-    assert!(t.bounds.is_none());
-    assert!(t.placements.is_none());
     assert!(t.external_refs.is_empty());
 }
 
 #[test]
 fn instantiate_preserves_wire_integrity() {
     let t = CompiledTemplate::from_module(simple_add_module());
-    let inst = t.instantiate("check", &HashMap::default());
+    let inst = t.instantiate(&HashMap::default());
 
     for wire in &inst.wires {
         assert!(
@@ -162,7 +159,7 @@ fn instantiate_captures_not_remapped_as_internal() {
     let mut captures = HashMap::default();
     captures.insert("in_a".to_string(), caller_id);
 
-    let inst = t.instantiate("ext_test", &captures);
+    let inst = t.instantiate(&captures);
 
     // Internal nodes should have fresh IDs, not the original template IDs.
     for &id in inst.nodes.keys() {
@@ -196,20 +193,19 @@ fn instantiate_50_times_all_disjoint() {
     let caps = HashMap::default();
     let mut all_ids: HashSet<NodeId> = HashSet::default();
 
-    for i in 0..50 {
-        let inst = t.instantiate(&format!("stress{i}"), &caps);
+    for _ in 0..50 {
+        let inst = t.instantiate(&caps);
         for &id in inst.nodes.keys() {
             assert!(
                 all_ids.insert(id),
-                "collision: node '{}' appeared in multiple instances",
-                id
+                "collision: node '{id}' appeared in multiple instances"
             );
         }
     }
 }
 
 fn collect_all_ids(m: &Module) -> HashSet<NodeId> {
-    let mut ids: HashSet<NodeId> = m.nodes.keys().cloned().collect();
+    let mut ids: HashSet<NodeId> = m.nodes.keys().copied().collect();
     for child_module in m.chips.values() {
         ids.extend(collect_all_ids(child_module));
     }
@@ -218,7 +214,7 @@ fn collect_all_ids(m: &Module) -> HashSet<NodeId> {
 
 /// The `chips` map keys at every level of `m`.
 fn collect_chip_keys(m: &Module) -> HashSet<NodeId> {
-    let mut keys: HashSet<NodeId> = m.chips.keys().cloned().collect();
+    let mut keys: HashSet<NodeId> = m.chips.keys().copied().collect();
     for child in m.chips.values() {
         keys.extend(collect_chip_keys(child));
     }
@@ -262,8 +258,8 @@ fn instantiate_three_level_nesting() {
     let t = CompiledTemplate::from_module(top);
     let caps = HashMap::default();
 
-    let inst0 = t.instantiate("top0", &caps);
-    let inst1 = t.instantiate("top1", &caps);
+    let inst0 = t.instantiate(&caps);
+    let inst1 = t.instantiate(&caps);
 
     let ids0 = collect_all_ids(&inst0);
     let ids1 = collect_all_ids(&inst1);
@@ -296,7 +292,7 @@ fn instantiate_three_level_nesting() {
 fn instantiate_empty_template() {
     let m = Module::new("empty");
     let t = CompiledTemplate::from_module(m);
-    let inst = t.instantiate("e0", &HashMap::default());
+    let inst = t.instantiate(&HashMap::default());
 
     assert_eq!(inst.nodes.len(), 0, "expected 0 nodes");
     assert_eq!(inst.wires.len(), 0, "expected 0 wires");
@@ -312,7 +308,7 @@ fn instantiate_no_captures_no_params() {
         .insert(gate_id, test_node(gate_id, NodeKind::Gate, ADD_GATE));
 
     let t = CompiledTemplate::from_module(m);
-    let inst = t.instantiate("nc0", &HashMap::default());
+    let inst = t.instantiate(&HashMap::default());
 
     assert_eq!(inst.nodes.len(), 1, "expected exactly 1 node");
     let new_id = *inst.nodes.keys().next().unwrap();
@@ -366,7 +362,7 @@ fn instantiate_multiple_captures_same_call() {
     captures.insert("ext_b".to_string(), real_b);
     captures.insert("ext_c".to_string(), real_c);
 
-    let inst = t.instantiate("mc0", &captures);
+    let inst = t.instantiate(&captures);
 
     let wire_sources: HashSet<NodeId> = inst.wires.iter().map(|w| w.source.node_id).collect();
 
@@ -402,11 +398,11 @@ fn instantiate_multiple_captures_same_call() {
 
 #[test]
 fn instantiate_boundary_wire_into_child_is_per_instance() {
-    // A parent module with a gate wired into a CHILD chip's input node: the
-    // wire lives in the PARENT wire list but its target is a CHILD node (how
+    // A parent module with a gate wired into a child chip's input node: the
+    // wire lives in the parent wire list but its target is a child node (how
     // a chip call wires an argument into a nested chip). Two instances must
-    // NOT converge on the same child node — that fan-in collision is what
-    // made the game drop every second-instance boundary wire.
+    // not converge on the same child node, or the game drops every
+    // second-instance boundary wire (fan-in collision).
     let gate_id = NodeId::fresh();
     let chip_key = NodeId::fresh();
     let child_input_id = NodeId::fresh();
@@ -441,8 +437,8 @@ fn instantiate_boundary_wire_into_child_is_per_instance() {
 
     let t = CompiledTemplate::from_module(parent);
     let caps = HashMap::default();
-    let inst0 = t.instantiate("i0", &caps);
-    let inst1 = t.instantiate("i1", &caps);
+    let inst0 = t.instantiate(&caps);
+    let inst1 = t.instantiate(&caps);
 
     let boundary_target = |m: &Module| -> NodeId {
         m.wires

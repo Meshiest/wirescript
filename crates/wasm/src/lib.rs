@@ -33,11 +33,19 @@ fn registry_prefab_resolver(registry: HashMap<String, Vec<u8>>) -> PrefabResolve
 // ---------- wirescript analysis (LSP-like, for browser IDE) ----------
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_diagnostics(source: String, files_json: Option<String>) -> String {
     analysis::diagnostics(&source, files_json.as_deref().unwrap_or("{}"))
 }
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_completions(
     source: String,
     line: u32,
@@ -61,11 +69,19 @@ pub fn wirescript_completions(
 }
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_hover(source: String, line: u32, col: u32, files_json: Option<String>) -> String {
     analysis::hover(&source, line, col, files_json.as_deref().unwrap_or("{}")).unwrap_or_default()
 }
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_definition(
     source: String,
     line: u32,
@@ -77,6 +93,10 @@ pub fn wirescript_definition(
 }
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_references(
     source: String,
     line: u32,
@@ -88,27 +108,43 @@ pub fn wirescript_references(
 }
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_format(source: String, tab_size: u32, use_tabs: bool) -> String {
     analysis::format(&source, tab_size, use_tabs)
 }
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_workspace_symbols(files_json: String) -> String {
     analysis::workspace_symbols(&files_json)
 }
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_inlay_hints(source: String, files_json: Option<String>) -> String {
     analysis::inlay_hints(&source, files_json.as_deref().unwrap_or("{}"))
 }
 
 // ---------- wirescript compile ----------
 
-/// Maximum `$```…``` nesting depth before compilation refuses (runaway guard);
+/// Maximum `` $```...``` `` nesting depth before compilation refuses (runaway guard);
 /// mirrors the native CLI's limit in `compile.rs`.
 const MAX_NESTED_DEPTH: usize = 8;
 
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
 pub fn wirescript_compile(
     source: String,
     module_name: Option<String>,
@@ -129,11 +165,10 @@ pub fn wirescript_compile(
     .map_err(|e| JsValue::from_str(&e))
 }
 
-/// Compile a single Wirescript source to `.brz` bytes against the in-memory
-/// loader (`files_json`) and dragged-in prefab registry, wiring a nested
-/// compiler so inline `$```…``` blocks compile recursively — the browser
-/// analog of the CLI's `default_nested_compiler`. `depth` is the current
-/// nesting level; the top-level compile starts at 0.
+/// Compile one Wirescript source to `.brz` bytes against the in-memory loader
+/// (`files_json`) and the dragged-in prefab registry, with a nested compiler so
+/// inline `` $```...``` `` blocks compile recursively (the browser counterpart of
+/// the CLI's `default_nested_compiler`). `depth` is the nesting level, 0 at the top.
 fn compile_source_to_brz(
     source: &str,
     file: &str,
@@ -155,10 +190,8 @@ fn compile_source_to_brz(
     };
     wirescript::compile_with_loader(
         wirescript::CompileInput {
-            source,
-            file,
             module_name,
-            fold_mode: wirescript::FoldMode::Auto,
+            ..wirescript::CompileInput::new(source, file)
         },
         opts,
         &loader,
@@ -167,16 +200,16 @@ fn compile_source_to_brz(
     .map_err(|e| match e {
         wirescript::CompileError::HasErrors(diags) => diags
             .iter()
-            .map(|d| d.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n"),
-        other => other.to_string(),
+        other @ wirescript::CompileError::Emit(_) => other.to_string(),
     })
 }
 
-/// A [`NestedCompiler`] that recompiles an inline `$```…``` block's source at
+/// A [`NestedCompiler`] that recompiles an inline `` $```...``` `` block's source at
 /// `depth`, reusing the same in-memory loader + prefab registry so the inner
-/// program can `import` and reference `$./…` prefabs exactly like the outer
+/// program can `import` and reference `$./...` prefabs exactly like the outer
 /// one. Mirrors the CLI's `default_nested_compiler`: the emit layer's depth
 /// argument is ignored (it always passes 1) in favor of the captured `depth`,
 /// which is what accumulates across nesting levels.
@@ -199,8 +232,9 @@ fn wasm_nested_compiler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
-    /// An inline nested-prefab block (`$```…```) must compile in the browser
+    /// An inline nested-prefab block (`` $```...``` ``) must compile in the browser
     /// build: the inner source is compiled to its own `.brz` and embedded.
     /// Without a nested compiler configured, this fails with "no nested
     /// compiler configured for this compile".
@@ -237,19 +271,17 @@ mod tests {
     /// every compile after the first in a page session differed.
     #[test]
     fn compiling_twice_in_one_process_is_byte_identical() {
-        // The shape matters more than the size. Plain vars, records and named
-        // chips emit in the same order whatever they are numbered, so they
-        // pass with the bug present; CONTAINERS are what makes the emitted
-        // order depend on the absolute ids. Found by bisecting shapes against
-        // a real program that did diverge.
+        // The shape matters more than the size: plain vars, records and named chips
+        // emit in the same order whatever their ids, while containers make the
+        // emitted order depend on the absolute ids.
         let mut src = String::from("in go: exec\n");
         for i in 0..8 {
-            src.push_str(&format!("var m{i}: Map<int, int> = {{{i} => {i}}}\n"));
-            src.push_str(&format!("var a{i}: int[] = [{i}]\n"));
+            let _ = writeln!(src, "var m{i}: Map<int, int> = {{{i} => {i}}}");
+            let _ = writeln!(src, "var a{i}: int[] = [{i}]");
         }
         src.push_str("on go {\n");
         for i in 0..8 {
-            src.push_str(&format!("  m{i}[{i}] = {i}\n  a{i}.push({i})\n"));
+            let _ = writeln!(src, "  m{i}[{i}] = {i}\n  a{i}.push({i})");
         }
         src.push_str("}\n");
 
@@ -285,8 +317,8 @@ mod tests {
         assert!(err.contains("WS005"), "expected WS005, got: {err}");
     }
 
-    /// Blocks nested past the runaway cap fail with a clear error, not a hang
-    /// or stack overflow — the same guard the native CLI enforces.
+    /// Blocks nested past the runaway cap fail with a clear error instead of a hang
+    /// or a stack overflow, as in the native CLI.
     #[test]
     fn nested_prefab_depth_guard_trips() {
         let mut inner = "in q: exec".to_string();

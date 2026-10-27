@@ -49,9 +49,8 @@ fn map_method_param_types_track_kv() {
 
 #[test]
 fn map_keys_values_fill_dest_array() {
-    // `keys`/`values` take a destination-array argument they fill in place;
-    // their own return is `Never`, so the `destArray: K[]`/`V[]` array is a
-    // param, not the result.
+    // `keys`/`values` fill their `destArray: K[]`/`V[]` param and return
+    // `Never`.
     let keys = map_method("keys")
         .unwrap()
         .signature(&Type::String, &Type::Int);

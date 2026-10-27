@@ -48,10 +48,10 @@ fn every_canonical_map_method_lowers() {
 
 #[test]
 fn constant_map_literal_bakes_no_set_gates() {
-    // A constant map literal in a `var` initializer bakes into the
-    // Pseudo_MapVar's InitialValue at rest — zero runtime gates — exactly
-    // like `var a: int[] = [1,2,3]` bakes a `Literal::Array`. `{}` parses as
-    // an empty RECORD, which a Map-typed slot accepts as the empty map.
+    // A constant map literal in a `var` initializer bakes into the Pseudo_MapVar's
+    // InitialValue at rest with zero runtime gates, as `var a: int[] = [1,2,3]` bakes
+    // a `Literal::Array`. `{}` parses as an empty RECORD, which a Map-typed slot
+    // accepts as the empty map.
     let rows: &[(&str, usize)] = &[
         (
             "var scores: Map<int, int> = { :red => 10, :blue => 20 }\n",
@@ -81,10 +81,9 @@ fn constant_map_literal_bakes_no_set_gates() {
 
 #[test]
 fn map_literal_coerces_mixed_entry_literals() {
-    // A coercion-mixed constant map entry (key/value literal kind doesn't
-    // match the declared K/V) must bake through the SAME coercion laws as
-    // the array path — string->bool `!= ""`, bool<->int, and int<->float
-    // truncation/widening — not the emit-side zero fallback.
+    // A coercion-mixed constant map entry (key/value literal kind differs from the
+    // declared K/V) bakes through the same coercion laws as the array path:
+    // string->bool `!= ""`, bool<->int, and int<->float truncation/widening.
     let cases = [
         (
             "var m: Map<int, bool> = { 1 => \"on\" }\n",
@@ -139,9 +138,9 @@ fn map_literal_in_a_map_slot_compiles_clean() {
 
 #[test]
 fn runtime_map_literal_desugars_to_clear_and_sets() {
-    // A map literal with a runtime key (`[k]`), or any `m = {…}` in a handler,
+    // A map literal with a runtime key (`[k]`), or any `m = {...}` in a handler,
     // can't bake: it is MapVar_Clear then one MapVar_Set per entry on the exec
-    // chain. A non-static handler `var m: Map<K, V> = {…}` re-runs that reset
+    // chain. A non-static handler `var m: Map<K, V> = {...}` re-runs that reset
     // each invocation (Pseudo_MapVar has no `VarRef` for a Var_Set reset).
     let rows = [
         "var m: Map<int, int>\nin k: int\nin t: exec\non t {\n  m = { [k] => 1, :fixed => 2 }\n}\n",

@@ -1,29 +1,48 @@
 //! Compile-time evaluation, shared by typecheck and lowering.
 //!
 //! Both must agree exactly: `const if` drops a branch during lowering, and the
-//! typechecker must skip type-checking the SAME branch. Two evaluators would
-//! make that a silent miscompile, so there is one, here.
+//! typechecker must skip the same branch, so both evaluate through this module.
+
+use std::sync::Arc;
+
+use crate::ast::{Expr, ImportScope, LetDecl, TopDecl, TypeAliasDecl, TypeExpr};
+use crate::collections::HashMap;
+use crate::diagnostic::SourceRange;
+use crate::ir::{Literal, Type};
+use crate::typecheck::enums::{DISC_FIELD, EnumRegistry, Payload, slot_name};
+use crate::types::infer::Subst;
+use crate::types::resolve::{AliasDef, GenericAlias, TypeNames};
 
 mod destructure;
+mod env;
 mod error;
 mod expr;
 mod interp;
+mod literal;
 
 pub(crate) use destructure::{bind_destructured, bound_names};
-pub use error::{ConstError, ConstReason};
-pub use expr::{ConstCtx, eval_expr};
+#[cfg(test)]
+pub(crate) use env::build_const_env;
+pub(crate) use env::{
+    ConstEnv, DupConsts, build_const_declared_names, build_const_env_at, build_const_env_in,
+    build_const_uncertified, dup_key,
+};
+pub(crate) use error::{ConstError, ConstReason};
+pub(crate) use expr::{ConstCtx, eval_expr};
 pub(crate) use expr::{ModDups, ModuleConsts};
-pub use interp::Budget;
+pub(crate) use interp::Budget;
+pub(crate) use literal::{
+    certified_binop, default_literal_for_var_type, eval_const_binop, eval_const_unop,
+    expr_to_literal, expr_to_literal_in, fold_ammo_override, fold_constructor, fold_mesh_colors,
+    holds_refs, ref_shaped,
+};
 
-/// Whether `e` evaluates through integer `+`, `-`, `*`, `/`, `%` and negations
-/// that each have the result the certified fold table gives the gate, those
-/// of a `const mod` body it calls included. An overflow, or a division of
-/// mixed signs with a remainder, has none, so a value computed through one is
-/// not baked; an integer division or remainder by zero is 0, as the gate
-/// gives. A name `cx` holds is taken as it holds it: a caller that must not
-/// bake a constant computed through such an operation reads names through a
-/// context that leaves those out (`Admit::Certified`).
-pub fn integer_ops_certified(e: &crate::ast::Expr, cx: &ConstCtx) -> bool {
+/// Whether every integer `+`, `-`, `*`, `/`, `%` and negation `e` evaluates,
+/// in called `const mod` bodies too, has a certified gate result. Overflow and
+/// mixed-sign division with a remainder have none, so such a value is not
+/// baked; division or remainder by zero is 0, as the gate gives. Names are
+/// taken as `cx` holds them (`Admit::Certified` leaves uncertified ones out).
+pub(crate) fn integer_ops_certified(e: &Expr, cx: &ConstCtx<'_>) -> bool {
     let mut budget = Budget::default();
     eval_expr(e, cx, &mut budget).is_ok() && !budget.uncertified
 }
@@ -31,15 +50,13 @@ pub fn integer_ops_certified(e: &crate::ast::Expr, cx: &ConstCtx) -> bool {
 /// Whether each integer operation in `e`, which the narrow evaluator folds on
 /// its own against `consts`, has the result the certified fold table gives
 /// (see [`integer_ops_certified`]).
-pub(crate) fn folded_ops_certified<C>(e: &crate::ast::Expr, consts: &C) -> bool
+pub(crate) fn folded_ops_certified<C>(e: &Expr, consts: &C) -> bool
 where
     C: crate::const_scope::Constants + ?Sized,
 {
-    use crate::ast::Expr;
     use crate::ast::walk::{Ctx, Node, walk};
     use crate::catalog::operators::op;
-    use crate::ir::Literal;
-    let int = |e: &Expr| match crate::lower::expr_to_literal_in(e, consts) {
+    let int = |e: &Expr| match expr_to_literal_in(e, consts) {
         Some(l @ Literal::Int(_)) => Some(l),
         _ => None,
     };
@@ -48,7 +65,7 @@ where
         Expr::BinOp {
             op: o, left, right, ..
         } if arithmetic(o) => match (int(left), int(right)) {
-            (Some(l), Some(r)) => crate::lower::certified_binop(o, &l, &r).is_some(),
+            (Some(l), Some(r)) => certified_binop(o, &l, &r).is_some(),
             _ => true,
         },
         Expr::UnOp { op: o, operand, .. } => {
@@ -68,16 +85,15 @@ where
 
 /// The value a `let`/`const` binds: its initializer's, held in the type its
 /// annotation names when it has one (see [`coerce_const_to_type`]).
-pub fn eval_let_value(
-    l: &crate::ast::LetDecl,
-    cx: &ConstCtx,
+pub(crate) fn eval_let_value(
+    l: &LetDecl,
+    cx: &ConstCtx<'_>,
     budget: &mut Budget,
-) -> Result<crate::ir::Literal, error::ConstError> {
+) -> Result<Literal, error::ConstError> {
     // An annotated `null` is the zero of its annotation's type.
-    if let (crate::ast::Expr::NullLit { .. }, Some(te)) = (&l.value, &l.typ) {
+    if let (Expr::NullLit { .. }, Some(te)) = (&l.value, &l.typ) {
         let types = cx.types.in_file(&l.range.file);
         let t = crate::types::mono::unwrap_ref(&types.resolve_in(te, &cx.type_args));
-        use crate::ir::Type;
         if matches!(
             t,
             Type::Int
@@ -91,7 +107,7 @@ pub fn eval_let_value(
                 | Type::Entity
                 | Type::Character
                 | Type::Controller
-        ) && let Some(lit) = crate::lower::default_literal_for_var_type(&t)
+        ) && let Some(lit) = default_literal_for_var_type(&t)
         {
             return Ok(lit);
         }
@@ -108,11 +124,7 @@ pub fn eval_let_value(
 
 /// `lit`, the value of `l`'s initializer, held in the type `l`'s annotation
 /// names when it has one.
-pub fn in_let_annotation(
-    l: &crate::ast::LetDecl,
-    lit: crate::ir::Literal,
-    types: &DeclaredTypes,
-) -> crate::ir::Literal {
+pub(crate) fn in_let_annotation(l: &LetDecl, lit: Literal, types: &DeclaredTypes) -> Literal {
     match &l.typ {
         Some(te) => {
             let types = types.in_file(&l.range.file);
@@ -126,7 +138,7 @@ pub fn in_let_annotation(
 /// value truncated toward zero, and whether that keeps the value written
 /// (`false` when a fraction is dropped, `WS106`). `None` when no `int` holds
 /// it: beyond the 64-bit range, or not finite (`WS028`).
-pub fn float_as_int(f: f64) -> Option<(i64, bool)> {
+pub(crate) fn float_as_int(f: f64) -> Option<(i64, bool)> {
     // 2^63, the first float past `i64::MAX`; `-2^63` is `i64::MIN` exactly.
     const LIMIT: f64 = 9_223_372_036_854_775_808.0;
     (f.is_finite() && (-LIMIT..LIMIT).contains(&f)).then(|| (f.trunc() as i64, f.fract() == 0.0))
@@ -135,7 +147,7 @@ pub fn float_as_int(f: f64) -> Option<(i64, bool)> {
 /// Whether the number literal `text` (`2.5`, `1e18`, `-4503599627370497.5`)
 /// is exactly the integer `n`: no nonzero digit after its point, and its
 /// whole part `n`'s digits.
-pub fn literal_is_integer(text: &str, n: i64) -> bool {
+pub(crate) fn literal_is_integer(text: &str, n: i64) -> bool {
     let text: String = text.chars().filter(|c| *c != '_').collect();
     let (negative, text) = match text.strip_prefix('-') {
         Some(rest) => (true, rest.to_string()),
@@ -169,14 +181,13 @@ pub fn literal_is_integer(text: &str, n: i64) -> bool {
     sign_ok && (int_digits == want || (int_digits.is_empty() && n == 0))
 }
 
-pub use crate::ir::written_float;
+pub(crate) use crate::ir::written_float;
 
 /// A number constant where its type is declared the number type `declared`:
 /// an integer is the float it names in a `float`, and a float the integer it
 /// truncates to in an `int` ([`float_as_int`]; one no `int` holds stays a
 /// float, which typecheck reports). Anything else is unchanged.
-pub fn number_in_type(lit: crate::ir::Literal, declared: &crate::ir::Type) -> crate::ir::Literal {
-    use crate::ir::{Literal, Type};
+pub(crate) fn number_in_type(lit: Literal, declared: &Type) -> Literal {
     match (lit, declared) {
         (Literal::Int(n), Type::Float) => Literal::Float(n as f64),
         (Literal::Float(f), Type::Int) => match float_as_int(f) {
@@ -194,14 +205,13 @@ pub fn number_in_type(lit: crate::ir::Literal, declared: &crate::ir::Type) -> cr
 ///
 /// Emit applies the same laws to array elements (`wire_value_as`), so a value
 /// baked here and one converted there agree.
-pub fn scalar_in_type(lit: crate::ir::Literal, ty: &crate::ir::Type) -> crate::ir::Literal {
-    use crate::ir::{Literal, Type};
+pub(crate) fn scalar_in_type(lit: Literal, ty: &Type) -> Literal {
     match (lit, ty) {
         (lit @ (Literal::Int(_) | Literal::Float(_)), Type::Int | Type::Float) => {
             number_in_type(lit, ty)
         }
         (Literal::Bool(b), Type::Float) => Literal::Float(if b { 1.0 } else { 0.0 }),
-        (Literal::Bool(b), Type::Int) => Literal::Int(b as i64),
+        (Literal::Bool(b), Type::Int) => Literal::Int(i64::from(b)),
         (Literal::Int(n), Type::Bool) => Literal::Bool(n != 0),
         (Literal::Float(f), Type::Bool) => Literal::Bool(f != 0.0),
         (Literal::String(s), Type::Bool) => Literal::Bool(!s.is_empty()),
@@ -210,25 +220,18 @@ pub fn scalar_in_type(lit: crate::ir::Literal, ty: &crate::ir::Type) -> crate::i
 }
 
 /// The value the constant `lit` takes where its type is declared `declared`:
-/// an integer is the float it names wherever `declared` says `float`, and a
-/// float is the integer it truncates to wherever `declared` says `int` (as a
-/// `var` declared `int` stores it; see [`float_as_int`]), through the fields
-/// of a record, the elements of a tuple, an array or a map, and an enum
-/// value's payload. A float no `int` holds stays a float (typecheck reports
-/// it). Anything else is unchanged; in particular an integer declared `int`
-/// stays an integer.
+/// each number becomes the declared number type ([`number_in_type`]), through
+/// record fields, tuple, array and map elements, and enum payloads. Anything
+/// else is unchanged.
 ///
-/// Every constant with a declared type is introduced through this function (a
-/// `const`/`let` with an annotation, a `const` parameter of a `mod` or `chip`,
-/// a `const mod`'s parameters and result), and a number constant read where
-/// typecheck typed it as the other number type (`int_constants_in_slot`) is
-/// converted by it too, so no other route converts a constant on its own.
-pub fn coerce_const_to_type(
-    lit: crate::ir::Literal,
-    declared: &crate::ir::Type,
+/// Every constant with a declared type goes through this function (annotated
+/// `const`/`let`, `const` parameters, a `const mod`'s parameters and result,
+/// and `int_constants_in_slot`), so no other route converts a constant.
+pub(crate) fn coerce_const_to_type(
+    lit: Literal,
+    declared: &Type,
     types: &DeclaredTypes,
-) -> crate::ir::Literal {
-    use crate::ir::{Literal, Type};
+) -> Literal {
     let declared = match declared {
         Type::Ref(inner) => inner.as_ref(),
         other => other,
@@ -305,12 +308,12 @@ pub fn coerce_const_to_type(
 /// declaration writes them with, and those each imported file can name by
 /// its file.
 #[derive(Default)]
-pub struct DeclaredTypes {
-    aliases: crate::collections::HashMap<String, (Vec<String>, crate::ast::TypeExpr)>,
+pub(crate) struct DeclaredTypes {
+    aliases: HashMap<String, (Vec<String>, TypeExpr)>,
     /// Each alias's place in declaration order.
-    order: crate::collections::HashMap<String, usize>,
-    enum_defs: std::sync::Arc<crate::typecheck::enums::EnumRegistry>,
-    by_file: crate::collections::HashMap<std::sync::Arc<str>, DeclaredTypes>,
+    order: HashMap<String, usize>,
+    enum_defs: Arc<EnumRegistry>,
+    by_file: HashMap<Arc<str>, Self>,
 }
 
 /// How deep an alias may expand inside another before it is taken as `any`.
@@ -320,9 +323,9 @@ const MAX_DECLARED_DEPTH: u32 = 32;
 #[derive(Clone, Copy)]
 enum Param<'a> {
     /// Whatever the caller answers for a name at a range.
-    Fn(&'a dyn Fn(&str, &crate::diagnostic::SourceRange) -> Option<crate::ir::Type>),
+    Fn(&'a dyn Fn(&str, &SourceRange) -> Option<Type>),
     /// A generic alias's arguments, by its parameter names.
-    Bound(&'a crate::collections::HashMap<String, crate::ir::Type>),
+    Bound(&'a HashMap<String, Type>),
 }
 
 /// A [`DeclaredTypes`] table as the resolver reads it, with what its type
@@ -333,16 +336,15 @@ struct DeclaredScope<'a> {
     param: Param<'a>,
 }
 
-impl crate::types::resolve::TypeNames for DeclaredScope<'_> {
-    fn param(&self, name: &str, range: &crate::diagnostic::SourceRange) -> Option<crate::ir::Type> {
+impl TypeNames for DeclaredScope<'_> {
+    fn param(&self, name: &str, range: &SourceRange) -> Option<Type> {
         match self.param {
             Param::Fn(f) => f(name, range),
             Param::Bound(b) => b.get(name).cloned(),
         }
     }
 
-    fn alias(&self, name: &str) -> Option<crate::types::resolve::AliasDef<'_>> {
-        use crate::types::resolve::AliasDef;
+    fn alias(&self, name: &str) -> Option<AliasDef<'_>> {
         let (params, body) = self.table.aliases.get(name)?;
         Some(if params.is_empty() {
             AliasDef::Body(body)
@@ -351,7 +353,7 @@ impl crate::types::resolve::TypeNames for DeclaredScope<'_> {
         })
     }
 
-    fn enum_named(&self, name: &str, args: Vec<crate::ir::Type>) -> Option<crate::ir::Type> {
+    fn enum_named(&self, name: &str, args: Vec<Type>) -> Option<Type> {
         self.table.enum_defs.type_named(name, args)
     }
 
@@ -360,9 +362,9 @@ impl crate::types::resolve::TypeNames for DeclaredScope<'_> {
     /// that uses the alias.
     fn body_scope<'s>(
         &'s self,
-        bindings: &'s crate::collections::HashMap<String, crate::ir::Type>,
+        bindings: &'s HashMap<String, Type>,
         _: &'s [String],
-    ) -> Box<dyn crate::types::resolve::TypeNames + 's> {
+    ) -> Box<dyn TypeNames + 's> {
         Box::new(DeclaredScope {
             table: self.table,
             param: Param::Bound(bindings),
@@ -373,30 +375,26 @@ impl crate::types::resolve::TypeNames for DeclaredScope<'_> {
 impl DeclaredTypes {
     /// The declarations of the program whose top level is `decls`, and of
     /// each file it imports (see [`crate::ast::ImportScope::aliases`]).
-    pub fn for_program_in(
-        decls: &[crate::ast::TopDecl],
-        enum_defs: &std::sync::Arc<crate::typecheck::enums::EnumRegistry>,
-        imports: &crate::ast::ImportScope,
+    pub(crate) fn for_program_in(
+        decls: &[TopDecl],
+        enum_defs: &Arc<EnumRegistry>,
+        imports: &ImportScope,
     ) -> Self {
         let mut out = Self::for_program(decls, enum_defs);
         for (file, own) in &imports.aliases {
             out.by_file
-                .insert(file.clone(), Self::for_program(own, enum_defs));
+                .insert(Arc::clone(file), Self::for_program(own, enum_defs));
         }
         out
     }
 
     /// The declarations of the program whose top level is `decls`.
-    pub fn for_program(
-        decls: &[crate::ast::TopDecl],
-        enum_defs: &std::sync::Arc<crate::typecheck::enums::EnumRegistry>,
-    ) -> Self {
-        use crate::ast::TopDecl;
+    pub(crate) fn for_program(decls: &[TopDecl], enum_defs: &Arc<EnumRegistry>) -> Self {
         let mut out = Self {
-            enum_defs: enum_defs.clone(),
+            enum_defs: Arc::clone(enum_defs),
             ..Self::default()
         };
-        let alias = |ta: &crate::ast::TypeAliasDecl| {
+        let alias = |ta: &TypeAliasDecl| {
             (
                 ta.type_params
                     .iter()
@@ -423,14 +421,14 @@ impl DeclaredTypes {
                         if let TopDecl::Enum(e) = nd {
                             let params: Vec<String> =
                                 e.type_params.iter().map(|p| p.name.clone()).collect();
-                            let name = |n: &str| crate::ast::TypeExpr::Name {
+                            let name = |n: &str| TypeExpr::Name {
                                 name: n.to_string(),
                                 range: e.range.clone(),
                             };
                             let body = if params.is_empty() {
                                 name(&e.name)
                             } else {
-                                crate::ast::TypeExpr::Generic {
+                                TypeExpr::Generic {
                                     name: e.name.clone(),
                                     args: params.iter().map(|p| name(p)).collect(),
                                     range: e.range.clone(),
@@ -440,7 +438,7 @@ impl DeclaredTypes {
                                 .insert(format!("{}.{}", ns.name, e.name), (params, body));
                         }
                     }
-                    if let Some(file) = ns.decls.first().map(|d| d.range().file.clone()) {
+                    if let Some(file) = ns.decls.first().map(|d| Arc::clone(&d.range().file)) {
                         out.by_file
                             .insert(file, Self::for_program(&ns.decls, enum_defs));
                     }
@@ -453,7 +451,7 @@ impl DeclaredTypes {
 
     /// The declarations a type written in `file` is read against: that
     /// file's own when `file` is an imported file, the program's otherwise.
-    pub fn in_file(&self, file: &str) -> &Self {
+    pub(crate) fn in_file(&self, file: &str) -> &Self {
         if let Some(own) = self.by_file.get(file) {
             return own;
         }
@@ -468,12 +466,12 @@ impl DeclaredTypes {
 
     /// Where alias `name` is declared among the program's aliases: `0` for
     /// the first one.
-    pub fn declared_at(&self, name: &str) -> Option<usize> {
+    pub(crate) fn declared_at(&self, name: &str) -> Option<usize> {
         self.order.get(name).copied()
     }
 
     /// The type parameters and body of the alias `name`.
-    pub fn alias(&self, name: &str) -> Option<(&[String], &crate::ast::TypeExpr)> {
+    pub(crate) fn alias(&self, name: &str) -> Option<(&[String], &TypeExpr)> {
         self.aliases
             .get(name)
             .map(|(params, body)| (params.as_slice(), body))
@@ -483,8 +481,7 @@ impl DeclaredTypes {
     /// when that body only names another alias, that alias's, as far as the
     /// chain goes. A member of an `import * as` module reads a sibling under
     /// its own qualified name first.
-    pub fn alias_target(&self, name: &str) -> Option<&crate::ast::TypeExpr> {
-        use crate::ast::TypeExpr;
+    pub(crate) fn alias_target(&self, name: &str) -> Option<&TypeExpr> {
         let (params, mut body) = self.alias(name)?;
         if !params.is_empty() {
             return None;
@@ -509,7 +506,7 @@ impl DeclaredTypes {
     }
 
     /// Each non-generic alias of this table with the type it names.
-    pub fn plain_aliases(&self) -> impl Iterator<Item = (String, crate::ir::Type)> + '_ {
+    pub(crate) fn plain_aliases(&self) -> impl Iterator<Item = (String, Type)> + '_ {
         self.aliases
             .iter()
             .filter(|(_, (params, _))| params.is_empty())
@@ -517,16 +514,14 @@ impl DeclaredTypes {
     }
 
     /// Each generic alias of this table with its parameters and body.
-    pub fn generic_aliases(
-        &self,
-    ) -> impl Iterator<Item = (String, crate::types::resolve::GenericAlias)> + '_ {
+    pub(crate) fn generic_aliases(&self) -> impl Iterator<Item = (String, GenericAlias)> + '_ {
         self.aliases
             .iter()
             .filter(|(_, (params, _))| !params.is_empty())
             .map(|(name, (params, body))| {
                 (
                     name.clone(),
-                    crate::types::resolve::GenericAlias {
+                    GenericAlias {
                         params: params.clone(),
                         body: body.clone(),
                     },
@@ -535,17 +530,13 @@ impl DeclaredTypes {
     }
 
     /// The type `te` names.
-    pub fn resolve(&self, te: &crate::ast::TypeExpr) -> crate::ir::Type {
-        self.resolve_in(te, &crate::types::infer::Subst::default())
+    pub(crate) fn resolve(&self, te: &TypeExpr) -> Type {
+        self.resolve_in(te, &Subst::default())
     }
 
     /// The type `te` names where each type parameter in `subst` stands for its
     /// type.
-    pub fn resolve_in(
-        &self,
-        te: &crate::ast::TypeExpr,
-        subst: &crate::types::infer::Subst,
-    ) -> crate::ir::Type {
+    pub(crate) fn resolve_in(&self, te: &TypeExpr, subst: &Subst) -> Type {
         self.resolve_scoped(te, &|name, _| subst.get(name).cloned())
     }
 
@@ -554,11 +545,11 @@ impl DeclaredTypes {
     /// itself writes are asked: an alias body is written at the top level of
     /// its own file, so it reads its names there, with none of the type
     /// parameters of the place that uses the alias.
-    pub fn resolve_scoped(
+    pub(crate) fn resolve_scoped(
         &self,
-        te: &crate::ast::TypeExpr,
-        param: &dyn Fn(&str, &crate::diagnostic::SourceRange) -> Option<crate::ir::Type>,
-    ) -> crate::ir::Type {
+        te: &TypeExpr,
+        param: &dyn Fn(&str, &SourceRange) -> Option<Type>,
+    ) -> Type {
         crate::types::resolve::resolve_with(
             te,
             &DeclaredScope {
@@ -573,32 +564,28 @@ impl DeclaredTypes {
     /// `__{Variant}_{field}`) of the enum type `t` instantiated with `args`.
     fn payload_slots(
         &self,
-        t: &crate::ir::Type,
-        args: &[crate::ir::Type],
-        fields: &[(String, crate::ir::Literal)],
-    ) -> Vec<(String, crate::ir::Type)> {
-        use crate::typecheck::enums::Payload;
+        t: &Type,
+        args: &[Type],
+        fields: &[(String, Literal)],
+    ) -> Vec<(String, Type)> {
         let Some(def) = self.enum_defs.of(t) else {
             return Vec::new();
         };
         let disc = fields.iter().find_map(|(n, l)| match (n.as_str(), l) {
-            ("__disc", crate::ir::Literal::Int(d)) => Some(*d),
+            (n, Literal::Int(d)) if n == DISC_FIELD => Some(*d),
             _ => None,
         });
         let Some(variant) = def.variants.iter().find(|v| Some(v.discriminant) == disc) else {
             return Vec::new();
         };
-        let subst: crate::types::infer::Subst = def
+        let subst: Subst = def
             .type_params
             .iter()
             .map(|p| p.name.clone())
             .zip(args.iter().cloned())
             .collect();
-        let slot = |f: &dyn std::fmt::Display, te: &crate::ast::TypeExpr| {
-            (
-                format!("__{}_{f}", variant.name),
-                self.resolve_in(te, &subst),
-            )
+        let slot = |f: &dyn std::fmt::Display, te: &TypeExpr| {
+            (slot_name(&variant.name, f), self.resolve_in(te, &subst))
         };
         match &variant.payload {
             Payload::Unit => Vec::new(),

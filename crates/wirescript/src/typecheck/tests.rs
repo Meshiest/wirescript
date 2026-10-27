@@ -8,7 +8,7 @@ fn tc(src: &str) -> TypeCheckResult {
         "parse diagnostics: {:?}",
         p.diagnostics
     );
-    typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    typecheck(&p.ast, &crate::typecheck::CeSlotMap::default())
 }
 
 fn assert_no_diags(r: &TypeCheckResult) {
@@ -17,7 +17,7 @@ fn assert_no_diags(r: &TypeCheckResult) {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
 }
 
 use crate::test_support::report_failures;
@@ -121,17 +121,17 @@ fn check_rows<S: AsRef<str>>(rows: &[(&str, S, &[Want])]) {
         if !p.diagnostics.is_empty() {
             return Err(format!("parse diagnostics: {:?}", p.diagnostics));
         }
-        Ok(typecheck(&p.ast, "test", &CeSlotMap::default()))
+        Ok(typecheck(&p.ast, &CeSlotMap::default()))
     });
 }
 
 #[test]
 fn statement_form_gate_builtin_reports_helpful_message() {
-    // `SetArrayElement`/`SetVariable`/`IncrementVariable` desugar to
-    // assignments only in statement position with the right arg count.
-    // Anything else — used as a value, or still being typed with too few
-    // args — used to report a bare "unknown identifier" even though
-    // completion offers the name. Both now get a describe-the-builtin hint.
+    // `SetArrayElement`, `SetVariable` and `IncrementVariable` desugar to
+    // assignments only in statement position with the right argument count.
+    // Anything else (a value use, too few arguments while typing) gets a hint
+    // describing the builtin, not "unknown identifier", since completion offers
+    // the name.
     let hint = |d: &crate::diagnostic::Diagnostic| {
         d.code == "WS002"
             && d.message.contains("SetArrayElement")
@@ -145,7 +145,7 @@ fn statement_form_gate_builtin_reports_helpful_message() {
         "value use: {:?}",
         r.diagnostics
     );
-    // Incomplete / wrong arg count (the mid-typing case) — NOT "unknown identifier".
+    // An incomplete argument list (mid-typing) is not "unknown identifier".
     let r2 = tc("var a: int[]\nin go: exec\non go { SetArrayElement(a, 0) }");
     assert!(
         r2.diagnostics.iter().any(hint)
@@ -761,9 +761,8 @@ fn container_method_arguments_are_checked() {
             "var m: Map<string, int>\nin go: exec\non go { m.set(\"x\", 5)\n  let v = m.get(\"x\") }",
             &[NoErrors],
         ),
-        // Map methods have fixed params, so a missing arg is arity (WS011): the
-        // old validator coerced only the args present, so `m.set("k")` checked
-        // clean and emitted a dangling wire at load.
+        // Map methods have fixed parameters, so a missing argument is arity (WS011);
+        // `m.set("k")` would otherwise emit a dangling wire.
         (
             "map.set missing value",
             "var m: Map<string, int>\nin s: exec\non s { m.set(\"k\") }",
@@ -970,10 +969,9 @@ fn values_are_checked_against_their_destination() {
 
 #[test]
 fn pure_chip_stmt_records_var_read_as_pure() {
-    // A `let` inside a pure `chip { }` — even one that follows a handler, so
-    // the chip is exec-wrapped — reads its vars continuously. The read must
-    // record as PURE in `var_read_contexts` (false), or the hover shows the
-    // wrong exec context. (Mirrors the lowering's per-statement chip purity.)
+    // A `let` inside a pure `chip { }`, even one after a handler (so the chip is
+    // exec-wrapped), reads its vars continuously: the read records as pure in
+    // `var_read_contexts`, as lowering's per-statement chip purity has it.
     let r =
         tc("var v: int = 0\nin go: exec\non go { v = 5 }\nchip { let x = v + 1 }\nout r: int = x");
     assert!(!r.var_read_contexts.is_empty(), "no var reads recorded");
@@ -1239,7 +1237,7 @@ fn generic_calls_are_checked_against_their_bounds() {
     check_rows(rows);
 }
 
-/// A `$```...```` block types as a prefab ref and maps to a
+/// A `` $```...``` `` block types as a prefab ref and maps to a
 /// `Literal::NestedPrefab` carrying the raw inner source verbatim, as
 /// `Expr::PrefabRef` maps to `Literal::PrefabRef`.
 #[test]
@@ -1260,7 +1258,7 @@ fn nested_prefab_types_as_prefab_and_lowers_to_literal() {
         range: crate::diagnostic::SourceRange::default(),
     };
     assert_eq!(
-        crate::lower::expr_to_literal(&expr),
+        crate::const_eval::expr_to_literal(&expr),
         Some(crate::ir::Literal::NestedPrefab {
             source: "in a: exec".to_string()
         })
@@ -1291,11 +1289,10 @@ fn nested_prefab_inner_error_remaps_into_outer_file() {
 
 #[test]
 fn nested_prefab_custom_event_slot_defaults_to_float_and_warns() {
-    // A self-contained prefab block runs the same two-phase inference the
-    // compile path uses: an unannotated custom-event slot with no in-block
-    // sender defaults to float (WS042) and its typed use surfaces WS003 —
-    // in the editor / `just check`, not just at emit time. Both remap into
-    // the block's outer span.
+    // A self-contained prefab block runs the compile's two-phase inference: an
+    // unannotated custom-event slot with no in-block sender defaults to float
+    // (WS042), and its typed use is WS003 in the editor and `just check`, both
+    // remapped into the block's outer span.
     let src = "in go: exec\non go { SpawnPrefab($```on CustomEvent(\"init\") -> p { let n = p.GetUserId() }```) }\n";
     let r = tc(src);
     let block = src.find("$```").unwrap();
@@ -1321,10 +1318,9 @@ fn nested_prefab_custom_event_slot_defaults_to_float_and_warns() {
 
 #[test]
 fn find_player_returns_controller_not_character() {
-    // FindPlayer emits the found player's persistent PlayerState (modeled as
-    // `controller`), NOT a character — its output was mistyped `Type::Character`
-    // before the PlayerState upgrade. A minimal program's only object-typed
-    // expression is the call, so its inferred type must be Controller.
+    // FindPlayer gives the found player's PlayerState (modeled as `controller`),
+    // not a character. The call is the program's only object-typed expression,
+    // so its inferred type is Controller.
     let r = tc("in go: exec\non go { let p = FindPlayer(\"id\") }");
     assert_no_diags(&r);
     assert!(
@@ -1342,9 +1338,8 @@ fn find_player_returns_controller_not_character() {
 #[test]
 fn array_record_field_is_never_ref_wrapped() {
     // An array is already a reference, so a shorthand `{ arr }` field (and
-    // `&arr`) types as `int[]`, never the redundant, write-dropping `*int[]`.
-    // A mixed record built from vars matches a `{ int[], *int }` type
-    // EXACTLY (plain array field, ref scalar field) — no coercion.
+    // `&arr`) types as `int[]`, never `*int[]`. A record built from vars matches
+    // `{ int[], *int }` exactly (a plain array field, a ref scalar field).
     let ok = "var regs: int[]\nvar cpsr: int = 0\n\
                   type Cpu = { regs: int[], cpsr: *int }\n\
                   mod f(c: Cpu) { }\n\
@@ -1443,7 +1438,7 @@ fn namespace_calls_are_checked() {
     ];
     check_rows_with(rows, |src| {
         let resolved = resolve(src, "main.ws", &loader);
-        Ok(typecheck(&resolved.ast, "main.ws", &CeSlotMap::default()))
+        Ok(typecheck(&resolved.ast, &CeSlotMap::default()))
     });
 }
 
@@ -1972,7 +1967,7 @@ fn ws_source_prefab_ref_surfaces_inner_errors_on_span() {
     let parent_path = dir.0.join("parent.ws").to_string_lossy().into_owned();
     let src = "in go: exec\non go { SpawnPrefab(prefab = $./broken_child.ws) }";
     let p = parse(src, &parent_path);
-    let result = crate::typecheck::typecheck_with_inference(&p.ast, &parent_path).0;
+    let result = crate::typecheck::typecheck_with_inference(&p.ast).0;
     assert!(
         result
             .diagnostics
@@ -1992,40 +1987,35 @@ fn infer_ce_slots_adopts_sender_type_and_warns_when_absent() {
                    on go {\n  SendCustomEvent(\"dmg\", 42)\n}\n";
     let p = parse(src, "test");
     assert!(p.diagnostics.is_empty(), "parse: {:?}", p.diagnostics);
-    let pass1 = typecheck(&p.ast, "test", &CeSlotMap::default());
+    let pass1 = typecheck(&p.ast, &CeSlotMap::default());
     let (map, diags) = infer_custom_event_slots(&p.ast, &pass1.type_of_expr);
     // The single receiver's slot 0 resolved to int.
     let slots = map.values().next().expect("one custom-event receiver");
-    assert_eq!(slots.get(0).cloned().flatten(), Some(Type::Int));
-    assert!(
-        diags.is_empty(),
-        "no WS042 when a sender exists: {:?}",
-        diags
-    );
+    assert_eq!(slots.first().cloned().flatten(), Some(Type::Int));
+    assert!(diags.is_empty(), "no WS042 when a sender exists: {diags:?}");
 
     // No in-unit sender -> float + WS042.
     let src2 = "static var last: int = 0\n\
                     on CustomEvent(\"ext\") -> (amount) {\n  last = last + 1\n}\n";
     let p2 = parse(src2, "test");
-    let pass1b = typecheck(&p2.ast, "test", &CeSlotMap::default());
+    let pass1b = typecheck(&p2.ast, &CeSlotMap::default());
     let (map2, diags2) = infer_custom_event_slots(&p2.ast, &pass1b.type_of_expr);
     let slots2 = map2.values().next().expect("one receiver");
-    assert_eq!(slots2.get(0).cloned().flatten(), Some(Type::Float));
+    assert_eq!(slots2.first().cloned().flatten(), Some(Type::Float));
     crate::test_support::assert_code(&diags2, "WS042");
 }
 
 #[test]
 fn inferred_ce_slot_type_is_enforced_in_body() {
-    // `amount` inferred as int from the sender; using it where a vector is
-    // required is a WS003 (type error) — proving the body sees `int`, not
-    // `any` (which coerces to everything, including vector — `int` doesn't:
-    // numeric-to-vector has no coercion rule, see `types::coerce::coerce`).
+    // `amount` infers as int from the sender, so using it where a vector is
+    // required is WS003: the body sees `int`, not `any` (which would coerce to a
+    // vector; numeric-to-vector has no rule in `types::coerce::coerce`).
     let src = "static var v: vector = Vec(0.0, 0.0, 0.0)\n\
                    in go: exec\n\
                    on CustomEvent(\"dmg\") -> (amount) {\n  v = amount\n}\n\
                    on go {\n  SendCustomEvent(\"dmg\", 42)\n}\n";
     let p = parse(src, "test");
-    let (r, _map) = typecheck_with_inference(&p.ast, "test");
+    let (r, _map) = typecheck_with_inference(&p.ast);
     crate::test_support::assert_code(&r.diagnostics, "WS003");
 }
 
@@ -2158,24 +2148,15 @@ fn const_bindings_and_branch_elision() {
     check_rows(rows);
 }
 
-// Wiring `lookup_mod` made `NotAConstMod` capable of lying: a `const mod`
-// call that const evaluation does not descend to isn't evaluated, and the
-// failure used to be reported as "'double' is not declared `const mod`"
-// about a mod that plainly IS one. Leaving a position unevaluated is
-// fine; stating something false about the user's code is not.
+// A `const mod` call that const evaluation does not descend to is left
+// unevaluated, and the diagnostic must not claim the mod is not a `const mod`.
 #[test]
 fn a_nested_const_mod_call_is_not_blamed_for_being_non_const() {
-    // `double(3) + 1` (this test's ORIGINAL trigger) is no longer nested
-    // in the sense this test is about: `eval_expr` now resolves a `const
-    // mod` call standing as a `BinOp`/`UnOp`/constructor-argument operand
-    // directly (see `const_eval::expr`'s
-    // `a_const_mod_call_nested_in_a_binary_operator_evaluates`), so that
-    // expression just evaluates to `7` and never reaches this
-    // diagnostic. Nest one level deeper instead — as an argument to a
-    // call whose OWN callee (`scaleUp`) is an ordinary, non-const `mod` —
-    // which `eval_expr`'s `Expr::Call` arm still declines to evaluate,
-    // falling back to `reason_for`'s walk and landing on the exact
-    // `NestedConstModCall` case this test exists to prove.
+    // The call is nested one level deeper than an operand: an argument to a call
+    // whose own callee (`scaleUp`) is an ordinary `mod`, which `eval_expr`'s
+    // `Expr::Call` arm declines to evaluate, so `reason_for` reaches the
+    // `NestedConstModCall` case. (`double(3) + 1` as a direct operand evaluates,
+    // see `a_const_mod_call_nested_in_a_binary_operator_evaluates`.)
     let r = tc("const mod double(n: int) -> int { return n * 2 }\n\
              mod scaleUp(n: int) -> int { return n }\n\
              mod f() { const total = scaleUp(double(3)) }");
@@ -2198,13 +2179,10 @@ fn a_nested_const_mod_call_is_not_blamed_for_being_non_const() {
     );
 }
 
-// The scoping is symmetric: once `A`'s body has finished checking (its
-// `mod_decls` frame popped), a call AFTER it in a totally unrelated decl
-// must not see `A`'s nested override either. Pins the exact mechanism —
-// WHICH range gets dropped — rather than just "no error": under the
-// flat-map bug `B` would resolve `size` to `A`'s leaked 999, so
-// `size() == 10` reads false and the THEN block (not the ELSE) would be
-// the one dropped.
+// Scoping is symmetric: once `A`'s body is checked (its `mod_decls` frame
+// popped), a call after it in an unrelated declaration does not see `A`'s
+// nested override. The test pins which range is dropped: resolving `size` to
+// `A`'s 999 would make `size() == 10` false and drop the then block instead.
 #[test]
 fn a_nested_const_mod_frame_is_dropped_once_its_scope_closes() {
     let src = "const mod size() -> int { return 10 }\n\
@@ -2415,33 +2393,26 @@ fn top_level_ports(
         .filter(|n| n.kind == crate::ir::NodeKind::Output && n.chip_id.is_none())
         .filter_map(
             |n| match n.properties.get(&*crate::intern::sym::PORT_LABEL) {
-                Some(crate::ir::Literal::String(name)) => Some((n.id, name.to_string())),
+                Some(crate::ir::Literal::String(name)) => Some((n.id, name.clone())),
                 _ => None,
             },
         )
 }
 
-/// THE structural invariant behind readable outputs: every port typecheck's
-/// registry hands out as readable must be a port lowering actually emits,
-/// and each phase must claim exactly the set this corpus pins for it.
+/// Every port typecheck's registry hands out as readable is a port lowering
+/// emits, and each phase claims exactly the set this corpus pins. A name only
+/// typecheck claims is a silent miscompile (the read and the write both vanish);
+/// the reverse is the safe slack (lowering emits a pin the source cannot name,
+/// such as a record port's per-field pins).
 ///
-/// A name only typecheck claims is a silent miscompile: the read
-/// type-checks and lowers to nothing, so the read and the write both
-/// disappear with no diagnostic. The reverse is slack, and the safe
-/// direction: lowering emits a pin the source cannot name (a record port's
-/// per-field pins, or an unannotated record-valued port's dead single pin),
-/// which at worst leaves a port nobody can read.
-///
-/// Five hand-written traversals decide this between them
+/// Five traversals decide this between them
 /// (`lower::predeclare::pre_declare_handler_outputs` and
 /// `pre_declare_anon_chip`, `typecheck::register::register_handler_outputs`
-/// and `register_anon_chip_outputs`, and
-/// `analysis::scoped_refs::widen_hoisted_out_bindings`). The site set inside
-/// a body comes from the shared `ast::handler_port_sites` /
-/// `ast::anon_chip_port_sites` enumerators, but WHICH bodies each traversal
-/// feeds them is decided per pass, which is what this corpus pins
-/// down. Both the annotated and the unannotated axis are covered: a rule
-/// keyed on one of them alone passes every row of the other.
+/// and `register_anon_chip_outputs`,
+/// `analysis::scoped_refs::widen_hoisted_out_bindings`). The sites inside a
+/// body come from the shared `ast::handler_port_sites` and
+/// `ast::anon_chip_port_sites`, but which bodies each traversal feeds them is
+/// per pass, which this pins, on both the annotated and the unannotated axis.
 #[test]
 fn port_registry_matches_lowerings_boundary_ports() {
     // (label, source, ports typecheck registers, port labels lowering emits)
@@ -2592,30 +2563,19 @@ fn port_registry_matches_lowerings_boundary_ports() {
     assert!(saw_a_port, "the corpus must claim at least one real port");
 }
 
-/// The EXACT-PARITY invariant that `lower::context`, `lower::stmt`,
-/// `lower::decl` and `typecheck::ctx` all cite by name. It was cited by
-/// four doc comments for a long time without ever being written, and that
-/// is precisely how a real divergence shipped: block-scope `const`
-/// recording used the FULL evaluator in `typecheck::stmt` but the NARROW
-/// `expr_to_literal_in` in `lower::decl`, so a `const` bound to a record —
-/// `const p = { x: 1 }` with `if p.x == 1`, and every destructuring
-/// `const` — was compile-time-decidable to typecheck and not to lowering.
-/// Typecheck skipped the untaken block; lowering emitted it. Ill-typed
-/// code reached the graph with no diagnostic at all.
+/// Typecheck and lowering drop exactly the same blocks (the parity
+/// `lower::context`, `lower::stmt`, `lower::decl` and `typecheck::ctx` cite).
+/// Equality catches both directions: block-scope `const` recording with the
+/// full evaluator on one side and the narrow `expr_to_literal_in` on the other
+/// would make a record-valued `const` (`const p = { x: 1 }` with `if p.x == 1`)
+/// decidable to one stage only, so typecheck would skip a block lowering emits.
+/// The containment test below (`typecheck_never_drops_a_block_that_lowering_still_emits`)
+/// allows lowering to drop more, so it would not catch the reverse.
 ///
-/// The weaker containment property
-/// (`typecheck_never_drops_a_block_that_lowering_still_emits`, below) does
-/// NOT catch that: dropping LESS on the typecheck side is the safe
-/// direction for containment, yet it is exactly what under-checking looks
-/// like when it is lowering that drops less. Equality catches both
-/// directions at once.
-///
-/// Corpus covers a plain `const`, a record-valued `const` read by field, a
-/// block-scope destructure (plain / alias / rest) and a top-level
-/// destructure — every shape whose recording differs between the two
-/// sides. Cases where the two stages genuinely hold DIFFERENT information
-/// (a `const` param's placeholder, `ident_literal_bool`) are excluded by
-/// construction and live in the containment test instead.
+/// The corpus covers a plain `const`, a record `const` read by field, block
+/// destructures (plain, alias, rest) and a top-level destructure. Cases where
+/// the stages hold different information (a `const` parameter's placeholder,
+/// `ident_literal_bool`) are in the containment test.
 #[test]
 fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
     let cases: &[(&str, &str)] = &[
@@ -2671,16 +2631,11 @@ fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
                    if a == 1 { x = 1 } else { x = 2 } } }\n\
                  in go: exec\non go { f(1) }",
         ),
-        // SHADOWING — the other half of keeping the two environments in
-        // step, and the half that had no coverage at all. Recording the
-        // same constants is only sound if RE-BINDING one clears it on both
-        // sides too, and lowering's clearing handled a single spelling
-        // (`Ident`, narrow evaluator) where typecheck's handled every one.
-        // Each case shadows ONE const and leaves a sibling alone, so the
-        // still-const half keeps the corpus's non-vacuity assert honest
-        // while the shadowed half is what actually has to agree.
+        // Shadowing: recording the same constants is sound only if re-binding one
+        // clears it on both sides, for every binding form. Each case shadows one
+        // const and leaves a sibling alone, so the corpus stays non-vacuous.
         (
-            // `let { a } = …` cleared `a`'s const mark in typecheck and
+            // `let { a } = ...` cleared `a`'s const mark in typecheck and
             // not in lowering: typecheck emitted a real Branch for
             // `if a == 1` while lowering tree-shook it on the STALE value,
             // shipping only the `x = 1` arm and no Branch gate at all.
@@ -2704,13 +2659,10 @@ fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
                  in go: exec\non go { f() }",
         ),
         (
-            // The same shadow with the `const` at the TOP level, which is
-            // a different mechanism rather than a rephrasing: eviction in
-            // `const_lookup_declared_only` fires on a name being PRESENT
-            // in a `scoped_consts` frame and ABSENT from that frame's
-            // marks, so a top-level constant is only evicted once the
-            // inner `let` RECORDS its own value there. Clearing the mark
-            // alone left the top-level value resolving straight through.
+            // The same shadow with the `const` at the top level, a different mechanism:
+            // `const_lookup_declared_only` evicts a name present in a `scoped_consts`
+            // frame and absent from its marks, so the top-level constant is evicted only
+            // once the inner `let` records its own value there.
             "a block-scope let shadowing a top-level const",
             "const a = 1\nconst b = 2\nvar x: int = 0\n\
                  in go: exec\n\
@@ -2718,18 +2670,14 @@ fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
                    if a == 1 { x = 1 } else { x = 2 }\n\
                    if b == 2 { x = 3 } else { x = 4 } }",
         ),
-        // NAMED-CHIP BOUNDARY. A chip body is a `Block` of statements, so
-        // its own `const`s never reach `build_const_env` (which takes
-        // `TopDecl`s) — they are recorded by `lower_let_decl` into
-        // `scoped_consts.last_mut()`, and `instance_body` used to hand the
-        // child ctx NO frame at all, so every one was silently discarded.
-        // Typecheck has always had a frame here, so the two stages read
-        // different constants inside the same body.
+        // Named-chip boundary: a chip body's own `const`s never reach
+        // `build_const_env` (which takes `TopDecl`s); `lower_let_decl` records them into
+        // `scoped_consts.last_mut()`, so `instance_body` must give the child context a
+        // frame, as typecheck has, or the two stages read different constants.
         (
-            // The sharpest form: lowering decided on the OUTER constant
-            // and typecheck on the INNER one, so they emitted and checked
-            // OPPOSITE arms — a wrong-branch miscompile AND an unchecked
-            // block reaching the graph, from one program.
+            // Deciding on the outer constant in one stage and the inner in the other
+            // would emit and check opposite arms: a wrong-branch miscompile and an
+            // unchecked block from one program.
             "a named chip's own const shadowing a top-level one",
             "const a = 1\nvar x: int = 0\n\
                  chip Named(t: exec) { const a = 9\n\
@@ -2738,10 +2686,9 @@ fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
                  in go: exec\nlet r = Named(go)",
         ),
         (
-            // The same gap with nothing shadowed: typecheck decided the
-            // condition on the chip-body `const` while lowering, holding
-            // no value for it, emitted a runtime Branch over both arms —
-            // typecheck dropping a block lowering still emits.
+            // The same gap with nothing shadowed: typecheck deciding on the chip-body
+            // `const` while lowering, holding no value for it, emits a runtime Branch over
+            // both arms.
             "a named chip's own const with no outer binding",
             "var x: int = 0\n\
                  chip Named(t: exec) { const a = 7\n\
@@ -2749,13 +2696,10 @@ fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
                  in go: exec\nlet r = Named(go)",
         ),
         (
-            // INLINED-CALLEE BOUNDARY. A `mod` body is lowered into the
-            // CALLER's ctx with the caller's block scopes still open, and
-            // the const lookups walk every open frame — so a caller-local
-            // shadow evicted the top-level constant INSIDE the callee.
-            // Typecheck checks a `mod` body once, at its declaration,
-            // where no call site's scope exists, so it kept resolving the
-            // top-level one and elided an arm lowering then emitted.
+            // Inlined-callee boundary: a `mod` body lowers into the caller's context with
+            // the caller's block scopes open, and the const lookups walk every open frame,
+            // so a caller-local shadow must not evict the top-level constant inside the
+            // callee; typecheck checks the body once, where no call site's scope exists.
             "a caller-local shadow must not reach into an inlined callee",
             "const a = 1\nvar x: int = 0\n\
                  mod inner() { if a == 1 { x = 1 } else { x = 2 } }\n\
@@ -2814,27 +2758,20 @@ fn typecheck_and_lowering_drop_exactly_the_same_ranges() {
     }
 }
 
-/// THE soundness property of this feature, stated exactly:
-/// **everything LOWERED must have been CHECKED.** A block is lowered iff
-/// it is not in lowering's dropped set; checked iff it is not in
-/// typecheck's. So the requirement is the containment
+/// Everything lowered must have been checked. A block is lowered unless it is
+/// in lowering's dropped set and checked unless it is in typecheck's, so:
 ///
 /// ```text
 /// typecheck_dropped  ⊆  lowering_dropped
 /// ```
 ///
-/// — typecheck may skip a block only if lowering also skips it. The
-/// reverse slack is deliberately allowed and is the SAFE direction:
-/// lowering knows things typecheck cannot (a call site's real argument, a
-/// literal bound to a gate), so it may drop MORE. That merely means a
-/// block was checked and then not emitted — at worst a diagnostic about
-/// absent code, never shipped-unchecked code.
+/// Typecheck may skip a block only if lowering skips it too. The reverse slack
+/// is the safe direction: lowering knows things typecheck cannot (a call site's
+/// real argument, a literal bound to a gate), so it may drop more, which at
+/// worst checks code that is not emitted.
 ///
-/// Every case below is a shape that genuinely diverged at some point, so
-/// this is a regression net rather than a smoke test. Cases 1-3 also
-/// satisfy exact EQUALITY (both stages hold the same information), which
-/// is asserted separately and more tightly; case 4-5 are the intentional
-/// strict-subset ones.
+/// Each case is a shape where the two once diverged. Cases 1 to 3 are also
+/// exact equality (asserted separately); cases 4 and 5 are strict subsets.
 #[test]
 fn typecheck_never_drops_a_block_that_lowering_still_emits() {
     // (label, source, both stages have equal information)
@@ -2858,18 +2795,12 @@ fn typecheck_never_drops_a_block_that_lowering_still_emits() {
             true,
         ),
         (
-            // CRITICAL regression: `mod_decls` used to be a flat map, so
-            // `A`'s NESTED `const mod size` (checked first, in source
-            // order) permanently overwrote the top-level `size` for
-            // every later reader — typecheck resolved `B`'s call to
-            // `size` to A's leaked 100 (dropping the ELSE), while
-            // lowering (already scope-correct through `ctx.scope`)
-            // resolved the top-level 10 (dropping the THEN). Disjoint
-            // dropped sets — exactly the containment violation this test
-            // exists to catch. Scoping `mod_decls` like `scoped_consts`
-            // (mirroring `lower::LowerCtx::pass1_chips`) makes both
-            // stages resolve `size` identically once `A`'s body (and its
-            // frame) has closed.
+            // `A`'s nested `const mod size`, checked first, must not replace the
+            // top-level `size` for later readers: with one flat map, typecheck would
+            // resolve `B`'s call to `A`'s 100 (dropping the else) while lowering, scoped
+            // through `ctx.scope`, resolves the top-level 10 (dropping the then).
+            // `mod_decls` is scoped like `scoped_consts` (as `lower::LowerCtx::pass1_chips`),
+            // so both resolve `size` alike once `A`'s frame closes.
             "a nested const mod does not leak into a later sibling's resolution",
             "const mod size() -> int { return 10 }\nvar x: int = 0\n\
                  mod A() { const mod size() -> int { return 100 } }\n\
@@ -2878,10 +2809,9 @@ fn typecheck_never_drops_a_block_that_lowering_still_emits() {
             true,
         ),
         (
-            // Typecheck sees a placeholder ZERO and must decline to elide
-            // at all; lowering inlines the REAL `1` and elides the ELSE.
-            // Opposite selections — which is precisely why typecheck must
-            // not elide. Strict subset: {} ⊂ {else}.
+            // Typecheck sees a placeholder zero and declines to elide; lowering inlines
+            // the real `1` and elides the else. They would select opposite arms, which is
+            // why typecheck does not elide. Strict subset: {} within {else}.
             "a const PARAM's placeholder must not decide a branch",
             "var x: int = 0\nmod f(m: const int) { if m == 1 { x = 1 } else { x = 2 } }\n\
                  in go: exec\non go { f(1) }",
@@ -3254,11 +3184,7 @@ fn a_namespace_in_an_assignment_target_keeps_its_type() {
     };
     let src = "import * as u from \"lib\"\nin go: exec\non go { u.xs[1] = 2 }";
     let resolved = resolve(src, "main", &loader);
-    let r = typecheck(
-        &resolved.ast,
-        "main",
-        &crate::typecheck::CeSlotMap::default(),
-    );
+    let r = typecheck(&resolved.ast, &crate::typecheck::CeSlotMap::default());
     assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
     let at = src.find("u.xs").unwrap();
     assert!(

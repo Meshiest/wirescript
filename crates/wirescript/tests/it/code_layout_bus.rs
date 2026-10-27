@@ -1,8 +1,8 @@
 //! Emit-side materialization of a `BusLayout`: rerouter bricks, the wires
 //! that chain them, and the suppression of the module wires they replace.
 //!
-//! Most of the bus is built by hand here — no allocator, no geometry — so the
-//! emit contract is pinned on its own. The last test is the other half: the
+//! Most of the bus is built by hand here, with no allocator and no geometry, so
+//! the emit contract is pinned on its own. The last test is the other half: the
 //! bus the allocator really builds, carried through emit into a world.
 
 use wirescript::ir::Module;
@@ -20,7 +20,7 @@ fn lowered_and_laid_out(src: &str) -> (Module, LayoutResult) {
         src,
         FILE,
         None,
-        wirescript::lower::FoldMode::Auto,
+        wirescript::FoldMode::Auto,
         &wirescript::resolve::FsLoader,
     );
     let layout = wirescript::layout::layout_with_opts(
@@ -33,14 +33,14 @@ fn lowered_and_laid_out(src: &str) -> (Module, LayoutResult) {
 fn build(module: &Module, layout: &LayoutResult) -> brdb::World {
     wirescript::build_world(
         module,
-        &Default::default(),
+        &wirescript::ir::ProgramSettings::default(),
         layout,
         &wirescript::EmitOptions::default(),
     )
     .expect("emit")
 }
 
-/// Every brick in the world — the main grid plus every chip grid.
+/// Every brick in the world: the main grid plus every chip grid.
 fn brick_count_in(world: &brdb::World) -> usize {
     world.bricks.len() + world.grids.iter().map(|(_, b)| b.len()).sum::<usize>()
 }
@@ -50,15 +50,14 @@ fn brick_count(module: &Module, layout: &LayoutResult) -> usize {
 }
 
 // Hand-built bus: two rerouters chained, the second tapping a real port.
-// Proves emit materializes nodes, chains them, honours suppression, and
-// never creates fan-in — with no allocator and no geometry involved.
+// Emit materializes nodes, chains them, honours suppression, and never creates
+// fan-in.
 #[test]
 fn emit_materializes_a_hand_built_bus() {
     // A program with one var read from one row.
     let src = "@layout(\"code\")\n\nvar a: int = 1\nin go: exec\non go {\n  PrintToConsole(\"${a}\")\n}\n";
     let (module, mut layout) = lowered_and_laid_out(src);
-    // The emit contract is what this pins, so the layout's own lanes are
-    // dropped and the bus below is entirely hand-built.
+    // Drop the layout's own lanes so the bus below is entirely hand-built.
     layout.bus = wirescript::layout::BusLayout::default();
 
     // Find the var node and the wire out of it that we will replace.
@@ -68,12 +67,11 @@ fn emit_materializes_a_hand_built_bus() {
         .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("a var node")
         .id;
-    let w = module
+    let w = *module
         .wires
         .iter()
         .find(|w| w.source.node_id == var_id)
-        .expect("a wire out of the var")
-        .clone();
+        .expect("a wire out of the var");
 
     let before = brick_count(&module, &layout);
 
@@ -125,7 +123,7 @@ fn emit_materializes_a_hand_built_bus() {
         assert!(seen.insert(key), "fan-in on {:?}", wire.target.port_name);
     }
     // The suppressed original wire is gone; the bus path replaces it.
-    // (Exactly one wire lands on the consumer's port — the bus tap.)
+    // Exactly one wire lands on the consumer's port: the bus tap.
     let is_rerouter = |p: &brdb::WirePort| p.component_type.to_string() == REROUTER;
     let lane: Vec<_> = world
         .wires
@@ -149,14 +147,11 @@ fn emit_materializes_a_hand_built_bus() {
     );
 }
 
-/// A bus wire whose end will not resolve must FAIL the build, not warn.
+/// A bus wire whose end will not resolve must fail the build, not warn.
 ///
-/// Pass 3 logs and carries on when a module wire cannot be drawn, and that is
-/// right: the wire was going to be drawn, so the loss shows up as a wire
-/// missing from the world. A BUS wire is not symmetric. Its original was
-/// suppressed and will never be redrawn, so dropping it leaves the consumer
-/// reading nothing, forever, in a save that compiles, loads and pastes
-/// cleanly. There is no later gate for it — so the build stops here.
+/// An undrawable module wire only logs, since its loss shows up as a missing
+/// wire. A bus wire's original was suppressed and is never redrawn, so dropping
+/// it leaves the consumer reading nothing in a save that otherwise loads fine.
 #[test]
 fn an_unresolvable_bus_wire_fails_the_build() {
     let src = "@layout(\"code\")\n\nvar a: int = 1\nin go: exec\non go {\n  PrintToConsole(\"${a}\")\n}\n";
@@ -169,12 +164,11 @@ fn an_unresolvable_bus_wire_fails_the_build() {
         .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("a var node")
         .id;
-    let w = module
+    let w = *module
         .wires
         .iter()
         .find(|w| w.source.node_id == var_id)
-        .expect("a wire out of the var")
-        .clone();
+        .expect("a wire out of the var");
 
     layout.bus.nodes.push(wirescript::layout::BusNode {
         x: 0,
@@ -188,8 +182,8 @@ fn an_unresolvable_bus_wire_fails_the_build() {
         source: wirescript::layout::BusEnd::Node(w.source),
         target: wirescript::layout::BusEnd::Bus(0),
     });
-    // The tap that delivers the value — pointed at a node that does not exist,
-    // so its end cannot be resolved to a brick port.
+    // The tap that delivers the value, pointed at a node that does not exist so
+    // its end cannot be resolved to a brick port.
     let ghost = wirescript::ir::PortRef {
         node_id: wirescript::ir::NodeId::fresh(),
         port: w.target.port,
@@ -205,7 +199,7 @@ fn an_unresolvable_bus_wire_fails_the_build() {
 
     let built = wirescript::build_world(
         &module,
-        &Default::default(),
+        &wirescript::ir::ProgramSettings::default(),
         &layout,
         &wirescript::EmitOptions::default(),
     );
@@ -213,8 +207,7 @@ fn an_unresolvable_bus_wire_fails_the_build() {
         panic!("an unresolvable bus wire must fail the build, not return Ok");
     };
 
-    // The message has to name both ends and both ports, or a future failure is
-    // a shrug rather than a lead.
+    // The message must name both ends and both ports.
     let text = err.to_string();
     for needle in [
         "bus node 0",
@@ -229,24 +222,21 @@ fn an_unresolvable_bus_wire_fails_the_build() {
     }
 }
 
-/// Suppressing a wire must not retroactively break a gate's variable tag.
+/// Suppressing a wire must not break a gate's variable tag.
 ///
-/// A `Var_Get`-style gate names itself by tracing its `VarRef` wire back to
-/// the var node through `EmitContext::wire_sources`, which emit builds from
-/// `module.wires` before anything is drawn. Suppression filters what pass 3
-/// draws and never mutates the IR, so the trace must still land on the var.
-/// This pins that separation.
+/// A `Var_Get`-style gate names itself by tracing its `VarRef` wire back to the
+/// var node through `EmitContext::wire_sources`, which emit builds from
+/// `module.wires` before anything is drawn. Suppression only filters what is
+/// drawn, so the trace must still land on the var.
 ///
-/// This does NOT exercise `resolve_var_label`'s rerouter hop: a `BusNode` has
-/// no `NodeId`, so it can never appear as a step in that walk, and the lookup
-/// here resolves on its first iteration. The hop is gated by the
-/// `emit::tests::var_label_walk_follows_rerouter_hops` unit test.
+/// The rerouter hop in `resolve_var_label` is covered by the
+/// `emit::tests::var_label_walk_follows_rerouter_hops` unit test, not here.
 #[test]
 fn suppression_leaves_var_tag_lookup_intact() {
     let src = "@layout(\"code\")\n\nvar a: int = 1\nin go: exec\non go {\n  PrintToConsole(\"${a}\")\n}\n";
     let (module, mut layout) = lowered_and_laid_out(src);
-    // Hand-built bus only: the layout's own lanes would drive the same port
-    // this test taps.
+    // Hand-built bus only: the layout's own lanes would drive the port this
+    // test taps.
     layout.bus = wirescript::layout::BusLayout::default();
 
     let var_id = module
@@ -255,12 +245,11 @@ fn suppression_leaves_var_tag_lookup_intact() {
         .find(|n| n.gate_class == "BrickComponentType_Var")
         .expect("a var node")
         .id;
-    let w = module
+    let w = *module
         .wires
         .iter()
         .find(|w| w.source.node_id == var_id)
-        .expect("a wire out of the var")
-        .clone();
+        .expect("a wire out of the var");
 
     // A lane node carries no text of its own, so every `a` tag below comes
     // from a gate.
@@ -352,20 +341,14 @@ fn wires_in(world: &brdb::World) -> Vec<&brdb::WireConnection> {
     world.wires.iter().collect()
 }
 
-/// The bus the ALLOCATOR built, carried end to end into a world.
+/// The bus the allocator built, carried end to end into a world.
 ///
-/// The two tests above zero the layout's own lanes and hand-build a bus, so
-/// they pin the emit contract in isolation and nothing else here reaches a
-/// world through the real geometry. This does: it compiles an
-/// `@layout("code")` program and compares the emitted world against the same
-/// program built with the lanes stripped out.
+/// Compiles an `@layout("code")` program and compares the emitted world against
+/// the same program built with the lanes stripped out.
 ///
-/// The program carries a chip in both directions — a value delivered in and a
-/// value read back out — because a DELIVERY tap is the endpoint the whole
-/// pipeline is least sure of: the wire's own end lives in another module, so
-/// it holds no placement here and every filter along the way has to be told to
-/// keep it. A chip-free two-row body proves the wire accounting and nothing
-/// about that.
+/// The program carries a chip in both directions (a value delivered in and a
+/// value read back out): a delivery tap's wire end lives in another module and
+/// holds no placement here, so every filter along the way must keep it.
 #[test]
 fn the_allocated_bus_reaches_the_emitted_world() {
     let src = "@layout(\"code\")
@@ -451,11 +434,9 @@ on go {
     }
 
     // (c) Every consumer port keeps exactly one inbound wire. Brick ids are
-    // minted per build so they cannot be compared across the two worlds;
-    // the port identity can, and with (b) proving each tuple unique, an
-    // unchanged multiset of non-rerouter targets says every port that was
-    // driven directly is now driven by the bus instead — no port lost its
-    // wire, and none gained a second.
+    // minted per build, so compare port identity instead; with (b) proving each
+    // tuple unique, an unchanged multiset of non-rerouter targets means every
+    // directly driven port is now driven by the bus, and none gained a second.
     let consumer_ports = |w: &brdb::World| -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> = wires_in(w)
             .iter()
@@ -476,8 +457,7 @@ on go {
         "the bus must land on the same consumer ports the direct wires did"
     );
 
-    // ...and the wire count balances exactly: each suppressed wire dropped,
-    // each bus wire drawn.
+    // The wire count balances: each suppressed wire dropped, each bus wire drawn.
     assert_eq!(
         wires_in(&world).len(),
         wires_in(&bare_world).len() - suppressed_count(&layout) + bus_wire_count(&layout),
@@ -486,15 +466,11 @@ on go {
         bus_wire_count(&layout)
     );
 
-    // (d) The bussed variable's gates still name themselves. A `Var_Get`
-    // reads its name by tracing its `VarRef` wire back to the var node, and
-    // here that wire is one the allocator suppressed. The walk runs over
-    // `wire_sources`, which emit builds from `module.wires` before anything
-    // is drawn, so it must be untouched by the suppression — this pins that.
-    // It does NOT reach `resolve_var_label`'s rerouter hop: a `BusNode` has
-    // no `NodeId`, so it can never be a step in that walk whatever the
-    // allocator does. The hop's gate is `emit::tests::
-    // var_label_walk_follows_rerouter_hops`.
+    // (d) The bussed variable's gates still name themselves. A `Var_Get` traces
+    // its `VarRef` wire back to the var node (here a wire the allocator
+    // suppressed) over `wire_sources`, which is built from `module.wires` before
+    // suppression applies. The rerouter hop is covered by
+    // `emit::tests::var_label_walk_follows_rerouter_hops`.
     let tags = label_texts(&world);
     assert!(
         tags.contains(&("a".to_string(), 1.2)),

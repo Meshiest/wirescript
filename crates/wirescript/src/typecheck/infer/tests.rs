@@ -7,10 +7,10 @@ use crate::typecheck::{TypeCheckCtx, TypeCheckResult};
 
 fn ctx() -> TypeCheckCtx<'static> {
     static EMPTY: std::sync::OnceLock<crate::typecheck::CeSlotMap> = std::sync::OnceLock::new();
-    TypeCheckCtx::new("test", EMPTY.get_or_init(Default::default))
+    TypeCheckCtx::new(EMPTY.get_or_init(Default::default))
 }
 fn first_expr(src: &str) -> crate::ast::Expr {
-    // A top-level `let x = <expr>` — pull the initializer to exercise infer.
+    // A top-level `let x = <expr>`: its initializer exercises `infer`.
     let p = parse(src, "test");
     match &p.ast.decls[0] {
         crate::ast::TopDecl::Let(l) => l.value.clone(),
@@ -20,7 +20,7 @@ fn first_expr(src: &str) -> crate::ast::Expr {
 
 fn tc(src: &str) -> TypeCheckResult {
     let p = parse(src, "test");
-    crate::typecheck::typecheck(&p.ast, "test", &crate::typecheck::CeSlotMap::default())
+    crate::typecheck::typecheck(&p.ast, &crate::typecheck::CeSlotMap::default())
 }
 
 /// Runs the full two-pass typecheck over `src` and returns the display
@@ -103,7 +103,7 @@ fn infer_and_check_on_a_bare_context() {
     let r = e.range();
     assert_eq!(
         c.type_of_expr
-            .get(&(r.file.clone(), r.start.offset, r.end.offset)),
+            .get(&(std::sync::Arc::clone(&r.file), r.start.offset, r.end.offset)),
         Some(&Type::Int),
         "infer records the type of what it inferred"
     );
@@ -146,8 +146,8 @@ fn binop_records_op_resolution() {
 
 #[test]
 fn erroring_arg_reports_inner_error_once() {
-    // An arg with its own error (undefined ident) must surface WS002 exactly
-    // once — the preamble infers args, and check_args must not re-infer them.
+    // An argument with its own error (an undefined identifier) reports WS002
+    // once: the preamble infers arguments, and `check_args` does not infer again.
     let r = tc("mod f(a: int) { }\nin go: exec\non go { f(nope) }");
     assert_code_count(&r.diagnostics, "WS002", 1);
 }
@@ -167,8 +167,8 @@ fn pure_and_exec_context_codes() {
             "var xs: int[]\nchip {\n  xs.push(1)\n}",
             &[Has("WS007")],
         ),
-        // A pure-context READ (`length`/`find`/…) also needs exec: it lowers to
-        // an `Exec_*` gate.
+        // A pure-context read (`length`, `find`) also needs exec: it lowers to an
+        // `Exec_*` gate.
         (
             "array read outside exec",
             "var xs: int[]\nout r = xs.length()",
@@ -192,10 +192,10 @@ fn pure_and_exec_context_codes() {
             "var m: Map<int,int>\nchip {\n  m.set(1, 2)\n}",
             &[Has("WS007")],
         ),
-        // A mod that reads a container reached through its own PARAMETER is
-        // exec-requiring; a pure call to it must be WS007, not a silent miscompile
-        // (the map ref used to wire straight into the consumer). The scan resolves
-        // the receiver against the mod's parameters, not the caller's scope.
+        // A mod reading a container reached through its own parameter needs exec, so
+        // a pure call to it is WS007 (the map ref would wire straight into the
+        // consumer). The scan resolves the receiver against the mod's parameters, not
+        // the caller's scope.
         (
             "pure call of a param-container-reading mod",
             "var mm: Map<int,int> = { 0: 1 }\n\
@@ -238,15 +238,15 @@ fn pure_and_exec_context_codes() {
             "var xs: int[]\nin go: exec\non go { xs.push(1) }",
             &[Lacks("WS007")],
         ),
-        // `let go` shadowing `in go: exec` used to silently hijack `on go` (the
-        // handler bound to the constant, the exec input went dead).
+        // `let go` shadowing `in go: exec` is an error: `on go` would bind the
+        // constant and leave the exec input dead.
         (
             "let shadowing an in port",
             "in go: exec\nlet go = 5\nout r: int\non go { emit r = 1 }",
             &[Has("WS013")],
         ),
-        // Rust-style value shadowing (`let a = 1; let a = 2`) is legal; only a port
-        // shadow is the bug.
+        // Value shadowing (`let a = 1; let a = 2`) is legal; only a port shadow is
+        // rejected.
         (
             "let value shadowing",
             "var x: int = 0\nin go: exec\non go { let a = 1\n let a = 2\n x = a }",
@@ -392,14 +392,14 @@ fn value_typing_codes() {
              let t = (1, Vec(0.0, 0.0, 0.0))\nout r = add2(...t)",
             &[Has("WS003")],
         ),
-        // A variadic mod accepts extra trailing args past its fixed params.
+        // A variadic mod accepts extra trailing arguments past its fixed ones.
         (
             "variadic surplus args",
             "mod f(a: int, ...rest) -> int { return a }\n\
              var t: int = 0\nin go: exec\non go { t = f(1, 2, 3, 4) }",
             &[Lacks("WS022")],
         ),
-        // ...but still requires the FIXED params.
+        // It still requires the fixed parameters.
         (
             "variadic too few fixed args",
             "mod g(a: int, b: int, ...rest) -> int { return a + b }\n\
@@ -935,13 +935,10 @@ fn a_user_symbol_named_some_shadows_the_prelude_variant() {
     );
 }
 
-// A `match` is exhaustive only when it covers every variant the SCHEMA
-// declares - built dynamically from `catalog::builtin_game_enums()` rather
-// than a hardcoded variant list, so this stays correct if the schema's
-// variant set ever changes. Covering all of them must stay WS054-free;
-// dropping the last one must surface WS054 naming exactly that variant -
-// proving exhaustiveness is checked against the real registry entry the
-// built-in seeds, not an empty/stub one.
+// A `match` is exhaustive only when it covers every variant the schema
+// declares, built from `catalog::builtin_game_enums()`, so it follows the
+// schema. Covering all of them is WS054-free; dropping the last one is WS054
+// naming that variant, so the check uses the real registry entry.
 #[test]
 fn builtin_game_enum_match_exhaustive_only_over_schema_variants() {
     let variants: Vec<String> = crate::catalog::builtin_game_enums()

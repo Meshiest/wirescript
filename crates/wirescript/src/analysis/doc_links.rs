@@ -50,7 +50,7 @@ pub enum Doc<'a> {
 }
 
 /// The docs URL for `doc`, if the docs cover it.
-pub fn doc_url(doc: Doc) -> Option<String> {
+pub fn doc_url(doc: Doc<'_>) -> Option<String> {
     let l = links();
     let (map, key) = match doc {
         Doc::Diagnostic(k) => (&l.diagnostics, k),
@@ -65,7 +65,7 @@ pub fn doc_url(doc: Doc) -> Option<String> {
 }
 
 /// `hover` with a link to `doc` on a line of its own, when the docs cover it.
-pub(crate) fn with_doc_link(hover: String, doc: Doc) -> String {
+pub(crate) fn with_doc_link(hover: String, doc: Doc<'_>) -> String {
     match doc_url(doc) {
         Some(url) => format!("{hover}\n\n[Docs]({url})"),
         None => hover,

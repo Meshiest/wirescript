@@ -8,7 +8,7 @@ use crate::ir::gate_class as gc;
 // was skipped.
 const PRELUDE: &str = "var v: int = 5\nvar w: int = 0\nvar u: int = 0\nin go: exec\n";
 
-/// How many Var_Gets a handler's reads lower to, across the whole module tree.
+/// How many `Var_Gets` a handler's reads lower to, across the whole module tree.
 #[test]
 fn a_cached_var_read_is_reused_until_something_may_have_written_the_var() {
     let rows: Vec<(&str, String, usize)> = vec![
@@ -50,10 +50,9 @@ fn a_cached_var_read_is_reused_until_something_may_have_written_the_var() {
                 .to_string(),
             2,
         ),
-        // A Var_Get emitted inside a branch only fires when that branch is taken,
-        // so a read after the join gets its own Var_Get on the unconditional
-        // chain. Bug: `gamblersTotal`, first read inside one `if phase == ...`
-        // block and re-read in a later one, came back stale 0 and skipped a phase.
+        // A Var_Get emitted inside a branch only fires when that branch is taken, so
+        // a read after the join gets its own Var_Get on the unconditional chain; reusing
+        // the in-branch one reads a stale 0 whenever the branch was skipped.
         (
             "a read after the join does not reuse the in-branch Var_Get",
             "in go: exec\nin t: bool\n\

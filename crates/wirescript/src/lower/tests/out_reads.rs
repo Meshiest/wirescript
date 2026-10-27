@@ -116,7 +116,7 @@ fn a_top_level_handler_may_declare_its_own_output_port() {
 
 /// Handler-body `out` bindings hoist to one port per name; a name written
 /// from more than one site, or under a branch, is backed by a var with one
-/// Var_Set per site. Exact counts over the whole module tree.
+/// `Var_Set` per site. Exact counts over the whole module tree.
 #[test]
 fn handler_out_bindings_hoist_to_one_port_per_name() {
     let rows: &[(&str, &str, &[(&str, usize)])] = &[

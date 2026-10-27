@@ -36,10 +36,9 @@ fn cube_opts() -> LayoutOptions {
     }
 }
 
-/// The size fallback is a ceiling on DAG cost, not the only way in: asking
-/// for the cube gets it at eight nodes, five thousand short of the
-/// threshold. Stacking in `z` is what tells the two engines apart — the
-/// DAG layout is a single plane.
+/// The size fallback is a ceiling on DAG cost, not the only way in: asking for the cube
+/// gets it at eight nodes, far below the threshold. Stacking in `z` is what tells the two
+/// engines apart, since the DAG layout is a single plane.
 #[test]
 fn cube_mode_is_forced_well_under_the_size_threshold() {
     let mut m = Module::new("cube");
@@ -120,7 +119,7 @@ fn cube_layers_clear_the_tallest_brick_they_hold() {
     }
     let l = layout_with_opts(&m, &cube_opts());
     let mut levels: Vec<i32> = l.placements.values().map(|p| p.z).collect();
-    levels.sort();
+    levels.sort_unstable();
     levels.dedup();
     for pair in levels.windows(2) {
         assert!(
@@ -133,15 +132,11 @@ fn cube_layers_clear_the_tallest_brick_they_hold() {
     }
 }
 
-/// A brick sits ON its layer's floor, not centred on it, and no two
-/// bricks intersect in 3D.
-///
-/// `Placement::z` is a brick CENTRE (emit offsets x and y by their
-/// half-extents but passes z straight through), so a layer sharing one z
-/// hangs anything taller than the step down into the layer below.
-/// Anchoring each brick's BOTTOM at the floor is what keeps the slabs
-/// disjoint whatever mix of heights lands in one, and the game drops
-/// intersecting bricks at load with no error.
+/// A brick sits on its layer's floor rather than centred on it, and no two bricks
+/// intersect in 3D. `Placement::z` is a brick centre (emit passes z straight through), so a
+/// layer sharing one z would hang anything taller than the step into the layer below.
+/// Anchoring each brick's bottom at the floor keeps the slabs disjoint whatever heights land
+/// in one, and the game drops intersecting bricks at load.
 #[test]
 fn cube_mode_never_overlaps_in_z_with_mixed_brick_heights() {
     let tall_class = "Component_Internal_ProjectileSpawner_Cannon";

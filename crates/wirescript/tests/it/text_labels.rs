@@ -7,8 +7,8 @@ use wirescript::compile_to_world;
 use wirescript::emit::EmitOptions;
 
 /// The set of brick ids that actually carry a `Component_TextDisplay`. A dynamic
-/// label wire must target one of these — a target brick absent from this set is
-/// a dangling wire that fails to connect at load.
+/// label wire must target one of these; a target brick outside this set is a
+/// dangling wire that fails to connect at load.
 fn text_display_brick_ids(world: &brdb::World) -> std::collections::HashSet<usize> {
     world
         .grids
@@ -16,7 +16,7 @@ fn text_display_brick_ids(world: &brdb::World) -> std::collections::HashSet<usiz
         .flat_map(|(_e, bricks)| bricks)
         .chain(world.bricks.iter())
         .filter(|b| b.components.iter().any(common::is_text_display))
-        .filter_map(|b| b.get_id())
+        .filter_map(brdb::Brick::get_id)
         .collect()
 }
 
@@ -51,12 +51,12 @@ fn labels_attach_to_chip_var_and_io_bricks() {
         "top-level chip brick should carry a text label"
     );
 
-    // One label per named element — root chip, `counter`, `tick`, `result`,
-    // the `Foo` chip brick, Foo's internal `x`/`r` I/O gates — plus a smaller
-    // variable tag on the handler's single `Var_Increment` gate (`counter =
-    // counter + 1` folds to one increment, no separate `Var_Get`), plus the two
-    // invisible plane header bricks (root plane + Foo plane). `Foo` is a pure
-    // chip, so it has no synthesized `_exec_in`/`_exec_out` ports.
+    // One label per named element (root chip, `counter`, `tick`, `result`, the
+    // `Foo` chip brick, Foo's internal `x`/`r` I/O gates), a smaller variable
+    // tag on the handler's single `Var_Increment` gate (`counter = counter + 1`
+    // folds to one increment, no separate `Var_Get`), and the two invisible
+    // plane header bricks (root plane and Foo plane). `Foo` is a pure chip, so
+    // it has no synthesized `_exec_in`/`_exec_out` ports.
     let labeled: Vec<String> = r
         .world
         .grids
@@ -80,7 +80,7 @@ fn labels_attach_to_chip_var_and_io_bricks() {
 }
 
 /// Roundtrip through the serialized .brz and check the label contents:
-/// texts, face (Z_Positive), outline (Outlined, 4px), and offsets.
+/// texts, face (`Z_Positive`), outline (Outlined, 4px), and offsets.
 #[test]
 fn labels_serialize_with_style() {
     use brdb::schema::BrdbValue;
@@ -143,10 +143,9 @@ fn labels_serialize_with_style() {
     assert_eq!(texts, expected, "serialized label texts + sizes");
 }
 
-/// A global var/array written from inside a NAMED chip must keep its
-/// on-brick name tag. The always-on boundary-pins pass rewires the write
-/// through a MicrochipInput pin, so the tag lookup must follow that pin
-/// back to the originating var node instead of stopping at the pin.
+/// A global var/array written from inside a named chip keeps its on-brick name
+/// tag. The boundary-pins pass rewires the write through a `MicrochipInput`
+/// pin, so the tag lookup must follow that pin back to the originating var node.
 #[test]
 fn var_tag_survives_boundary_pins_inside_named_chip() {
     use brdb::schema::BrdbValue;
@@ -183,7 +182,7 @@ fn var_tag_survives_boundary_pins_inside_named_chip() {
     );
 }
 
-/// A non-constant `@label(<expr>)` on a top-level variable is a DYNAMIC label:
+/// A non-constant `@label(<expr>)` on a top-level variable is a dynamic label:
 /// the (string-coerced) value is wired into the label component's `Text` input
 /// port. An `int` source is routed through a `FormatText` gate first, so the
 /// wire originates at the gate's `Output` port.
@@ -225,8 +224,8 @@ fn dynamic_int_label_wires_through_formattext() {
 }
 
 /// `@label(myvar) var myvar` self-labels the variable with its own live value.
-/// A `string` value needs no coercion — the variable's own `Value` output wires
-/// straight into its label's `Text` port (no needless `FormatText` gate).
+/// A `string` value needs no coercion: the variable's own `Value` output wires
+/// straight into its label's `Text` port, with no `FormatText` gate.
 #[test]
 fn dynamic_string_self_label_wires_value_directly() {
     let r = compile_to_world(
@@ -264,10 +263,10 @@ fn dynamic_string_self_label_wires_value_directly() {
     );
 }
 
-/// Regression: a dynamically-labeled `var` whose name starts with `_` (a legal
-/// identifier whose floating name emit normally suppresses) must STILL get its
-/// label `Component_TextDisplay` emitted as the wire target — otherwise Pass 3.5
-/// wires a dangling `Text` target that fails to connect at load.
+/// A dynamically labeled `var` whose name starts with `_` (a legal identifier
+/// whose floating name emit normally suppresses) still gets its label
+/// `Component_TextDisplay` emitted as the wire target, or Pass 3.5 wires a
+/// dangling `Text` target that fails to connect at load.
 #[test]
 fn dynamic_label_on_underscore_var_emits_wire_target() {
     let r = compile_to_world(
@@ -299,7 +298,7 @@ fn dynamic_label_on_underscore_var_emits_wire_target() {
 }
 
 /// A module-level `@label(runtimeVar)` (blank-line separated at the top of the
-/// file) labels the ROOT microchip dynamically — a wire runs into the root shell
+/// file) labels the root microchip dynamically: a wire runs into the root shell
 /// brick's `Text` port. The label forward-references a var declared below it
 /// (hoisting).
 #[test]
@@ -335,10 +334,10 @@ fn module_label_wires_runtime_value_into_root_shell() {
     );
 }
 
-/// A module `@label` whose expression is a string interpolation must NOT stack a
-/// second (identity `{0}`) FormatText on top of the interpolation's own — the
-/// interpolation already produces a string, so it wires directly. Exactly one
-/// FormatText gate should exist (the interpolation's).
+/// A module `@label` whose expression is a string interpolation does not stack
+/// a second (identity `{0}`) `FormatText` on the interpolation's own, since the
+/// interpolation already produces a string. Exactly one `FormatText` gate
+/// exists.
 #[test]
 fn interpolated_module_label_has_no_redundant_format() {
     let r = compile_to_world(
@@ -369,7 +368,7 @@ fn interpolated_module_label_has_no_redundant_format() {
 }
 
 /// A module-level `@label("Constant")` bakes static title text on the root chip
-/// (the constant path — no value is wired into any label).
+/// (the constant path: no value is wired into any label).
 #[test]
 fn module_label_constant_bakes_root_title_without_a_wire() {
     use brdb::schema::BrdbValue;
@@ -417,18 +416,17 @@ fn doc_comment_renders_under_the_title() {
     let cr = wirescript::compile::compile(common::input(src, "docs.ws")).expect("should compile");
     let mut found = false;
     for c in common::world_components(&cr.brz) {
-        if let Some(BrdbValue::String(text)) = c.get("Text") {
-            if text == "<size=\"96\">Foo</>\n\nAdds one to x.\nPure and simple." {
-                found = true;
-            }
+        if let Some(BrdbValue::String(text)) = c.get("Text")
+            && text == "<size=\"96\">Foo</>\n\nAdds one to x.\nPure and simple."
+        {
+            found = true;
         }
     }
     assert!(found, "expected the Foo header with its doc comment");
 }
 
-/// A `var m: Map<K, V>` must get the same floating name label as an ordinary
-/// var/array (its var name) — before, `Pseudo_MapVar` fell through the emit's
-/// label match and got nothing.
+/// A `var m: Map<K, V>` gets the same floating name label as an ordinary
+/// var/array (its var name), including for `Pseudo_MapVar`.
 #[test]
 fn map_var_gets_a_name_label() {
     use brdb::schema::BrdbValue;
@@ -450,11 +448,11 @@ fn map_var_gets_a_name_label() {
     );
 }
 
-/// The map-op `Key`/`Value` DATA fields must be baked with the map's CONCRETE
-/// key/value type. A generic `any` Key bakes a float `0.0`; for a string-keyed
-/// map that is a type the game rejects at load, failing every wire into the
-/// Map_Get component (including its `Exec` — the "map get has no inbound exec"
-/// bug). The `Key` field of a `Map<string, _>` get must therefore be a String.
+/// The map-op `Key`/`Value` data fields must be baked with the map's concrete
+/// key/value type. A generic `any` Key bakes a float `0.0`, a type the game
+/// rejects at load for a string-keyed map, failing every wire into the
+/// `Map_Get` component (including its `Exec`). The `Key` field of a
+/// `Map<string, _>` get must therefore be a String.
 #[test]
 fn map_get_key_data_field_matches_key_type() {
     use brdb::schema::BrdbValue;

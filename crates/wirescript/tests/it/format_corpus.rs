@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 use wirescript::TokenKind;
+use wirescript::TokenValue;
 use wirescript::analysis::format_wirescript;
-use wirescript::lexer::TokenValue;
 
 fn ws_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

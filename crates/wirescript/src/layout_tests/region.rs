@@ -5,11 +5,10 @@ use crate::ir::Node;
 use crate::ir::{GateIO, ROOT_SCOPE_ID};
 use crate::layout::internals::*;
 
-use crate::{Module, lexer};
+use crate::Module;
 
 fn compile(src: &str) -> Module {
     // Exercise the full pipeline so scopes match the real lowering.
-    let _ = lexer::lex(src, "test"); // compiled-but-unused; parser also lexes
     let crate::compile::FrontEnd {
         resolved: parsed,
         lowered: r,
@@ -92,8 +91,7 @@ fn scope_count_matches_module_total() {
 
 #[test]
 fn orphan_nodes_land_on_root_region() {
-    // Synthesize a module where a node points to a missing scope —
-    // the tree builder must not drop it.
+    // A node that points at a missing scope must still land in the tree.
     let mut m = Module::default();
     let nid = crate::ir::NodeId::fresh();
     let node = Node {
@@ -102,7 +100,7 @@ fn orphan_nodes_land_on_root_region() {
         gate_class: "G",
         properties: Arc::new(HashMap::default()),
         ports: Arc::new(GateIO::default()),
-        source_range: Default::default(),
+        source_range: crate::diagnostic::SourceRange::default(),
         chip_id: None,
         chain_id: None,
         scope_id: 9999, // bogus

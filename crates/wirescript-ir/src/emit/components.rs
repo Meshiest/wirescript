@@ -1,14 +1,30 @@
 //! Component-data encoding: schema metadata in, brdb component out.
 
-use super::*;
+use std::collections::HashMap as StdMap;
 
-/// Build the gate's `LiteralComponent`. For wire-input ports that have an
-/// inlined literal (from a `_Literal` source node), we embed the value into
-/// the component data struct's `WireValue` field so the game reads it on load
-/// without needing a separate constant source gate.
+use brdb::schema::as_brdb::BrdbArrayIter;
+use brdb::schema::{BrdbInterned, BrdbSchema};
+use brdb::{AsBrdbValue, BString, BrdbSchemaError, World, assets::LiteralComponent};
+
+use crate::catalog::enum_has_value;
+use crate::collections::{HashMap, HashSet};
+use crate::diagnostic::{Diagnostic, SourceRange};
+use crate::intern::{Sym, intern_static, sym};
+use crate::ir::{GateIO, Literal, Module, NodeId, NodeKind, Type, gate_class as gc};
+
+use super::options::{EmitError, NestedCompiler, PrefabResolver};
+use super::schema_meta::{FieldKind, gate_field_meta, resolve_enum_value};
+use super::variants::{
+    bool_input_bakes_as_int, coerce_bool_to_int, literal_to_boxed_native, literal_to_string,
+    literal_to_wire_value_or_default, reshape_literal_for_struct, var_type_to_wire_value,
+};
+
+/// Build the gate's `LiteralComponent`. A literal inlined into a wire-input port (from a
+/// `_Literal` source node) is embedded in the component data struct's `WireValue` field, so
+/// the game reads it on load without a separate constant gate.
 pub(super) fn build_gate_component(
     gate_class: &'static str,
-    ports: &crate::ir::GateIO,
+    ports: &GateIO,
     inlined: &HashMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
@@ -26,8 +42,8 @@ pub(super) fn build_gate_component(
             gate_class,
             std::sync::Arc::new(data),
         )),
-        // Default: dataless component stub — registers component type only,
-        // no struct data (engine uses the default from the brick type).
+        // A dataless component: the type only, so the engine uses the brick
+        // type's default data.
         None => Ok(LiteralComponent::new(gate_class)),
     }
 }
@@ -35,23 +51,20 @@ pub(super) fn build_gate_component(
 /// Build the component data map (schema field name -> serializable value) for a
 /// gate that has a data struct, or `None` for a dataless gate. Each field is
 /// classified once via [`gate_field_meta`] and serialized from its inlined
-/// literal, falling back to typed wire-variant defaults / STRUCT_DEFAULTS for
+/// literal, falling back to typed wire-variant defaults / `STRUCT_DEFAULTS` for
 /// unset fields. Shared by [`build_gate_component`] and the advanced-inventory
 /// composite builder.
 fn build_gate_data_map(
     gate_class: &'static str,
-    ports: &crate::ir::GateIO,
+    ports: &GateIO,
     inlined: &HashMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
     nested_compiler: Option<&NestedCompiler>,
 ) -> Result<Option<StdMap<BString, Box<dyn AsBrdbValue>>>, EmitError> {
-    // For gates whose component data struct carries `WireValue` fields,
-    // look up the struct schema and build the component with embedded values.
-    // Non-inlined fields get a typed default so the struct is always complete.
-    // Always write the data struct when the gate type has one — even if no
-    // fields are inlined. This ensures ALL instances of the same component
-    // type have matching data, preventing reader misalignment.
+    // Always write the data struct when the gate type has one, even with no
+    // inlined fields: every instance of a component type must carry matching
+    // data or the reader misaligns.
     let Some(fields) = gate_field_meta(gate_class) else {
         return Ok(None);
     };
@@ -71,7 +84,7 @@ fn build_gate_data_map(
             }
             Some(lit) => match fm.kind {
                 FieldKind::AssetRef => {
-                    // Asset-reference field (AudioDescriptor, Item, …):
+                    // Asset-reference field (AudioDescriptor, Item and so on):
                     // register the `$Type/Name` in the world's external
                     // asset table and store the index.
                     use brdb::schema::BrdbValue;
@@ -117,10 +130,8 @@ fn build_gate_data_map(
                         literal: (**lit).clone(),
                     }
                 })?),
-                // A native struct field takes one representation, so a
-                // rotation constant bound for a quaternion field converts
-                // here rather than at runtime (see
-                // `reshape_literal_for_struct`).
+                // A native struct field takes one representation, so a rotation constant bound for a
+                // quaternion field converts here (see `reshape_literal_for_struct`).
                 FieldKind::NativeStruct(struct_ty) => {
                     let reshaped = reshape_literal_for_struct(struct_ty, lit);
                     let lit = reshaped.as_ref().unwrap_or(lit);
@@ -138,29 +149,19 @@ fn build_gate_data_map(
                     }
                 })?,
             },
-            // No inlined value. Wire-typed ports still need a typed default
-            // so the `WireValue` alternative matches the port type (the
-            // component_db defaults don't carry wire values). Every other
-            // (native) field is omitted from the data map entirely: the brdb
-            // writer fills missing struct fields from component_db's
-            // STRUCT_DEFAULTS — the single source of truth for gate defaults
-            // (e.g. DisplayText FontSize=16, Lifetime=5) — falling back to a
-            // type-zero when no default is registered.
+            // No inlined value. A wire-typed field gets a default whose
+            // `WireValue` variant matches the port type (component_db carries
+            // no wire values). Native fields are omitted: the brdb writer fills
+            // them from component_db's `STRUCT_DEFAULTS`, else a type-zero.
             None if is_wire_value => {
                 // Convert's setting is a value of the type it converts to:
                 // the variant stored in `TargetType` picks the output.
-                let port_sym =
-                    if gate_class == crate::ir::gate_class::CONVERT && field == "TargetType" {
-                        *crate::intern::sym::OUTPUT
-                    } else {
-                        fm.sym
-                    };
-                let port_ty = ports
-                    .inputs
-                    .iter()
-                    .chain(ports.outputs.iter())
-                    .find(|p| p.name == port_sym)
-                    .map(|p| &p.ty);
+                let port_sym = if gate_class == gc::CONVERT && field == "TargetType" {
+                    *sym::OUTPUT
+                } else {
+                    fm.sym
+                };
+                let port_ty = ports.find_port(port_sym).map(|p| &p.ty);
                 let wv = var_type_to_wire_value(port_ty);
                 Box::new(if bool_as_int {
                     coerce_bool_to_int(wv)
@@ -178,12 +179,12 @@ fn build_gate_data_map(
 
 /// A Set Variable writing an `any` value. It needs Change Type on: without it
 /// the game converts the value to the kind the var already holds.
-pub(super) fn sets_any_var(gate_class: &str, ports: &crate::ir::GateIO) -> bool {
+pub(super) fn sets_any_var(gate_class: &str, ports: &GateIO) -> bool {
     gate_class == gc::VAR_SET
         && ports
             .inputs
             .iter()
-            .any(|p| resolve(p.name) == "Value" && p.ty == crate::ir::Type::Opaque)
+            .any(|p| p.name == *sym::VALUE && p.ty == Type::Opaque)
 }
 
 /// A constant `lit` as a native scalar field of `kind` holds it: an integer,
@@ -197,7 +198,7 @@ fn in_native_field<'l>(kind: &FieldKind, lit: &'l Literal) -> std::borrow::Cow<'
         (FieldKind::Integer(_) | FieldKind::Enum(_), Literal::Float(f)) => {
             Cow::Owned(Literal::Int(truncated(*f)))
         }
-        (FieldKind::Integer(_), Literal::Bool(b)) => Cow::Owned(Literal::Int(*b as i64)),
+        (FieldKind::Integer(_), Literal::Bool(b)) => Cow::Owned(Literal::Int(i64::from(*b))),
         (FieldKind::Real(_), Literal::Int(n)) => Cow::Owned(Literal::Float(*n as f64)),
         (FieldKind::Real(_), Literal::Bool(b)) => {
             Cow::Owned(Literal::Float(if *b { 1.0 } else { 0.0 }))
@@ -228,21 +229,21 @@ enum Landing {
 fn landing(kind: &FieldKind, lit: &Literal, bool_pin: bool) -> Landing {
     let int_range = |ty: &str| -> (i128, i128) {
         match ty {
-            "i8" => (i8::MIN as i128, i8::MAX as i128),
-            "i16" => (i16::MIN as i128, i16::MAX as i128),
-            "i32" => (i32::MIN as i128, i32::MAX as i128),
-            "u8" => (0, u8::MAX as i128),
-            "u16" => (0, u16::MAX as i128),
-            "u32" => (0, u32::MAX as i128),
-            "u64" => (0, u64::MAX as i128),
-            _ => (i64::MIN as i128, i64::MAX as i128),
+            "i8" => (i128::from(i8::MIN), i128::from(i8::MAX)),
+            "i16" => (i128::from(i16::MIN), i128::from(i16::MAX)),
+            "i32" => (i128::from(i32::MIN), i128::from(i32::MAX)),
+            "u8" => (0, i128::from(u8::MAX)),
+            "u16" => (0, i128::from(u16::MAX)),
+            "u32" => (0, i128::from(u32::MAX)),
+            "u64" => (0, i128::from(u64::MAX)),
+            _ => (i128::from(i64::MIN), i128::from(i64::MAX)),
         }
     };
     let whole = |f: f64| -> Option<i128> { f.is_finite().then(|| f.trunc() as i128) };
     match (kind, lit) {
         (FieldKind::Integer(ty), Literal::Int(n)) => {
             let (lo, hi) = int_range(ty);
-            if (lo..=hi).contains(&(*n as i128)) {
+            if (lo..=hi).contains(&i128::from(*n)) {
                 Landing::Exact
             } else {
                 Landing::Invalid(format!("its field holds a whole number from {lo} to {hi}"))
@@ -257,22 +258,22 @@ fn landing(kind: &FieldKind, lit: &Literal, bool_pin: bool) -> Landing {
             }
         }
         (FieldKind::Integer(_), Literal::Bool(b)) if !bool_pin => {
-            Landing::Inexact((*b as i64).to_string())
+            Landing::Inexact(i64::from(*b).to_string())
         }
         (FieldKind::Real(ty), Literal::Int(n)) => {
             let stored = if *ty == "f32" {
-                *n as f32 as f64
+                f64::from(*n as f32)
             } else {
                 *n as f64
             };
-            if stored as i128 == *n as i128 {
+            if stored as i128 == i128::from(*n) {
                 Landing::Exact
             } else {
                 Landing::Inexact(format!("{stored}"))
             }
         }
         (FieldKind::Real("f32"), Literal::Float(f))
-            if f.is_finite() && f.abs() > f32::MAX as f64 =>
+            if f.is_finite() && f.abs() > f64::from(f32::MAX) =>
         {
             Landing::Invalid("its field holds a 32-bit float".to_string())
         }
@@ -285,12 +286,15 @@ fn landing(kind: &FieldKind, lit: &Literal, bool_pin: bool) -> Landing {
         (FieldKind::Boolean, Literal::Float(f)) if *f != 0.0 && *f != 1.0 => {
             Landing::Inexact((*f != 0.0).to_string())
         }
-        (FieldKind::Enum(ty), Literal::Int(n)) => match crate::catalog::enum_has_value(ty, *n) {
-            true => Landing::Exact,
-            false => Landing::Invalid(enum_choices(ty)),
-        },
+        (FieldKind::Enum(ty), Literal::Int(n)) => {
+            if enum_has_value(ty, *n) {
+                Landing::Exact
+            } else {
+                Landing::Invalid(enum_choices(ty))
+            }
+        }
         (FieldKind::Enum(ty), Literal::Float(f)) => match whole(*f) {
-            Some(n) if i64::try_from(n).is_ok_and(|n| crate::catalog::enum_has_value(ty, n)) => {
+            Some(n) if i64::try_from(n).is_ok_and(|n| enum_has_value(ty, n)) => {
                 if n as f64 == *f {
                     Landing::Exact
                 } else {
@@ -300,9 +304,10 @@ fn landing(kind: &FieldKind, lit: &Literal, bool_pin: bool) -> Landing {
             _ => Landing::Invalid(enum_choices(ty)),
         },
         (FieldKind::Enum(ty), Literal::Bool(b)) => {
-            match crate::catalog::enum_has_value(ty, *b as i64) {
-                true => Landing::Inexact((*b as i64).to_string()),
-                false => Landing::Invalid(enum_choices(ty)),
+            if enum_has_value(ty, i64::from(*b)) {
+                Landing::Inexact(i64::from(*b).to_string())
+            } else {
+                Landing::Invalid(enum_choices(ty))
             }
         }
         _ => Landing::Exact,
@@ -355,27 +360,21 @@ pub(super) fn one_field_component(
     LiteralComponent::new_from_data(class, std::sync::Arc::new(data))
 }
 
-/// Check every constant a gate stores in a native setting field (a number,
-/// bool or enum field of its component data, such as `SleepTicks`' tick count
-/// or `DisplayText`'s font size and justification) against the field it lands
-/// in, across `root` and every chip module under it. A constant the field
-/// cannot hold (out of its range, or no value of its enum) is `WS028`, as the
-/// integer spelling of a bad enum value already is; one stored as a different
-/// value (a fraction dropped, a number made a bool, a bool made a number) is
-/// the warning `WS106`, naming the setting, the value written and the value
-/// stored. A constant stored as written is silent.
+/// Check every constant a gate stores in a native setting field (a number, bool or enum
+/// field of its component data, such as `SleepTicks`' tick count or `DisplayText`'s font
+/// size) against the field it lands in, across `root` and every chip module under it. A
+/// constant the field cannot hold is the error `WS028`; one stored as a different value is
+/// the warning `WS106`.
 ///
-/// `param_of(note, field)` names the source-level call and parameter that set
-/// `field` on a gate whose [`crate::ir::Node::note`] is `note`, so the
-/// diagnostic can quote what the program wrote; `None` falls back to the
-/// field's own name.
+/// `param_of(note, field)` names the source-level call and parameter that set `field` on a
+/// gate whose [`crate::ir::Node::note`] is `note`, so the diagnostic can quote the program;
+/// `None` falls back to the field's own name.
 pub fn check_native_settings(
-    root: &crate::ir::Module,
-    diagnostics: &mut Vec<crate::diagnostic::Diagnostic>,
+    root: &Module,
+    diagnostics: &mut Vec<Diagnostic>,
     param_of: &SettingParamOf<'_>,
 ) {
-    let mut seen: crate::collections::HashSet<(crate::diagnostic::SourceRange, String)> =
-        Default::default();
+    let mut seen: HashSet<(SourceRange, String)> = HashSet::default();
     check_module_settings(root, &mut seen, diagnostics, param_of);
 }
 
@@ -383,14 +382,13 @@ pub fn check_native_settings(
 pub type SettingParamOf<'a> = dyn Fn(&str, &str) -> Option<(&'static str, &'static str)> + 'a;
 
 fn check_module_settings(
-    m: &crate::ir::Module,
-    seen: &mut crate::collections::HashSet<(crate::diagnostic::SourceRange, String)>,
-    diagnostics: &mut Vec<crate::diagnostic::Diagnostic>,
+    m: &Module,
+    seen: &mut HashSet<(SourceRange, String)>,
+    diagnostics: &mut Vec<Diagnostic>,
     param_of: &SettingParamOf<'_>,
 ) {
     let value_sym = *sym::VALUE;
-    let mut inlined: HashMap<NodeId, Vec<(Sym, &Literal, &crate::diagnostic::SourceRange)>> =
-        HashMap::default();
+    let mut inlined: HashMap<NodeId, Vec<(Sym, &Literal, &SourceRange)>> = HashMap::default();
     for w in &m.wires {
         if let Some(src) = m.nodes.get(&w.source.node_id)
             && src.gate_class == gc::LITERAL
@@ -404,7 +402,7 @@ fn check_module_settings(
         }
     }
     for (id, node) in m.nodes_in_order() {
-        if node.kind == crate::ir::NodeKind::Chip {
+        if node.kind == NodeKind::Chip {
             continue;
         }
         let Some(fields) = gate_field_meta(node.gate_class) else {
@@ -431,7 +429,7 @@ fn check_module_settings(
                 .ports
                 .inputs
                 .iter()
-                .any(|p| p.name == fm.sym && p.ty == crate::ir::Type::Bool);
+                .any(|p| p.name == fm.sym && p.ty == Type::Bool);
             let landed = landing(&fm.kind, lit, bool_pin);
             if matches!(landed, Landing::Exact) {
                 continue;
@@ -439,7 +437,7 @@ fn check_module_settings(
             let param = node.note.and_then(|note| param_of(note, fm.name));
             // An input of a pure expression gate (`sqrt(x)`, `BitCount(x)`) is
             // an operand the program passes, not a setting of the gate.
-            let what = if node.gate_class.starts_with("BrickComponentType_Expr_")
+            let what = if gc::is_pure_expr(node.gate_class)
                 && crate::catalog::is_wire_input(node.gate_class, fm.name)
             {
                 "argument"
@@ -463,7 +461,7 @@ fn check_module_settings(
             };
             let diagnostic = match landed {
                 Landing::Exact => continue,
-                Landing::Inexact(stored) => crate::diagnostic::Diagnostic::warning(
+                Landing::Inexact(stored) => Diagnostic::warning(
                     "WS106",
                     format!(
                         "{setting} is stored as {stored}, not the {} written: the field cannot hold that value exactly. Write {stored} if that is what you mean",
@@ -471,7 +469,7 @@ fn check_module_settings(
                     ),
                     range,
                 ),
-                Landing::Invalid(why) => crate::diagnostic::Diagnostic::error(
+                Landing::Invalid(why) => Diagnostic::error(
                     "WS028",
                     format!("{setting} cannot be {}: {why}", written(lit)),
                     range,
@@ -488,7 +486,7 @@ fn check_module_settings(
 }
 
 /// Embed a prefab literal into `world`, content-addressed via `add_prefab`,
-/// and return the `Prefabs/Uploads/…` path a spawner's `Prefab` string holds.
+/// and return the `Prefabs/Uploads/...` path a spawner's `Prefab` string holds.
 /// A file reference (`$./file.brz`) is resolved to its raw bytes; an inline
 /// nested-prefab block (`$``` ... ``` `) is compiled to `.brz` bytes first.
 fn embed_prefab(
@@ -526,14 +524,12 @@ fn embed_prefab(
     Ok(world.add_prefab(bytes))
 }
 
-// --- Advanced-inventory composite config (MeshColors, WeaponAmmoOverride) ---
+// Advanced-inventory composite config (MeshColors, WeaponAmmoOverride).
 //
-// brdb's `LiteralComponent` deliberately errors when an *array*-typed struct
-// field has a stored value ("literal gate data only carries scalars"). The two
-// advanced-inventory gates need real native composites — `MeshColors: Color[]`
-// and the `WeaponAmmoOverride` struct (a bool + a `Resources` array of structs)
-// — so they use the two small `AsBrdbValue` helpers below, which provide the
-// array + struct serialization the schema writer drives, without touching brdb.
+// brdb's `LiteralComponent` errors on a stored value in an array-typed struct field, but the
+// advanced-inventory gates need `MeshColors: Color[]` and the `WeaponAmmoOverride` struct (a
+// bool and a `Resources` array of structs), so the two `AsBrdbValue` helpers below serialize
+// arrays and structs.
 
 /// A native (non-wire-variant) array field value. When the containing
 /// [`NativeStruct`] delegates an array-prop request to it, it yields its boxed
@@ -543,22 +539,21 @@ struct NativeArray(Vec<Box<dyn AsBrdbValue>>);
 impl AsBrdbValue for NativeArray {
     fn as_brdb_struct_prop_array(
         &self,
-        _schema: &brdb::schema::BrdbSchema,
-        _struct_name: brdb::schema::BrdbInterned,
-        _prop_name: brdb::schema::BrdbInterned,
-    ) -> Result<brdb::schema::as_brdb::BrdbArrayIter<'_>, brdb::BrdbSchemaError> {
+        _schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
+        _prop_name: BrdbInterned,
+    ) -> Result<BrdbArrayIter<'_>, BrdbSchemaError> {
         Ok(Box::new(
             self.0.iter().map(|v| v.as_ref() as &dyn AsBrdbValue),
         ))
     }
 }
 
-/// A map-backed struct/component value that DOES serialize array-typed fields
-/// (unlike brdb's `LiteralComponent`). Used as the top-level component for the
-/// advanced-inventory gates and for their nested `Color` /
-/// `BRInventoryEntryWeaponAmmoOverride` / `BRInventoryEntryWeaponResourceAmounts`
-/// structs. Scalar fields behave exactly like `LiteralComponent`; array fields
-/// delegate to the stored [`NativeArray`].
+/// A map-backed struct/component value that serializes array-typed fields (unlike brdb's
+/// `LiteralComponent`). Top-level component for the advanced-inventory gates and for their
+/// nested `Color` / `BRInventoryEntryWeaponAmmoOverride` /
+/// `BRInventoryEntryWeaponResourceAmounts` structs. Scalar fields behave like
+/// `LiteralComponent`; array fields delegate to the stored [`NativeArray`].
 #[derive(Clone)]
 pub(super) struct NativeStruct {
     name: &'static str,
@@ -577,9 +572,9 @@ impl NativeStruct {
 impl AsBrdbValue for NativeStruct {
     fn has_brdb_struct_prop(
         &self,
-        schema: &brdb::schema::BrdbSchema,
-        _struct_name: brdb::schema::BrdbInterned,
-        prop_name: brdb::schema::BrdbInterned,
+        schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
+        prop_name: BrdbInterned,
     ) -> bool {
         prop_name
             .get(schema)
@@ -588,26 +583,29 @@ impl AsBrdbValue for NativeStruct {
 
     fn as_brdb_struct_prop_value(
         &self,
-        schema: &brdb::schema::BrdbSchema,
-        _struct_name: brdb::schema::BrdbInterned,
-        prop_name: brdb::schema::BrdbInterned,
-    ) -> Result<&dyn AsBrdbValue, brdb::BrdbSchemaError> {
+        schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
+        prop_name: BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, BrdbSchemaError> {
         let name = prop_name.get(schema).unwrap();
-        self.data.get(name).map(|v| v.as_ref()).ok_or_else(|| {
-            brdb::BrdbSchemaError::MissingStructField(self.name.to_string(), name.to_string())
-        })
+        self.data
+            .get(name)
+            .map(std::convert::AsRef::as_ref)
+            .ok_or_else(|| {
+                BrdbSchemaError::MissingStructField(self.name.to_string(), name.to_string())
+            })
     }
 
     fn as_brdb_struct_prop_array(
         &self,
-        schema: &brdb::schema::BrdbSchema,
-        struct_name: brdb::schema::BrdbInterned,
-        prop_name: brdb::schema::BrdbInterned,
-    ) -> Result<brdb::schema::as_brdb::BrdbArrayIter<'_>, brdb::BrdbSchemaError> {
+        schema: &BrdbSchema,
+        struct_name: BrdbInterned,
+        prop_name: BrdbInterned,
+    ) -> Result<BrdbArrayIter<'_>, BrdbSchemaError> {
         let name = prop_name.get(schema).unwrap();
         match self.data.get(name) {
             Some(v) => v.as_brdb_struct_prop_array(schema, struct_name, prop_name),
-            None => Err(brdb::BrdbSchemaError::MissingStructField(
+            None => Err(BrdbSchemaError::MissingStructField(
                 self.name.to_string(),
                 name.to_string(),
             )),
@@ -626,8 +624,8 @@ impl brdb::BrdbComponent for NativeStruct {
 }
 
 /// The schema `Color { B, G, R, A: u8 }` value for one `MeshColors` element.
-/// `Literal::Color` is semantic RGBA; the struct is BGRA, and Brickadia stores
-/// brick colours sRGB-direct — so the bytes map straight across, no gamma.
+/// `Literal::Color` is RGBA sRGB bytes and the struct is BGRA sRGB, so the
+/// bytes map straight across with no gamma.
 fn color_bgra_struct(r: u8, g: u8, b: u8, a: u8) -> NativeStruct {
     let mut m: StdMap<BString, Box<dyn AsBrdbValue>> = StdMap::new();
     m.insert("B".into(), Box::new(b));
@@ -637,16 +635,10 @@ fn color_bgra_struct(r: u8, g: u8, b: u8, a: u8) -> NativeStruct {
     NativeStruct::new("Color", m)
 }
 
-/// Decode a folded `ammoOverride` literal (the `Array[Bool, Array[Array[Int,
-/// Int], …]]` shape produced by `predeclare::fold_ammo_override`) into the
-/// `BRInventoryEntryWeaponAmmoOverride` struct value.
-/// The engine reflects `BRInventoryEntryWeaponAmmoOverride::Resources` as a
-/// fixed-size array (a `TStaticArray`), even though the text schema flattens it
-/// to a dynamic `[]`. Writing any other element count fails the game load with
-/// `FixedArraySizeInvalid: … does not match expected length of 8`, so the field
-/// must ALWAYS carry exactly this many entries — including when the user omits
-/// `ammoOverride` entirely (see [`build_adv_inventory_component`]). Unspecified
-/// slots are padded with a zero `{ Loaded, Reserve }` resource.
+/// `BRInventoryEntryWeaponAmmoOverride::Resources` is a fixed-size array in the
+/// engine (the text schema shows a dynamic `[]`). Any other element count fails
+/// the load with `FixedArraySizeInvalid: ... does not match expected length of
+/// 8`, so it ALWAYS carries this many, padded with zero `{ Loaded, Reserve }`.
 const WEAPON_AMMO_RESOURCE_SLOTS: usize = 8;
 
 /// One `BRInventoryEntryWeaponResourceAmounts` struct.
@@ -680,14 +672,12 @@ fn default_weapon_ammo_override() -> NativeStruct {
 }
 
 /// `MeshColors` is likewise a fixed-size array the game rejects at any other
-/// length (`FixedArraySizeInvalid … expected length of 8`). Always emit exactly
-/// this many colours, padding unspecified slots with white (`bOverrideColors`
-/// gates whether they apply at all, and a mesh with fewer material slots ignores
-/// the extras).
+/// length. Always emit exactly this many colors, padded with white
+/// (`bOverrideColors` gates whether they apply; extra slots are ignored).
 const MESH_COLOR_SLOTS: usize = 8;
 
 /// A `MeshColors` value of exactly [`MESH_COLOR_SLOTS`] entries: the supplied
-/// colours (capped) followed by white padding.
+/// colors (capped) followed by white padding.
 fn mesh_colors_array(colors: &[Literal]) -> NativeArray {
     let mut elems: Vec<Box<dyn AsBrdbValue>> = Vec::with_capacity(MESH_COLOR_SLOTS);
     for c in colors.iter().take(MESH_COLOR_SLOTS) {
@@ -701,6 +691,9 @@ fn mesh_colors_array(colors: &[Literal]) -> NativeArray {
     NativeArray(elems)
 }
 
+/// Decode a folded `ammoOverride` literal (the `Array[Bool, Array[Array[Int,
+/// Int], ...]]` shape produced by `predeclare::fold_ammo_override`) into the
+/// `BRInventoryEntryWeaponAmmoOverride` struct value, or `None` for any other shape.
 fn build_weapon_ammo_override(lit: &Literal) -> Option<NativeStruct> {
     let Literal::Array(parts) = lit else {
         return None;
@@ -730,7 +723,7 @@ fn build_weapon_ammo_override(lit: &Literal) -> Option<NativeStruct> {
 /// with native array/struct values the schema writer can serialize.
 pub(super) fn build_adv_inventory_component(
     gate_class: &'static str,
-    ports: &crate::ir::GateIO,
+    ports: &GateIO,
     inlined: &HashMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
@@ -746,20 +739,16 @@ pub(super) fn build_adv_inventory_component(
     )?
     .unwrap_or_default();
 
-    // MeshColors: a fixed-size Color[] (like WeaponAmmoOverride.Resources).
-    // Always written with exactly MESH_COLOR_SLOTS entries — the user's colours
-    // padded with white — even when omitted, or the game load fails.
+    // MeshColors: always written with exactly MESH_COLOR_SLOTS entries, even
+    // when omitted, or the game load fails.
     let colors: &[Literal] = match inlined.get(&intern_static("MeshColors")).copied() {
         Some(Literal::Array(cs)) => cs.as_slice(),
         _ => &[],
     };
     data.insert("MeshColors".into(), Box::new(mesh_colors_array(colors)));
 
-    // WeaponAmmoOverride: bOverrideStartingAmmo + a fixed-count Resources array.
-    // Always written — its Resources is a fixed-size array the game rejects at
-    // any other length, so even when the user omits `ammoOverride` we must emit
-    // the zero-padded no-op default rather than let the schema writer fall back
-    // to an empty (length-0) array.
+    // WeaponAmmoOverride: always written, as the zero-padded no-op default when
+    // `ammoOverride` is omitted; the schema writer's empty array fails the load.
     let ammo = inlined
         .get(&intern_static("WeaponAmmoOverride"))
         .copied()
@@ -781,7 +770,7 @@ const CALLABLE_INPUT_SLOTS: usize = 8;
 /// (`DefinitionDefault`, 0). Read from an `InputSources` array of ints; any
 /// slot it leaves out is `DefinitionDefault`.
 pub(super) fn build_function_call_component(
-    ports: &crate::ir::GateIO,
+    ports: &GateIO,
     inlined: &HashMap<Sym, &Literal>,
     world: &mut World,
     prefab_resolver: Option<&PrefabResolver>,
@@ -796,26 +785,25 @@ pub(super) fn build_function_call_component(
         nested_compiler,
     )?
     .unwrap_or_default();
-    let given: &[Literal] = match inlined.get(&intern_static("InputSources")).copied() {
+    let given: &[Literal] = match inlined.get(&*sym::INPUT_SOURCES).copied() {
         Some(Literal::Array(v)) => v.as_slice(),
         _ => &[],
     };
     let mut sources: Vec<Box<dyn AsBrdbValue>> = Vec::with_capacity(CALLABLE_INPUT_SLOTS);
     for i in 0..CALLABLE_INPUT_SLOTS {
-        let v = matches!(given.get(i), Some(Literal::Int(1))) as u8;
+        let v = u8::from(matches!(given.get(i), Some(Literal::Int(1))));
         sources.push(Box::new(v));
     }
     data.insert("InputSources".into(), Box::new(NativeArray(sources)));
     Ok(NativeStruct::new(gc::FUNCTION_CALL, data))
 }
 
-/// Test-only: build the advanced-inventory component for `node` and round-trip
-/// its data struct through the live max schema — the exact `write_brdb` path
-/// emit uses for component data — returning the decoded struct so tests can
-/// assert on the serialized bytes (not just the IR properties).
+/// Test-only: build the advanced-inventory component for `node`, round-trip its
+/// data struct through the max schema's `write_brdb` (emit's own path), and
+/// return the decoded struct so tests can assert on the serialized data.
 #[cfg(any(test, feature = "test-internals"))]
 #[doc(hidden)]
-pub fn roundtrip_adv_inventory_component(node: &Node) -> brdb::schema::BrdbValue {
+pub fn roundtrip_adv_inventory_component(node: &crate::ir::Node) -> brdb::schema::BrdbValue {
     use brdb::schema::ReadBrdbSchema;
     let mut world = World::new();
     let mut inlined: HashMap<Sym, &Literal> = HashMap::default();

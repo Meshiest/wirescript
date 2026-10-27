@@ -9,7 +9,7 @@ use crate::test_support::assert_code;
 
 /// Does any port anywhere in the module tree still carry a `Type::Param`?
 /// After monomorphization of a fully-applied generic call the answer must be
-/// no — a leaked `Param` trips emit's `var_type_to_wire_variant` debug_assert.
+/// no: a leaked `Param` trips emit's `var_type_to_wire_value` `debug_assert`.
 fn any_param_port(module: &Module) -> bool {
     fn ty_has_param(t: &Type) -> bool {
         match t {
@@ -71,9 +71,14 @@ fn sorted(mut types: Vec<Type>) -> Vec<Type> {
 pub(super) fn emit_ok(r: &LowerResult) -> Result<(), String> {
     let lr = crate::layout::layout(&r.module);
     let opts = crate::emit::EmitOptions::default();
-    crate::emit::emit_brz(&r.module, &Default::default(), &lr, &opts)
-        .map(|_| ())
-        .map_err(|e| format!("{e:?}"))
+    crate::emit::emit_brz(
+        &r.module,
+        &crate::ir::ProgramSettings::default(),
+        &lr,
+        &opts,
+    )
+    .map(|_| ())
+    .map_err(|e| format!("{e:?}"))
 }
 
 /// A `(label, source, storage types, distinct chip templates)` row: the source
@@ -83,7 +88,7 @@ pub(super) fn emit_ok(r: &LowerResult) -> Result<(), String> {
 type MonoRow<'a> = (&'a str, String, Vec<Type>, Option<usize>);
 
 #[track_caller]
-fn check_monomorphs(rows: &[MonoRow]) {
+fn check_monomorphs(rows: &[MonoRow<'_>]) {
     let mut failures = Vec::new();
     for (label, src, vars, templates) in rows {
         let r = compile(src);
@@ -120,7 +125,7 @@ fn check_monomorphs(rows: &[MonoRow]) {
 #[test]
 fn generic_storage_monomorphizes_per_instantiation() {
     use Type::{Bool, Float, Int, String as Str, Vector};
-    let rows: Vec<MonoRow> = vec![
+    let rows: Vec<MonoRow<'_>> = vec![
         (
             "a T-typed storage gate + T return, called at `int` and at `vector`: a leaked \
              `Type::Param` would give both a wrong (Number-defaulted) variant",
@@ -274,7 +279,7 @@ fn a_type_param_bound_through_a_composite_argument_binds_per_call() {
              mod outer<A: string | int>(x: A) -> A {{\n{body}\n}}\nin go: exec\non go {{\n  n = outer(s)\n  k = outer(i)\n}}\n"
         )
     };
-    let rows: Vec<MonoRow> = vec![
+    let rows: Vec<MonoRow<'_>> = vec![
         (
             "`A` appears only as the element type of `xs`",
             "var ss: string[]\nvar is: int[]\nvar n: string = \"\"\nvar k: int = 0\n\
@@ -446,10 +451,10 @@ fn generic_mod_buffer_and_array_annotations_monomorphize() {
 
 #[test]
 fn generic_mod_polymorphic_recursion_terminates() {
-    // A generic mod that (transitively) calls itself would make
-    // monomorphization non-terminating. The existing WS020 recursion guard
-    // (in `lower_chip_call`) blocks the self-call BEFORE the monomorph inline
-    // re-enters, so lowering terminates with an error instead of looping.
+    // A generic mod that (transitively) calls itself would make monomorphization
+    // non-terminating. The WS020 recursion guard (in `lower_chip_call`) blocks the
+    // self-call BEFORE the monomorph inline re-enters, so lowering terminates with
+    // an error instead of looping.
     let src = "mod rec<T>(v: T) -> T { return rec(v) }\nin n: int\nin go: exec\non go { let a = rec(n) }\n";
     let r = compile(src); // must return (no hang / stack overflow)
     assert_code(&r.diagnostics, "WS020");
@@ -457,29 +462,24 @@ fn generic_mod_polymorphic_recursion_terminates() {
 
 #[test]
 fn generic_body_invalid_for_a_member_is_rejected_above_the_combo_cap() {
-    // Combo-cap escape: two UNbounded params make
-    // 11×11 = 121 mask combos, over MAX_BODY_CHECK_COMBOS (64). The old capped
-    // fallback checked a single all-first-member combo (every param bound to
-    // `bool`, the most permissive member for arithmetic), so a body op invalid
-    // for other members slipped through with NO diagnostic and lowering then
-    // monomorphized it into a broken gate. `a + b` is not a valid op for every
-    // instantiation, so the decl must be rejected even above the cap.
+    // Combo-cap escape: two UNbounded params make 11x11 = 121 mask combos, over
+    // MAX_BODY_CHECK_COMBOS (64). `a + b` is not a valid op for every
+    // instantiation, so the decl is rejected even above the cap, rather than
+    // monomorphized into a broken gate with no diagnostic.
     let src = "mod combine<A, B>(a: A, b: B) -> A {\n  var x: A = a\n  x = a + b\n  return x\n}\n\
                on CharacterSpawned() -> (ch) {\n  let e: entity = ch\n  let r = combine(e, e)\n}\n";
     let tc = typecheck(
         &parse(src, "test").ast,
-        "test",
         &crate::typecheck::CeSlotMap::default(),
     );
     assert_code(&tc.diagnostics, "WS004");
-    // Sanity (no over-rejection): a body that is valid for EVERY instantiation
-    // must still type-check clean above the cap. `first<A, B>` also has 121
-    // combos (> cap) but its body only returns `a`, so no combo can fail.
+    // No over-rejection: a body that is valid for EVERY instantiation still
+    // type-checks clean above the cap. `first<A, B>` also has 121 combos (> cap)
+    // but its body only returns `a`, so no combo can fail.
     let ok = "mod first<A, B>(a: A, b: B) -> A {\n  return a\n}\n\
               on CharacterSpawned() -> (ch) {\n  let r = first(ch, 1)\n}\n";
     let tco = typecheck(
         &parse(ok, "test").ast,
-        "test",
         &crate::typecheck::CeSlotMap::default(),
     );
     assert!(
@@ -491,12 +491,11 @@ fn generic_body_invalid_for_a_member_is_rejected_above_the_combo_cap() {
 
 #[test]
 fn generic_body_operator_and_if_use_call_monomorph_variant() {
-    // Regression: operators (`v * v`) and if-exprs
-    // (`if c then a else b`) inside a generic body must emit the CALL's
-    // monomorph variant — not the last mask-member the per-mask-member body
-    // check leaves in `op_resolutions` / `type_of_expr` (Numeric -> Color,
-    // an unbounded `T` -> Prefab). `sq<int>` must be an int MathMultiply,
-    // `sq<vector>` a vector one; `pick<int>` an int Select — never Color/Prefab.
+    // Operators (`v * v`) and if-exprs (`if c then a else b`) inside a generic body
+    // emit the CALL's monomorph variant, not the last mask-member the per-member
+    // body check leaves in `op_resolutions` / `type_of_expr` (Numeric -> Color, an
+    // unbounded `T` -> Prefab): `sq<int>` is an int MathMultiply, `sq<vector>` a
+    // vector one, `pick<int>` an int Select.
     let src = "mod sq<T: Numeric>(v: T) -> T { return v * v }\n\
                mod pick<T>(c: bool, a: T, b: T) -> T { return if c then a else b }\n\
                in go: exec\nin n: int\nin vec: vector\nin flag: bool\n\
@@ -505,7 +504,7 @@ fn generic_body_operator_and_if_use_call_monomorph_variant() {
     emit_ok(&r).expect("emit must succeed");
     assert!(!any_param_port(&r.module));
 
-    // The two MathMultiply monomorphs: one int, one vector — never Color.
+    // The two MathMultiply monomorphs: one int, one vector, never Color.
     let muls = sorted(gate_output_types(&r.module, "MathMultiply"));
     assert_eq!(
         muls,
@@ -513,9 +512,9 @@ fn generic_body_operator_and_if_use_call_monomorph_variant() {
         "MathMultiply monomorphs must be int + vector, got {muls:?}"
     );
 
-    // The if-expr Select for `pick<int>` must be int-typed — never the stale
-    // last-mask-member the per-combo body check leaves behind for an unbounded
-    // `T`. `pick` is only called at int here, so EVERY Select must be int.
+    // The if-expr Select for `pick<int>` is int-typed, not the stale last mask
+    // member the per-combo body check leaves behind for an unbounded `T`. `pick` is
+    // only called at int here, so EVERY Select is int.
     let sels = gate_output_types(&r.module, "Select");
     assert!(
         !sels.is_empty() && sels.iter().all(|t| *t == Type::Int),
@@ -535,7 +534,7 @@ fn chip_template_keys(module: &Module) -> crate::collections::HashSet<String> {
         .collect()
 }
 
-/// Data-carrying (non-Exec) rerouter port types across the whole module tree —
+/// Data-carrying (non-Exec) rerouter port types across the whole module tree:
 /// the MicrochipInput/Output boundary ports of every chip instance. Reads out
 /// each monomorph's boundary typing (the `_exec_in`/`_exec_out` rerouters are
 /// Exec-typed and excluded).
@@ -574,8 +573,8 @@ fn generic_chip_monomorphizes_per_instantiation() {
         "int + vector instances must be two distinct templates, got {keys:?}"
     );
 
-    // Each monomorph's `stored` gate is concrete int / vector — proof the body
-    // came out per-type, not shared.
+    // Each monomorph's `stored` gate is concrete int / vector, so the body came out
+    // per-type, not shared.
     let vals = sorted(pseudo_var_value_types(&r.module));
     assert_eq!(
         vals,
@@ -584,15 +583,15 @@ fn generic_chip_monomorphizes_per_instantiation() {
     );
 
     // Boundary ports monomorphize too: the `v`/`r` rerouters are int in one
-    // instance and vector in the other — never `Any` (the pre-seed default) or
+    // instance and vector in the other, never `Any` (the pre-seed default) or
     // `Type::Param`.
     let rer = rerouter_data_types(&r.module);
     assert!(
-        rer.iter().any(|t| *t == Type::Int) && rer.iter().any(|t| *t == Type::Vector),
+        rer.contains(&Type::Int) && rer.contains(&Type::Vector),
         "boundary ports must include both int and vector, got {rer:?}"
     );
     assert!(
-        !rer.iter().any(|t| *t == Type::Any),
+        !rer.contains(&Type::Any),
         "no boundary port may stay `Any` after monomorphization, got {rer:?}"
     );
 }
@@ -623,14 +622,11 @@ fn generic_flat_chip_monomorphizes() {
 
 #[test]
 fn nested_generic_chip_monomorphizes_to_two_grids() {
-    // A generic chip instantiated INSIDE another (non-generic) chip's body must
-    // still monomorphize per type: the two `Boxed` grids live nested under
-    // `Outer`'s child module, so this only holds if the monomorph keying (and
-    // the recursive `chip_template_keys` walk) sees through the nesting.
-    // `out b = y`, not `y.r`: a single-output chip hands back the output's
-    // value itself, so `y` IS the vector and `y.r` reads a field a `vector`
-    // does not have. (`x.r` passes only because an `int` has no fields to
-    // check the name against.)
+    // A generic chip instantiated INSIDE another (non-generic) chip's body still
+    // monomorphizes per type: the two `Boxed` grids nest under `Outer`'s child
+    // module, so the monomorph keying and `chip_template_keys` see through nesting.
+    // `out b = y`, not `y.r`: a single-output chip hands back the output's value,
+    // so `y` IS the vector (`x.r` passes only because an `int` has no fields).
     let src = "chip Boxed<T>(v: T) -> (r: T) { var stored: T = v\n out r = stored }\n\
                chip Outer(n: int, v3: vector) -> (a: int, b: vector) {\n\
                let x = Boxed(n)\n  let y = Boxed(v3)\n  out a = x\n  out b = y\n}\n\
@@ -652,13 +648,13 @@ fn nested_generic_chip_monomorphizes_to_two_grids() {
     );
 }
 
-// ---------- `self`-receiver (UFCS) desugar ----------
+// `self`-receiver (UFCS) desugar
 
 #[test]
 fn self_receiver_method_desugars_to_mod_call() {
-    // `a.dist(b)` on a user `self`-mod desugars to `dist(a, b)`: the inlined
-    // body's `self.Dot(o)` lowers to a real VecDotProduct gate — NOT the
-    // `_Unsupported` placeholder the pre-feature dangling-method path emitted.
+    // `a.dist(b)` on a user `self`-mod desugars to `dist(a, b)`: the inlined body's
+    // `self.Dot(o)` lowers to a real VecDotProduct gate, not an `_Unsupported`
+    // placeholder.
     let src = "mod dist(self: vector, o: vector) -> float { return self.Dot(o) }\n\
                in a: vector\nin b: vector\nin go: exec\n\
                on go { let d = a.dist(b) }\n";
@@ -684,7 +680,6 @@ fn non_self_mod_method_call_is_a_typecheck_error() {
                on go { let d = v.f(w) }\n";
     let tc = typecheck(
         &parse(src, "test").ast,
-        "test",
         &crate::typecheck::CeSlotMap::default(),
     );
     assert_code(&tc.diagnostics, "WS036");
@@ -695,15 +690,14 @@ fn non_self_mod_method_call_is_a_typecheck_error() {
     );
 }
 
-// ---------- container-var receiver self-mods ----------
+// container-var receiver self-mods
 
 #[test]
 fn container_array_self_receiver_desugars_to_mod_call() {
-    // A self-mod whose receiver is an array VAR must NOT be hijacked by the
-    // array-method lowering branch. Before the `is_array_method` gate was added
-    // there, `arr.firstOr(9)` (firstOr NOT an array method) routed into
-    // `lower_array_method` -> `_Unsupported`, diverging from typecheck. It must
-    // desugar to `firstOr(arr, 9)` and inline the body's real gates.
+    // A self-mod whose receiver is an array VAR is not hijacked by the array-method
+    // lowering branch (`is_array_method` gates it): `arr.firstOr(9)` (firstOr is NOT
+    // an array method) desugars to `firstOr(arr, 9)` and inlines the body's real
+    // gates, agreeing with typecheck.
     let method = "mod firstOr(self: int[], fallback: int) -> int { let n = self.length()\n return n + fallback }\n\
                   var arr: int[] = [1, 2, 3]\nvar rr: int = 0\nin go: exec\non go { rr = arr.firstOr(9) }\n";
     let plain = "mod firstOr(self: int[], fallback: int) -> int { let n = self.length()\n return n + fallback }\n\
@@ -733,11 +727,10 @@ fn container_array_self_receiver_desugars_to_mod_call() {
 
 #[test]
 fn container_map_self_receiver_desugars_to_mod_call() {
-    // The map counterpart: a self-mod on a map VAR must not be hijacked by the
-    // map-method branch. `m.bump(5)` desugars to `bump(m, 5)` and inlines the
-    // body. (The body avoids calling a map method on `self` — map PARAMETERS
-    // aren't method-callable inside a mod body, a separate pre-existing gap
-    // unrelated to receiver dispatch.)
+    // The map counterpart: a self-mod on a map VAR is not hijacked by the
+    // map-method branch. `m.bump(5)` desugars to `bump(m, 5)` and inlines the body.
+    // (The body calls no map method on `self`: map PARAMETERS aren't
+    // method-callable inside a mod body.)
     let src = "mod bump(self: Map<string, int>, d: int) -> int { return d + 1 }\n\
                var m: Map<string, int>\nvar rr: int = 0\nin go: exec\non go { rr = m.bump(5) }\n";
     let r = compile_ok(src);
@@ -796,7 +789,6 @@ fn type_args_do_not_break_comparison_parsing() {
     let ok = "in a: int\nin b: int\nin c: int\nout r: bool = (a < b)\nout s: bool = a < b\n";
     let d = crate::typecheck::typecheck(
         &crate::parser::parse(ok, "t").ast,
-        "t",
         &crate::typecheck::CeSlotMap::default(),
     );
     assert!(
@@ -810,19 +802,19 @@ fn type_args_do_not_break_comparison_parsing() {
 
 #[test]
 fn non_callable_call_errors_ws038() {
-    // Calling a non-callable value (a var / let / array / input) is a hard
-    // error, not a silent `_Unsupported` gate reading 0. An index typo is the
-    // common trigger.
+    // Calling a non-callable value (a var / let / array / input) is a hard error,
+    // not a silent `_Unsupported` gate reading 0. An index typo is the common
+    // trigger.
     let typo = "on CharacterSpawned() -> (ch) {\n  var xs: int[] = [1, 2, 3]\n  let r = xs(0)\n}\n";
     assert!(
         errs(typo).contains(&"WS038".to_string()),
         "xs(i) must be WS038: {:?}",
         errs(typo)
     );
-    // `a < b > (c)` parses as an explicit-type-argument call on `a`; since `a`
-    // is not callable it now surfaces as a clear WS038 instead of a silently
-    // dropped comparison. (`a < b` / `(a < b)` without a trailing `(` stay
-    // comparisons — see `type_args_do_not_break_comparison_parsing`.)
+    // `a < b > (c)` parses as an explicit-type-argument call on `a`; since `a` is
+    // not callable it is a clear WS038, not a silently dropped comparison. (`a < b`
+    // and `(a < b)` without a trailing `(` stay comparisons; see
+    // `type_args_do_not_break_comparison_parsing`.)
     let misparse = "on CharacterSpawned() -> (ch) {\n  let a = 1\n  let b = 2\n  let c = 3\n  let r = a < b > (c)\n}\n";
     assert!(
         errs(misparse).contains(&"WS038".to_string()),
@@ -841,12 +833,10 @@ fn non_callable_call_errors_ws038() {
 #[test]
 fn builtins_and_types_program_compiles() {
     // The `examples/builtins_types_test.ws` self-checking program is also a
-    // compile-time type test: it exercises math builtins, coercion, native
-    // string equality, vector receiver methods, generics (inference + explicit
-    // type arguments),
-    // and `self`-receiver dispatch together. It only type-checks + emits if every
-    // builtin's argument/result types line up and each receiver binds a
-    // compatible `self` — so this guards the whole type surface end to end.
+    // compile-time type test of math builtins, coercion, native string equality,
+    // vector receiver methods, generics (inference + explicit type arguments) and
+    // `self`-receiver dispatch: it type-checks and emits only if every builtin's
+    // argument/result types line up and each receiver binds a compatible `self`.
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/builtins_types_test.ws"
@@ -858,7 +848,7 @@ fn builtins_and_types_program_compiles() {
 
 #[test]
 fn receiver_call_validates_receiver_type() {
-    // A receiver whose type doesn't match `self` is a WS003 error — user mod/chip
+    // A receiver whose type doesn't match `self` is a WS003 error: user mod/chip
     // calls coerce each arg (incl. the receiver bound as arg 0) against its
     // parameter, exactly like the wire layer's PortsAreCompatible.
     let bad = "mod lensq(self: vector, k: float) -> float { return self.Dot(self) * k }\n\
@@ -872,7 +862,7 @@ fn receiver_call_validates_receiver_type() {
     let bad_plain = "mod lensq(self: vector, k: float) -> float { return self.Dot(self) * k }\n\
                      in x: int\nstatic var rv: float = 0.0\nout r: float = rv\nin go: exec\non go { rv = lensq(x, 2.0) }\n";
     assert!(errs(bad_plain).contains(&"WS003".to_string()));
-    // A receiver that WIDENS to `self`'s type (character -> entity) is accepted —
+    // A receiver that WIDENS to `self`'s type (character -> entity) is accepted:
     // the coercion walks the applicable type options, it isn't an exact match.
     let widen = "mod who(self: entity) -> string { return self.GetDisplayName() }\n\
                  in c: character\nstatic var rv: string = \"\"\nout r: string = rv\nin go: exec\non go { rv = c.who() }\n";
@@ -891,7 +881,6 @@ fn type_args_on_builtin_warn() {
             "t",
         )
         .ast,
-        "t",
         &crate::typecheck::CeSlotMap::default(),
     );
     assert!(
@@ -908,21 +897,17 @@ fn type_args_on_builtin_warn() {
             "t",
         )
         .ast,
-        "t",
         &crate::typecheck::CeSlotMap::default(),
     );
     crate::test_support::assert_no_code(&r2.diagnostics, "WS037");
 }
 
-// ---- max generic parameters / cartesian body-check cap
-// (`MAX_BODY_CHECK_COMBOS = 64` in typecheck.rs). A bounded generic's body
-// is checked once per member of the cartesian product of its type params'
-// masks; over the cap the check falls back to a representative combo (each
-// mask's first member) with every param individually varied across its
-// whole mask (see the `capped` branch in typecheck.rs). These confirm the
-// cap boundary (64), the truncation path just past it (128), and a wildly
-// over-cap unbounded case all compile without hanging or panicking — and
-// that truncation is still SOUND (still catches a real per-param error). ----
+// Max generic parameters / cartesian body-check cap (`MAX_BODY_CHECK_COMBOS =
+// 64` in typecheck/decl.rs). A bounded generic's body is checked once per
+// combination of its type params' masks; over the cap the check uses a
+// representative combo (each mask's first member) with every param varied across
+// its whole mask. These pin the cap boundary (64), the path just past it (128),
+// a far over-cap unbounded case, and that truncation still catches a real error.
 
 #[test]
 fn six_scalar_type_params_at_body_check_cap_compiles_clean() {
@@ -942,10 +927,10 @@ fn six_scalar_type_params_at_body_check_cap_compiles_clean() {
 
 #[test]
 fn seven_scalar_type_params_over_cap_truncates_without_error() {
-    // 2^7 = 128 combos, over the 64 cap — the truncation (representative +
-    // per-param variation) path kicks in. Body is valid for every member of
-    // every param individually, so truncation must not manufacture a
-    // spurious error, and checking must terminate promptly (no hang).
+    // 2^7 = 128 combos, over the 64 cap: the truncation (representative +
+    // per-param variation) path runs. Body is valid for every member of every
+    // param individually, so truncation must not manufacture a spurious error,
+    // and checking must terminate promptly (no hang).
     let src = "mod combo7<A: Scalar, B: Scalar, C: Scalar, D: Scalar, E: Scalar, F: Scalar, G: Scalar>(a: A, b: B, c: C, d: D, e: E, f: F, g: G) -> A { return a }\n\
                in go: exec\nin n: int\nin fl: float\n\
                on go { let r = combo7(n, fl, n, fl, n, fl, n) }\n";
@@ -956,9 +941,9 @@ fn seven_scalar_type_params_over_cap_truncates_without_error() {
 
 #[test]
 fn three_unbounded_type_params_variant_mask_truncates_without_error() {
-    // Unbounded <A, B, C> = the full Variant mask (11 members) each -> 11^3
-    // = 1331 combos, far over the cap — the same truncation path, at a much
-    // larger multiple. Body only returns `a`, valid for every combination.
+    // Unbounded <A, B, C> = the full Variant mask (11 members) each -> 11^3 = 1331
+    // combos, far over the cap: the same truncation path, at a much larger
+    // multiple. Body only returns `a`, valid for every combination.
     let src = "mod triple<A, B, C>(a: A, b: B, c: C) -> A { return a }\n\
                in go: exec\nin n: int\nin s: string\nin v: vector\n\
                on go { let r = triple(n, s, v) }\n";
@@ -969,17 +954,14 @@ fn three_unbounded_type_params_variant_mask_truncates_without_error() {
 
 #[test]
 fn truncated_combo_check_still_catches_single_param_op_error() {
-    // 3 `Numeric` params (mask size 6) -> 6^3 = 216 combos, over the cap —
-    // the SAME truncation path as the tests above, but here the body uses
-    // an op ('&', no rule for vector/rotator/quat/color) on ONLY param A.
-    // Truncation varies each param across its whole mask while the others
-    // hold their first member (int), so this must still be caught:
-    // truncation is a coverage optimization, not a soundness hole.
+    // 3 `Numeric` params (mask size 6) -> 6^3 = 216 combos, over the cap, on the
+    // truncation path; the body uses an op ('&', no rule for vector/rotator/quat/
+    // color) on ONLY param A. Truncation varies each param across its whole mask
+    // while the others hold their first member (int), so this is still caught.
     let src = "mod combo3<A: Numeric, B: Numeric, C: Numeric>(a: A, b: B, c: C) -> A { let x = a & a\n return a }\n\
                in go: exec\nin n: int\non go { let r = combo3(n, n, n) }\n";
     let tc = typecheck(
         &parse(src, "test").ast,
-        "test",
         &crate::typecheck::CeSlotMap::default(),
     );
     // A single-param-only op invalid for some Numeric member is caught even
@@ -988,10 +970,9 @@ fn truncated_combo_check_still_catches_single_param_op_error() {
 }
 
 /// Unary negate inside a generic mod (and one generic mod calling another over a
-/// negated value) monomorphizes to a real MathNegate per concrete type. The
-/// operator table keys negate as `-u` but the AST spelling is `-`; the
-/// monomorphizer resolved the raw `-` and previously found no rule, falling back
-/// to a stale type instead of emitting the gate.
+/// negated value) monomorphizes to a real `MathNegate` per concrete type. The
+/// operator table keys negate as `-u` while the AST spelling is `-`, so the
+/// monomorphizer resolves `-u`.
 #[test]
 fn generic_negate_monomorphizes() {
     let src = "mod neg<T: int | float>(x: T) -> T { return -x }\n\
@@ -1007,16 +988,11 @@ fn generic_negate_monomorphizes() {
 }
 
 /// Generic PASSTHROUGH BUILTINS (`Sleep`/`SleepTicks`/`Select`/`Swap`, declared
-/// in `catalog/calls/flow.rs`) are a second monomorphization surface, separate
-/// from user `mod<T>` calls: their `T`-typed ports were left as the CallSpec's
-/// bare `Type::Param("T")` when the argument was a runtime value rather than an
-/// inlined constant (`lower/call/builtin.rs`'s `ports.inputs`/`ports.outputs`
-/// build used the declared type verbatim). `await SleepTicks(_, delay = N)` -
-/// the documented anonymous-placeholder await form, `_` standing for the armed
-/// flag - is the case that surfaced it: `_` binds the generic `input` port to a
-/// `bool`, and that `Type::Param` reached `var_type_to_wire_value` and tripped
-/// its debug_assert (a release build silently defaulted the field to
-/// `WireValue::Number(0.0)` instead).
+/// in `catalog/calls/flow.rs`) are a monomorphization surface separate from user
+/// `mod<T>` calls: their `T`-typed ports take the argument's type even when it is
+/// a runtime value. In `await SleepTicks(_, delay = N)`, `_` (the armed flag)
+/// binds the generic `input` port to a `bool`; a leaked `Type::Param` would trip
+/// `var_type_to_wire_value`'s `debug_assert` (and default silently in release).
 #[test]
 fn await_sleep_ticks_placeholder_monomorphizes_input_and_output_to_bool() {
     let src = "in start: exec\non start {\n  await SleepTicks(_, delay = 10)\n}\n";
@@ -1029,9 +1005,8 @@ fn await_sleep_ticks_placeholder_monomorphizes_input_and_output_to_bool() {
 
     // The armed flag `_` binds is a `bool` (typecheck/stmt.rs declares it
     // `Type::Bool` for the await's exec expression), so the BufferTicks gate's
-    // generic `Input`/`Output` ports must both monomorphize to `Type::Bool` -
-    // not fall back to `Any` (which would silently re-default to `Number(0.0)`
-    // at emit, the same wrong answer the leaked `Param` produced).
+    // generic `Input`/`Output` ports both monomorphize to `Type::Bool`. `Any` would
+    // silently re-default to `Number(0.0)` at emit.
     let buf = r
         .module
         .nodes
@@ -1092,11 +1067,10 @@ fn chip_instance_types(module: &Module) -> Vec<(String, Vec<Type>, Vec<Type>)> {
 #[test]
 fn chip_in_generic_mod_keys_apart_per_outer_instantiation() {
     // A NON-generic chip declared inside a generic mod's body, whose pins and
-    // storage are typed by the mod's `T`. Each outer instantiation lowers the
-    // chip body under a different `T`, so the two instances must be two
-    // templates, each typed for its own `T`. Keyed on the chip's own
-    // (empty) substitution alone, the `string` call reused the body built for
-    // `int`.
+    // storage are typed by the mod's `T`. Each outer instantiation lowers the chip
+    // body under a different `T`, so the two instances are two templates, each
+    // typed for its own `T`; keyed on the chip's own (empty) substitution alone,
+    // the `string` call would reuse the body built for `int`.
     let src = "in go: exec\nin n: int\nin s: string\n\
                mod outer<T: int | string>(v: T) -> (r: T) {\n\
                  chip inner(x: T) -> (y: T) {\n\
@@ -1138,7 +1112,7 @@ fn chip_in_generic_mod_keys_apart_per_outer_instantiation() {
 #[test]
 fn top_level_non_generic_chip_still_shares_one_template() {
     // A top-level non-generic chip has an empty resolution key, so two calls
-    // share one template exactly as before.
+    // share one template.
     let src = "chip inner(x: int) -> (y: int) {\n\
                  var stored: int = x\n\
                  out y = stored\n\
@@ -1159,7 +1133,7 @@ fn top_level_non_generic_chip_still_shares_one_template() {
         2,
         "two `inner` instances expected, got {inst:?}"
     );
-    // The key is exactly the pre-fix shape: no resolution-key segment.
+    // The key has no resolution-key segment.
     let key = keys.iter().next().unwrap();
     assert!(
         !key.contains("\u{1}r["),
@@ -1980,7 +1954,7 @@ fn an_instantiation_past_the_combination_cap_keeps_its_types() {
                     "{HUE_GENERIC}mod f<A, C, B: {bound}>(a: A, cc: C, b: B) {body}\non go {{ {call} }}\n"
                 );
                 let parsed = crate::parser::parse(&src, "test");
-                let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
+                let tc = typecheck(&parsed.ast, &crate::typecheck::CeSlotMap::default());
                 assert!(
                     tc.demanded_instantiations
                         .iter()
@@ -2209,7 +2183,7 @@ fn a_generic_mod_named_like_a_builtin_is_the_one_called() {
                mod clamp<T: int | float>(v: T, lo: T, hi: T) -> T { if v < lo { return lo }\n if v > hi { return hi }\n return v }\n\
                on go { n = clamp(i, 0, 10) }\n";
     let parsed = crate::parser::parse(src, "test");
-    let tc = typecheck(&parsed.ast, "test", &crate::typecheck::CeSlotMap::default());
+    let tc = typecheck(&parsed.ast, &crate::typecheck::CeSlotMap::default());
     let call = src.find("clamp(i, 0, 10)").unwrap();
     let key = (
         std::sync::Arc::from("test"),
@@ -2252,8 +2226,8 @@ fn a_generic_mod_named_like_a_builtin_is_the_one_called() {
 
 /// A type parameter given a record by its instantiation names that record
 /// wherever an annotation of one is read: `var u: A = a` holds `a`'s fields,
-/// and an output `r: D` written from both branches stores each field. Both
-/// were WS071 ("a record, not one value").
+/// and an output `r: D` written from both branches stores each field, with no
+/// WS071 ("a record, not one value").
 #[test]
 fn a_type_parameter_given_a_record_declares_the_record() {
     let head = "type P = { x: int, y: int }\nvar p: P = { x: 1, y: 2 }\nvar q: P = { x: 0, y: 0 }\nvar k: int = 1\n\
@@ -2278,8 +2252,8 @@ fn a_type_parameter_given_a_record_declares_the_record() {
 }
 
 /// A `...tuple` spread into a generic infers its type parameters from the
-/// tuple's elements, as written-out arguments do; it was WS033 ("cannot infer
-/// type parameter") and an `_Unsupported` call.
+/// tuple's elements, as written-out arguments do: no WS033 ("cannot infer type
+/// parameter") and no `_Unsupported` call.
 #[test]
 fn a_tuple_spread_into_a_generic_infers_its_parameters() {
     for (decls, call) in [
@@ -2311,8 +2285,7 @@ fn a_tuple_spread_into_a_generic_infers_its_parameters() {
 /// twin spelling the instantiation does, in every position: a `var`, a
 /// parameter of a `mod` and a `chip`, an annotated output, a record
 /// assignment, an array element, a return type and an alias of the alias. A
-/// record alias was one `any` wire (`Var f64`, its fields read through
-/// `SplitColor`) and an enum alias had no tag.
+/// record alias keeps its fields and an enum alias its tag.
 #[test]
 fn an_alias_of_a_generic_instantiation_is_its_instantiation() {
     let record = "type Pair<T> = { a: T, b: T }\ntype IP = Pair<int>\ntype IP2 = IP\nvar n: int = 0\nvar k: int = 3\nin go: exec\n";
@@ -2362,9 +2335,9 @@ fn an_alias_of_a_generic_instantiation_is_its_instantiation() {
             fold_mode,
         };
         let loader = crate::resolve::MemLoader {
-            files: Default::default(),
+            files: HashMap::default(),
         };
-        let out = crate::compile_with_loader(input, Default::default(), &loader)
+        let out = crate::compile_with_loader(input, crate::emit::EmitOptions::default(), &loader)
             .unwrap_or_else(|e| panic!("{e:?}\n{src}"));
         super::shadow_differential::save_components(&out.brz)
     };
@@ -2373,7 +2346,7 @@ fn an_alias_of_a_generic_instantiation_is_its_instantiation() {
             source: src,
             file: "main",
             module_name: None,
-            fold_mode: Default::default(),
+            fold_mode: FoldMode::default(),
         };
         match crate::compile(input) {
             Err(crate::CompileError::HasErrors(errors)) => errors
@@ -2428,8 +2401,8 @@ fn an_alias_of_a_generic_instantiation_is_its_instantiation() {
 /// that instantiation where the library is imported, by name or as a
 /// namespace, in a constant, a `var`, a parameter and through the generic
 /// itself (`u.Pair<int>`): the importer compiles to the save of its twin
-/// declaring the record itself. An integer for a `float` field of one is that
-/// float. Each import was `WS002 unknown generic type 'Pair'`.
+/// declaring the record itself, with no `WS002 unknown generic type`. An integer
+/// for a `float` field of one is that float.
 #[test]
 fn a_library_alias_of_a_generic_instantiation_imports() {
     let lib = "type Pair<T> = { a: T, b: T }\ntype IP = Pair<int>\ntype FP = Pair<float>\nconst C: IP = { a: 1, b: 2 }\n\
@@ -2495,7 +2468,7 @@ fn a_library_alias_of_a_generic_instantiation_imports() {
                 .into_iter()
                 .collect(),
         };
-        let out = crate::compile_with_loader(input, Default::default(), &loader)
+        let out = crate::compile_with_loader(input, crate::emit::EmitOptions::default(), &loader)
             .unwrap_or_else(|e| panic!("{e:?}\n{src}"));
         super::shadow_differential::save_components(&out.brz)
     };
@@ -2510,7 +2483,7 @@ fn a_library_alias_of_a_generic_instantiation_imports() {
     }
 }
 
-// ---------- generic declarations: typecheck and alias lowering ----------
+// generic declarations: typecheck and alias lowering
 
 #[test]
 fn generic_mod_type_params_resolve_not_ws002() {
@@ -2542,18 +2515,17 @@ fn generic_mod_type_params_resolve_not_ws002() {
 
 #[test]
 fn generic_mod_call_inference() {
-    // Error diagnostics as (code, message) pairs — used where the message text
+    // Error diagnostics as (code, message) pairs, for where the message text
     // itself is load-bearing (proving the *concrete* substituted type).
     let err_msgs = |s: &str| {
         crate::typecheck::typecheck(
             &crate::parser::parse(s, "t").ast,
-            "t",
             &crate::typecheck::CeSlotMap::default(),
         )
         .diagnostics
         .into_iter()
         .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-        .map(|d| (d.code.to_string(), d.message))
+        .map(|d| (d.code.clone(), d.message))
         .collect::<Vec<_>>()
     };
     let pick = "in flag: bool\nmod pick<T>(c: bool, a: T, b: T) -> T { return a }\n";
@@ -2563,16 +2535,10 @@ fn generic_mod_call_inference() {
         "int inference should be clean: {:?}",
         errs(&format!("{pick}let x = pick(flag, 1, 2)\n"))
     );
-    // result type is CONCRETELY float (not any, not a leaked `Param("T")`):
-    // int + float safe-widens T to float, and assigning the result to a
-    // vector-typed var errors, AND the error MESSAGE names `Float` as the
-    // actual type. (A `let` annotation mismatch is only a WS016 *warning*
-    // here — `var`'s initializer coercion is the hard WS003 error, so
-    // that's the construct that proves the result type.) Asserting the message
-    // (not just the WS003 code) is deliberate: `coerce(Param("T"), Vector)` is
-    // ALSO a Mismatch -> WS003, so a regression that stopped substituting and
-    // leaked a raw `Param` would still emit WS003 — only the "got Float" text
-    // proves substitution actually produced the concrete widened `float`.
+    // The result type is CONCRETELY float: int + float safe-widens T to float, so
+    // assigning it to a `var` of vector type (the hard WS003; a `let` annotation is
+    // only a WS016 warning) errors with a message naming `Float`. The message is
+    // asserted because a leaked raw `Param("T")` is also a WS003 Mismatch.
     let vecerr = err_msgs(&format!("{pick}var v: vector = pick(flag, 1, 2.0)\n"));
     assert!(
         vecerr
@@ -2596,35 +2562,34 @@ fn generic_mod_call_inference() {
         e.iter().any(|c| c == "WS033"),
         "int/vector incompatible should be WS033: {e:?}"
     );
-    // out of mask: string is not Numeric. (Named `onlyNumeric`, not `clamp` —
-    // `clamp` collides with the builtin math function of the same name, which
-    // `find_call` resolves before user symbols and so never reaches this
-    // user-mod inference path at all.)
+    // Out of mask: string is not Numeric. (Named `onlyNumeric`, not `clamp`:
+    // `find_call` resolves the builtin `clamp` before user symbols, so it never
+    // reaches this user-mod inference path.)
     let only_numeric = "mod onlyNumeric<T: Numeric>(v: T) -> T { return v }\n";
     let e2 = errs(&format!("{only_numeric}let x = onlyNumeric(\"hi\")\n"));
     assert!(
         e2.iter().any(|c| c == "WS033"),
         "string out of Numeric mask should be WS033: {e2:?}"
     );
-    // vector inference: pick(flag, va, vb) => T=vector, clean. (`pick` already
-    // declares `in flag: bool`; only `va`/`vb` are new here — redeclaring
-    // `flag` would itself be a duplicate-decl error unrelated to inference.)
+    // Vector inference: pick(flag, va, vb) => T=vector, clean. (`pick` already
+    // declares `in flag: bool`; only `va`/`vb` are new here, since redeclaring
+    // `flag` would be a duplicate-decl error unrelated to inference.)
     let vecsrc = format!("in va: vector\nin vb: vector\n{pick}let r = pick(flag, va, vb)\n");
     assert!(
         errs(&vecsrc).is_empty(),
         "vector inference should be clean: {:?}",
         errs(&vecsrc)
     );
-    // Ref-param inference: a `*T` param resolves to `Ref(Param(T))`, but a var
-    // arg auto-derefs to its inner type — the Ref layers must be aligned before
-    // collecting or `T` is never pinned. Ref params are core idiomatic
-    // Wirescript (`mod inc(v: *int)`), so this MUST infer cleanly (no WS033).
+    // Ref-param inference: a `*T` param resolves to `Ref(Param(T))`, but a var arg
+    // auto-derefs to its inner type, so the Ref layers are aligned before
+    // collecting or `T` is never pinned. Ref params (`mod inc(v: *int)`) infer
+    // cleanly, with no WS033.
     let e3 = errs("mod passRef<T>(v: *T) { }\nvar x: int = 0\npassRef(x)\n");
     assert!(
         !e3.iter().any(|c| c == "WS033"),
         "ref-param generic call should infer cleanly (no WS033): {e3:?}"
     );
-    // ...and a ref param that's actually written through (the `inc` shape) works too.
+    // A ref param that's actually written through (the `inc` shape) works too.
     let e4 = errs("mod inc<T>(v: *T) { v = v }\nvar y: int = 0\ninc(y)\n");
     assert!(
         !e4.iter().any(|c| c == "WS033"),
@@ -2659,26 +2624,24 @@ fn generic_widening_inference() {
 #[test]
 fn generic_body_checked_per_mask_member() {
     // `a + 1` is valid for every Scalar member (int + 1 -> int, float + 1 -> float),
-    // so the generic body checks CLEAN once we check per concrete member.
+    // so the generic body checks CLEAN when checked per concrete member.
     let ok = "mod addOne<T: Scalar>(a: T) -> T { return a + 1 }\n";
     assert!(
         errs(ok).is_empty(),
         "a + 1 valid for all Scalar members should be clean: {:?}",
         errs(ok)
     );
-    // `Dot()` takes two vectors — invalid for every Scalar member (int/float
-    // aren't vectors) — so the body fails per-member checking and surfaces
-    // an error at the DEFINITION. (`a.length()` is NOT a counterexample here
-    // — method-call resolution doesn't check the receiver type strictly, so
-    // it silently passes on int/float too; `Dot()`'s WS003 "expected Vector,
-    // got Int/Float" argument-type check is a genuine per-member failure.)
+    // `Dot()` takes two vectors, invalid for every Scalar member, so the body fails
+    // per-member checking with an error at the DEFINITION. (Not `a.length()`:
+    // method-call resolution doesn't check the receiver type strictly, while
+    // `Dot()`'s WS003 argument-type check is a genuine per-member failure.)
     let bad = "mod wrong<T: Scalar>(a: T) -> float { return a.Dot(a) }\n";
     assert!(
         !errs(bad).is_empty(),
         "member-invalid op should error at the generic definition: {:?}",
         errs(bad)
     );
-    // the error surfaces ONCE (not once per member) — dedup check:
+    // The error surfaces ONCE (not once per member): dedup check.
     assert!(
         errs(bad).len() <= 2,
         "member errors should be deduped, got {:?}",
@@ -2693,13 +2656,12 @@ fn if_expr_and_builtins_widen() {
     let errs = |s: &str| {
         crate::typecheck::typecheck(
             &crate::parser::parse(s, "t").ast,
-            "t",
             &crate::typecheck::CeSlotMap::default(),
         )
         .diagnostics
         .into_iter()
         .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-        .map(|d| (d.code.to_string(), d.message.clone()))
+        .map(|d| (d.code.clone(), d.message))
         .collect::<Vec<_>>()
     };
     let codes = |s: &str| errs(s).into_iter().map(|(c, _)| c).collect::<Vec<_>>();
@@ -2718,28 +2680,23 @@ fn if_expr_and_builtins_widen() {
         "if float/int (branches swapped) should also widen to float: {:?}",
         errs("in c: bool\nlet y = if c then 2.0 else 1\n")
     );
-    // result is float: assigning to a vector annotation errors "got Float".
-    // (`var`'s initializer coercion is the hard WS003 error -- a `let`
-    // annotation mismatch is only a WS016 warning here, per the `pick`
-    // tests above, so `var` is what proves the concrete result type.)
-    // Proves the *swapped* branch order also yields Float (old else-wins
-    // code would have produced Int here, whose WS003 message would say
-    // "Int", not "Float").
+    // The result is float: assigning to a vector annotation errors "got Float"
+    // (`var`'s initializer coercion is the hard WS003 error; a `let` annotation
+    // mismatch is only a WS016 warning). The *swapped* branch order yields Float
+    // too, so the join is not else-wins (which would say "Int").
     let swapped_vec_err = errs("in c: bool\nvar v: vector = if c then 2.0 else 1\n");
     assert!(
         swapped_vec_err
             .iter()
             .any(|(cd, m)| cd == "WS003" && m.contains("float")),
-        "if-expr result (else-wins branch order) should still be Float under widening: {:?}",
-        swapped_vec_err
+        "if-expr result (else-wins branch order) should still be Float under widening: {swapped_vec_err:?}"
     );
     let vec_err = errs("in c: bool\nvar v: vector = if c then 1 else 2.0\n");
     assert!(
         vec_err
             .iter()
             .any(|(cd, m)| cd == "WS003" && m.contains("float")),
-        "if-expr result should be Float: {:?}",
-        vec_err
+        "if-expr result should be Float: {vec_err:?}"
     );
     // incompatible branches still error (WS003, no common widening).
     assert!(
@@ -2749,26 +2706,24 @@ fn if_expr_and_builtins_widen() {
         "int/vector branches should still error"
     );
 
-    // Builtin half: `union_output_type` is used by the math-variant gates
-    // whose declared output is `Type::Union` -- confirmed (via catalog/calls.rs)
-    // to be `Blend`, `lerp`, and `Easing` (all built from `blend_variant()` ==
-    // Union([Float, Int, Vector, Rotator, Quat, Color])). `Tween`'s output is a
-    // *Record* wrapping a union field, not a bare Union, so it doesn't go
-    // through this path. Use `lerp(a, b, t)` -- the plainest signature.
+    // Builtin half: `union_output_type` serves the math-variant gates whose
+    // declared output is `Type::Union`: `Blend`, `lerp` and `Easing` (all built
+    // from `blend_variant()`). `Tween`'s output is a *Record* wrapping a union
+    // field, so it doesn't take this path. `lerp(a, b, t)` is the plainest.
     assert!(
         codes("let x = lerp(1, 2.0, 0.5)\n").is_empty(),
         "lerp(int, float, float) should widen to float, clean: {:?}",
         errs("let x = lerp(1, 2.0, 0.5)\n")
     );
-    // incompatible: int vs vector share no common widening -> WS033 (both
-    // ARE individually valid blend-variant members, so this only fails at
-    // the join step, not at argument-type checking).
+    // Incompatible: int vs vector share no common widening -> WS033 (both ARE
+    // individually valid blend-variant members, so this only fails at the join
+    // step, not at argument-type checking).
     let e = errs("in vecArg: vector\nlet x = lerp(1, vecArg, 0.5)\n");
     assert!(
         e.iter().any(|(c, _)| c == "WS033"),
         "lerp(int, vector) incompatible should be WS033: {e:?}"
     );
-    // Blend, receiver form: `a.Blend(b, alpha)` -- same widening, same gate.
+    // Blend, receiver form: `a.Blend(b, alpha)`, same widening, same gate.
     assert!(
         codes("in a: int\nlet x = a.Blend(2.0, 0.5)\n").is_empty(),
         "a.Blend(2.0, ...) should widen to float, clean: {:?}",
@@ -2778,18 +2733,17 @@ fn if_expr_and_builtins_widen() {
 
 #[test]
 fn generic_chip_type_checks_clean() {
-    // Generic *chips* (physical microchips) are monomorphized per distinct
-    // type instantiation at lowering time (one template per `(name, subst)`),
-    // so a generic chip decl type-checks clean — the old WS034 hard error is
-    // gone. (The per-type lowering + no-shared-grid proof lives in
-    // `lower::tests::generics::generic_chip_monomorphizes_per_instantiation`.)
+    // Generic *chips* (physical microchips) are monomorphized per distinct type
+    // instantiation at lowering time (one template per `(name, subst)`), so a
+    // generic chip decl type-checks clean, with no WS034. (The per-type lowering is
+    // covered by `generic_chip_monomorphizes_per_instantiation`.)
     let gchip = "chip Box<T>(v: T) -> (r: T) { out r = v }\n";
     assert!(
         errs(gchip).is_empty(),
         "generic chip must type-check clean now: {:?}",
         errs(gchip)
     );
-    // a generic MOD is likewise clean -- mods inline+monomorphize per call.
+    // A generic MOD is likewise clean: mods inline and monomorphize per call.
     let gmod = "mod pick<T>(a: T) -> T { return a }\n";
     assert!(
         errs(gmod).is_empty(),
@@ -2807,7 +2761,7 @@ fn generic_chip_type_checks_clean() {
 
 #[test]
 fn generic_type_aliases_instantiate() {
-    // Pair<int> resolves to { a: int, b: int } — `.a` used where an `int` is
+    // Pair<int> resolves to { a: int, b: int }, so `.a` used where an `int` is
     // expected is clean.
     let ok = "type Pair<T> = { a: T, b: T }\nin p: Pair<int>\nout r: int = p.a\n";
     assert!(
@@ -2815,9 +2769,8 @@ fn generic_type_aliases_instantiate() {
         "Pair<int>.a should be int, clean: {:?}",
         errs(ok)
     );
-    // Pair<string> resolves to { a: string, b: string } — `.a` no longer
-    // coerces to `int` (string doesn't coerce to a numeric), proving `T`
-    // actually substituted per instantiation rather than resolving to `any`
+    // Pair<string> resolves to { a: string, b: string }, so `.a` doesn't coerce to
+    // `int`: `T` substituted per instantiation rather than resolving to `any`
     // (which would coerce to anything and stay clean).
     let bad = "type Pair<T> = { a: T, b: T }\nin p: Pair<string>\nout r: int = p.a\n";
     assert!(
@@ -2846,9 +2799,9 @@ fn generic_type_aliases_instantiate() {
         "recursive generic alias should error: {:?}",
         errs(recursive)
     );
-    // A DOUBLY self-referencing alias would re-expand each occurrence — a
-    // depth-only guard blows up exponentially; the in-progress cycle guard must
-    // cut it off so this terminates with a diagnostic rather than hanging.
+    // A DOUBLY self-referencing alias re-expands each occurrence, exponential under
+    // a depth-only guard; the in-progress cycle guard cuts it off so this
+    // terminates with a diagnostic rather than hanging.
     let tree = "type Tree<T> = { l: Tree<T>, r: Tree<T> }\nin x: Tree<int>\n";
     assert!(
         !errs(tree).is_empty(),
@@ -2864,12 +2817,10 @@ fn generic_type_aliases_instantiate() {
     );
 }
 
-/// Regression: a generic-alias record type used at a PORT or a chip param
-/// must dissolve into real per-field wire gates at LOWERING — not silently
-/// degrade to a single `any` port whose field accesses emit
-/// `_Unsupported`/`SplitColor` swizzle gates with zero diagnostics.
-/// typecheck alone can't catch this (it was green while the IR was broken), so
-/// this asserts on the emitted IR.
+/// A generic-alias record type used at a PORT or a chip param dissolves into
+/// real per-field wire gates at LOWERING, not a single `any` port whose field
+/// accesses emit `_Unsupported`/`SplitColor` swizzle gates. Typecheck stays
+/// green either way, so this asserts on the emitted IR.
 #[test]
 fn generic_alias_record_port_lowers_to_real_gates() {
     // Top-level record PORT: `Pair<int>` -> two int sub-ports feeding a MathAdd.
@@ -2917,10 +2868,8 @@ fn generic_alias_record_port_lowers_to_real_gates() {
 #[test]
 fn deeply_nested_generic_decls_terminate_quickly() {
     // The per-mask-member body check is a whole-PATH budget, not per-decl, so
-    // nesting generic decls can't multiply the combo count (`13^d` -> a 17s+
-    // typecheck / LSP hang). Depth-6 nested generic mods must type-check clean
-    // and near-instantly (this test would time out conspicuously in the suite
-    // if the budget regressed).
+    // nesting generic decls can't multiply the combo count (`13^d`, a typecheck /
+    // LSP hang). Depth-6 nested generic mods type-check clean and near-instantly.
     let src = "mod l0<A>(a: A) -> A {\n\
                mod l1<B>(b: B) -> B {\n\
                mod l2<C>(c: C) -> C {\n\
@@ -2930,12 +2879,12 @@ fn deeply_nested_generic_decls_terminate_quickly() {
                return c }\n return b }\n return a }\n\
                in go: exec\nin n: int\non go { let z = l0(n) }\n";
     let parsed = crate::parser::parse(src, "t");
-    let tc = crate::typecheck::typecheck(&parsed.ast, "t", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&parsed.ast, &crate::typecheck::CeSlotMap::default());
     let errs: Vec<String> = tc
         .diagnostics
         .iter()
         .filter(|d| d.severity == crate::diagnostic::Severity::Error)
-        .map(|d| d.code.to_string())
+        .map(|d| d.code.clone())
         .collect();
     assert!(
         errs.is_empty(),

@@ -18,7 +18,7 @@ use wirescript::ir::port_registry::WirePort;
 use wirescript::ir::{Literal, Module, Node, NodeId};
 
 /// Each fixture and the structural check for the miscompile it guards.
-const CHECKS: &[(&str, fn(&Fixture))] = &[
+const CHECKS: &[(&str, fn(&Fixture<'_>))] = &[
     ("game_enum_ports.ws", enum_pins_carry_variant_tags),
     (
         "generic_nesting.ws",
@@ -93,7 +93,7 @@ fn lower_clean(path: &std::path::Path, src: &str, mode: FoldMode, label: &str) -
     lowered.module
 }
 
-// ── IR helpers ───────────────────────────────────────────────────────────────
+// IR helpers
 
 fn modules(m: &Module) -> Vec<&Module> {
     let mut out = Vec::new();
@@ -121,7 +121,7 @@ fn label(n: &Node) -> &str {
 }
 
 /// The node wired into `(id, port)` in `m`.
-fn driver<'a>(m: &'a Module, id: NodeId, port: WirePort) -> Option<&'a Node> {
+fn driver(m: &Module, id: NodeId, port: WirePort) -> Option<&Node> {
     m.wires
         .iter()
         .find(|w| w.target.node_id == id && w.target.port == port)
@@ -210,15 +210,15 @@ fn sort_columns(m: &Module, n: &Node) -> (String, Vec<String>) {
 }
 
 fn set(items: &[&str]) -> BTreeSet<String> {
-    items.iter().map(|s| s.to_string()).collect()
+    items.iter().map(std::string::ToString::to_string).collect()
 }
 
-// ── structural checks, one per fixture ───────────────────────────────────────
+// Structural checks, one per fixture
 
 /// Both `sortMultiple` calls sort `keys` and carry `order`, all three `rows`
-/// columns and `uids`, one array per pin. The shipped bug wired the record array
-/// into `bDescending`, so no record column reached a parallel pin.
-fn sort_carries_every_record_column(f: &Fixture) {
+/// columns and `uids`, one array per pin. The record array must not be wired
+/// into `bDescending`, which would leave no record column on a parallel pin.
+fn sort_carries_every_record_column(f: &Fixture<'_>) {
     let m = f.module;
     let sorts = of_class(m, gc::ARRAY_SORT_MULTIPLE);
     assert_eq!(sorts.len(), 2, "{}: two sortMultiple gates", f.ctx());
@@ -247,7 +247,7 @@ fn sort_carries_every_record_column(f: &Fixture) {
             .map(|n| n.gate_class)
             .collect();
         assert!(
-            !into_desc.iter().any(|c| *c == gc::ARRAY_VAR),
+            !into_desc.contains(&gc::ARRAY_VAR),
             "{}: an array reached bDescending: {into_desc:?}",
             f.ctx()
         );
@@ -274,14 +274,14 @@ fn sort_carries_every_record_column(f: &Fixture) {
 /// Every field of `h` and `h2` is its own column, sorting by a column drags
 /// exactly its siblings, sorting a plain array field drags nothing, and the
 /// spread copies each unnamed column of `h` into the same column of `h2`.
-fn record_columns_stay_distinct(f: &Fixture) {
+fn record_columns_stay_distinct(f: &Fixture<'_>) {
     let m = f.module;
     let mut columns: Vec<&str> = of_class(m, gc::ARRAY_VAR)
         .into_iter()
         .chain(of_class(m, gc::MAP_VAR))
         .map(label)
         .collect();
-    columns.sort();
+    columns.sort_unstable();
     let unique: BTreeSet<&str> = columns.iter().copied().collect();
     assert_eq!(
         unique.len(),
@@ -361,7 +361,7 @@ fn record_columns_stay_distinct(f: &Fixture) {
 /// The swap reads both fields before it writes either, the popped value is
 /// popped once, the rebuild reads the old length before it clears, and each
 /// record local's initializer writes every field at each place it runs.
-fn record_assign_reads_before_it_writes(f: &Fixture) {
+fn record_assign_reads_before_it_writes(f: &Fixture<'_>) {
     let m = f.module;
     let var_of = |n: &Node| driver_label(m, n.id, WirePort::VarRef);
 
@@ -470,7 +470,7 @@ fn record_assign_reads_before_it_writes(f: &Fixture) {
 /// `inner` and `deep` each exist once per instantiation of their enclosing
 /// generics, one typed int and one typed string, and each passes its `x`
 /// straight to `y`. The shadowing generic's call lands once per `shadow` copy.
-fn nested_chips_are_typed_per_instantiation(f: &Fixture) {
+fn nested_chips_are_typed_per_instantiation(f: &Fixture<'_>) {
     let port_type = |n: &Node| {
         n.ports
             .outputs
@@ -544,7 +544,7 @@ fn nested_chips_are_typed_per_instantiation(f: &Fixture) {
 /// Each enum `out` pin is an int pin driven by its variant's tag: the default
 /// ones by the constant tag, the emitted ones by a backing var that starts at the
 /// default tag and is written by the emit. Each enum `in` pin reaches a reader.
-fn enum_pins_carry_variant_tags(f: &Fixture) {
+fn enum_pins_carry_variant_tags(f: &Fixture<'_>) {
     let m = f.module;
     let pin = |ids: &[NodeId], name: &str| -> NodeId {
         *ids.iter()
@@ -611,7 +611,7 @@ fn enum_pins_carry_variant_tags(f: &Fixture) {
     }
 }
 
-// ── tests ────────────────────────────────────────────────────────────────────
+// Tests
 
 #[test]
 fn every_fixture_has_a_structural_check() {

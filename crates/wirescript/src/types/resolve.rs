@@ -4,10 +4,10 @@
 //! the single structural resolver; every other resolver in the crate either
 //! delegates to these directly or (for `typecheck::resolve_type_expr`, which
 //! is entangled with the mutable scope stack) at least shares the primitive
-//! table. A resolver with its own independent copy of this mapping risks
-//! drift — e.g. missing `zone`/`teleport` would silently degrade a
-//! `zone`/`teleport`-annotated value to `Type::Any` once it reached lowering,
-//! even though typecheck had resolved it correctly.
+//! table. A resolver with its own copy of this mapping risks drift: a missing
+//! `zone`/`teleport` would silently degrade a `zone`/`teleport`-annotated
+//! value to `Type::Any` once it reached lowering, even though typecheck had
+//! resolved it correctly.
 
 use crate::collections::HashMap;
 
@@ -22,7 +22,7 @@ use crate::ir::Type;
 /// the LSP and the playground each hand-write their own for completion, and
 /// both are short of this one, so a type that resolves here may still not be
 /// offered in the editor. Adding a primitive means editing those too.
-pub fn primitive(name: &str) -> Option<Type> {
+pub(crate) fn primitive(name: &str) -> Option<Type> {
     PRIMITIVES
         .iter()
         .find(|(n, _)| *n == name)
@@ -30,7 +30,7 @@ pub fn primitive(name: &str) -> Option<Type> {
 }
 
 /// Each primitive type's source spelling and its [`Type`] (see [`primitive`]).
-pub const PRIMITIVES: &[(&str, Type)] = &[
+pub(crate) const PRIMITIVES: &[(&str, Type)] = &[
     ("bool", Type::Bool),
     ("int", Type::Int),
     ("float", Type::Float),
@@ -59,14 +59,13 @@ pub const PRIMITIVES: &[(&str, Type)] = &[
     ("never", Type::Never),
 ];
 
-/// A generic type alias's template — its declared parameter names and the
+/// A generic type alias's template: its declared parameter names and the
 /// (still parametric) `TypeExpr` body, substituted at each `Name<Args>` use
 /// site. Populated from `ast::TypeAliasDecl`s whose `type_params` is
-/// non-empty; the body is intentionally left unresolved at declaration time
-/// (it references its own free params, which aren't bound to anything until
-/// an actual use supplies arguments).
+/// non-empty; the body is left unresolved at declaration time (it references
+/// its own free params, which aren't bound until a use supplies arguments).
 #[derive(Clone, Debug)]
-pub struct GenericAlias {
+pub(crate) struct GenericAlias {
     pub params: Vec<String>,
     pub body: TypeExpr,
 }
@@ -77,19 +76,17 @@ pub struct GenericAlias {
 const MAX_ALIAS_DEPTH: u32 = 32;
 
 /// Context a [`resolve_type`] call resolves names against.
-pub struct ResolveCtx<'a> {
+pub(crate) struct ResolveCtx<'a> {
     /// In-scope generic type-parameter names (a `Name` matching one resolves
     /// to `Type::Param`).
     pub params: &'a [String],
-    /// Type aliases visible to the caller (name -> resolved type). Empty for
-    /// the lowering-side callers; typecheck fills it from its scope so
-    /// `type X = …` names still resolve.
+    /// Type aliases visible to the caller (name -> resolved type), so
+    /// `type X = ...` names resolve.
     pub type_aliases: &'a HashMap<String, Type>,
     /// Generic type aliases visible to the caller (name -> param list + raw
     /// `TypeExpr` body), instantiated by substitution when used as
-    /// `Name<Args>`. Empty for lowering-side callers and any context that
-    /// doesn't need generic-alias resolution — typecheck's
-    /// `resolve_type_expr` is the one caller that fills it.
+    /// `Name<Args>`. Empty for any context that doesn't need generic-alias
+    /// resolution.
     pub generic_aliases: &'a HashMap<String, GenericAlias>,
     /// The aliases a generic alias's body reads its own names against: those
     /// of the top level it is declared at, where none of the use site's type
@@ -105,7 +102,7 @@ pub struct ResolveCtx<'a> {
 /// `Type::Record` because it has to re-resolve each field's own `TypeExpr` to
 /// detect `array`/`ref` sub-ports). A `Name` matching a substitution key
 /// becomes that argument's `TypeExpr` verbatim.
-pub fn substitute_type_expr(te: &TypeExpr, subst: &HashMap<String, TypeExpr>) -> TypeExpr {
+pub(crate) fn substitute_type_expr(te: &TypeExpr, subst: &HashMap<String, TypeExpr>) -> TypeExpr {
     match te {
         TypeExpr::Name { name, .. } => match subst.get(name) {
             Some(rep) => rep.clone(),
@@ -159,10 +156,10 @@ pub fn substitute_type_expr(te: &TypeExpr, subst: &HashMap<String, TypeExpr>) ->
 /// `TypeExpr` (`{ a: int, b: int }`), substituting each type argument for its
 /// parameter. Returns `None` if `name` isn't a known generic alias or the
 /// argument count doesn't match (so the caller can fall through to its
-/// not-a-generic-alias path — typecheck has already flagged a real arity
+/// not-a-generic-alias path; typecheck has already flagged a real arity
 /// error). Lowering uses this to dissolve a generic-alias record annotation
-/// into per-field sub-ports, the same as a non-generic `type P = { … }`.
-pub fn instantiate_generic_alias(
+/// into per-field sub-ports, the same as a non-generic `type P = { ... }`.
+pub(crate) fn instantiate_generic_alias(
     name: &str,
     args: &[TypeExpr],
     generic_aliases: &HashMap<String, GenericAlias>,
@@ -182,7 +179,7 @@ pub fn instantiate_generic_alias(
 
 /// What an alias name means where a type is written (see
 /// [`TypeNames::alias`]).
-pub enum AliasDef<'a> {
+pub(crate) enum AliasDef<'a> {
     /// A type already resolved.
     Resolved(Type),
     /// A non-generic alias's body, read where the alias is declared.
@@ -193,7 +190,7 @@ pub enum AliasDef<'a> {
 
 /// What the names a type is written with mean where it is written: the
 /// table [`resolve_with`] reads them against.
-pub trait TypeNames {
+pub(crate) trait TypeNames {
     /// The type the type parameter `name`, written at `range`, stands for.
     fn param(&self, name: &str, range: &SourceRange) -> Option<Type>;
     /// The alias `name`.
@@ -334,21 +331,28 @@ impl TypeNames for Borrowed<'_> {
 }
 
 /// Resolve a `TypeExpr` to a `Type`. Pushes a diagnostic into `diags` for an
-/// unknown type name (so typecheck can surface WS002); lowering callers pass
-/// a throwaway `&mut Vec::new()` and ignore it — typecheck has already
-/// flagged unresolvable names by the time lowering runs.
-pub fn resolve_type(te: &TypeExpr, cx: &ResolveCtx, diags: &mut Vec<Diagnostic>) -> Type {
+/// unknown type name (so typecheck can surface WS002); a caller that has
+/// already reported unresolvable names passes a throwaway `&mut Vec::new()`.
+pub(crate) fn resolve_type(
+    te: &TypeExpr,
+    cx: &ResolveCtx<'_>,
+    diags: &mut Vec<Diagnostic>,
+) -> Type {
     resolve_with(te, cx, diags)
 }
 
 /// Resolve `te` against `names`, reporting into `diags`.
-pub fn resolve_with(te: &TypeExpr, names: &dyn TypeNames, diags: &mut Vec<Diagnostic>) -> Type {
+pub(crate) fn resolve_with(
+    te: &TypeExpr,
+    names: &dyn TypeNames,
+    diags: &mut Vec<Diagnostic>,
+) -> Type {
     // `in_progress` is a path stack of `(alias_name, resolved_arg_types)`
     // currently being expanded. A body that references its own instantiation
     // (`type Tree<T> = { l: Tree<T>, r: Tree<T> }`) re-enters the same key and
-    // is cut off there — without this, `depth` alone bounds only ONE self-ref
-    // chain, so a doubly-self-referencing alias re-expands each occurrence and
-    // blows up exponentially (2^depth) before the depth cap ever trips.
+    // is cut off there; `depth` alone bounds only one self-ref chain, so a
+    // doubly-self-referencing alias would re-expand each occurrence and blow up
+    // exponentially (2^depth) before the depth cap ever trips.
     let mut in_progress: Vec<(String, Vec<Type>)> = Vec::new();
     resolve_type_at_depth(te, names, diags, 0, &mut in_progress)
 }
@@ -390,12 +394,12 @@ fn resolve_type_at_depth(
             if let Some(prim) = primitive(name) {
                 return prim;
             }
-            // A generic alias used bare (no `<Args>`) is never a valid type —
+            // A generic alias used bare (no `<Args>`) is never a valid type:
             // it isn't fully applied, so there's nothing to substitute `T`
             // with. Caught here (before the plain alias-map fallback) so it
             // gets a targeted message instead of silently resolving through
-            // `cx.type_aliases`' placeholder entry (see `typecheck.rs`'s
-            // registration of a generic alias's scope symbol).
+            // `cx.type_aliases`' placeholder entry for a generic alias's scope
+            // symbol.
             match cx.alias(name) {
                 Some(AliasDef::Generic(..)) => {
                     diags.push(Diagnostic::error(
@@ -498,20 +502,20 @@ fn resolve_type_at_depth(
                     }
                     return Type::Any;
                 }
-                // Resolve each argument in the OUTER ctx (args are the caller's
-                // types, not the alias body's) — this is also the identity we
-                // key cycle-detection on.
+                // Resolve each argument in the outer ctx (args are the caller's
+                // types, not the alias body's); this is also the identity
+                // cycle detection keys on.
                 let resolved_args: Vec<Type> = args
                     .iter()
                     .map(|a| resolve_type_at_depth(a, cx, diags, depth, in_progress))
                     .collect();
                 // Cycle guard: this exact instantiation is already expanding
-                // higher on the path -> self-referential, stop. Handles both a
-                // single self-ref (`L<T> = { tail: L<T> }`) and, crucially, a
+                // higher on the path, so it is self-referential; stop. Handles a
+                // single self-ref (`L<T> = { tail: L<T> }`) and a
                 // doubly-self-referencing body (`Tree<T> = { l: Tree<T>, r:
                 // Tree<T> }`) which a depth counter alone lets blow up
-                // exponentially. The `depth` cap below stays as a backstop for
-                // any pathological non-cyclic nesting.
+                // exponentially. The `depth` cap below is a backstop for any
+                // pathological non-cyclic nesting.
                 if in_progress
                     .iter()
                     .any(|(n, a)| n == name && *a == resolved_args)

@@ -5,7 +5,7 @@ fn loads_real_table_v4() {
     let t = CertifiedTable::certified();
     assert_eq!(t.gate_classes().count(), 95);
     assert_eq!(t.render_laws().len(), 32);
-    // v4: extendedMath / bitwise / rounding chapters.
+    // extendedMath, bitwise and rounding chapters.
     assert!(t.covers("BrickComponentType_Expr_MathSin", &[InVariant::Float]));
     assert!(t.covers(
         "BrickComponentType_Expr_MathClamp",
@@ -20,7 +20,7 @@ fn loads_real_table_v4() {
         "BrickComponentType_Expr_MathAdd",
         &[InVariant::Int, InVariant::Int]
     ));
-    // Probed one direction only — the reverse signature must NOT be covered.
+    // Probed in one direction only, so the reverse signature is not covered.
     assert!(t.covers(
         "BrickComponentType_Expr_CompareEqual",
         &[InVariant::Int, InVariant::Str]
@@ -37,8 +37,7 @@ fn loads_real_table_v4() {
     // Select/Branch signatures are 1-ary (condition only).
     assert!(t.covers("BrickComponentType_Expr_Select", &[InVariant::Str]));
     assert!(t.covers("BrickComponentType_Exec_Branch", &[InVariant::Unwired]));
-    // v3: composite math is a SHARED signature with the scalar chapter —
-    // MathAdd covers both, keyed purely by operand variant.
+    // Composite and scalar math share one gate class, keyed by operand variant.
     assert!(t.covers(
         "BrickComponentType_Expr_MathAdd",
         &[InVariant::Vector, InVariant::Vector]
@@ -47,14 +46,13 @@ fn loads_real_table_v4() {
         "BrickComponentType_Expr_MathAdd",
         &[InVariant::Vector, InVariant::Float]
     ));
-    // v3: composite compare.
+    // Composite compare.
     assert!(t.covers(
         "BrickComponentType_Expr_CompareEqual",
         &[InVariant::Quat, InVariant::Quat]
     ));
-    // v3: FormatText's only recorded signature is the synthetic Tmpl
-    // marker — never producible by a real Value, so never coverable by a
-    // live fold query (see `InVariant::Tmpl`'s doc comment).
+    // FormatText's only recorded signature is the synthetic Tmpl marker,
+    // which no real Value produces.
     assert!(t.covers(
         "BrickComponentType_Expr_String_FormatText",
         &[InVariant::Tmpl]
@@ -149,7 +147,7 @@ fn render_laws_hold_the_certified_calibration_entries() {
             .map(String::as_str),
         Some("X=1.000 Y=2.000 Z=3.000")
     );
-    // rotator/color/quat never render through FormatText — certified blank.
+    // Certified: rotator, color and quat render blank through FormatText.
     assert_eq!(
         t.render_laws()
             .get("rotator:Rotation(0.0,90.0,45.5)")

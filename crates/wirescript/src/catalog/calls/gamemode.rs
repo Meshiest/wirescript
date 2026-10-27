@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Gamemode -------------------------------------------------------
+    // Gamemode
     m.insert(
         "SetLeaderboard",
         controller_exec(
@@ -81,7 +81,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Gamemode (additional) -------------------------------------------
+    // Gamemode (additional)
     // A round ends by declaring a winner via PlayerWins / TeamWins.
     m.insert(
         "PlayerWins",
@@ -131,7 +131,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Gamemode teams (additional) -------------------------------------
+    // Gamemode teams (additional)
     m.insert(
         "SetTeam",
         controller_exec(

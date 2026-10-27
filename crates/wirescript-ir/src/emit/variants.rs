@@ -1,22 +1,28 @@
 //! IR `Literal`/`Type` to brdb `WireValue` conversion, plus the dynamic
 //! array/map containers that `ArrayVar`/`MapVar` store.
-
-use super::*;
+#![cfg_attr(
+    not(feature = "test-internals"),
+    expect(unreachable_pub, reason = "public only for the test-internals export")
+)]
 
 use brdb::schema::as_brdb::{BrdbArrayIter, BrdbMapIter};
+use brdb::schema::{BrdbInterned, BrdbSchema, SavedBrickRef, SavedComponentRef};
+use brdb::{AsBrdbValue, BrdbSchemaError, schema::WireValue};
 
-/// Gates whose wire-value inputs were numeric-only in the previous save
-/// format: the `Expr_Math*` family, the ordered compares, `NearlyEqual` and
-/// `Exec_Random`. A constant `bool` baked into one of their inputs is written
-/// as an int, the form these gates have always been given.
+use crate::intern::resolve;
+use crate::ir::{Literal, Type, gate_class as gc};
+
+/// Gates with numeric wire-value inputs: the `Expr_Math*` family, the ordered
+/// compares, `NearlyEqual` and `Exec_Random`. A constant `bool` baked into one
+/// of their inputs is written as an int.
 pub(super) fn bool_input_bakes_as_int(gate_class: &str) -> bool {
-    gate_class.starts_with("BrickComponentType_Expr_Math")
+    gate_class.starts_with(gc::EXPR_MATH_PREFIX)
         || matches!(
             gate_class,
-            "BrickComponentType_Expr_CompareGreater"
-                | "BrickComponentType_Expr_CompareGreaterOrEqual"
-                | "BrickComponentType_Expr_CompareLess"
-                | "BrickComponentType_Expr_CompareLessOrEqual"
+            gc::COMPARE_GREATER
+                | gc::COMPARE_GREATER_OR_EQUAL
+                | gc::COMPARE_LESS
+                | gc::COMPARE_LESS_OR_EQUAL
                 | gc::NEARLY_EQUAL
                 | gc::RANDOM
         )
@@ -25,30 +31,29 @@ pub(super) fn bool_input_bakes_as_int(gate_class: &str) -> bool {
 /// Bool -> Int, for [`bool_input_bakes_as_int`] gates.
 pub(super) fn coerce_bool_to_int(wv: WireValue) -> WireValue {
     match wv {
-        WireValue::Bool(b) => WireValue::Int(if b { 1 } else { 0 }),
+        WireValue::Bool(b) => WireValue::Int(i64::from(b)),
         other => other,
     }
 }
 
 /// The game's own unset brick ref, as it writes into an unwired ref field:
 /// brick index `u32::MAX` in chunk (0, 0, 0) of grid 0.
-pub(super) fn null_brick_ref() -> brdb::schema::SavedBrickRef {
-    brdb::schema::SavedBrickRef {
+pub(super) fn null_brick_ref() -> SavedBrickRef {
+    SavedBrickRef {
         brick_index_in_chunk: u32::MAX,
         ..Default::default()
     }
 }
 
 /// The game's own unset component ref: the null brick, component type 0.
-pub(super) fn null_component_ref() -> brdb::schema::SavedComponentRef {
-    brdb::schema::SavedComponentRef {
+pub(super) fn null_component_ref() -> SavedComponentRef {
+    SavedComponentRef {
         brick: null_brick_ref(),
         component_type_index: 0,
     }
 }
 
-pub(super) fn var_type_to_wire_value(ty: Option<&crate::ir::Type>) -> WireValue {
-    use crate::ir::Type;
+pub(super) fn var_type_to_wire_value(ty: Option<&Type>) -> WireValue {
     debug_assert!(
         !matches!(ty, Some(Type::Param(_))),
         "Type::Param reached emit: monomorphization must substitute it first"
@@ -80,9 +85,8 @@ pub(super) fn var_type_to_wire_value(ty: Option<&crate::ir::Type>) -> WireValue 
             b: 1.0,
             a: 1.0,
         },
-        // A var ref, and an array or map ref (a `VarRef` of an ArrayVar /
-        // MapVar), is a component ref, as is a `Component<X>` from Get/Add
-        // Component; unset, it is the game's null one.
+        // A var ref, an array or map ref (a `VarRef` of an ArrayVar / MapVar) and a
+        // `Component<X>` from Get/Add Component are component refs; unset, it is the game's null one.
         Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _) | Type::Component(_)) => {
             WireValue::ComponentRef(null_component_ref())
         }
@@ -94,8 +98,7 @@ pub(super) fn var_type_to_wire_value(ty: Option<&crate::ir::Type>) -> WireValue 
 /// The schema `types` entry a dynamic array/map stores values of `ty` as.
 /// Unknown and float types store as `f64`, the game's own default for a new
 /// array or map variable.
-pub(super) fn dynamic_type_name(ty: Option<&crate::ir::Type>) -> &'static str {
-    use crate::ir::Type;
+pub(super) fn dynamic_type_name(ty: Option<&Type>) -> &'static str {
     match ty {
         Some(Type::Int) => "i64",
         Some(Type::Bool) => "Bool",
@@ -105,15 +108,13 @@ pub(super) fn dynamic_type_name(ty: Option<&crate::ir::Type>) -> &'static str {
         Some(Type::Quat) => "Quat",
         Some(Type::Color) => "LinearColor",
         Some(Type::Controller | Type::Character | Type::Entity) => "weak_object",
-        // Handle storage is kind-strict in game: a component_handle container
-        // keeps var, array and map refs and components; a brick_handle one
-        // keeps bricks.
+        // Handle storage is kind-strict in game: a component_handle container keeps var,
+        // array and map refs and components; a brick_handle one keeps bricks.
         Some(Type::Ref(_) | Type::Array(_) | Type::Map(_, _) | Type::Component(_)) => {
             "component_handle"
         }
         Some(Type::Brick) => "brick_handle",
-        // `any`: each element a `WireValue`, keeping its own kind (the game's
-        // Any Value).
+        // `any`: each element a `WireValue` keeping its own kind (the game's Any Value).
         Some(Type::Opaque) => "WireValue",
         _ => "f64",
     }
@@ -128,7 +129,7 @@ pub(super) struct DynArray {
 }
 
 impl AsBrdbValue for DynArray {
-    fn as_brdb_dynamic_array(&self) -> Result<(&str, BrdbArrayIter<'_>), brdb::BrdbSchemaError> {
+    fn as_brdb_dynamic_array(&self) -> Result<(&str, BrdbArrayIter<'_>), BrdbSchemaError> {
         Ok((
             self.element_type,
             Box::new(self.values.iter().map(|v| v as &dyn AsBrdbValue)),
@@ -146,7 +147,7 @@ pub(super) struct DynMap {
 }
 
 impl AsBrdbValue for DynMap {
-    fn as_brdb_dynamic_map(&self) -> Result<(&str, &str, BrdbMapIter<'_>), brdb::BrdbSchemaError> {
+    fn as_brdb_dynamic_map(&self) -> Result<(&str, &str, BrdbMapIter<'_>), BrdbSchemaError> {
         Ok((
             self.key_type,
             self.value_type,
@@ -169,10 +170,10 @@ pub fn wire_value_as(ty: &str, lit: &Literal) -> WireValue {
         ("WireValue", _) => literal_to_wire_value(lit).unwrap_or(WireValue::Number(0.0)),
         ("i64", Literal::Int(n)) => WireValue::Int(*n),
         ("i64", Literal::Float(f)) => WireValue::Int(*f as i64),
-        ("i64", Literal::Bool(b)) => WireValue::Int(*b as i64),
+        ("i64", Literal::Bool(b)) => WireValue::Int(i64::from(*b)),
         ("f64", Literal::Float(f)) => WireValue::Number(*f),
         ("f64", Literal::Int(n)) => WireValue::Number(*n as f64),
-        ("f64", Literal::Bool(b)) => WireValue::Number(*b as i64 as f64),
+        ("f64", Literal::Bool(b)) => WireValue::Number(i64::from(*b) as f64),
         ("Bool", Literal::Bool(b)) => WireValue::Bool(*b),
         ("Bool", Literal::Int(n)) => WireValue::Bool(*n != 0),
         ("Bool", Literal::Float(f)) => WireValue::Bool(*f != 0.0),
@@ -218,8 +219,7 @@ pub fn wire_value_as(ty: &str, lit: &Literal) -> WireValue {
 
 /// Unwrap a `ref array<T>` (or bare `array<T>`) port type down to its element
 /// type `T`.
-pub(super) fn array_element_type(ty: &crate::ir::Type) -> Option<&crate::ir::Type> {
-    use crate::ir::Type;
+pub(super) fn array_element_type(ty: &Type) -> Option<&Type> {
     let inner = match ty {
         Type::Ref(inner) => inner.as_ref(),
         other => other,
@@ -235,8 +235,7 @@ pub(super) fn array_element_type(ty: &crate::ir::Type) -> Option<&crate::ir::Typ
 /// int/string/object (a bool key stores as an int); values cover the
 /// wire-storable scalars. Defaults to `int -> float` for an unknown or
 /// degenerate type.
-pub(super) fn map_from_type(ty: &crate::ir::Type) -> DynMap {
-    use crate::ir::Type;
+pub(super) fn map_from_type(ty: &Type) -> DynMap {
     let inner = match ty {
         Type::Ref(inner) => inner.as_ref(),
         other => other,
@@ -262,7 +261,7 @@ pub(super) fn map_from_type(ty: &crate::ir::Type) -> DynMap {
 
 /// `map` populated from a map's constant entries, each literal read in the
 /// map's key/value type.
-pub(super) fn map_from_literals(map: DynMap, entries: &[(Literal, Literal)]) -> DynMap {
+pub(super) fn map_from_literals(map: &DynMap, entries: &[(Literal, Literal)]) -> DynMap {
     let entries = entries
         .iter()
         .map(|(k, v)| {
@@ -272,13 +271,13 @@ pub(super) fn map_from_literals(map: DynMap, entries: &[(Literal, Literal)]) -> 
             )
         })
         .collect();
-    DynMap { entries, ..map }
+    DynMap { entries, ..*map }
 }
 
 /// The `dynamic_array` an `ArrayVar` brick serializes, typed by the array's
 /// element type and holding its constant initial elements (none for an array
 /// that starts empty). Object references start null: a save cannot hold one.
-pub(super) fn array_from_literals(elem: Option<&crate::ir::Type>, lits: &[Literal]) -> DynArray {
+pub(super) fn array_from_literals(elem: Option<&Type>, lits: &[Literal]) -> DynArray {
     let element_type = dynamic_type_name(elem);
     DynArray {
         element_type,
@@ -310,11 +309,9 @@ pub(super) fn literal_to_wire_value_or_default(
 
 /// Convert a Literal to its native string representation (str/i32/f64/bool as text).
 ///
-/// `None` for a literal with no native-string representation — a `const`
-/// record, which typecheck's validators are supposed to keep out of a
-/// `FieldKind::Str` field entirely (see the caller in `components.rs`, which
-/// turns a `None` here into `EmitError::UnrepresentableLiteral` instead of
-/// panicking).
+/// `None` for a `const` record, which has no native-string form; typecheck keeps records out
+/// of `FieldKind::Str` fields, and the caller in `components.rs` reports
+/// `EmitError::UnrepresentableLiteral` on a `None`.
 pub(super) fn literal_to_string(lit: &Literal) -> Option<String> {
     match lit {
         Literal::String(s) => Some(s.clone()),
@@ -326,8 +323,8 @@ pub(super) fn literal_to_string(lit: &Literal) -> Option<String> {
     }
 }
 
-/// `None` for a literal with no native `AsBrdbValue` representation — same
-/// `Literal::Record` case and the same reasoning as [`literal_to_string`].
+/// `None` for a literal with no native `AsBrdbValue` form (`Literal::Record`), as in
+/// [`literal_to_string`].
 pub(super) fn literal_to_boxed_native(lit: &Literal) -> Option<Box<dyn AsBrdbValue>> {
     match lit {
         Literal::String(s) => Some(Box::new(s.clone())),
@@ -355,9 +352,9 @@ pub(super) fn literal_to_boxed_native(lit: &Literal) -> Option<Box<dyn AsBrdbVal
     }
 }
 
-// Folded literals embedded into native f64 struct fields (the schema's
-// `Vector`/`Rotator`/`Quat` structs) — brdb's Vector3f/Quat4f are f32, so
-// these mirror its AsBrdbValue impl at full precision.
+// Folded literals embedded into native f64 struct fields (the schema's `Vector`/`Rotator`/
+// `Quat` structs). brdb's Vector3f/Quat4f are f32, so these mirror its AsBrdbValue impl at
+// full precision.
 struct VectorValue {
     x: f64,
     y: f64,
@@ -367,15 +364,15 @@ struct VectorValue {
 impl AsBrdbValue for VectorValue {
     fn as_brdb_struct_prop_value(
         &self,
-        schema: &brdb::schema::BrdbSchema,
-        _struct_name: brdb::schema::BrdbInterned,
-        prop_name: brdb::schema::BrdbInterned,
-    ) -> Result<&dyn AsBrdbValue, brdb::BrdbSchemaError> {
+        schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
+        prop_name: BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, BrdbSchemaError> {
         match prop_name.get(schema).unwrap() {
             "X" => Ok(&self.x),
             "Y" => Ok(&self.y),
             "Z" => Ok(&self.z),
-            n => Err(brdb::BrdbSchemaError::MissingStructField(
+            n => Err(BrdbSchemaError::MissingStructField(
                 "Vector".into(),
                 n.into(),
             )),
@@ -383,16 +380,12 @@ impl AsBrdbValue for VectorValue {
     }
 }
 
-/// Unreal's `FRotator::Quaternion()`: the euler (Pitch/Yaw/Roll, degrees) to
-/// quaternion conversion the engine applies itself when a rotation reaches a
-/// quaternion sink. Pitch turns about Y, Yaw about Z, Roll about X, and the
-/// sign pattern is UE's own, not the textbook one; angles are unwound to a
-/// single turn first, as `FRotator::Quaternion` does.
-///
-/// Cross-checked against the certified rotation cases in
-/// `data/gate_semantics.json`: a pure +45 degree yaw gives
-/// `Quat(0, 0, 0.38268, 0.92388)`, the exact quaternion `RotateVector`'s
-/// probe was run with (see `lower/fold/eval.rs::rotate_vector`).
+/// Unreal's `FRotator::Quaternion()`: the euler (Pitch/Yaw/Roll, degrees) to quaternion
+/// conversion the engine applies itself when a rotation reaches a quaternion sink. Pitch
+/// turns about Y, Yaw about Z, Roll about X, with UE's own sign pattern rather than the
+/// textbook one; angles are unwound to a single turn first. A pure +45 degree yaw gives
+/// `Quat(0, 0, 0.38268, 0.92388)`, matching the certified rotation cases in
+/// `data/gate_semantics.json`.
 pub(super) fn rotator_to_quat(pitch: f64, yaw: f64, roll: f64) -> (f64, f64, f64, f64) {
     let half = |deg: f64| (deg % 360.0).to_radians() / 2.0;
     let (sp, cp) = half(pitch).sin_cos();
@@ -406,19 +399,16 @@ pub(super) fn rotator_to_quat(pitch: f64, yaw: f64, roll: f64) -> (f64, f64, f64
     )
 }
 
-/// Reshape a constant so it can be BAKED into a native `struct_ty`
-/// (`Vector`/`Rotator`/`Quat`) field, whose properties are written one by one
-/// and therefore admit exactly one representation. `None` when the literal
-/// already fits, or when no conversion applies — the caller keeps the literal
-/// as-is, and `port_accepts_inline_variant` has already refused to bake the
-/// shapes that would not serialize.
+/// Reshape a constant so it can be baked into a native `struct_ty` (`Vector`/`Rotator`/
+/// `Quat`) field, whose properties are written one by one and so admit exactly one
+/// representation. `None` when the literal already fits or no conversion applies; the
+/// caller keeps it as-is, and `port_accepts_inline_variant` has already refused shapes that
+/// would not serialize.
 ///
-/// Only euler -> quaternion is converted, because only it is reachable: a
-/// `Rotation(p, y, r)` constant folds to a `Literal::Rotator` and flows into
-/// quaternion sinks such as `RotateVector.Rotation`. The reverse never occurs
-/// (no constructor folds to a `Literal::Quat` on its own), so a `Quat`
-/// constant bound for a `Rotator` field keeps its `MakeQuaternion` carrier
-/// and lets the game convert, rather than carrying unexercised code here.
+/// Only euler -> quaternion is converted: a `Rotation(p, y, r)` constant folds to a
+/// `Literal::Rotator` and flows into quaternion sinks such as `RotateVector.Rotation`. A
+/// `Quat` constant bound for a `Rotator` field keeps its `MakeQuaternion` carrier gate and
+/// the game converts.
 pub(super) fn reshape_literal_for_struct(struct_ty: &str, lit: &Literal) -> Option<Literal> {
     match (struct_ty, lit) {
         ("Quat", Literal::Rotator { pitch, yaw, roll }) => {
@@ -438,15 +428,15 @@ struct RotatorValue {
 impl AsBrdbValue for RotatorValue {
     fn as_brdb_struct_prop_value(
         &self,
-        schema: &brdb::schema::BrdbSchema,
-        _struct_name: brdb::schema::BrdbInterned,
-        prop_name: brdb::schema::BrdbInterned,
-    ) -> Result<&dyn AsBrdbValue, brdb::BrdbSchemaError> {
+        schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
+        prop_name: BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, BrdbSchemaError> {
         match prop_name.get(schema).unwrap() {
             "Pitch" => Ok(&self.pitch),
             "Yaw" => Ok(&self.yaw),
             "Roll" => Ok(&self.roll),
-            n => Err(brdb::BrdbSchemaError::MissingStructField(
+            n => Err(BrdbSchemaError::MissingStructField(
                 "Rotator".into(),
                 n.into(),
             )),
@@ -464,19 +454,16 @@ struct QuatValue {
 impl AsBrdbValue for QuatValue {
     fn as_brdb_struct_prop_value(
         &self,
-        schema: &brdb::schema::BrdbSchema,
-        _struct_name: brdb::schema::BrdbInterned,
-        prop_name: brdb::schema::BrdbInterned,
-    ) -> Result<&dyn AsBrdbValue, brdb::BrdbSchemaError> {
+        schema: &BrdbSchema,
+        _struct_name: BrdbInterned,
+        prop_name: BrdbInterned,
+    ) -> Result<&dyn AsBrdbValue, BrdbSchemaError> {
         match prop_name.get(schema).unwrap() {
             "X" => Ok(&self.x),
             "Y" => Ok(&self.y),
             "Z" => Ok(&self.z),
             "W" => Ok(&self.w),
-            n => Err(brdb::BrdbSchemaError::MissingStructField(
-                "Quat".into(),
-                n.into(),
-            )),
+            n => Err(BrdbSchemaError::MissingStructField("Quat".into(), n.into())),
         }
     }
 }
@@ -510,21 +497,15 @@ pub(super) fn literal_to_wire_value(lit: &Literal) -> Option<WireValue> {
             b: *b as f32,
             a: *a as f32,
         }),
-        // sRGB byte color (brick paint) -> linear-ish 0–1. Only reached if a
-        // paint literal ends up on a wire-value port.
+        // sRGB byte color (brick paint) to linear-ish 0 to 1; only reached if a paint literal
+        // lands on a wire-value port.
         Literal::Color { r, g, b, a } => Some(WireValue::LinearColor {
-            r: *r as f32 / 255.0,
-            g: *g as f32 / 255.0,
-            b: *b as f32 / 255.0,
-            a: *a as f32 / 255.0,
+            r: f32::from(*r) / 255.0,
+            g: f32::from(*g) / 255.0,
+            b: f32::from(*b) / 255.0,
+            a: f32::from(*a) / 255.0,
         }),
-        // No wire-value form. `Record` belongs here with its siblings:
-        // this function's contract IS "None when there is no wire
-        // representation", so panicking for one such variant would
-        // contradict what every caller is told to expect. The `unreachable!`s
-        // live only in the two converters below, whose contract really is
-        // "this always yields a value" and which therefore have no honest way
-        // to decline.
+        // No wire-value form; callers fall back to the port type's default.
         Literal::Array(_)
         | Literal::Map(_)
         | Literal::Record(_)

@@ -1,8 +1,8 @@
-//! wirescript — a logic-brick scripting language that compiles to Brickadia
+//! wirescript: a logic-brick scripting language that compiles to Brickadia
 //! `.brz` world files.
 
 pub mod analysis;
-pub mod analyze;
+pub(crate) mod analyze;
 pub mod ast;
 pub mod catalog;
 pub mod compile;
@@ -14,22 +14,23 @@ mod emit_tests;
 pub(crate) mod hash;
 #[cfg(test)]
 mod layout_tests;
-pub mod lexer;
-pub mod lower;
+pub(crate) mod lexer;
+pub(crate) mod lower;
 pub mod parser;
 pub mod resolve;
 pub(crate) mod scope;
 pub(crate) mod template;
-pub mod template_cache;
+pub(crate) mod template_cache;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod typecheck;
+pub(crate) mod typecheck;
 pub(crate) mod types;
 
 // The backend: IR, layout and emit, re-exported at their old paths.
 // `layout` brings the module and the `layout` function together.
 pub use wirescript_ir::{collections, emit, intern, ir, layout, wsir};
 
+pub use analyze::analyze_cycles;
 pub use compile::{
     CompileError, CompileInput, CompileProgress, CompileResult, CompileWorldResult, FoldMode,
     FrontEnd, FrontEndStage, ProgressCallback, assemble_options, compile, compile_to_world,
@@ -49,9 +50,16 @@ pub use ir::{
     Type, Wire,
 };
 pub use layout::{LayoutMode, LayoutOptions, LayoutResult, layout_with_opts};
-pub use lexer::{LexResult, Token, TokenKind, lex};
+pub use lexer::{KEYWORDS, LexResult, Token, TokenKind, TokenValue, lex};
+/// The certified fold evaluator, for the fuzzer example.
+#[doc(hidden)]
+pub use lower::fold::eval as fold_eval;
+pub use lower::{LowerInput, LowerResult, lower};
 pub use parser::{ParseResult, parse};
 pub use resolve::{FsLoader, MemLoader, ResolveResult, resolve};
+pub use template_cache::TemplateCache;
+pub use typecheck::enums::EnumRegistry;
+pub use typecheck::{CeSlotMap, TypeCheckResult, typecheck, typecheck_with_inference};
 
 #[cfg(test)]
 mod grammar_tests;

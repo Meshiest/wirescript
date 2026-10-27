@@ -1,22 +1,18 @@
-//! Shared full-AST visitor used by both the WS030 custom-event type check
+//! The full-AST visitor shared by the WS030 custom-event check
 //! (`typecheck::check_custom_event_types`) and custom-event go-to-definition
-//! (`analysis::definition::custom_event_send_definition`). Both passes need
-//! the same two things out of a walk over the whole program: every `Handler`
-//! (to find `on CustomEvent(...)` receivers) and every `Expr` that is a call
-//! (to find `SendCustomEvent(...)` sends). The walk itself is the canonical
-//! traversal in `ast::walk`, so it reaches every position the AST has: loop
+//! (`analysis::definition::custom_event_send_definition`), which need every
+//! `Handler` (for `on CustomEvent(...)` receivers) and every call (for
+//! `SendCustomEvent(...)` sends). It runs on `ast::walk`, so it reaches loop
 //! bodies, `match` arms, block expressions, handler config and labels.
 
 use crate::ast::walk::{self, Node};
 use crate::ast::*;
 
-/// Walk every `Handler` and every `Expr` (including call expressions) in the
-/// program. `on_handler` fires for each handler (top-level, in chips/anon-chips,
-/// in namespaces, in nested blocks, AND in a captured-event body); `on_call`
-/// fires for each call, record literal, `match`, variant construction and
-/// embedded prefab so callers can match the ones they care about (e.g.
-/// `SendCustomEvent(...)` calls). Lifetimes tie the visited refs to the script
-/// so callers may collect `&'a Handler` / `&'a Expr`.
+/// Walk every `Handler` and every `Expr` in the program. `on_handler` fires for
+/// each handler (top-level, in chips, anonymous chips, namespaces, nested
+/// blocks and captured-event bodies); `on_call` for each call, record literal,
+/// `match`, variant construction and embedded prefab, for callers to filter.
+/// The visited references live as long as the script, so callers can keep them.
 pub fn visit_program<'a>(
     script: &'a Script,
     on_handler: &mut dyn FnMut(&'a Handler),
@@ -36,12 +32,11 @@ fn visit<'a>(
         Node::Decl(TopDecl::Event(EventDecl {
             captured: Some(h), ..
         })) => on_handler(h),
-        // The `match` and variant-construction nodes fire too: the "fill
-        // missing match arms" code action locates the enclosing `match` at a
-        // cursor through this, and hover / go-to-definition on a named payload
-        // field's key inspect a construction's `fields`. Embedded prefab
-        // leaves fire so a caller can count every `$./file` reference and
-        // `$```…``` ` block. Callers filter for the kinds they want.
+        // `match` and variant-construction nodes fire too: the "fill missing match
+        // arms" action finds the enclosing `match` through this, and hover and
+        // go-to-definition on a payload field key read a construction's `fields`.
+        // Embedded prefabs fire so a caller can count every `$./file` reference and
+        // `$```...``` ` block.
         Node::Expr(
             e @ (Expr::Call { .. }
             | Expr::RecordLit { .. }

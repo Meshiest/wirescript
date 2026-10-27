@@ -1,7 +1,7 @@
 use super::*;
 use crate::typecheck::{CeNamespace, ce_slot_key};
 
-pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
+pub(super) fn lower_event_decl(ctx: &mut LowerCtx<'_>, d: &EventDecl) {
     // A captured body runs as the `on` handler of its trigger, config and
     // output captures included, and its exit is the event. An alias has no
     // body: each `on` of it is that trigger, written there.
@@ -19,9 +19,9 @@ pub(super) fn lower_event_decl(ctx: &mut LowerCtx, d: &EventDecl) {
     }
 }
 
-/// `on !x`: route the trigger through a LogicalNOT so the handler fires when
+/// `on !x`: route the trigger through a `LogicalNOT` so the handler fires when
 /// the source goes false. The identity when the trigger was not negated.
-fn negate_trigger(ctx: &mut LowerCtx, port: PortRef, negated: bool) -> PortRef {
+fn negate_trigger(ctx: &mut LowerCtx<'_>, port: PortRef, negated: bool) -> PortRef {
     if !negated {
         return port;
     }
@@ -36,20 +36,16 @@ fn negate_trigger(ctx: &mut LowerCtx, port: PortRef, negated: bool) -> PortRef {
 
 /// How a handler's trigger reads in the emitted scope label: `name`, or
 /// `name.field` for a field trigger.
-fn trigger_label(name: &str, field: &Option<String>) -> String {
+fn trigger_label(name: &str, field: Option<&str>) -> String {
     match field {
         Some(f) => format!("{name}.{f}"),
         None => name.to_string(),
     }
 }
 
-/// The slice of [`LowerCtx`] a handler body is allowed to clobber, taken once
-/// at the top of [`lower_handler`]. EVERY exit from that function has to put it
-/// back, including the ones that give up without lowering anything:
-/// `handler_ends` holds the exit exec of every PRECEDING handler, and a path
-/// that drops it leaves the next top-level statement with no chain to attach
-/// to, so the statement is silently deleted and blamed with a WS058 on the
-/// user's line.
+/// The slice of [`LowerCtx`] a handler body may clobber, taken at the top of
+/// [`lower_handler`]. Every exit must restore it: `handler_ends` holds the exits
+/// of the preceding handlers, and dropping it deletes the next statement (WS058).
 struct HandlerSave {
     chain: Option<u32>,
     handler_ends: Vec<PortRef>,
@@ -58,7 +54,7 @@ struct HandlerSave {
 impl HandlerSave {
     /// Take the state, and open a fresh chain for the handler about to be
     /// lowered.
-    fn take(ctx: &mut LowerCtx) -> Self {
+    fn take(ctx: &mut LowerCtx<'_>) -> Self {
         let chain = ctx.builder.current_chain_id;
         let fresh = ctx.alloc_chain();
         ctx.builder.current_chain_id = Some(fresh);
@@ -71,7 +67,7 @@ impl HandlerSave {
     }
 
     /// Give up on the handler without lowering its body.
-    fn abandon(self, ctx: &mut LowerCtx) {
+    fn abandon(self, ctx: &mut LowerCtx<'_>) {
         ctx.builder.current_chain_id = self.chain;
         ctx.handler_end_execs = self.handler_ends;
     }
@@ -80,11 +76,11 @@ impl HandlerSave {
     /// this handler's own exit exec to whatever the enclosing block chains next.
     fn lower_body<R>(
         self,
-        ctx: &mut LowerCtx,
+        ctx: &mut LowerCtx<'_>,
         h: &Handler,
         trig: PortRef,
         trigger_label: String,
-        body: impl FnOnce(&mut LowerCtx) -> R,
+        body: impl FnOnce(&mut LowerCtx<'_>) -> R,
     ) {
         let saved = (ctx.current_exec, ctx.handler_entry_exec);
         let saved_closed = std::mem::take(&mut ctx.exec_closed_by_buffer_emit);
@@ -111,311 +107,219 @@ impl HandlerSave {
     }
 }
 
-pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
-    // Union trigger `on a | b { ... }`: run the body when ANY part fires. Lower
-    // the body once per part (each part reuses the full single-trigger
-    // resolution below), so it works for every trigger kind. Without this the
-    // whole handler fell into the `_ => return` below and was silently dropped.
-    if let Trigger::Union { parts, .. } = &h.trigger {
-        for part in parts {
-            let mut single = h.clone();
-            single.trigger = part.clone();
-            lower_handler(ctx, &single);
-        }
-        return;
-    }
-    // Unwrap negated triggers: `on !foo { ... }` -> lower `foo`, negate
-    // Also handle `on var.value { ... }` field triggers.
-    let (trigger_name, trigger_field, negated) = match &h.trigger {
-        Trigger::Ident { name, .. } => (name.clone(), None, false),
-        Trigger::Field { obj, field, .. } => (obj.clone(), Some(field.clone()), false),
-        Trigger::Not { inner, .. } => match inner.as_ref() {
-            Trigger::Ident { name, .. } => (name.clone(), None, true),
-            Trigger::Field { obj, field, .. } => (obj.clone(), Some(field.clone()), true),
-            _ => return,
-        },
-        _ => return,
+/// What a handler's trigger resolved to before any event gate is built.
+enum SimpleTrigger {
+    /// The body fires on `port`, shown as `label` in the scope.
+    Fires { port: PortRef, label: String },
+    /// The trigger names something that cannot fire; the handler is dropped.
+    Unfireable,
+    /// Not a port-backed trigger: the name is a built-in event or nothing.
+    NotSimple,
+}
+
+/// How an `on <call>` trigger resolved.
+enum CallTrigger {
+    /// Not the exec form of a call trigger.
+    NotCall,
+    /// The call exposes no exec output to fire on.
+    NoExec,
+    /// Fires on `trig`; `fields` is the call's result record and `data_fields`
+    /// the names of its non-exec fields, in order.
+    Exec {
+        trig: PortRef,
+        fields: Fields,
+        data_fields: Vec<String>,
+    },
+}
+
+/// Resolve a call trigger `on <call> [-> <pattern>] { ... }`, which the parser
+/// desugars into a synthetic `_on_expr_N` trigger plus `let _on_expr_N = <call>`.
+/// It fires on the call's one `Type::Exec` result field.
+///
+/// A call with no bindable exec output (an inline `mod` exposes none) is
+/// `NoExec`: falling through to the value-change branch would wire a value
+/// output as the exec trigger. Value-change forms (`on ServerUptime()`) are
+/// `NotCall`.
+fn resolve_call_trigger(
+    ctx: &mut LowerCtx<'_>,
+    h: &Handler,
+    trigger_name: &str,
+    field: Option<&str>,
+    negated: bool,
+) -> CallTrigger {
+    let Trigger::Ident {
+        name,
+        range: trig_range,
+    } = &h.trigger
+    else {
+        return CallTrigger::NotCall;
     };
+    if field.is_some() || negated || !name.starts_with("_on_expr_") {
+        return CallTrigger::NotCall;
+    }
+    // The exec form applies when `_on_expr_N` is a `Binding::Record`, has
+    // `-> <pattern>` params, or passed `exec = <x>`; otherwise the value-change
+    // branch takes it. The result type cannot decide this, since a
+    // `.field` trigger's range can carry a nested expr's record type.
+    let is_record_binding = matches!(ctx.scope.get(trigger_name), Some(Binding::Record(_)));
+    if !(is_record_binding || !h.params.is_empty() || h.expr_trigger_has_exec_arg) {
+        return CallTrigger::NotCall;
+    }
+    // The call's typechecked result shape + its structural exec field
+    // name (typecheck records the record type at the call's own range;
+    // reliable here because a record-binding trigger is a plain call
+    // expr, not a `.field` access whose key can overlap a nested expr).
+    let Some(Type::Record(shape)) = ctx.type_at(trig_range) else {
+        return CallTrigger::NoExec;
+    };
+    let Some(exec_name) = shape
+        .iter()
+        .find(|(_, t)| matches!(t, Type::Exec))
+        .map(|(n, _)| n.clone())
+    else {
+        return CallTrigger::NoExec;
+    };
+    let Some(Binding::Record(fields)) = ctx.scope.get(trigger_name).cloned() else {
+        return CallTrigger::NoExec;
+    };
+    let Some(exec_binding) = fields.get(&intern(&exec_name)).cloned() else {
+        return CallTrigger::NoExec;
+    };
+    let Some(trig) = binding_to_port(ctx, &exec_binding, &h.range) else {
+        return CallTrigger::NoExec;
+    };
+    let data_fields = shape
+        .iter()
+        .filter(|(n, _)| n != &exec_name)
+        .map(|(n, _)| n.clone())
+        .collect();
+    CallTrigger::Exec {
+        trig,
+        fields,
+        data_fields,
+    }
+}
 
-    let save = HandlerSave::take(ctx);
+/// Resolve a trigger that names a port already in scope: a record or namespace
+/// member, a `var.value` field, a captured event, an `in` port, a buffer, a
+/// local, a `var`, or an event data param. A `!` adds a NOT where the trigger
+/// is a value that can go false.
+fn resolve_simple_trigger(
+    ctx: &mut LowerCtx<'_>,
+    h: &Handler,
+    trigger_name: &str,
+    trigger_field: Option<&str>,
+    negated: bool,
+) -> SimpleTrigger {
+    let fires = |port: PortRef, label: String| SimpleTrigger::Fires { port, label };
+    let field_label = |field: &str| format!("{trigger_name}.{field}");
 
-    // Try: record-binding field trigger - chip-call results (`on r.exec`,
+    // Record-binding field trigger: chip-call results (`on r.exec`,
     // `on r.someExecOutput`) resolve through the result record.
-    if let Some(ref field) = trigger_field {
-        let rec_binding = match ctx.scope.get(&trigger_name) {
-            Some(Binding::Record(fields_map)) => {
-                fields_map.get(&crate::intern::intern(field)).cloned()
-            }
+    if let Some(field) = trigger_field {
+        let rec_binding = match ctx.scope.get(trigger_name) {
+            Some(Binding::Record(fields_map)) => fields_map.get(&intern(field)).cloned(),
             // `on ns.trigger` where `ns` came from `import * as ns`: resolve the
             // member through that namespace. An imported `in` port binds as
-            // `Binding::Input`, which `binding_to_port` turns into its
-            // `RerOutput` exactly like a local input. Without this the trigger
-            // matched nothing and the ENTIRE handler was dropped, with no
-            // diagnostic from either stage.
+            // `Binding::Input`, which `binding_to_port` turns into its `RerOutput`.
             Some(Binding::Namespace(members)) => members.get(field).cloned(),
             _ => None,
         };
-        if let Some(binding) = rec_binding {
-            if let Some(trig) = crate::lower::access::binding_to_port(ctx, &binding, &h.range) {
-                save.lower_body(ctx, h, trig, format!("{}.{}", trigger_name, field), |ctx| {
-                    lower_block(ctx, &h.body)
-                });
-                return;
-            }
+        if let Some(binding) = rec_binding
+            && let Some(trig) = binding_to_port(ctx, &binding, &h.range)
+        {
+            return fires(trig, field_label(field));
         }
     }
 
-    // Try: general expression/call trigger - `on <expr> [-> <pattern>]
-    // { ... }` where `<expr>` is a mod/chip call, desugared by the parser into a
-    // synthetic `_on_expr_N` trigger + a queued `let _on_expr_N = <expr>`. `on`
-    // triggers on the call's own exec OUTPUT (a structural `Type::Exec` field in
-    // its typechecked result record - there is exactly one; see the design doc's
-    // REVISION section), NOT on a value edge, and `-> <pattern>` binds the
-    // record's remaining (data) fields (tuple = positional over the non-exec
-    // fields in declared order, `source_field: None`; record = by name,
-    // `source_field: Some(original_field_name)`).
-    //
-    // This form REQUIRES a materializable exec trigger. A call that exposes NO
-    // bindable exec output - notably an INLINE `mod` (whose completion exec is
-    // not yet surfaced as a record field - a separate lowering gap) - is a HARD
-    // ERROR (WS043), NEVER a silent fall-through to the value-changed-local
-    // branch below (which would miswire the call's value output as an exec
-    // trigger and orphan the real `exec = ...`, or drop the whole handler).
-    // The value-change form (`on ServerUptime() { }`, `on a.Dot(b) > 0 { }`) is
-    // preserved: it produces neither an exec-typed result field NOR `-> ` params,
-    // so it skips this block entirely and falls through to the local branch.
-    if trigger_field.is_none()
-        && !negated
-        && matches!(&h.trigger, Trigger::Ident { name, .. } if name.starts_with("_on_expr_"))
+    // `var.value` / `var.prev`: both pseudo-fields read the storage gate's
+    // `Value` port.
+    if let Some(field) = trigger_field
+        && let Some(rec) = ctx.lookup_var(trigger_name).cloned()
     {
-        let Trigger::Ident {
-            range: trig_range, ..
-        } = &h.trigger
-        else {
-            unreachable!()
-        };
-        // Engage on the SCOPE BINDING / arrow-params / explicit `exec =` intent,
-        // NOT on the typechecked result type: a multi-output/exec call binds
-        // `_on_expr_N` to a `Binding::Record` (built in `lower_let_decl` from the
-        // chip's outputs or an inline mod's pending record), `-> <pattern>` fills
-        // `h.params`, and an `exec = <x>` arg (`h.expr_trigger_has_exec_arg`) is
-        // explicit "drive this as exec" intent. Any of the three means the
-        // handler triggers on the call's completion exec — materialize it, or
-        // WS043. A bare value or `on <call>.field` trigger with none of the three
-        // (`on ServerUptime() { }`, `on doWork(5) { }`, `on Branch(c, a).A { }`)
-        // binds a `Binding::Local`, has no params, and passed no `exec =`, so it
-        // is left to the value-change branch below. (The result TYPE is NOT a
-        // reliable engage signal: `type_of_expr` can carry a nested expr's record
-        // type at a `.field` trigger's key via key overlap.)
-        let is_record_binding = matches!(ctx.scope.get(&trigger_name), Some(Binding::Record(_)));
-        if is_record_binding || !h.params.is_empty() || h.expr_trigger_has_exec_arg {
-            // The call's typechecked result shape + its structural exec field
-            // name (typecheck records the record type at the call's own range;
-            // reliable here because a record-binding trigger is a plain call
-            // expr, not a `.field` access whose key can overlap a nested expr).
-            let shape = match ctx.type_at(trig_range) {
-                Some(Type::Record(s)) => Some(s),
-                _ => None,
-            };
-            let exec_name = shape.as_ref().and_then(|s| {
-                s.iter()
-                    .find(|(_, t)| matches!(t, Type::Exec))
-                    .map(|(n, _)| n.clone())
-            });
-            // Materialize a bindable exec trigger from the call's result record,
-            // or `None` when the call exposes none (e.g. an inline mod).
-            let materialized = if let Some(en) = &exec_name
-                && let Some(Binding::Record(fm)) = ctx.scope.get(&trigger_name).cloned()
-                && let Some(exec_b) = fm.get(&crate::intern::intern(en)).cloned()
-                && let Some(trig) = crate::lower::access::binding_to_port(ctx, &exec_b, &h.range)
-            {
-                Some((trig, fm))
-            } else {
-                None
-            };
-
-            match materialized {
-                Some((trig, fields_map)) => {
-                    let exec_name = exec_name.expect("materialized implies an exec field");
-                    let shape = shape.expect("materialized implies a record shape");
-                    let data_fields: Vec<&str> = shape
-                        .iter()
-                        .filter(|(n, _)| n != &exec_name)
-                        .map(|(n, _)| n.as_str())
-                        .collect();
-                    save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
-                        for (i, pname) in h.params.iter().enumerate() {
-                            let field_name: Option<&str> = match &pname.source_field {
-                                Some(f) => Some(f.as_str()),
-                                None => data_fields.get(i).copied(),
-                            };
-                            let Some(fname) = field_name else { continue };
-                            let Some(binding) =
-                                fields_map.get(&crate::intern::intern(fname)).cloned()
-                            else {
-                                continue;
-                            };
-                            if let Some(port) =
-                                crate::lower::access::binding_to_port(ctx, &binding, &pname.range)
-                            {
-                                ctx.scope.insert(&pname.name, Binding::EventParam(port));
-                            }
-                        }
-                        lower_block(ctx, &h.body)
-                    });
-                    return;
-                }
-                None => {
-                    ctx.diagnostics.push(Diagnostic::error(
-                        "WS043",
-                        "this `on <call>` trigger's call exposes no exec output to trigger on - \
-                         `on` fires on the call's completion exec (bind its data outputs with \
-                         `-> ...`, drive it with `exec = ...`). Use an event, or a named `chip` \
-                         or `fn` call; an inline `mod` does not yet surface a completion exec, so an \
-                         `exec = ...` on it has nothing to attach to"
-                            .to_string(),
-                        h.range.clone(),
-                    ));
-                    save.abandon(ctx);
-                    return;
-                }
-            }
+        if !crate::catalog::is_var_pseudo_field(field) {
+            return SimpleTrigger::Unfireable;
         }
+        return fires(port_ref(rec.node_id, "Value"), field_label(field));
     }
 
-    // Try: var.value / var.prev field trigger
-    if let Some(ref field) = trigger_field {
-        let var_rec = ctx.lookup_var(&trigger_name).cloned();
-        if let Some(rec) = var_rec {
-            // Both pseudo-fields read the storage gate's `Value` port. The
-            // list used to be spelled out here and missed `Prev`, so a
-            // capitalisation typo matched no arm and the whole handler was
-            // dropped with no diagnostic.
-            if !crate::catalog::is_var_pseudo_field(field) {
-                save.abandon(ctx);
-                return;
-            }
-            let port_name = "Value";
-            let trig = port_ref(rec.node_id, port_name);
-            save.lower_body(ctx, h, trig, format!("{}.{}", trigger_name, field), |ctx| {
-                lower_block(ctx, &h.body)
-            });
-            return;
-        }
+    if let Some(cap) = ctx.captured_events.get(trigger_name).copied() {
+        return fires(cap, trigger_name.to_string());
     }
 
-    // Try: captured event alias
-    let captured = ctx.captured_events.get(&trigger_name).cloned();
-    if let Some(cap) = captured {
-        save.lower_body(ctx, h, cap, trigger_name.clone(), |ctx| {
-            lower_block(ctx, &h.body)
-        });
-        return;
+    if let Some(rec) = ctx.lookup_input(trigger_name).cloned() {
+        let trig = negate_trigger(ctx, rec.node_id.port(WirePort::RerOutput), negated);
+        return fires(trig, trigger_name.to_string());
     }
 
-    // Try: chip input trigger
-    let in_rec = ctx.lookup_input(&trigger_name).cloned();
-    if let Some(rec) = in_rec {
-        let trig = rec.node_id.port(WirePort::RerOutput);
-        let trig = negate_trigger(ctx, trig, negated);
-        save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
-            lower_block(ctx, &h.body)
-        });
-        return;
+    if let Some(rec) = ctx.lookup_buffer(trigger_name).cloned() {
+        return fires(rec.node_id.port(WirePort::Output), trigger_name.to_string());
     }
 
-    // Try: buffer as trigger
-    let buf_rec = ctx.lookup_buffer(&trigger_name).cloned();
-    if let Some(rec) = buf_rec {
-        let trig = rec.node_id.port(WirePort::Output);
-        save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
-            lower_block(ctx, &h.body)
-        });
-        return;
-    }
-
-    // Try: local (let binding) as trigger - fires on value change. A field
-    // trigger (`on split.Jump`) selects the named output port on the local's
-    // gate (e.g. InputReader's `bPressedJump`) instead of its default port.
-    let local_rec = ctx.lookup_local(&trigger_name).cloned();
-    if let Some(rec) = local_rec {
-        let base_port = match &trigger_field {
+    // A local (let binding) fires on value change. A field trigger
+    // (`on split.Jump`) selects the named output port on the local's gate
+    // (e.g. InputReader's `bPressedJump`) instead of its default port.
+    if let Some(rec) = ctx.lookup_local(trigger_name).cloned() {
+        let base_port = match trigger_field {
             Some(field) => {
-                crate::lower::access::resolve_output_field_port(ctx, rec.port.node_id, field)
-                    .unwrap_or(rec.port)
+                resolve_output_field_port(ctx, rec.port.node_id, field).unwrap_or(rec.port)
             }
             None => rec.port,
         };
-        let trigger_port = negate_trigger(ctx, base_port, negated);
-        let trigger_label = trigger_label(&trigger_name, &trigger_field);
-        save.lower_body(ctx, h, trigger_port, trigger_label, |ctx| {
-            lower_block(ctx, &h.body)
-        });
-        return;
+        let port = negate_trigger(ctx, base_port, negated);
+        return fires(port, trigger_label(trigger_name, trigger_field));
     }
 
-    // Try: a `var` as trigger — fires on the var's value change (`on x` / `on !x`).
-    // Mirrors the local (let-binding) case: the var gate's `Value` output is the
-    // trigger port; negation adds a LogicalNOT.
-    if trigger_field.is_none() {
-        if let Some(rec) = ctx.lookup_var(&trigger_name).cloned() {
-            let base_port = port_ref(rec.node_id, "Value");
-            let trigger_port = negate_trigger(ctx, base_port, negated);
-            save.lower_body(ctx, h, trigger_port, trigger_name.clone(), |ctx| {
-                lower_block(ctx, &h.body)
-            });
-            return;
-        }
+    // A `var` (`on x` / `on !x`) fires on its value change; the var gate's
+    // `Value` output is the trigger port.
+    if trigger_field.is_none()
+        && let Some(rec) = ctx.lookup_var(trigger_name).cloned()
+    {
+        let port = negate_trigger(ctx, port_ref(rec.node_id, "Value"), negated);
+        return fires(port, trigger_name.to_string());
     }
 
-    // Try: an enclosing handler's event data param as trigger — `on p` / `on !p`
-    // where `p` is e.g. `on CustomEvent("x") -> (p: character)`'s data output.
-    // Fires on the param's value edge; negation adds a LogicalNOT, exactly like
-    // the local (let-binding) case above.
-    if let Some(Binding::EventParam(ep_port)) = ctx.scope.get(&trigger_name).cloned() {
-        let base_port = match &trigger_field {
+    // An enclosing handler's event data param (`on p` / `on !p` for the `p` of
+    // `on CustomEvent("x") -> (p: character)`) fires on the param's value edge.
+    if let Some(Binding::EventParam(ep_port)) = ctx.scope.get(trigger_name).cloned() {
+        let base_port = match trigger_field {
             Some(field) => {
-                crate::lower::access::resolve_output_field_port(ctx, ep_port.node_id, field)
-                    .unwrap_or(ep_port)
+                resolve_output_field_port(ctx, ep_port.node_id, field).unwrap_or(ep_port)
             }
             None => ep_port,
         };
-        let trigger_port = negate_trigger(ctx, base_port, negated);
-        let trigger_label = trigger_label(&trigger_name, &trigger_field);
-        save.lower_body(ctx, h, trigger_port, trigger_label, |ctx| {
-            lower_block(ctx, &h.body)
-        });
-        return;
+        let port = negate_trigger(ctx, base_port, negated);
+        return fires(port, trigger_label(trigger_name, trigger_field));
     }
 
-    // Built-in event
-    let evt = match find_event(&trigger_name) {
-        Some(e) => e,
-        None => {
-            save.abandon(ctx);
-            // None of the resolution attempts above found a port, and this is
-            // not a built-in event, so the body has nothing to fire on. Say so:
-            // typecheck admits ANY `let` as a trigger, so a record-, tuple- or
-            // multi-output-valued one lands here, and dropping it quietly takes
-            // the whole handler with it without a single diagnostic.
-            let at = match &h.trigger {
-                Trigger::Not { inner, .. } => inner.as_ref(),
-                other => other,
-            };
-            let at = match at {
-                Trigger::Ident { range, .. } | Trigger::Field { range, .. } => range,
-                _ => &h.range,
-            };
-            ctx.error(
-                "WS001",
-                format!(
-                    "'{trigger_name}' is not an event and has no exec or value port to \
+    SimpleTrigger::NotSimple
+}
+
+/// Lower a handler whose trigger is a built-in event: build the event gate with
+/// its config and input wires, then lower the body with the data params bound.
+fn lower_event_handler(ctx: &mut LowerCtx<'_>, h: &Handler, save: HandlerSave, trigger_name: &str) {
+    let Some(evt) = find_event(trigger_name) else {
+        save.abandon(ctx);
+        // No port and no built-in event, so the body has nothing to fire on.
+        // Typecheck admits any `let` as a trigger, so a record-, tuple- or
+        // multi-output-valued one lands here and needs this error.
+        let at = match &h.trigger {
+            Trigger::Not { inner, .. } => inner.as_ref(),
+            other => other,
+        };
+        let at = match at {
+            Trigger::Ident { range, .. } | Trigger::Field { range, .. } => range,
+            _ => &h.range,
+        };
+        ctx.error(
+            "WS001",
+            format!(
+                "'{trigger_name}' is not an event and has no exec or value port to \
                      trigger on, so this handler would never run"
-                ),
-                at,
-            );
-            return;
-        }
+            ),
+            at,
+        );
+        return;
     };
 
     let trigger_range = match &h.trigger {
@@ -427,10 +331,10 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
     let mut input_wires: Vec<(&'static str, &Type, &Expr)> = Vec::new();
     for (surf, port, ty) in &evt.input_named {
         for arg in &h.config {
-            if let HandlerConfigArg::Named { name, value } = arg {
-                if name.eq_ignore_ascii_case(surf) {
-                    input_wires.push((port, ty, value));
-                }
+            if let HandlerConfigArg::Named { name, value } = arg
+                && name.eq_ignore_ascii_case(surf)
+            {
+                input_wires.push((port, ty, value));
             }
         }
     }
@@ -440,14 +344,13 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         .collect();
 
     let mut event_outputs = vec![PortSpec::exec(intern(evt.exec_out))];
-    // Custom Event types its data-output ports from the handler's annotations
-    // (`on CustomEvent("x") -> (a: int, b: float)`); a present-but-unannotated
-    // param takes the inferred type (typecheck's `CeSlotMap`, resolved from
-    // an in-unit sender), falling back to float when nothing was inferred.
-    // Other events keep their fixed declared data types.
+    // Custom Event types its data outputs from the handler's annotations
+    // (`-> (a: int, b: float)`); an unannotated param takes the type typecheck
+    // inferred from an in-unit sender, else float. Other events keep their
+    // catalog data types.
     let is_custom_event = evt.gate_class == crate::ir::gate_class::CUSTOM_EVENT;
-    // Resolved inferred slot types for this handler, if it's a custom-event
-    // receiver — see `crate::typecheck::infer_custom_event_slots`.
+    // This handler's inferred slot types when it is a custom-event receiver
+    // (see `crate::typecheck::infer_custom_event_slots`).
     let inferred = CeNamespace::from_event_name(evt.surface_name)
         .and_then(|ns| ctx.ce_slots.get(&ce_slot_key(ns, h)));
     let inferred_slot = |i: usize| inferred.and_then(|v| v.get(i).cloned().flatten());
@@ -455,12 +358,9 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         let ty = match h.params.get(i) {
             Some(p) => match &p.ty {
                 Some(te) => ctx.resolve_local_type(te),
-                // Present but unannotated: use the inferred type when this is a
-                // custom-event receiver (the inference pass always fills the
-                // slot — an in-unit sender's type or a float fallback), else the
-                // event's fixed catalog type. A non-custom event (`inferred` is
-                // `None`) must keep `d.ty` — e.g. `on CharacterSpawned() -> (character)`
-                // keeps its `Character` port, NOT float.
+                // Unannotated: a custom-event receiver takes the inferred type;
+                // any other event (`inferred` is `None`) keeps its catalog type,
+                // so `on CharacterSpawned() -> (character)` stays `Character`.
                 None => inferred_slot(i).unwrap_or_else(|| d.ty.clone()),
             },
             None if is_custom_event => Type::Float,
@@ -487,11 +387,10 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
         ctx.connect(src, port_ref(event_node, port));
     }
 
-    // Typed event-data params (`on CustomEvent("x") -> (a: int) { ... a ... }`)
-    // are bound INSIDE the closure — after `with_scope`'s own push — so they
-    // live in the handler-body frame it pushes/pops, not the enclosing one.
+    // Event-data params are bound inside the closure, after `with_scope` pushes
+    // the handler-body frame, so they live in that frame and not the enclosing one.
     let trig = port_ref(event_node, evt.exec_out);
-    save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
+    save.lower_body(ctx, h, trig, trigger_name.to_string(), |ctx| {
         for (i, pname) in h.params.iter().enumerate() {
             if let Some(data) = evt.data.get(i) {
                 ctx.scope.insert(
@@ -500,25 +399,99 @@ pub(super) fn lower_handler(ctx: &mut LowerCtx, h: &Handler) {
                 );
             }
         }
-        lower_block(ctx, &h.body)
+        lower_block(ctx, &h.body);
     });
+}
+
+pub(super) fn lower_handler(ctx: &mut LowerCtx<'_>, h: &Handler) {
+    // Union trigger `on a | b { ... }`: run the body when ANY part fires. The
+    // body is lowered once per part, each through the full single-trigger
+    // resolution below, so every trigger kind works as a part.
+    if let Trigger::Union { parts, .. } = &h.trigger {
+        for part in parts {
+            let mut single = h.clone();
+            single.trigger = part.clone();
+            lower_handler(ctx, &single);
+        }
+        return;
+    }
+    // Split the trigger into its name, optional field (`on var.value`) and
+    // whether it is negated (`on !foo` lowers `foo` and adds a NOT).
+    let (trigger_name, trigger_field, negated) = match &h.trigger {
+        Trigger::Ident { name, .. } => (name.clone(), None, false),
+        Trigger::Field { obj, field, .. } => (obj.clone(), Some(field.clone()), false),
+        Trigger::Not { inner, .. } => match inner.as_ref() {
+            Trigger::Ident { name, .. } => (name.clone(), None, true),
+            Trigger::Field { obj, field, .. } => (obj.clone(), Some(field.clone()), true),
+            _ => return,
+        },
+        Trigger::Union { .. } => return,
+    };
+
+    let save = HandlerSave::take(ctx);
+    let field = trigger_field.as_deref();
+
+    match resolve_call_trigger(ctx, h, &trigger_name, field, negated) {
+        CallTrigger::NotCall => {}
+        CallTrigger::NoExec => {
+            ctx.diagnostics.push(Diagnostic::error(
+                "WS043",
+                "this `on <call>` trigger's call exposes no exec output to trigger on - \
+                 `on` fires on the call's completion exec (bind its data outputs with \
+                 `-> ...`, drive it with `exec = ...`). Use an event, or a named `chip` \
+                 or `fn` call; an inline `mod` does not yet surface a completion exec, so an \
+                 `exec = ...` on it has nothing to attach to"
+                    .to_string(),
+                h.range.clone(),
+            ));
+            save.abandon(ctx);
+            return;
+        }
+        CallTrigger::Exec {
+            trig,
+            fields,
+            data_fields,
+        } => {
+            save.lower_body(ctx, h, trig, trigger_name.clone(), |ctx| {
+                for (i, pname) in h.params.iter().enumerate() {
+                    let field_name: Option<&str> = match &pname.source_field {
+                        Some(f) => Some(f.as_str()),
+                        None => data_fields.get(i).map(String::as_str),
+                    };
+                    let Some(fname) = field_name else { continue };
+                    let Some(binding) = fields.get(&intern(fname)).cloned() else {
+                        continue;
+                    };
+                    if let Some(port) = binding_to_port(ctx, &binding, &pname.range) {
+                        ctx.scope.insert(&pname.name, Binding::EventParam(port));
+                    }
+                }
+                lower_block(ctx, &h.body);
+            });
+            return;
+        }
+    }
+
+    match resolve_simple_trigger(ctx, h, &trigger_name, field, negated) {
+        SimpleTrigger::Fires { port, label } => {
+            save.lower_body(ctx, h, port, label, |ctx| lower_block(ctx, &h.body));
+        }
+        SimpleTrigger::Unfireable => save.abandon(ctx),
+        SimpleTrigger::NotSimple => lower_event_handler(ctx, h, save, &trigger_name),
+    }
 }
 
 /// Resolve an event handler's config args (e.g. `on ChatCommand("greet",
 /// Description = "Greets you")`) into the event gate's data-struct properties.
-/// Positional literals fill `evt.config_positional` in order; named args target
-/// a field via `evt.config_named` (case-insensitive). Args with no matching
-/// slot are ignored. Values are folded against `consts` (`ctx.const_lookup()`)
-/// so a named constant (e.g. a computed `CustomEvent` channel) bakes here just
-/// as it does on the `SendCustomEvent` sender side; a genuinely non-constant
-/// value still folds to `None` and is ignored (typecheck has already rejected
-/// it via `validate_handler_config`).
+/// Positional args fill `evt.config_positional` in order; named args match
+/// `evt.config_named` case-insensitively; unmatched args are ignored. Values fold
+/// against `consts`, and a non-constant one is ignored (typecheck rejects it).
 fn event_config_props(
     evt: &crate::catalog::events::EventSpec,
     config: &[HandlerConfigArg],
     consts: &crate::const_scope::ConstNames,
-) -> HashMap<crate::intern::Sym, Literal> {
-    let mut props: HashMap<crate::intern::Sym, Literal> = HashMap::default();
+) -> HashMap<Sym, Literal> {
+    let mut props: HashMap<Sym, Literal> = HashMap::default();
     let mut positional = 0;
     for arg in config {
         let (field, value) = match arg {
@@ -543,7 +516,7 @@ fn event_config_props(
     props
 }
 
-pub(super) fn lower_block(ctx: &mut LowerCtx, block: &Block) {
+pub(super) fn lower_block(ctx: &mut LowerCtx<'_>, block: &Block) {
     // Every caller is an imperative body; a top-level chip comes from the decl
     // loop instead and so never sets this.
     let saved_in_body = ctx.in_handler_body;
@@ -552,7 +525,7 @@ pub(super) fn lower_block(ctx: &mut LowerCtx, block: &Block) {
     ctx.in_handler_body = saved_in_body;
 }
 
-fn lower_block_inner(ctx: &mut LowerCtx, block: &Block) {
+fn lower_block_inner(ctx: &mut LowerCtx<'_>, block: &Block) {
     // Pre-declare vars inside stmt-level anon chips.
     for s in &block.stmts {
         if let Stmt::AnonChip(ac) = s {
@@ -631,7 +604,7 @@ fn runs_on_chain(s: &Stmt) -> bool {
         Stmt::Emit(e) => e.value.is_none(),
         Stmt::If(_) | Stmt::IfLet(_) | Stmt::For(_) => true,
         Stmt::ExprStmt(x) => !matches!(&x.expr, Expr::Call { args, .. }
-            if args.iter().any(|a| matches!(a, CallArg::Named { name, .. } if name == "exec"))),
+            if args.has_exec_arg()),
         _ => false,
     }
 }
@@ -639,22 +612,15 @@ fn runs_on_chain(s: &Stmt) -> bool {
 /// Whether `s` is a `buffer emit` of a signal or output, which ends the exec
 /// chain it stands on: the emit crosses the buffer and continues from there,
 /// and nothing after it on the chain runs.
-fn closes_chain(ctx: &LowerCtx, s: &Stmt) -> bool {
+fn closes_chain(ctx: &LowerCtx<'_>, s: &Stmt) -> bool {
     matches!(s, Stmt::Emit(e) if e.buffer.is_some()
         && (ctx.signal_key(&e.name).is_some() || ctx.lookup_output(&e.name).is_some()))
 }
 
-/// A BUFFERED `emit` as the block's final statement terminates this exec
-/// chain: a loop back-edge (`buffer emit loop` last in the then-block) crosses
-/// the buffer barrier, so it must NOT fall through the if-join into the mod's
-/// end exec, or the caller's continuation would fire once per iteration
-/// instead of on `return`. An UNBUFFERED `emit sig` is a FORK, not a
-/// terminator: it fires the signal AND the exec continues. Nulling the cursor
-/// for it strands whatever follows, e.g. a mod whose body ends in `emit`,
-/// inlined mid-chain, would drop the caller's following exec statements to an
-/// `_Unsupported` placeholder. Shared by handler/branch blocks and anon chip
-/// bodies.
-pub(super) fn close_on_trailing_buffered_emit(ctx: &mut LowerCtx, block: &Block) {
+/// A buffered `emit` as a block's last statement ends its exec chain, so a loop
+/// back-edge does not fall through the if-join and fire the caller's continuation
+/// every iteration. An unbuffered `emit` forks and the chain continues.
+pub(super) fn close_on_trailing_buffered_emit(ctx: &mut LowerCtx<'_>, block: &Block) {
     if let Some(Stmt::Emit(e)) = block.stmts.last()
         && e.buffer.is_some()
         && (ctx.signal_key(&e.name).is_some() || ctx.lookup_output(&e.name).is_some())
@@ -676,14 +642,9 @@ pub(super) fn is_handler_like(d: &TopDecl) -> bool {
     }
 }
 
-/// A pure, reactive top-level declaration — `let`/`out`/`var`/`buffer` — whose
-/// value defines signal flow, as opposed to an imperative continuation
-/// (`assign`/`if`/expr-statement) that legitimately runs after — and chains
-/// from — a preceding handler's exit. A pure declaration must be lowered with a
-/// cleared `current_exec` so its reads stay pure and never splice onto that
-/// handler exec chain (which would, e.g., turn `let c = "${x}"` into an
-/// exec-context `Exec_Var_Get` on the handler's spine, and — via `on Change(v)`'s
-/// synthetic `let _on_expr = Change(v)` — misplace a trigger's own input read).
+/// A pure top-level declaration (`let`/`out`/`var`/`buffer`), as opposed to an
+/// imperative statement that chains from the preceding handler's exit. It is
+/// lowered with `current_exec` cleared, or its reads become `Exec_Var_Get`s on that chain.
 pub(super) fn is_pure_top_decl(d: &TopDecl) -> bool {
     matches!(
         d,
@@ -693,7 +654,7 @@ pub(super) fn is_pure_top_decl(d: &TopDecl) -> bool {
 
 /// Union all accumulated handler end execs into a single Union gate,
 /// setting `current_exec` so subsequent code chains from every handler's exit.
-pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx) {
+pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx<'_>) {
     let ends = std::mem::take(&mut ctx.handler_end_execs);
     if ends.is_empty() {
         return;
@@ -707,25 +668,10 @@ pub(super) fn flush_handler_end_execs(ctx: &mut LowerCtx) {
     let mut iter = ends.into_iter();
     let first = iter.next().unwrap();
     let second = iter.next().unwrap();
-    let mut prev_out = {
-        let union_id = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::UNION,
-            ports: GateIO::exec_join(),
-            ..Default::default()
-        });
-        ctx.connect(first, union_id.port(WirePort::ExecA));
-        ctx.connect(second, union_id.port(WirePort::ExecB));
-        union_id.port(WirePort::ExecOut)
-    };
+    let no_range = SourceRange::default();
+    let mut prev_out = exec_join(ctx, Some(first), Some(second), &no_range);
     for end in iter {
-        let union_id = ctx.add_gate(AddNodeOpts {
-            gate_class: gc::UNION,
-            ports: GateIO::exec_join(),
-            ..Default::default()
-        });
-        ctx.connect(prev_out, union_id.port(WirePort::ExecA));
-        ctx.connect(end, union_id.port(WirePort::ExecB));
-        prev_out = union_id.port(WirePort::ExecOut);
+        prev_out = exec_join(ctx, Some(prev_out), Some(end), &no_range);
     }
     ctx.current_exec = Some(prev_out);
     reset_var_get_caches(ctx);

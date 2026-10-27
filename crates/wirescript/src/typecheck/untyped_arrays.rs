@@ -20,7 +20,7 @@ pub(super) fn inferable_element(t: &Type) -> bool {
 /// a literal (`[1, K]`): registration typed it from its literal elements
 /// alone, so give it the join of every element's value before any body reads
 /// it.
-pub(super) fn type_constant_elements(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) {
+pub(super) fn type_constant_elements(ctx: &mut TypeCheckCtx<'_>, decls: &[TopDecl]) {
     for d in decls {
         let TopDecl::Var(v) = d else { continue };
         let (None, Some(Expr::Array { elements, .. })) = (&v.typ, &v.init) else {
@@ -36,20 +36,16 @@ pub(super) fn type_constant_elements(ctx: &mut TypeCheckCtx, decls: &[TopDecl]) 
             .iter()
             .map(|el| match el {
                 ArrayElem::Item(e) => {
-                    let lit = {
-                        let lookup = |n: &str| ctx.resolve_mod(n);
-                        let cx = ctx.const_ctx(Some(&lookup));
-                        crate::const_eval::eval_expr(e, &cx, &mut Default::default()).ok()?
-                    };
+                    let lit = ctx.const_eval(e, crate::const_scope::Admit::All).ok()?;
                     match crate::lower::wire_type_of_literal(&lit) {
                         Some(t) => Some(t),
                         // An enum value (`Hue.Blue`, `Shape.Circle(2.5)`) is the
                         // enum it constructs, also through a constant naming one;
                         // the body check reports anything amiss with it.
                         None => {
-                            let before = ctx.diagnostics.len();
-                            let t = unwrap_ref(&infer::infer(ctx, named_value(decls, e)));
-                            ctx.diagnostics.truncate(before);
+                            let t = ctx.discarding_diagnostics(|ctx| {
+                                unwrap_ref(&infer::infer(ctx, named_value(decls, e)))
+                            });
                             matches!(t, Type::Enum { .. }).then_some(t)
                         }
                     }
@@ -96,7 +92,7 @@ fn spreads_only_empty(e: &Expr) -> bool {
 
 /// After a `var` declaration is checked: an unannotated empty `[]` or `{}`
 /// initializer, or an array literal with only spreads of empty ones, is WS098.
-pub(super) fn declare(ctx: &mut TypeCheckCtx, v: &VarDecl) {
+pub(super) fn declare(ctx: &mut TypeCheckCtx<'_>, v: &VarDecl) {
     if v.typ.is_some() {
         return;
     }
@@ -112,19 +108,18 @@ pub(super) fn declare(ctx: &mut TypeCheckCtx, v: &VarDecl) {
              declaration with the type it holds, such as `var {}: int[] = []`",
             v.name, v.name
         ),
-        Some(init) if map_init_entries(init).is_some_and(|e| e.is_empty()) => format!(
-            "`{}` is declared `= {{}}` with no key and value types, so its storage can't be \
+        Some(init) if map_init_entries(init).is_some_and(<[crate::ast::MapLitEntry]>::is_empty) => {
+            format!(
+                "`{}` is declared `= {{}}` with no key and value types, so its storage can't be \
              chosen. Annotate the declaration with the types it holds, such as \
              `var {}: Map<string, int> = {{}}`",
-            v.name, v.name
-        ),
+                v.name, v.name
+            )
+        }
         _ => return,
     };
     let at = &v.range;
-    if ctx
-        .untyped_reported
-        .insert((at.file.clone(), at.start.offset))
-    {
+    if ctx.untyped_reported.insert(at.start_key()) {
         ctx.emit("WS098", message, at.clone());
     }
 }

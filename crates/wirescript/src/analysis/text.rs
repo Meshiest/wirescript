@@ -1,8 +1,8 @@
-/// Byte index just past the char at byte `i` of `s`. `i + 1` is only correct
-/// for ASCII — after an `rfind` that landed on a multi-byte char (e.g. `─` in
-/// a comment), `i + 1` is not a char boundary and slicing there panics.
+/// Byte index just past the char at byte `i` of `s`. `i + 1` is right only for
+/// ASCII: after an `rfind` that landed on a multi-byte char, `i + 1` is not a
+/// char boundary and slicing there panics.
 pub fn after_char(s: &str, i: usize) -> usize {
-    i + s[i..].chars().next().map_or(1, |c| c.len_utf8())
+    i + s[i..].chars().next().map_or(1, char::len_utf8)
 }
 
 /// The text of 0-based `line`, without its line terminator. CRLF and LF files
@@ -58,14 +58,10 @@ pub fn editor_col_to_char(source: &str, line: usize, utf16: usize) -> usize {
     utf16_col_to_char_col(line_text(source, line), utf16)
 }
 
-/// A 0-based char column on line `line` of `source` -> the editor's UTF-16
-/// column.
-///
-/// A column past the end of the line it names is left alone rather than
-/// clamped: the two conventions agree for everything below U+10000, so passing
-/// it through is right whenever the line could not be read (a closed file that
-/// has since changed on disk), while clamping would collapse it onto the line's
-/// end.
+/// A 0-based char column on line `line` of `source`, as the editor's UTF-16
+/// column. A column past the end of its line passes through unchanged: the two
+/// agree below U+10000, so that is right when the line cannot be read (a closed
+/// file changed on disk), where clamping would move it to the line's end.
 pub fn char_col_to_editor(source: &str, line: usize, col: usize) -> usize {
     char_col_in_line_to_editor(line_text(source, line), col)
 }
@@ -159,16 +155,14 @@ pub fn word_at(source: &str, line: usize, col: usize) -> Option<String> {
     }
 }
 
-/// If the cursor sits in a `receiver.partial` member-access position — the text
-/// just before the cursor is `<ident>.<zero-or-more ident chars>` — return the
-/// receiver identifier. Returns `None` at an argument boundary like `Call(`,
-/// where the nearest `.` belongs to the callee and the cursor is not typing a
-/// member, so param completion can take over. Used by every editor frontend to
-/// give member completions priority over the enclosing call's param names.
+/// The receiver identifier when the text before the cursor is a member access,
+/// `<ident>.<ident chars>`. `None` at an argument boundary such as `Call(`,
+/// where the nearest `.` belongs to the callee, so parameter completion takes
+/// over. Every editor frontend uses it to rank member completions first.
 pub fn member_receiver_at(source: &str, line: usize, col: usize) -> Option<String> {
     let l = source.lines().nth(line)?;
-    // `col` is a char column — convert to a byte offset (a raw byte index
-    // would slice mid-char and panic on multi-byte text earlier in the line).
+    // `col` is a char column: convert it to a byte offset, since a raw byte index
+    // would slice mid-char on multi-byte text earlier in the line.
     let col_idx = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
     let before = &l[..col_idx];
     // The partial member name being typed (identifier chars adjacent to cursor).
@@ -264,8 +258,8 @@ pub fn param_names(sig: &str) -> Option<Vec<String>> {
     let bytes = sig.as_bytes();
     let mut depth = 0i32;
     let mut close = None;
-    for i in open..sig.len() {
-        match bytes[i] {
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        match b {
             b'(' => depth += 1,
             b')' => {
                 depth -= 1;
@@ -403,10 +397,9 @@ pub fn cursor_byte_offset(source: &str, line: usize, col: usize) -> usize {
     line_start_byte(source, line) + char_col_to_byte(line_text(source, line), col)
 }
 
-/// Name of the call whose argument list the cursor sits inside, if any. Scans
-/// the whole source up to the cursor (not just the current line) so a call
-/// spread across multiple lines still resolves — the open `(` may be lines
-/// above. Skips parentheses inside strings and comments.
+/// The name of the call whose argument list contains the cursor, if any. Scans
+/// the source up to the cursor, not just the current line, so a call spanning
+/// several lines resolves. Parentheses in strings and comments are skipped.
 pub fn find_enclosing_call(source: &str, line: usize, col: usize) -> Option<String> {
     let offset = cursor_byte_offset(source, line, col).min(source.len());
     let prefix = &source[..offset];
@@ -526,47 +519,10 @@ pub fn named_arg_value(source: &str, line: usize, col: usize) -> Option<(String,
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod line_index_tests {
-    use super::*;
-
-    /// The index must agree with the scanning functions it replaces on every
-    /// line of both line-ending styles, or a request that uses one and a
-    /// request that uses the other disagree about where a token is.
-    #[test]
-    fn line_index_agrees_with_the_scanning_functions() {
-        for src in [
-            "a\nbb\nccc\n",
-            "a\r\nbb\r\nccc\r\n",
-            "no trailing newline",
-            "",
-            "\n\n\n",
-            "unicode \u{e9}\u{1f600}\nsecond \u{4e16}\u{754c}\n",
-        ] {
-            let idx = LineIndex::new(src);
-            for line in 0..6 {
-                assert_eq!(
-                    idx.line_text(src, line),
-                    line_text(src, line),
-                    "line_text disagreed at line {line} of {src:?}"
-                );
-                assert_eq!(
-                    idx.line_start_byte(line),
-                    line_start_byte(src, line),
-                    "line_start_byte disagreed at line {line} of {src:?}"
-                );
-            }
-        }
-    }
-}
-
-/// Byte offset of the start of every line, computed once.
-///
-/// The free functions above each scan from the start of the source, which is
-/// fine for the one lookup a hover does and quadratic for a request that
-/// converts thousands of ranges: a semantic-token pass over a 257 KB file
-/// rescanned 2.3 billion source bytes. Build one of these per request and the
-/// scans become a binary search.
+/// The byte offset where each line starts, computed once. The free functions
+/// above each scan from the start of the source, which is quadratic for a
+/// request that converts thousands of ranges (a semantic-token pass); one
+/// `LineIndex` per request makes each lookup a binary search.
 pub struct LineIndex {
     starts: Vec<u32>,
     len: u32,
@@ -622,5 +578,39 @@ impl LineIndex {
         let mut slice = &source[start as usize..end as usize];
         slice = slice.strip_suffix('\n').unwrap_or(slice);
         slice.strip_suffix('\r').unwrap_or(slice)
+    }
+}
+
+#[cfg(test)]
+mod line_index_tests {
+    use super::*;
+
+    /// The index must agree with the scanning functions it replaces on every
+    /// line of both line-ending styles, or a request that uses one and a
+    /// request that uses the other disagree about where a token is.
+    #[test]
+    fn line_index_agrees_with_the_scanning_functions() {
+        for src in [
+            "a\nbb\nccc\n",
+            "a\r\nbb\r\nccc\r\n",
+            "no trailing newline",
+            "",
+            "\n\n\n",
+            "unicode \u{e9}\u{1f600}\nsecond \u{4e16}\u{754c}\n",
+        ] {
+            let idx = LineIndex::new(src);
+            for line in 0..6 {
+                assert_eq!(
+                    idx.line_text(src, line),
+                    line_text(src, line),
+                    "line_text disagreed at line {line} of {src:?}"
+                );
+                assert_eq!(
+                    idx.line_start_byte(line),
+                    line_start_byte(src, line),
+                    "line_start_byte disagreed at line {line} of {src:?}"
+                );
+            }
+        }
     }
 }

@@ -12,7 +12,6 @@
 //! the kind typecheck typed it as.
 
 use super::*;
-use crate::intern::Sym;
 
 /// Whether `b`, bound to a scalar `*T` field, names storage.
 pub(super) fn binds_place(b: &Binding) -> bool {
@@ -25,7 +24,11 @@ pub(super) fn binds_place(b: &Binding) -> bool {
 
 /// The ref a scalar `*T` field holds: a place's own ref, or the ref a value
 /// carries.
-pub(super) fn ref_port_of(ctx: &mut LowerCtx, b: &Binding, range: &SourceRange) -> Option<PortRef> {
+pub(super) fn ref_port_of(
+    ctx: &mut LowerCtx<'_>,
+    b: &Binding,
+    range: &SourceRange,
+) -> Option<PortRef> {
     match b {
         Binding::Var(v) if binds_place(b) => Some(v.node_id.port(WirePort::VarRef)),
         Binding::DynRef(d) if d.storage == VarStorage::Var => Some(d.port),
@@ -45,9 +48,9 @@ pub(super) enum FieldKind {
 
 /// Rebind the scalar `*T` fields of `rec`, a record of type `typ`, to `kind`.
 pub(super) fn rebind_ref_fields(
-    ctx: &mut LowerCtx,
-    typ: &crate::ast::TypeExpr,
-    rec: &mut HashMap<Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    typ: &TypeExpr,
+    rec: &mut Fields,
     kind: FieldKind,
     range: &SourceRange,
 ) {
@@ -58,14 +61,14 @@ pub(super) fn rebind_ref_fields(
 
 /// `rebind_ref_fields` over an explicit field list (a call's outputs).
 pub(super) fn rebind_fields(
-    ctx: &mut LowerCtx,
-    decl: &[crate::ast::RecordTypeField],
-    rec: &mut HashMap<Sym, Binding>,
+    ctx: &mut LowerCtx<'_>,
+    decl: &[RecordTypeField],
+    rec: &mut Fields,
     kind: FieldKind,
     range: &SourceRange,
 ) {
     for f in decl {
-        let key = crate::intern::intern(&f.name);
+        let key = intern(&f.name);
         let Some(b) = rec.get(&key).cloned() else {
             continue;
         };
@@ -93,9 +96,9 @@ pub(super) fn rebind_fields(
 /// `rebind_fields` for a record known by its resolved type: a record-valued
 /// `if` or `match` branch, whose chosen value is a value like a call's result.
 pub(super) fn rebind_typed(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     ty: &Type,
-    rec: &mut HashMap<Sym, Binding>,
+    rec: &mut Fields,
     kind: FieldKind,
     range: &SourceRange,
 ) {
@@ -109,7 +112,7 @@ pub(super) fn rebind_typed(
         _ => return,
     };
     for (name, ft) in fields {
-        let key = crate::intern::intern(&name);
+        let key = intern(&name);
         let Some(b) = rec.get(&key).cloned() else {
             continue;
         };
@@ -134,7 +137,7 @@ pub(super) fn rebind_typed(
 /// binding the kind typecheck does, so this rebinds nothing unless a route
 /// was missed; the read then still means what its type says.
 pub(super) fn as_typed(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     obj: &Expr,
     e: &Expr,
     b: Binding,
@@ -171,7 +174,7 @@ pub(super) fn as_typed(
 
 /// One scalar `*T` field's binding as `kind`, or `None` when it already is.
 fn rebind_leaf(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     b: &Binding,
     kind: FieldKind,
     inner: Type,
@@ -196,11 +199,7 @@ fn rebind_leaf(
 
 /// `&r` for a record `r`: each field's ref, as `*` on a record distributes over
 /// its fields. An array or map field is its own ref.
-pub(super) fn refs_of(
-    ctx: &mut LowerCtx,
-    fields: &HashMap<Sym, Binding>,
-    range: &SourceRange,
-) -> HashMap<Sym, Binding> {
+pub(super) fn refs_of(ctx: &mut LowerCtx<'_>, fields: &Fields, range: &SourceRange) -> Fields {
     let mut out = HashMap::default();
     for (k, b) in fields {
         let b = match b {

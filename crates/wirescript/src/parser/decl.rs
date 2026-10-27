@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     /// One `name` / `name: alias` entry of a record destructuring pattern.
     ///
     /// The range runs to the START of the next token, so a trailing comma or
@@ -88,14 +88,10 @@ impl<'a> Parser<'a> {
                 }
                 return Some(decl);
             }
-            // `@nofold` (alone — no side/label/closed) is also legal directly on
-            // `var` / `static var` / `let` / `on`, at any nesting depth. `@label`
-            // (string or constant expression) is additionally legal directly on
-            // `var` / `static var` — it overrides the var's name-derived
-            // floating label, same as on a port — and so are `@color` and
-            // `@material`. Any other annotation combined with these still falls
-            // through to the generic "must be followed by ..." error below,
-            // unchanged.
+            // `@nofold` alone is also legal on `var` / `static var` / `let` /
+            // `on` at any depth; `@label`, `@color` and `@material` are legal on
+            // `var` / `static var` (the label overrides the name-derived one).
+            // Any other annotation falls through to the error below.
             let is_static_var = kw("static")
                 && self.peek_at(1).kind == TokenKind::Kw
                 && self.peek_at(1).text == "var";
@@ -164,8 +160,8 @@ impl<'a> Parser<'a> {
             return self.parse_top_decl(); // annotations consumed -> guaranteed progress
         }
         // `enum` is a contextual keyword, so it still lexes as an identifier and
-        // stays usable as a name. Only `enum` followed by another identifier —
-        // the type's name, a shape no expression can take — opens a declaration.
+        // stays usable as a name. Only `enum` followed by another identifier
+        // (the type's name, a shape no expression can take) opens a declaration.
         if t.kind == TokenKind::Ident
             && t.text == "enum"
             && self.peek_at(1).kind == TokenKind::Ident
@@ -198,7 +194,7 @@ impl<'a> Parser<'a> {
                         // `const chip` is rejected: a chip shares one compiled template
                         // across call sites, so "every parameter is const" is not a
                         // property of the declaration the way it is for an inlined mod.
-                        // Const PARAMETERS on a chip are supported — they extend its
+                        // Const PARAMETERS on a chip are supported: they extend its
                         // template key.
                         "chip" => {
                             let kw = self.peek().clone();
@@ -378,8 +374,8 @@ impl<'a> Parser<'a> {
                 value: Some(value),
                 typ,
                 side,
-                label: label.clone(),
-                label_expr: label_expr.clone(),
+                label,
+                label_expr,
                 invisible,
                 no_fold,
                 range: self.make_range(start, end),
@@ -387,9 +383,8 @@ impl<'a> Parser<'a> {
         } else {
             let end = self.peek().start;
             // `out NAME` declares a port driven by `emit`. Anything else on the
-            // line — most often `out f(x)`, which reads like an anonymous output
-            // of a call — is not a value binding, and letting it fall through
-            // silently re-parsed the remainder as its own declaration.
+            // line (most often `out f(x)`) is an error here; falling through
+            // would re-parse the remainder as its own declaration.
             let t = self.peek().clone();
             if !matches!(
                 t.kind,
@@ -459,7 +454,7 @@ impl<'a> Parser<'a> {
                 None
             };
             self.expect(TokenKind::Op, Some("="));
-            // `let { a, b } = await sig` — destructure the awaited signal's
+            // `let { a, b } = await sig`: destructure the awaited signal's
             // ferried payload fields into locals.
             if self.check(TokenKind::Kw, Some("await")) {
                 let await_start = self.advance().start;
@@ -554,17 +549,12 @@ impl<'a> Parser<'a> {
         }
 
         // `let Some(x) = expr else { ... }` / `let Box { w } = expr else { ... }`:
-        // a refutable variant-pattern head, detected by shape - an identifier
-        // directly followed by `(` or `{`, which never occurs in the plain
-        // single-binding form below (that form's name is always followed by
-        // `:` or `=`). `parse_pattern` always returns `Pattern::Variant` for
-        // this shape. Phase 4: single-variant refutable binds only - a bare
-        // capitalized unit-variant name (`let None = ... else`) parses as
-        // `Pattern::Binding`, not `Pattern::Variant`, so it still falls
-        // through to the plain binding path below and is out of scope here.
-        // A literal (`let "go " .. dest = cmd else`) or a name followed by `..`
-        // (`let name .. ".ws" = file else`) starts a pattern too: neither
-        // begins a plain binding.
+        // a refutable variant-pattern head, detected by shape: an identifier
+        // directly followed by `(` or `{`, which the plain binding form never
+        // has (its name is followed by `:` or `=`). A literal
+        // (`let "go " .. dest = cmd else`) or a name followed by `..` starts a
+        // pattern too. A bare unit-variant name (`let None = ... else`) is not
+        // detected and takes the plain binding path below.
         let ident_then =
             |p: &Self, text: &str| p.peek().kind == TokenKind::Ident && p.peek_at(1).text == text;
         if (self.peek().kind == TokenKind::Ident
@@ -612,23 +602,22 @@ impl<'a> Parser<'a> {
             range: ref type_range,
             ..
         }) = typ
+            && !self.check(TokenKind::Op, Some("="))
         {
-            if !self.check(TokenKind::Op, Some("=")) {
-                let end = type_range.end;
-                self.eat_stmt_end();
-                return TopDecl::Let(LetDecl {
-                    binding,
-                    typ,
-                    value: Expr::IntLit {
-                        value: 0,
-                        text: "0".into(),
-                        range: self.make_range(start, end),
-                    },
-                    no_fold: false,
-                    is_const,
+            let end = type_range.end;
+            self.eat_stmt_end();
+            return TopDecl::Let(LetDecl {
+                binding,
+                typ,
+                value: Expr::IntLit {
+                    value: 0,
+                    text: "0".into(),
                     range: self.make_range(start, end),
-                });
-            }
+                },
+                no_fold: false,
+                is_const,
+                range: self.make_range(start, end),
+            });
         }
         self.expect(TokenKind::Op, Some("="));
         // `let name = on Trigger() { ... }` -> EventDecl (captured event)
@@ -862,9 +851,26 @@ impl<'a> Parser<'a> {
             let neg = self.match_tok(TokenKind::Op, Some("-")).is_some();
             let int_tok = self.expect(TokenKind::Int, None);
             let cleaned: String = int_tok.text.chars().filter(|c| *c != '_').collect();
-            let value: i64 = cleaned.parse().unwrap_or(0);
+            let value = match super::expr::parse_int_literal(&cleaned) {
+                Some(v) if neg => Some(-v),
+                Some(v) => Some(v),
+                None if neg => format!("-{cleaned}").parse::<i64>().ok(),
+                None => None,
+            };
+            let value = value.unwrap_or_else(|| {
+                let sign = if neg { "-" } else { "" };
+                self.error(
+                    format!(
+                        "integer literal '{sign}{}' is out of range for a 64-bit int",
+                        int_tok.text
+                    ),
+                    int_tok.start,
+                    int_tok.end,
+                );
+                0
+            });
             end = int_tok.end;
-            Some(if neg { -value } else { value })
+            Some(value)
         } else {
             None
         };
@@ -876,13 +882,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // `var name: ElementType[]`
+    // `array name: ElementType[]`, which is rejected.
     pub(super) fn parse_array_decl(&mut self) -> TopDecl {
         let kw = self.expect(TokenKind::Kw, Some("array"));
         let start = kw.start;
-        // The `array` declaration keyword has been removed — arrays are declared
-        // with `var NAME: T[]` (identical storage). Reject, but keep parsing the
-        // rest so a stray `array` decl doesn't derail the whole file.
+        // The `array` keyword declares nothing; arrays are `var NAME: T[]`.
+        // Reject, but keep parsing so a stray `array` decl does not derail the
+        // whole file.
         self.error(
             "`array` declarations have been removed; declare an array with `var NAME: T[]` instead",
             kw.start,
@@ -925,12 +931,12 @@ impl<'a> Parser<'a> {
         })
     }
 
-    // `var name: Map<K, V>`
+    // `map name: Map<K, V>`, which is rejected.
     pub(super) fn parse_map_decl(&mut self) -> TopDecl {
         let kw = self.expect(TokenKind::Kw, Some("map"));
         let start = kw.start;
-        // The `map` declaration keyword has been removed — maps are declared with
-        // `var NAME: Map<K, V>` (identical storage). Reject, but keep parsing.
+        // The `map` keyword declares nothing; maps are `var NAME: Map<K, V>`.
+        // Reject, but keep parsing.
         self.error(
             "`map` declarations have been removed; declare a map with `var NAME: Map<K, V>` instead",
             kw.start,
@@ -981,12 +987,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Optional declaration-header generic type params: `<T>` / `<T: Numeric>`
-    /// / `<T, U>`. Called right after a `mod`/`chip`/`type` decl's name is
-    /// consumed — in that position `<` is unambiguous (it can only start a
-    /// type-param list, never the `<` comparison operator), unlike at a call
-    /// site, where an explicit type-argument `<...>` needs the speculative
-    /// disambiguation in [`Self::try_parse_type_args`]. Returns `Vec::new()`
-    /// when there's no `<`.
+    /// / `<T, U>`, right after a `mod`/`chip`/`type` decl's name, where `<`
+    /// can only start a type-param list (a call site needs the speculative
+    /// [`Self::try_parse_type_args`]). Empty when there is no `<`.
     fn parse_type_params(&mut self) -> Vec<TypeParam> {
         if !self.check(TokenKind::Op, Some("<")) {
             return Vec::new();
@@ -1065,12 +1068,10 @@ impl<'a> Parser<'a> {
                 })
                 .unwrap_or(start);
             self.eat_stmt_end();
-            // A `chip let` has no name of its own, so default its display label
-            // to the binding name(s) — the chip should show what it computes.
-            // An explicit `@label(...)` (string OR expression) still wins —
-            // the name-derived fallback only applies when neither is given.
+            // A `chip let` has no name of its own, so its display label
+            // defaults to the binding name(s); an explicit `@label(...)` wins.
             let derived_label = if label.is_some() || label_expr.is_some() {
-                label.clone()
+                label
             } else {
                 let names: Vec<&str> = stmts
                     .iter()
@@ -1091,7 +1092,7 @@ impl<'a> Parser<'a> {
                 },
                 range: self.make_range(start, end),
                 label: derived_label,
-                label_expr: label_expr.clone(),
+                label_expr,
                 color_expr: None,
                 material_expr: None,
                 closed,
@@ -1107,14 +1108,14 @@ impl<'a> Parser<'a> {
                     range: self.make_range(start, end),
                 },
                 range: self.make_range(start, end),
-                label: label.clone(),
-                label_expr: label_expr.clone(),
+                label,
+                label_expr,
                 color_expr: None,
                 material_expr: None,
                 closed,
             });
         }
-        // Anonymous chip: `chip { body }` — no name, no params.
+        // Anonymous chip: `chip { body }`, with no name and no params.
         if self.check(TokenKind::LBrace, None) {
             let body = self.parse_block();
             let end = body.range.end;
@@ -1337,7 +1338,7 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::Colon, None);
                 let typ = self.parse_type();
                 let pend = self.peek().start;
-                let synth_name = format!("_p{}", synth_counter);
+                let synth_name = format!("_p{synth_counter}");
                 synth_counter += 1;
                 params.push(Param {
                     name: synth_name,
@@ -1380,7 +1381,7 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::Colon, None);
                 let typ = self.parse_type();
                 let pend = self.peek().start;
-                let synth_name = format!("_p{}", synth_counter);
+                let synth_name = format!("_p{synth_counter}");
                 synth_counter += 1;
                 params.push(Param {
                     name: synth_name,
@@ -1398,10 +1399,9 @@ impl<'a> Parser<'a> {
             }
 
             // Normal parameter: `name: Type`
-            // `name: const int` — a per-parameter modifier, NOT part of the type
-            // grammar. `const` is not a type (a `const int` IS an `int`), so
-            // putting it in `parse_type` would make `const int[]`, `*const int`
-            // and `Map<const int, V>` parse as though they meant something.
+            // `name: const int` is a per-parameter modifier, not type grammar:
+            // in `parse_type` it would let `const int[]`, `*const int` and
+            // `Map<const int, V>` parse as though they meant something.
             let pname = self.expect(TokenKind::Ident, None).text;
             self.expect(TokenKind::Colon, None);
             let is_const = self.match_tok(TokenKind::Kw, Some("const")).is_some();

@@ -44,28 +44,24 @@ fn boundary_pin_count(m: &Module) -> usize {
     m.nodes_deep().filter(|n| is_boundary_pin(n)).count()
 }
 
-// A port declared in source: carries a real source range (synthesized pins
+/// A port declared in source: it carries a real source range (synthesized pins
 /// are built with `SourceRange::default()`) and no `boundary_pin` marker.
 fn is_declared_port(n: &crate::ir::Node) -> bool {
     !is_boundary_pin(n) && (n.source_range.end.offset > 0 || !n.source_range.file.is_empty())
 }
 
-/// After the pass, every wire must be legal relative to its endpoints'
-/// common path prefix (the wire's LCA): each endpoint sits at most one
-/// nesting level below the LCA, and every endpoint that IS one level below
-/// must be a MicrochipInput/Output pin. This admits module-local wires,
-/// parent<->child-pin hops, and the sibling middle wire (outpin -> inpin,
-/// both one level below their shared prefix on different branches), while
-/// still rejecting any wire spanning >1 wall on either side and any deep
-/// endpoint that isn't a pin. No (target node, target port) tuple may
-/// appear twice.
+/// After the pass, each wire endpoint sits at most one nesting level below the
+/// wire's LCA (the endpoints' common path prefix), and an endpoint one level
+/// below is a MicrochipInput/Output pin. This admits module-local wires,
+/// parent<->child-pin hops and the sibling outpin -> inpin wire. No (target
+/// node, target port) tuple appears twice.
 fn assert_pin_adjacent(root: &Module) {
     // Each node's module path and gate class, so a deep endpoint can be checked
     // against the pin kind the wire DIRECTION requires: a deep source only
     // through an output pin, a deep target only through an input pin (a
     // backwards inpin->outpin wire at the deep end must fail).
     let mut own: crate::collections::HashMap<NodeId, (Vec<NodeId>, &'static str)> =
-        Default::default();
+        HashMap::default();
     root.walk(&mut |path, m| {
         for (id, n) in &m.nodes {
             own.insert(*id, (path.to_vec(), n.gate_class));
@@ -135,8 +131,8 @@ fn global_pure_read_gets_labeled_input_pin() {
 }
 
 /// Two `out` bindings in the same chip both read the same external var
-/// directly (`.Value`) — the two crossings share one feeder, so `pin_for`'s
-/// dedup should collapse them onto a single pin with two interior wires.
+/// directly (`.Value`): the two crossings share one feeder, so `pin_for`'s
+/// dedup collapses them onto a single pin with two interior wires.
 #[test]
 fn two_consumers_share_one_pin() {
     let r = compile_ok(
@@ -181,10 +177,9 @@ fn inside_value_consumed_outside_gets_output_pin() {
 }
 
 /// A normal chip call's declared outpin->inpin wire is already the approved
-/// boundary shape, so the pass — which `lower()` runs unconditionally —
-/// must leave it alone on its real, first run: the middle wire still runs
-/// directly between the two DECLARED pins, and no pin was synthesized
-/// anywhere in the tree.
+/// boundary shape, so the pass (which `lower()` runs unconditionally) leaves it
+/// alone: the middle wire runs directly between the two DECLARED pins, and no
+/// pin is synthesized anywhere in the tree.
 #[test]
 fn declared_chip_call_wires_are_untouched() {
     let r = compile_ok(
@@ -256,7 +251,7 @@ fn declared_chip_call_wires_are_untouched() {
 
 /// `var g` read from inside a doubly-nested named chip call
 /// (`Outer -> Inner`, both real call instances) reaches two walls with no
-/// intermediate pin pre-pass — the pass must add one pin per wall.
+/// intermediate pin pre-pass: the pass adds one pin per wall.
 #[test]
 fn two_level_nesting_chains_pins_through_each_wall() {
     let r = compile_ok(
@@ -300,9 +295,9 @@ fn exec_crossing_gets_exec_pin() {
 }
 
 /// `g = 1` inside a chip's exec handler (global var, not a declared ref
-/// param): the Var_Set's VarRef wire is a raw crossing back to root's
-/// Pseudo_Var. After the pass, the interior chain is
-/// Pseudo_Var -> pin -> Var_Set.VarRef, and the chip's scope_captures is
+/// param): the `Var_Set`'s `VarRef` wire is a raw crossing back to root's
+/// `Pseudo_Var`. After the pass, the interior chain is
+/// `Pseudo_Var` -> pin -> `Var_Set.VarRef`, and the chip's `scope_captures` is
 /// recomputed to match a fresh `compute_scope_captures`.
 #[test]
 fn varref_crossing_gets_local_pin_and_captures_update() {
@@ -323,7 +318,7 @@ fn varref_crossing_gets_local_pin_and_captures_update() {
     );
     let recomputed = crate::lower::call::compute_scope_captures(chip);
     let mut stored = chip.scope_captures.clone();
-    let mut recomputed_sorted = recomputed.clone();
+    let mut recomputed_sorted = recomputed;
     stored.sort_by_key(|id| id.0);
     recomputed_sorted.sort_by_key(|id| id.0);
     assert_eq!(
@@ -333,15 +328,10 @@ fn varref_crossing_gets_local_pin_and_captures_update() {
     assert_pin_adjacent(&r.module);
 }
 
-/// Constructed by hand rather than via `compile_ok(src)`: in practice, real
-/// Wirescript source rarely leaves a genuine cross-module `_Literal`-sourced
-/// wire lying around by the time `lower()` finishes — top-level const
-/// `let`s get cloned into any chip that references them, chip-call constant
-/// arguments get folded via a dedicated `ConstFold` path, and
-/// `materialize_unfoldable_constants`/`inline_orphan_literals` absorb same-
-/// module literal uses — so this exercises the exclusion rule directly
-/// against a minimal, deliberately-shaped module instead of fishing for an
-/// increasingly contrived source program.
+/// Constructed by hand rather than via `compile_ok(src)`: by the time `lower()`
+/// finishes, real source rarely leaves a cross-module `_Literal`-sourced wire
+/// (const `let`s are cloned into chips, constant chip arguments fold, and
+/// same-module literals are absorbed), so this tests the exclusion rule directly.
 #[test]
 fn literal_source_crossings_are_left_alone() {
     use crate::ir::{
@@ -367,7 +357,7 @@ fn literal_source_crossings_are_left_alone() {
                 inputs: vec![PortSpec::new(crate::intern::intern("InputA"), Type::Int)],
                 outputs: vec![PortSpec::new(crate::intern::intern("Output"), Type::Int)],
             }),
-            source_range: Default::default(),
+            source_range: SourceRange::default(),
             chip_id: None,
             chain_id: None,
             scope_id: crate::ir::ROOT_SCOPE_ID,
@@ -389,7 +379,7 @@ fn literal_source_crossings_are_left_alone() {
                 inputs: vec![],
                 outputs: vec![PortSpec::new(crate::intern::intern("Output"), Type::Int)],
             }),
-            source_range: Default::default(),
+            source_range: SourceRange::default(),
             chip_id: None,
             chain_id: None,
             scope_id: crate::ir::ROOT_SCOPE_ID,
@@ -449,9 +439,9 @@ fn templated_module_receiving_pin_loses_template_key() {
     assert_pin_adjacent(&r.module);
 }
 
-/// A self-contained program with nothing to cross: the pass — which
-/// `lower()` runs unconditionally — must synthesize no pin and relocate no
-/// wire on its real, first run, leaving every wire module-local.
+/// A self-contained program with nothing to cross: the pass (which `lower()`
+/// runs unconditionally) synthesizes no pin and relocates no wire, leaving every
+/// wire module-local.
 #[test]
 fn no_crossings_is_a_no_op() {
     let r = compile_ok("var g: int = 1\nout r = g + 2\n");
@@ -512,12 +502,9 @@ fn pin_labels_are_never_internal_notes_or_empty() {
     }
 }
 
-/// Reproduces the exact leak the label policy exists to close: `arr[0]`
-/// lowers to an `ARRAY_GET` gate carrying `Node.note == Some("array get")`
-/// and no `NAME_LABEL`/`PORT_LABEL`. Bound with `let` (not a `var`), its
-/// `Value` output is used directly rather than through a named Var_Get, so
-/// when the nested chip consumes it the crossing's source node has no
-/// identifier at all.
+/// `arr[0]` lowers to an `ARRAY_GET` gate carrying `Node.note == Some("array
+/// get")` and no `NAME_LABEL`/`PORT_LABEL`; bound with `let`, its crossing source
+/// has no identifier at all. The synthesized pin's label never shows the note.
 #[test]
 fn array_element_crossing_never_leaks_the_internal_note() {
     let r = compile_ok(
@@ -581,11 +568,9 @@ fn pass_is_idempotent() {
     assert_pin_adjacent(&r.module);
 }
 
-/// A synthesized pin must not reuse a label a DECLARED port in the same
-/// module already carries. Here the chip declares an output `score` and its
-/// body reads the outer `score` var, so the crossing derives that same
-/// identifier — two ports named `score` on one chip until the taken-name
-/// set counts declared ports too.
+/// A synthesized pin does not reuse a label a DECLARED port in the same module
+/// already carries: the chip declares an output `score` and its body reads the
+/// outer `score` var, so the crossing derives that same identifier.
 #[test]
 fn a_pin_never_reuses_a_declared_ports_label() {
     let r = compile_ok(
@@ -604,7 +589,7 @@ fn a_pin_never_reuses_a_declared_ports_label() {
         .values()
         .filter(is_port)
         .filter(|n| is_declared_port(n))
-        .filter_map(|n| port_label(n))
+        .filter_map(port_label)
         .collect();
     assert!(
         declared.iter().any(|l| l == "score"),
@@ -616,7 +601,7 @@ fn a_pin_never_reuses_a_declared_ports_label() {
         .values()
         .filter(is_port)
         .filter(|n| is_boundary_pin(n))
-        .filter_map(|n| port_label(n))
+        .filter_map(port_label)
         .collect();
     assert_eq!(pins.len(), 1, "fixture expects one synthesized pin");
     assert!(
@@ -628,10 +613,10 @@ fn a_pin_never_reuses_a_declared_ports_label() {
 
 #[test]
 fn captured_let_pins_use_binding_name_not_ext() {
-    // A nested chip that reads an outer `let` gets a boundary pin named after
-    // the binding (`base`) via the `BINDING_NAME` hint — not a synthetic
-    // `ext1`/`ext2`. (Mirrors `array_element_crossing_never_leaks_the_internal_note`,
-    // the case where a `let`'s source node carries no identifier of its own.)
+    // A nested chip that reads an outer `let` gets a boundary pin named after the
+    // binding (`base`) via the `BINDING_NAME` hint, not a synthetic `ext1`/`ext2`.
+    // (`array_element_crossing_never_leaks_the_internal_note` covers a `let` whose
+    // source node carries no identifier of its own.)
     let r = compile_ok(
         "var g: int = 0\nin go: exec\non go {\n  let base = g + 100\n  \
          chip {\n    PrintToConsole(\"${base}\")\n  }\n}\n",

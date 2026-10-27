@@ -2,26 +2,22 @@
 //! `CallSignature` adapters.
 
 use super::*;
+use crate::analysis::types::type_str;
+use crate::catalog::calls::CallSpec;
+use crate::ir::gate_class;
+use crate::types::infer::{InferError, Subst};
 use crate::types::mono::{substitute, unwrap_ref};
 
-/// The result type of a call whose declared output is a union.
-///
-/// The math-variant gates (`Blend`/`lerp`/`Easing`) carry whichever variant
-/// their inputs do, so a union output resolves to the **widening join**
-/// (`crate::types::coerce::widening_join`) of every union-typed param's
-/// argument type — the least upper bound, not just "first arg wins". Left as
-/// the union, the result would satisfy no operator overload and every use of
-/// it would fail. When only one operand is concrete, the join is just that
-/// type. When two operands have no common
-/// widening (e.g. `Blend(vector, 1, t)`), that's a genuine incompatibility —
-/// emit `WS033` (the same code the generic-mod inference solver uses for an
-/// unwidenable conflict; this is the same kind of failure, just for a
-/// builtin's dynamically-typed param instead of a user type parameter) and
-/// fall back to the declared union. Any other output type is returned
-/// unchanged.
+/// The result type of a call whose declared output is a union. The math-variant
+/// gates (`Blend`, `lerp`, `Easing`) carry the variant their inputs carry, so
+/// the output is the widening join (`crate::types::coerce::widening_join`) of
+/// the union-typed parameters' argument types; left a union, it would match no
+/// operator overload. Arguments with no common widening (`Blend(vector, 1, t)`)
+/// are WS033, as for the generic solver, falling back to the declared union.
+/// Any other output type is returned unchanged.
 fn union_output_type(
-    ctx: &mut TypeCheckCtx,
-    c: &crate::catalog::calls::CallSpec,
+    ctx: &mut TypeCheckCtx<'_>,
+    c: &CallSpec,
     args: &[CallArg],
     out_index: usize,
     range: &SourceRange,
@@ -30,23 +26,12 @@ fn union_output_type(
     // Get/Add Component give a reference of the type their `$Component/...` names.
     if matches!(
         c.gate_class,
-        crate::ir::gate_class::GET_COMPONENT | crate::ir::gate_class::ADD_COMPONENT
+        gate_class::GET_COMPONENT | gate_class::ADD_COMPONENT
     ) {
         let pos = c.params.iter().position(|p| p.name == "componentType");
         let arg = args
-            .iter()
-            .find_map(|a| match a {
-                CallArg::Named { name, value, .. } if name == "componentType" => Some(value),
-                _ => None,
-            })
-            .or_else(|| {
-                args.iter()
-                    .filter_map(|a| match a {
-                        CallArg::Positional(e) => Some(e),
-                        _ => None,
-                    })
-                    .nth(pos?)
-            });
+            .named("componentType")
+            .or_else(|| args.positionals().nth(pos?));
         return match arg.and_then(super::props::component_type_arg) {
             Some(class) => Type::Component(class.to_string()),
             None => {
@@ -67,38 +52,27 @@ fn union_output_type(
         };
     }
     // `GetBrickProperty` reads whatever its constant `property` holds.
-    if c.gate_class == crate::ir::gate_class::GET_BRICK_PROPERTY {
+    if c.gate_class == gate_class::GET_BRICK_PROPERTY {
         let pos = c.params.iter().position(|p| p.name == "property");
         let property = args
-            .iter()
-            .find_map(|a| match a {
-                CallArg::Named { name, value, .. } if name == "property" => Some(value),
-                _ => None,
-            })
-            .or_else(|| {
-                args.iter()
-                    .filter_map(|a| match a {
-                        CallArg::Positional(e) => Some(e),
-                        _ => None,
-                    })
-                    .nth(pos?)
-            });
+            .named("property")
+            .or_else(|| args.positionals().nth(pos?));
         return property
             .and_then(super::sig::brick_property_member)
             .and_then(super::sig::brick_property_type)
             .unwrap_or(Type::Any);
     }
-    // Generic passthrough builtins (`Sleep`/`SleepTicks`/`Select`/`Swap`): a
-    // `Type::Param(name)` output — bare or as a Record field — resolves to the
-    // widening join of the args at that same param's positions, so
-    // `Select(cond, a: T, b: T) -> T` yields the args' type instead of `any`.
+    // Generic passthrough builtins (`Sleep`, `SleepTicks`, `Select`, `Swap`): a
+    // `Type::Param(name)` output, bare or as a record field, is the widening join
+    // of the arguments at that parameter's positions, so
+    // `Select(cond, a: T, b: T) -> T` gives the arguments' type, not `any`.
     if type_has_param(&declared) {
         return resolve_param_output(ctx, c, args, &declared, range);
     }
     // The output rides the input variant when it is a union directly (Blend /
     // lerp / Easing) OR contains one as a Record FIELD (a stateful gate like
     // `Tween`, whose `{ Value: <variant>, Arrived: exec }` should give a float
-    // `Value` for a float target, not the full `float|int|vector|…` union). Grab
+    // `Value` for a float target, not the full `float|int|vector|...` union). Grab
     // that union's mask; nothing to resolve if there is no union.
     let mask: Vec<Type> = match &declared {
         Type::Union(m) => m.clone(),
@@ -132,8 +106,8 @@ fn union_output_type(
                                  widening (the math-variant params must all agree, up to \
                                  numeric/rotation widening)",
                                 c.name,
-                                crate::analysis::types::type_str(&prev),
-                                crate::analysis::types::type_str(&t),
+                                type_str(&prev),
+                                type_str(&t),
                             ),
                             range.clone(),
                         );
@@ -144,9 +118,8 @@ fn union_output_type(
         }
     }
     let resolved = match joined {
-        // Bool never appears as a math-variant on its own (the mask is
-        // Float/Int/Vector/Rotator/Quat/Color) — an all-bool fold widens one
-        // step further to Int, the mask's narrowest numeric member.
+        // Bool is never a math variant on its own (the mask is Float, Int, Vector,
+        // Rotator, Quat, Color), so an all-bool join widens one more step to Int.
         Some(Type::Bool) if !mask_contains(&mask, &Type::Bool) => Type::Int,
         Some(t) => t,
         None => return declared,
@@ -172,22 +145,16 @@ fn union_output_type(
     }
 }
 
-/// Resolve a `Type::Param(name)` output (bare or nested in a Record/Array/Tuple)
-/// to the widening join of the arguments passed to the same-named `Param` params
-/// — the monomorphization for a generic builtin (`Sleep`/`Select`/`Swap`). An
-/// unresolved param (no concrete positional arg) falls back to `Any`, never
-/// `Param` — a `Param` must never reach emit. Args with no common widening
-/// (e.g. `Select(c, 5, "hello")`) are a genuine conflict — the same failure
-/// `union_output_type` reports for math-variant params and the generic-mod
-/// solver reports for a user type parameter — so it's reported the same way:
-/// emit `WS033` and fall back to `Any` so the conflict doesn't cascade.
-/// Delegates to `resolve_param_output_inner`, which memoizes each param name
-/// in `resolved` so a name referenced more than once in the output type
-/// (`Swap`'s `Output`/`OutputB` both share `T`) is only joined — and any
-/// conflict only reported — once.
+/// Resolve a `Type::Param(name)` output (bare or inside a record, array or
+/// tuple) to the widening join of the arguments passed for the same-named
+/// parameters: the monomorphization of a generic builtin (`Sleep`, `Select`,
+/// `Swap`). No concrete argument gives `Any`, never a `Param`, which must not
+/// reach emit. No common widening (`Select(c, 5, "hello")`) is WS033, falling
+/// back to `Any`. `resolve_param_output_inner` memoizes per name, so a name used
+/// twice (`Swap`'s `Output` and `OutputB`) is joined and reported once.
 fn resolve_param_output(
-    ctx: &mut TypeCheckCtx,
-    c: &crate::catalog::calls::CallSpec,
+    ctx: &mut TypeCheckCtx<'_>,
+    c: &CallSpec,
     args: &[CallArg],
     ty: &Type,
     range: &SourceRange,
@@ -197,8 +164,8 @@ fn resolve_param_output(
 }
 
 fn resolve_param_output_inner(
-    ctx: &mut TypeCheckCtx,
-    c: &crate::catalog::calls::CallSpec,
+    ctx: &mut TypeCheckCtx<'_>,
+    c: &CallSpec,
     args: &[CallArg],
     ty: &Type,
     range: &SourceRange,
@@ -231,8 +198,8 @@ fn resolve_param_output_inner(
                                         "'{}': '{name}' is {} from one argument but {} from \
                                          another, and all '{name}' arguments must be the same type",
                                         c.name,
-                                        crate::analysis::types::type_str(&prev),
-                                        crate::analysis::types::type_str(&t),
+                                        type_str(&prev),
+                                        type_str(&t),
                                     ),
                                     range.clone(),
                                 );
@@ -275,17 +242,13 @@ fn resolve_param_output_inner(
     }
 }
 
-/// The result type of a call with at least one declared output — shared by
-/// the builtin and receiver call arms. A single output widens directly via
-/// `union_output_type`; multiple outputs each widen independently (per their
-/// own `out_index`) and assemble into a field-keyed record, so a multi-output
-/// gate whose field rides the math variant (like a single-output `Blend`)
-/// still resolves to the argument type instead of the declared union. Callers
-/// with a zero-output `CallSpec` handle that fallback themselves (the
-/// builtin and receiver arms differ there) and never call this helper.
+/// The result type of a call with at least one declared output, for the
+/// builtin and receiver arms. One output widens through `union_output_type`;
+/// several each widen on their own `out_index` and form a field-keyed record.
+/// A zero-output `CallSpec` is the callers' own fallback.
 pub(super) fn output_record_type(
-    ctx: &mut TypeCheckCtx,
-    c: &crate::catalog::calls::CallSpec,
+    ctx: &mut TypeCheckCtx<'_>,
+    c: &CallSpec,
     args: &[CallArg],
     range: &SourceRange,
 ) -> Type {
@@ -309,37 +272,20 @@ pub(super) fn output_record_type(
     Type::call_result(outputs)
 }
 
-/// Type a resolved user `mod`/`chip` call from its already-inferred positional
-/// argument types. Shared by the plain-identifier call path and the
-/// `self`-receiver method path (which prepends the receiver as positional
-/// arg 0). Emits WS021 (use-before-declaration), WS022 (argument count) and
-/// WS033 (generic inference), then returns the call's result type — the
-/// (possibly monomorphized) single output, a record of the outputs, or `any`.
-///
-/// `positional_count` and `positional_arg_types` must already include the
-/// receiver for a method call. `name_range` anchors the count / decl-order
-/// diagnostics; `call_range` anchors the generic-inference one. `args` feeds
-/// the `sig::check_args` arg-coercion pass — it must be the FULL `CallArg`
-/// list, receiver included as its own leading `CallArg::Positional` for a
-/// method call (mirroring `positional_arg_types`).
-/// The number of positional args a `...t` spread contributes, or `None` when its
-/// arity isn't statically known (a non-tuple / unresolved type — the call stays
-/// arity-dynamic then). A tuple/record LITERAL counts its fields; a bound
-/// tuple/record uses its recorded type.
-fn spread_arity(ctx: &TypeCheckCtx, t: &Expr) -> Option<usize> {
+/// The number of positional arguments a `...t` spread contributes, or `None`
+/// when its arity is unknown (a non-tuple or unresolved type keeps the call
+/// arity-dynamic). A tuple or record literal counts its fields; a bound one uses
+/// its recorded type.
+fn spread_arity(ctx: &TypeCheckCtx<'_>, t: &Expr) -> Option<usize> {
     if let Expr::RecordLit { fields, .. } = t {
         return Some(
             fields
                 .iter()
-                .filter(|f| matches!(f, crate::ast::RecordLitField::Named { .. }))
+                .filter(|f| matches!(f, RecordLitField::Named { .. }))
                 .count(),
         );
     }
-    let r = t.range();
-    let ty = ctx
-        .type_of_expr
-        .get(&(r.file.clone(), r.start.offset, r.end.offset))?;
-    match unwrap_ref(ty) {
+    match unwrap_ref(ctx.recorded_type(t.range())?) {
         Type::Tuple(e) => Some(e.len()),
         Type::Record(f) | Type::Outputs(f) => Some(f.len()),
         _ => None,
@@ -351,16 +297,11 @@ fn spread_arity(ctx: &TypeCheckCtx, t: &Expr) -> Option<usize> {
 /// arguments' types in order), and each element of a `...tuple` spread. Ends
 /// at a spread whose elements are unknown, past which the slots don't line up.
 fn spread_arg_types(
-    ctx: &TypeCheckCtx,
+    ctx: &TypeCheckCtx<'_>,
     args: &[CallArg],
     positional_arg_types: &[Type],
 ) -> Vec<Type> {
-    let recorded = |e: &Expr| {
-        let r = e.range();
-        ctx.type_of_expr
-            .get(&(r.file.clone(), r.start.offset, r.end.offset))
-            .cloned()
-    };
+    let recorded = |e: &Expr| ctx.recorded_type(e.range()).cloned();
     let mut positional = positional_arg_types.iter();
     let mut out = Vec::new();
     for a in args {
@@ -370,8 +311,8 @@ fn spread_arg_types(
             CallArg::Spread(Expr::RecordLit { fields, .. }) => {
                 for f in fields {
                     match f {
-                        crate::ast::RecordLitField::Named { value, .. } => {
-                            out.push(recorded(value).unwrap_or(Type::Any))
+                        RecordLitField::Named { value, .. } => {
+                            out.push(recorded(value).unwrap_or(Type::Any));
                         }
                         _ => return out,
                     }
@@ -380,7 +321,7 @@ fn spread_arg_types(
             CallArg::Spread(t) => match recorded(t).map(|t| unwrap_ref(&t)) {
                 Some(Type::Tuple(elems)) => out.extend(elems),
                 Some(Type::Record(fields) | Type::Outputs(fields)) => {
-                    out.extend(fields.into_iter().map(|(_, t)| t))
+                    out.extend(fields.into_iter().map(|(_, t)| t));
                 }
                 _ => return out,
             },
@@ -389,9 +330,21 @@ fn spread_arg_types(
     out
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Type a resolved user `mod` or `chip` call from its inferred positional
+/// argument types, for the plain call and the `self` method path (which
+/// prepends the receiver as argument 0). Reports WS021 (use before
+/// declaration), WS022 (argument count) and WS033 (generic inference) and
+/// returns the result type: the single output, a record of the outputs, or
+/// `any`. For a method call, `positional_count`, `positional_arg_types` and
+/// `args` (the full list, for `sig::check_args`) include the receiver.
+/// `name_range` anchors the count and order diagnostics, `call_range` the
+/// inference one.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each input is a separate part of the call site"
+)]
 pub(super) fn type_user_symbol_call(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     name: &str,
     sym: &SymbolInfo,
     positional_arg_types: &[Type],
@@ -403,11 +356,9 @@ pub(super) fn type_user_symbol_call(
     call_range: &SourceRange,
     name_range: &SourceRange,
 ) -> Type {
-    // Use-before-declaration. Chips/mods are registered in source order during
-    // lowering, so a call whose declaration lexically follows the call site
-    // cannot resolve — it would synthesise an `_Unsupported` gate that silently
-    // reads 0 at runtime. Only applies to same-file chip/mod decls (imports
-    // live elsewhere and are always available).
+    // Use before declaration: chips and mods register in source order during
+    // lowering, so a call above its same-file declaration cannot resolve and would
+    // become an `_Unsupported` gate reading 0. Imports are always available.
     if sym.kind == SymbolKind::Chip
         && sym.signature.is_some()
         && sym.decl_range.file == name_range.file
@@ -424,13 +375,11 @@ pub(super) fn type_user_symbol_call(
             name_range.clone(),
         );
     }
-    // Argument-count check. The positional-argument count must lie between the
-    // required count and the parameter count (trailing params with a default
-    // value may be omitted) — each param
-    // (including a whole-record or destructured one, and the `self` receiver)
-    // takes exactly one positional arg. A `...tuple` spread contributes its
-    // element count; the check runs whenever every spread's arity is known,
-    // staying dynamic (skipped) only for a spread of unknown/non-tuple type.
+    // The positional count must lie between the required count and the
+    // parameter count (defaulted trailing parameters may be omitted); every
+    // parameter, a record or destructured one and the `self` receiver included,
+    // takes one positional argument. A `...tuple` spread contributes its element
+    // count, and the check is skipped only for a spread of unknown arity.
     if let Some(sig) = &sym.signature {
         let expected = sig.params.len();
         let mut effective = positional_count;
@@ -443,9 +392,8 @@ pub(super) fn type_user_symbol_call(
                 }
             }
         }
-        // A variadic mod (`...rest`) fixes only the leading params; the trailing
-        // args are captured, so the count just has to REACH the fixed count.
-        // Trailing params with a default value may be omitted.
+        // A variadic mod (`...rest`) fixes only its leading parameters, so the count
+        // only has to reach the fixed count; defaulted ones may still be omitted.
         let required = sig.required.min(expected);
         let count_wrong = if sig.variadic {
             effective < expected
@@ -476,7 +424,6 @@ pub(super) fn type_user_symbol_call(
             );
         }
     }
-    let _ = has_spread;
     if sym.kind == SymbolKind::Chip
         && let Some(decl) = ctx.resolve_mod(name)
         && decl.range.file == sym.decl_range.file
@@ -485,12 +432,10 @@ pub(super) fn type_user_symbol_call(
         super::shadow::note_call(ctx, name, &decl);
     }
     let Some(sig) = &sym.signature else {
-        // The callee resolved to a non-callable symbol — a var / let / array /
-        // buffer / input / param, not a mod, chip, or function. Without this the
-        // call typed as `any` with no diagnostic and lowering emitted an
-        // `_Unsupported` gate that reads 0 — a silent miscompile. Common causes:
-        // an index typo (`xs(i)` for `xs[i]`) and a chained comparison the
-        // parser reads as an explicit-type-argument call (`a < b > (c)`).
+        // The callee resolved to a non-callable symbol (a var, let, array, buffer,
+        // input or parameter). Untyped, it would lower to an `_Unsupported` gate
+        // reading 0. Common causes: an index typo (`xs(i)` for `xs[i]`) and a chained
+        // comparison read as an explicit-type-argument call (`a < b > (c)`).
         ctx.emit(
             "WS038",
             format!("`{name}` is not callable: only mods, chips, and functions can be called"),
@@ -498,15 +443,11 @@ pub(super) fn type_user_symbol_call(
         );
         return Type::Any;
     };
-    // Exec-requiring mod called from a PURE position. A mod whose inlined body
-    // reads or writes a container (or does so transitively) demands an exec
-    // context; the per-op WS007 is deferred inside the body (checked in exec
-    // mode) so an exec-only mod stays legal, but a pure call inlines those ops
-    // into pure context, where a container read yields the container REFERENCE
-    // instead of a value and silently miscompiles. Mirror the builtin exec-call
-    // WS007: fire unless the call supplies its own `exec =` trigger. Only
-    // mods/chips (`SymbolKind::Chip`) are scannable via `resolve_mod`; a plain
-    // `fn` never hosts a container op, so it is left alone.
+    // An exec-requiring mod called from a pure position: its container ops, whose
+    // WS007 is deferred inside the body, would inline into pure context, where a
+    // container read yields the reference instead of a value. Reported as the
+    // builtin exec-call WS007 is, unless the call has its own `exec =` trigger.
+    // Only mods and chips (`SymbolKind::Chip`) are scanned through `resolve_mod`.
     if ctx.exec_mode() != ExecMode::Exec
         && !has_exec_arg
         && sym.kind == SymbolKind::Chip
@@ -521,13 +462,11 @@ pub(super) fn type_user_symbol_call(
             name_range.clone(),
         );
     }
-    // Arg-driven inference for a generic mod/chip call: collect an equality
-    // constraint from every (declared param type, inferred arg type) pair, solve
-    // for each type param, and substitute the result into the output types
-    // below. Guarded on `type_params` being non-empty so a non-generic call
-    // takes exactly the pre-generics path — `subst` stays `None` and `out_ty`
-    // is a plain clone.
-    let subst: Option<crate::types::infer::Subst> = if sig.type_params.is_empty() {
+    // Inference for a generic call: an equality constraint from every (declared
+    // parameter type, inferred argument type) pair, solved per type parameter and
+    // substituted into the output types below. A non-generic call skips it
+    // (`subst` stays `None`).
+    let subst: Option<Subst> = if sig.type_params.is_empty() {
         if !type_args.is_empty() {
             ctx.emit(
                 "WS033",
@@ -556,7 +495,7 @@ pub(super) fn type_user_symbol_call(
             );
             None
         } else {
-            let mut s = crate::types::infer::Subst::new();
+            let mut s = Subst::new();
             for ((pname, mask), te) in sig.type_params.iter().zip(type_args.iter()) {
                 let ty = resolve_type_expr(ctx, te);
                 if !crate::types::classes::mask_contains(mask, &ty) {
@@ -564,7 +503,7 @@ pub(super) fn type_user_symbol_call(
                         "WS033",
                         format!(
                             "`{pname}` = {}, which isn't allowed by its bound",
-                            crate::analysis::types::type_str(&ty),
+                            type_str(&ty),
                         ),
                         te.range().clone(),
                     );
@@ -590,17 +529,17 @@ pub(super) fn type_user_symbol_call(
             Ok(s) => Some(s),
             Err(e) => {
                 let msg = match &e {
-                    crate::types::infer::InferError::Conflict { var, a, b } => format!(
+                    InferError::Conflict { var, a, b } => format!(
                         "cannot infer '{var}': it's {} from one argument but {} from another, and all '{var}' arguments must be the same type",
-                        crate::analysis::types::type_str(a),
-                        crate::analysis::types::type_str(b),
+                        type_str(a),
+                        type_str(b),
                     ),
-                    crate::types::infer::InferError::Unpinnable(var) => {
+                    InferError::Unpinnable(var) => {
                         format!("cannot infer type parameter '{var}'; annotate the argument(s)")
                     }
-                    crate::types::infer::InferError::OutOfMask { var, ty, .. } => format!(
+                    InferError::OutOfMask { var, ty, .. } => format!(
                         "'{var}' = {}, which isn't allowed by its bound",
-                        crate::analysis::types::type_str(ty),
+                        type_str(ty),
                     ),
                 };
                 ctx.emit("WS033", msg, call_range.clone());
@@ -608,23 +547,8 @@ pub(super) fn type_user_symbol_call(
             }
         }
     };
-    // Validate each argument against its (substituted) parameter type — the
-    // same coercion the wire layer applies (`PortsAreCompatible`), routed
-    // through the shared `sig::check_args` (arity already checked above as
-    // WS022, so `check_arity = false` here). Skipping this would let
-    // `f(int)` on a `vector` param — or a receiver call `x.m()` whose `x`'s
-    // type doesn't match `self` — pass clean and then miscompile at the wire
-    // level. This runs for a `...tuple` spread too: `check_args` expands the
-    // spread into per-element slots and coerces each against its param, so a
-    // mismatched element (`g(...(1, aVector))` on `int` params) is caught the
-    // same as if written out. A spread whose arity isn't statically known (a
-    // `...rest` typed `any`) contributes no slots, so it stays lenient rather
-    // than firing spurious errors. `check_args`'s own `Wire`-arm coerce already
-    // treats `Any`/`Opaque` args as always-`Same` and skips a still-generic
-    // (`Type::Param`-carrying) param — the latter left to the WS033
-    // inference diagnostics above.
-    // The instantiation this call builds: lowering takes these type arguments
-    // as they are, and its body is checked for exactly them.
+    // The instantiation this call builds: lowering takes these type arguments as
+    // they are, and its body is checked for exactly them.
     if !sig.type_params.is_empty()
         && let Some(s) = &subst
     {
@@ -639,16 +563,20 @@ pub(super) fn type_user_symbol_call(
             .map(|(p, _)| p.clone())
             .zip(type_args.iter().cloned())
             .collect();
-        let key = (sym.decl_range.file.clone(), sym.decl_range.start.offset);
+        let key = sym.decl_range.start_key();
         ctx.generic_call_args.entry(key).or_default().push(named);
         super::instances::demand(ctx, &sym.decl_range, type_args, call_range);
     }
+    // Each argument against its substituted parameter type, the coercion the
+    // wire layer applies, through `sig::check_args` (arity was WS022 above).
+    // A `...tuple` spread is checked per element; one of unknown arity adds no
+    // slots, and a still-generic parameter is left to WS033.
     let checked = sig_of_fnchip(name, sig, subst.as_ref());
     check_args(
-        ctx, &checked, args, 0, /* check_arity */ false,
-        // A user mod/chip DOES know its full param list, so flag an unknown
-        // named arg (`g(1, bogus = 5)`) as WS041 — the arity check is off
-        // only to avoid double-reporting count against WS022 above.
+        ctx, &checked, args, /* check_arity */ false,
+        // A user mod or chip knows its full parameter list, so an unknown named
+        // argument (`g(1, bogus = 5)`) is WS041; the arity check is off only because
+        // WS022 above already reported the count.
         /* check_named */
         true, call_range,
     );
@@ -670,17 +598,14 @@ pub(super) fn type_user_symbol_call(
         }
         return Type::call_result(fields);
     }
-    // No outputs at all: the call has nothing to give a value position. `Never`
-    // is the existing "produces no value" type (a void container mutation like
-    // `a.push(x)` already carries it), so the shared rejections
-    // (`let_binding::reject_never_value`, `infer::coerce_or_emit`) catch a
-    // consumer that reads it while every statement-position call stays clean.
-    // `Any` used to make `o = noret(1)` typecheck, after which lowering handed
-    // the caller its exec continuation and wired an exec pin into the store's
-    // `Value`. An `exec =` trigger keeps `Any`: that spelling carries the
-    // chain's completion, which lowering does return as a real port.
-    // A `fn` call is a gate with a real `Completed` pin, so it returns that
-    // exec as its one field.
+    // No outputs: the call has no value to give. `Never` is the "no value" type (a
+    // void container mutation such as `a.push(x)` carries it), so the shared
+    // rejections (`let_binding::reject_never_value`, `infer::coerce_or_emit`)
+    // catch a consumer while a statement-position call stays clean. As `Any`,
+    // `o = noret(1)` would wire an exec pin into the store's `Value`. An
+    // `exec =` trigger keeps `Any`, since that spelling returns the chain's
+    // completion as a real port. A `fn` call returns its `Completed` exec as its
+    // one field.
     if has_exec_arg && sig.is_fn {
         return Type::outputs(vec![("exec".into(), Type::Exec)]);
     }
@@ -690,10 +615,10 @@ pub(super) fn type_user_symbol_call(
     Type::Never
 }
 
-/// Reference-only types: like a variable ref, these wire and reroute but are not
-/// values — they can't be selected, stored, or operated on. Covers the explicit
-/// `ref T` var ref plus the opaque `zone`/`teleport` component references and
-/// the compile-time-constant `prefab` reference.
+/// Reference-only types: like a variable ref they wire and reroute, but they
+/// are not values and cannot be selected, stored or operated on. The explicit
+/// `ref T`, the opaque `zone` and `teleport` component references, and the
+/// compile-time `prefab` reference.
 pub(super) fn is_reference_type(t: &Type) -> bool {
     matches!(
         t,
@@ -701,17 +626,13 @@ pub(super) fn is_reference_type(t: &Type) -> bool {
     )
 }
 
-// ---------- generic mod/chip call-site inference ----------
+// Generic mod and chip call-site inference
 //
-// Arg-driven inference at a call to a generic `mod`/`chip`: `mono::call_constraints`
-// walks each (declared param type, inferred arg type) pair in lockstep and
-// records an equality `Constraint` everywhere the param side names a
-// `Type::Param`. `types::infer::solve` turns the collected constraints into a
-// `Subst`; `mono::substitute` then replaces every `Type::Param` in the
-// signature's output type with its solved binding. The
-// `call_constraints`/`substitute`/`mask_for_param` helpers live in the shared
-// `types::mono` module so the lowering-side monomorphizer reuses the
-// exact same inference at each generic-mod inline site.
+// `mono::call_constraints` walks each (declared parameter type, inferred
+// argument type) pair and records an equality `Constraint` wherever the
+// parameter side names a `Type::Param`; `types::infer::solve` turns them into a
+// `Subst`, and `mono::substitute` applies it to the output type. These live in
+// `types::mono`, so lowering's monomorphizer infers the same way.
 
 /// Operand type for operator-overload resolution: unwrap a `ref`, then take a
 /// gate read's first output. A gate like `ParseInt`/`GetDamage` exposes
@@ -726,13 +647,12 @@ pub(super) fn op_operand_type(t: &Type) -> Type {
     }
 }
 
-/// Adapt a builtin/receiver `CallSpec` into the generic `CallSignature` shape
-/// `sig::check_args` validates against — the bridge that lets both call forms
-/// route through the one arg checker. Each `CallParam` maps to a `Param` whose
-/// `ParamKind` mirrors exactly the per-param branch the arg checker takes (enum
-/// config / composite config / scalar config / ordinary wire), keyed off the
-/// gate PORT name so the config validators' schema lookups are unchanged.
-pub(super) fn sig_of_callspec(spec: &crate::catalog::calls::CallSpec) -> CallSignature {
+/// A builtin or receiver `CallSpec` as the `CallSignature` `sig::check_args`
+/// validates, so both call forms share one argument checker. Each `CallParam`
+/// maps to a `Param` whose `ParamKind` is the branch the checker takes (enum,
+/// composite or scalar config, or ordinary wire), keyed by the gate port name
+/// the config validators' schema lookups use.
+pub(super) fn sig_of_callspec(spec: &CallSpec) -> CallSignature {
     let params = spec
         .params
         .iter()
@@ -763,24 +683,15 @@ pub(super) fn sig_of_callspec(spec: &crate::catalog::calls::CallSpec) -> CallSig
     }
 }
 
-/// Adapt a user mod/chip's `FnOrChipSig` into a `CallSignature` for
-/// `sig::check_args` — the `type_user_symbol_call` analog of
-/// `sig_of_callspec`. Every param is `ParamKind::Wire`, except a `const`
-/// parameter (`name: const T`, or any parameter of a `const mod`) which
-/// becomes `ParamKind::Const` (user mods have no config-menu params) and
-/// non-optional (user mods have no default params either). `subst` — the
-/// generic-inference result computed by the caller, `None` for a non-generic
-/// call — is applied to each param's type first; a param whose
-/// (possibly-substituted) type still carries a `Type::Param` is left alone
-/// here too — `check_args`'s
-/// own `type_has_param` guard skips it. `config_gate` is `None`: a named arg
-/// that matches no declared param has no data-driven fallback to dispatch to
-/// for a user call.
-fn sig_of_fnchip(
-    name: &str,
-    sig: &FnOrChipSig,
-    subst: Option<&crate::types::infer::Subst>,
-) -> CallSignature {
+/// A user mod or chip's `FnOrChipSig` as a `CallSignature` for
+/// `sig::check_args`, the counterpart of `sig_of_callspec`. Every parameter is
+/// `ParamKind::Wire` except a `const` one (`name: const T`, or any parameter of
+/// a `const mod`), which is `ParamKind::Const`; parameters past `required` (the
+/// defaulted ones) are optional. `subst`, the caller's generic inference
+/// (`None` for a non-generic call), applies to each type first; a type still
+/// carrying a `Type::Param` is skipped by `check_args`. `config_gate` is
+/// `None`: an unmatched named argument has no data-driven fallback.
+fn sig_of_fnchip(name: &str, sig: &FnOrChipSig, subst: Option<&Subst>) -> CallSignature {
     let params = sig
         .params
         .iter()

@@ -50,18 +50,13 @@ fn same_outcome_at(
 }
 
 #[track_caller]
-fn report(failures: Vec<String>, rows: usize) {
-    crate::test_support::report_failures(&failures, rows);
+fn report(failures: &[String], rows: usize) {
+    crate::test_support::report_failures(failures, rows);
 }
 
 fn codes(src: &str, deps: &[(&str, &str)]) -> Vec<String> {
     match compiled(src, deps, true) {
-        Ok(c) => c
-            .out
-            .diagnostics
-            .iter()
-            .map(|d| d.code.to_string())
-            .collect(),
+        Ok(c) => c.out.diagnostics.iter().map(|d| d.code.clone()).collect(),
         Err(codes) => codes,
     }
 }
@@ -69,15 +64,15 @@ fn codes(src: &str, deps: &[(&str, &str)]) -> Vec<String> {
 /// The codes resolving and type-checking `src` report, with no lowering.
 fn typecheck_codes(src: &str) -> Vec<String> {
     let loader = crate::resolve::MemLoader {
-        files: Default::default(),
+        files: crate::collections::HashMap::default(),
     };
     let resolved = crate::resolve::resolve(src, "main", &loader);
-    let (tc, _) = crate::typecheck::typecheck_with_inference(&resolved.ast, "main");
+    let (tc, _) = crate::typecheck::typecheck_with_inference(&resolved.ast);
     resolved
         .diagnostics
         .iter()
         .chain(&tc.diagnostics)
-        .map(|d| d.code.to_string())
+        .map(|d| d.code.clone())
         .collect()
 }
 
@@ -184,7 +179,7 @@ fn event_parameter_through_an_alias_matrix(full: bool) {
             }
         }
     }
-    report(failures, rows);
+    report(&failures, rows);
 }
 
 /// An alias of a ref received from an event is the ref the sender sends.
@@ -204,7 +199,7 @@ fn an_event_parameter_declared_as_an_alias_of_a_ref_is_that_ref() {
         &[],
         &mut failures,
     );
-    report(failures, 1);
+    report(&failures, 1);
 }
 
 /// A sender and a receiver that disagree are `WS030` whether the receiver
@@ -417,7 +412,7 @@ fn a_chip_parameter_through_an_alias_of_a_ref_binds_as_written() {
         let twin = format!("{written}{}{twin_body}\n", head_for(head, written));
         same_outcome(row, &aliased, &twin, &[], &mut failures);
     }
-    report(failures, rows.len());
+    report(&failures, rows.len());
 }
 
 /// `head`, without the record var when `decls` declares no `R` to give it.
@@ -519,7 +514,7 @@ fn a_program_type_named_like_a_builtin_generic_is_the_programs() {
             }
         }
     }
-    report(failures, rows.len() + 3);
+    report(&failures, rows.len() + 3);
 }
 
 /// A type or enum declared under a builtin type's name is WS107: `Array<T>`
@@ -655,7 +650,7 @@ fn a_library_names_the_enums_it_declares_or_imports() {
     assert!(save_dump(src, &[("le", lib)], true).is_ok());
     let lib = "import \"d\"\nmod me() -> int { var e: Dir = Dir.B\n return EnumToInt(e) }\n";
     assert!(save_dump(src, &[("le", lib), ("d", "enum Dir { A, B }\n")], true).is_ok());
-    report(failures, rows);
+    report(&failures, rows);
 }
 
 /// Every type a lowering or typecheck path reads from a written annotation is
@@ -726,19 +721,12 @@ fn no_type_is_read_without_its_aliases() {
     }
 }
 
-/// The second line behind `typecheck::enums::EnumRegistry`, which hands out
-/// no enum by a raw name but through these, each called only where it may
-/// be, whatever the registry is called there and however the call is spelled
-/// (`reg.f(..)`, `EnumRegistry::f(&reg, ..)`, `EnumRegistry::f` as a value):
-/// a resolved type (`of`, never handed a type built in place, directly or
-/// through a binding), an expression path (`expression_path`, where an alias
-/// names no variants), the variants a `match` cites (`citing_arms`), the
-/// editor's text (`editor_lookup`, which only the editor's build has), or, by
-/// the alias-aware resolvers alone, a written type name (`written_name`,
-/// `type_named`). The lookup by written variant text (`declaring_variants`)
-/// is the registry's own. The registry hands out no iterator of its enums,
-/// and a by-name table of enums kept anywhere else (any map keyed by a name
-/// string, or list of name and enum pairs) would bypass it.
+/// `typecheck::enums::EnumRegistry` hands out enums only through its methods,
+/// each called only where it may be however the call is spelled: `of` (a resolved
+/// type, never one built in place), `expression_path`, `citing_arms`,
+/// `editor_lookup` (editor build only), and `written_name`/`type_named` (the
+/// alias-aware resolvers alone); `declaring_variants` is the registry's own. No
+/// other file keeps a by-name table of enums, which would bypass the registry.
 #[test]
 fn the_enum_registry_is_read_by_a_written_name_only_in_the_resolvers() {
     fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
@@ -1014,7 +1002,7 @@ fn an_alias_of_an_enum_in_a_payload_or_a_field_is_the_enum() {
         "{:?}",
         codes(&missing, &[])
     );
-    report(failures, rows.len() + 1);
+    report(&failures, rows.len() + 1);
 }
 
 /// An enum of an `import * as` module is the type `ns.Name` and its variants
@@ -1066,7 +1054,7 @@ fn an_enum_of_a_namespace_import_reads_as_its_named_import() {
         "{:?}",
         codes(&clash, &deps)
     );
-    report(failures, rows.len());
+    report(&failures, rows.len());
 }
 
 /// A library naming the enum it imports, in a program that declares another
@@ -1094,7 +1082,7 @@ fn a_library_enum_hidden_by_a_duplicate_is_named_as_imported() {
         fold_mode: crate::FoldMode::ForceOn,
     };
     let Err(crate::CompileError::HasErrors(errors)) =
-        crate::compile_with_loader(input, Default::default(), &loader)
+        crate::compile_with_loader(input, crate::emit::EmitOptions::default(), &loader)
     else {
         panic!("compiles");
     };

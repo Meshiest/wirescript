@@ -4,12 +4,13 @@
 
 pub mod properties;
 
-use crate::collections::HashMap;
-
 use serde::Deserialize;
 
-/// Raw port-type tags as they appear in the JSON. The typecheck phase
-/// (Phase 3) maps these to the `Type` ADT.
+use crate::collections::HashMap;
+use crate::ir::{Node, PortSide, Type};
+
+/// Raw port-type tags as they appear in the JSON; [`RawPortType::to_type`]
+/// maps them to [`Type`].
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum RawPortType {
@@ -34,23 +35,22 @@ impl RawPortType {
     /// The IR type of a port with this tag. The wildcard `any` port is
     /// `any_as` (an array gate's element type, say) and an exec port is
     /// `exec_as`; a reference is `any`.
-    pub fn to_type(self, any_as: &crate::ir::Type, exec_as: &crate::ir::Type) -> crate::ir::Type {
-        use crate::ir::Type;
+    pub fn to_type(self, any_as: &Type, exec_as: &Type) -> Type {
         match self {
-            RawPortType::Bool => Type::Bool,
-            RawPortType::Int => Type::Int,
-            RawPortType::Float => Type::Float,
-            RawPortType::String => Type::String,
-            RawPortType::Vector => Type::Vector,
-            RawPortType::Rotator => Type::Rotator,
-            RawPortType::Color => Type::Color,
-            RawPortType::Entity => Type::Entity,
-            RawPortType::Character => Type::Character,
-            RawPortType::Controller => Type::Controller,
-            RawPortType::Brick => Type::Brick,
-            RawPortType::Any => any_as.clone(),
-            RawPortType::Exec => exec_as.clone(),
-            RawPortType::VarRef | RawPortType::ArrayVarRef => Type::Any,
+            Self::Bool => Type::Bool,
+            Self::Int => Type::Int,
+            Self::Float => Type::Float,
+            Self::String => Type::String,
+            Self::Vector => Type::Vector,
+            Self::Rotator => Type::Rotator,
+            Self::Color => Type::Color,
+            Self::Entity => Type::Entity,
+            Self::Character => Type::Character,
+            Self::Controller => Type::Controller,
+            Self::Brick => Type::Brick,
+            Self::Any => any_as.clone(),
+            Self::Exec => exec_as.clone(),
+            Self::VarRef | Self::ArrayVarRef => Type::Any,
         }
     }
 }
@@ -107,7 +107,7 @@ pub struct ComponentSpec {
     #[serde(default)]
     pub description: String,
     /// Space-separated search keywords for the gate picker (from the game's
-    /// SearchTags metadata); empty for gates the game hasn't tagged.
+    /// `SearchTags` metadata); empty for gates the game hasn't tagged.
     #[serde(default)]
     pub search_tags: String,
     /// The game's grouping (`Gameplay`, `Environment`, ...); empty for most
@@ -123,9 +123,9 @@ pub struct ComponentSpec {
     pub family: String,
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
-    /// Settings-menu (non-wire) config properties the game exposes on this gate
-    /// — e.g. Sweep's `bOnlyHitPlayerBodyParts`. Not wireable; set via the
-    /// gate's editor settings. Empty for gates without any.
+    /// Settings-menu (non-wire) config properties the game exposes on this
+    /// gate, e.g. Sweep's `bOnlyHitPlayerBodyParts`. Not wireable. Empty for
+    /// gates without any.
     #[serde(default)]
     pub config: Vec<ConfigProperty>,
 }
@@ -277,29 +277,27 @@ impl Catalog {
 
     /// Is `port` a wire input on `gate_class`, per the game's own dump?
     ///
-    /// A gate can carry settable values that are *not* wireable — e.g.
-    /// `DisplayText.FontSize` is a data field with a default but has no input
-    /// port. Wiring one produces a file the game rejects at load, so a constant
-    /// bound to such a port has to be written as data instead.
+    /// A gate can carry settable values that are *not* wireable (e.g.
+    /// `DisplayText.FontSize` is a data field with no input port). The game
+    /// rejects a wire into one at load, so such a constant is written as data.
     ///
-    /// Unknown classes (pseudo gates, internals) answer `true`: they are not in
-    /// the inventory, and treating them as wireable keeps existing behavior.
+    /// Classes not in the inventory (pseudo gates, internals) answer `true`.
     pub fn is_wire_input(&self, gate_class: &str, port: &str) -> bool {
-        self.has_wire_port(gate_class, crate::ir::PortSide::Input, port)
+        self.has_wire_port(gate_class, PortSide::Input, port)
     }
 
     /// Is `port` a wire port on the `side` of `gate_class`, per the game's
     /// own dump? A composite sub-port (`Position.X`) is one when its parent
-    /// (`Position`) is a composite port listing that sub-port: Vector2D
+    /// (`Position`) is a composite port listing that sub-port: `Vector2D`
     /// layout ports expose each axis as an individually-wireable float.
     /// Unknown classes answer `true`, as in [`Catalog::is_wire_input`].
-    pub fn has_wire_port(&self, gate_class: &str, side: crate::ir::PortSide, port: &str) -> bool {
+    pub fn has_wire_port(&self, gate_class: &str, side: PortSide, port: &str) -> bool {
         let Some(spec) = self.find_by_class(gate_class) else {
             return true;
         };
         let ports = match side {
-            crate::ir::PortSide::Input => &spec.component.inputs,
-            crate::ir::PortSide::Output => &spec.component.outputs,
+            PortSide::Input => &spec.component.inputs,
+            PortSide::Output => &spec.component.outputs,
         };
         ports.iter().any(|p| p.name == port)
             || port.split_once('.').is_some_and(|(base, sub)| {
@@ -315,15 +313,15 @@ impl Catalog {
 
 /// The half-size `node`'s brick is placed at, or `None` for a class the
 /// catalog does not know. For a procedural gate this is the variant
-/// `lower::gate_variants` recorded on the node, so layout (which reserves the
+/// `ir::gate_variants` recorded on the node, so layout (which reserves the
 /// cell) and emit (which sizes and centers the brick) can never disagree.
-pub fn node_half_size(node: &crate::ir::Node) -> Option<HalfSize> {
+pub fn node_half_size(node: &Node) -> Option<HalfSize> {
     let spec = default_catalog().find_by_class(node.gate_class)?;
     Some(spec.placed_half_size(node_variant(node)))
 }
 
 /// The procedural-gate variant recorded on `node`, if any.
-pub fn node_variant(node: &crate::ir::Node) -> Option<usize> {
+pub fn node_variant(node: &Node) -> Option<usize> {
     match node.properties.get(&*crate::intern::sym::GATE_VARIANT) {
         Some(crate::ir::Literal::Int(i)) => usize::try_from(*i).ok(),
         _ => None,
@@ -363,7 +361,7 @@ pub fn component_types() -> &'static [ComponentTypeOption] {
                     name: c
                         .label
                         .chars()
-                        .filter(|ch| ch.is_ascii_alphanumeric())
+                        .filter(char::is_ascii_alphanumeric)
                         .collect(),
                     class: &c.option,
                     display_name: &c.label,
@@ -428,11 +426,9 @@ pub fn is_wire_input(gate_class: &str, port: &str) -> bool {
 
 /// The gate's non-wire config property named `field`, if it exists AND is a
 /// type this compiler can bake into a data-struct field: `bool | int | float |
-/// string | enum`. Complex config (`struct | array | object | any`) is
-/// intentionally excluded — those are deferred or already handled by other
-/// mechanisms (asset refs, `WeaponAmmoOverride`, `Value` literal init, …), and
-/// filtering by type means we never double-model them. Drives the data-driven
-/// config-attribute path: any such field is settable via `<FieldName> = value`.
+/// string | enum`. Complex config (`struct | array | object | any`) is excluded:
+/// it is handled elsewhere (asset refs, `WeaponAmmoOverride`, `Value` literal
+/// init) or not at all. Any field returned is settable via `<FieldName> = value`.
 pub fn scalar_config_field(gate_class: &str, field: &str) -> Option<&'static ConfigProperty> {
     let prop = default_catalog()
         .find_by_class(gate_class)?
@@ -482,9 +478,9 @@ pub fn config_field_enum_type(gate_class: &str, field: &str) -> Option<&'static 
     schema.get_enum(ty).is_some().then_some(ty)
 }
 
-/// Is `bare` the trailing `<Enum>_MAX` / bare `MAX` sentinel — the enum's count
-/// bound, not a real selectable member? (Most enums spell it `<Enum>_MAX`; a few,
-/// e.g. EBrickDirection / EBrickAxis, spell it bare `MAX`.)
+/// Is `bare` the enum's count-bound sentinel rather than a selectable member?
+/// Most enums spell it `<Enum>_MAX`; a few (`EBrickDirection`, `EBrickAxis`)
+/// spell it bare `MAX`.
 fn is_enum_sentinel(bare: &str) -> bool {
     bare == "MAX" || bare.ends_with("_MAX")
 }
@@ -496,7 +492,7 @@ fn is_enum_sentinel(bare: &str) -> bool {
 pub fn enum_member_value(enum_type: &str, member: &str) -> Option<i64> {
     let schema = brdb::schemas::bricks_components_schema_max();
     let enum_def = schema.get_enum(enum_type)?;
-    for (id, v) in enum_def.iter() {
+    for (id, v) in enum_def {
         let Some(full) = schema.intern.lookup_ref(*id) else {
             continue;
         };
@@ -505,7 +501,7 @@ pub fn enum_member_value(enum_type: &str, member: &str) -> Option<i64> {
             continue;
         }
         if full == member || bare == member {
-            return Some(*v as i64);
+            return Some(i64::from(*v));
         }
     }
     None
@@ -524,7 +520,7 @@ pub fn enum_member_names(enum_type: &str) -> Vec<String> {
         .filter_map(|k| schema.intern.lookup_ref(*k))
         .map(|name| name.rsplit("::").next().unwrap_or(name))
         .filter(|bare| !is_enum_sentinel(bare))
-        .map(|bare| bare.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
@@ -536,7 +532,7 @@ pub fn enum_has_value(enum_type: &str, value: i64) -> bool {
         return false;
     };
     enum_def.iter().any(|(id, v)| {
-        *v as i64 == value
+        i64::from(*v) == value
             && schema
                 .intern
                 .lookup_ref(*id)

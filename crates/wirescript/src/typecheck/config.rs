@@ -1,31 +1,25 @@
 //! Constant-only gate config validation (WS028).
 
 use super::*;
+use crate::catalog::calls::{CallParam, CallSpec};
+use crate::const_eval::ConstReason;
+use crate::const_scope::Admit;
+use crate::ir::Literal;
 
-/// The English name of a constant literal that has NO scalar config form, or
-/// `None` for every kind that does.
-///
-/// Being constant is necessary but NOT sufficient for a constant-only SCALAR
-/// config slot: a record, array or map is a perfectly good compile-time value
-/// with no single scalar to write into the gate's data field. Skipping this
-/// check lets such a value reach emit, where it is resolved by literal kind in
-/// two different wrong ways:
-///
-///   - an ARRAY silently defaults to a zero/empty value — a program that
-///     type-checks clean and bakes config the author never wrote;
-///   - a RECORD reaches `literal_to_boxed_native` / `literal_to_string`, which
-///     decline it via `EmitError::UnrepresentableLiteral` — a compile error
-///     instead of the more precise WS028 this validator gives.
-///
-/// Rejecting these kinds at every scalar-config validation site closes both at
-/// once. The COMPOSITE config path (`validate_composite_config_arg`, for
-/// `MeshColors` / `WeaponAmmoOverride`) legitimately takes arrays and records
-/// and deliberately does NOT consult this.
-pub(super) fn non_scalar_config_kind(lit: &crate::ir::Literal) -> Option<&'static str> {
+/// The English name of a constant literal kind with no scalar config form, or
+/// `None` for every kind that has one. Being constant is not enough for a
+/// constant-only scalar slot: a record, array or map is a compile-time value
+/// with no scalar to write into the gate's data field. At emit an array would
+/// default to a zero or empty value, and a record would be refused as
+/// `EmitError::UnrepresentableLiteral`, so every scalar-config check rejects
+/// these kinds (WS028). The composite path (`validate_composite_config_arg`,
+/// for `MeshColors` and `WeaponAmmoOverride`) takes arrays and records and does
+/// not use this.
+pub(super) fn non_scalar_config_kind(lit: &Literal) -> Option<&'static str> {
     match lit {
-        crate::ir::Literal::Record(_) => Some("a record"),
-        crate::ir::Literal::Array(_) => Some("an array"),
-        crate::ir::Literal::Map(_) => Some("a map"),
+        Literal::Record(_) => Some("a record"),
+        Literal::Array(_) => Some("an array"),
+        Literal::Map(_) => Some("a map"),
         _ => None,
     }
 }
@@ -33,10 +27,7 @@ pub(super) fn non_scalar_config_kind(lit: &crate::ir::Literal) -> Option<&'stati
 /// The schema enum type of a config (non-wire, data-only) param, if any.
 /// A param is data-only when its port is not a wire input on the gate; such a
 /// param backed by a schema enum field takes a bare member name or an int.
-pub(super) fn call_param_config_enum(
-    spec: &crate::catalog::calls::CallSpec,
-    param: &crate::catalog::calls::CallParam,
-) -> Option<&'static str> {
+pub(super) fn call_param_config_enum(spec: &CallSpec, param: &CallParam) -> Option<&'static str> {
     let port = param.port.as_str();
     if crate::catalog::is_wire_input(spec.gate_class, port) {
         return None;
@@ -45,13 +36,10 @@ pub(super) fn call_param_config_enum(
 }
 
 /// The schema enum type of a WIRE param whose gate data field is also a schema
-/// enum (DisplayText's `justify`/`easing`). A constant enum form bakes into the
+/// enum (`DisplayText`'s `justify`/`easing`). A constant enum form bakes into the
 /// data field exactly like enum config; any other value wires like an ordinary
 /// input.
-pub(super) fn call_param_wire_enum(
-    spec: &crate::catalog::calls::CallSpec,
-    param: &crate::catalog::calls::CallParam,
-) -> Option<&'static str> {
+pub(super) fn call_param_wire_enum(spec: &CallSpec, param: &CallParam) -> Option<&'static str> {
     let port = param.port.as_str();
     if !crate::catalog::is_wire_input(spec.gate_class, port) {
         return None;
@@ -68,14 +56,14 @@ pub(super) fn is_bare_enum_member(enum_type: &str, e: &Expr) -> bool {
 /// Whether a wire-enum argument is written as an enum constant, so it bakes
 /// into the gate's data field instead of wiring: a member name (bare or
 /// quoted), an int literal, or a constant naming a member.
-pub(super) fn is_enum_constant_arg(ctx: &TypeCheckCtx, enum_type: &str, e: &Expr) -> bool {
+pub(super) fn is_enum_constant_arg(ctx: &TypeCheckCtx<'_>, enum_type: &str, e: &Expr) -> bool {
     match e {
         Expr::StringLit { .. } | Expr::IntLit { .. } => true,
         Expr::Ident { .. } => {
             is_bare_enum_member(enum_type, e)
                 || matches!(
-                    crate::lower::expr_to_literal_in(e, &ctx.const_lookup()),
-                    Some(crate::ir::Literal::String(s))
+                    crate::const_eval::expr_to_literal_in(e, &ctx.const_lookup()),
+                    Some(Literal::String(s))
                         if crate::catalog::enum_member_value(enum_type, &s).is_some()
                 )
         }
@@ -88,7 +76,7 @@ pub(super) fn is_enum_constant_arg(ctx: &TypeCheckCtx, enum_type: &str, e: &Expr
 /// an int is range-checked; anything else is rejected (config is constant-only).
 /// `setting` names the argument as a diagnostic quotes it.
 pub(super) fn validate_enum_config_arg(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     enum_type: &str,
     setting: &str,
     e: &Expr,
@@ -96,17 +84,13 @@ pub(super) fn validate_enum_config_arg(
     match e {
         Expr::Ident { name, range } => {
             if crate::catalog::enum_member_value(enum_type, name).is_none() {
-                // Not a member name — fall back to the constant environment
-                // before erroring, so `const EASE = "Bounce"` resolves the
-                // same way a quoted member name would. Enum-member
-                // interpretation stays FIRST (above): a program that already
-                // relies on `name` being a member (or would be if it existed)
-                // keeps that meaning unchanged.
-                match crate::lower::expr_to_literal_in(e, &ctx.const_lookup()) {
-                    Some(crate::ir::Literal::String(s))
+                // Not a member name: try the constant environment before erroring, so
+                // `const EASE = "Bounce"` resolves as a quoted member name would. The member
+                // reading comes first (above).
+                match crate::const_eval::expr_to_literal_in(e, &ctx.const_lookup()) {
+                    Some(Literal::String(s))
                         if crate::catalog::enum_member_value(enum_type, &s).is_some() => {}
-                    Some(crate::ir::Literal::Int(v))
-                        if crate::catalog::enum_has_value(enum_type, v) => {}
+                    Some(Literal::Int(v)) if crate::catalog::enum_has_value(enum_type, v) => {}
                     _ => {
                         let members = crate::catalog::enum_member_names(enum_type).join(", ");
                         ctx.emit(
@@ -130,7 +114,7 @@ pub(super) fn validate_enum_config_arg(
                 );
             }
         }
-        // The quoted-name form (`function = "Bounce"`) — validate the same way.
+        // The quoted-name form (`function = "Bounce"`), validated the same way.
         Expr::StringLit { value, range } => {
             if crate::catalog::enum_member_value(enum_type, value).is_none() {
                 let members = crate::catalog::enum_member_names(enum_type).join(", ");
@@ -141,14 +125,11 @@ pub(super) fn validate_enum_config_arg(
                 );
             }
         }
-        // A qualified built-in enum value (`function = EasingFunction.Bounce`)
-        // or any value whose inferred type is a built-in game enum. Accept it
-        // when its enum backs THIS field's schema type; reject a value of a
-        // DIFFERENT game enum as an argument-type mismatch (WS003). A non-enum
-        // value falls through to the constant-only WS028 below. The bare
-        // member-name, int, and quoted-name forms are handled above and never
-        // reach here, so inferring `other` here can never run against a bare
-        // member name (which is not a value and would misreport WS002).
+        // A qualified built-in enum value (`function = EasingFunction.Bounce`), or any
+        // value whose type is a built-in game enum: accepted when its enum backs this
+        // field's schema type, WS003 for another game enum; a non-enum falls through
+        // to WS028 below. The bare member, int and quoted forms are handled above, so
+        // `other` is never a bare member name here (which would misreport WS002).
         other => {
             let ty = crate::typecheck::infer::infer(ctx, other);
             if let crate::ir::Type::Enum { name, .. } = &ty {
@@ -178,44 +159,31 @@ pub(super) fn validate_enum_config_arg(
 /// `ammoOverride`: the `WeaponAmmoOverride` nested struct) that fold into gate
 /// data rather than wiring. `true` when this param is one and targets a
 /// non-wire data field on its gate.
-pub(super) fn is_composite_config_param(
-    spec: &crate::catalog::calls::CallSpec,
-    param: &crate::catalog::calls::CallParam,
-) -> bool {
+pub(super) fn is_composite_config_param(spec: &CallSpec, param: &CallParam) -> bool {
     let port = param.port.as_str();
     matches!(port, "MeshColors" | "WeaponAmmoOverride")
         && !crate::catalog::is_wire_input(spec.gate_class, port)
 }
 
-/// Validate a composite constant-only config argument. It must fold to a
-/// constant of the expected shape (the same fold the lowering uses); a
-/// non-constant or malformed value is rejected here rather than becoming a
-/// silent broken gate.
-///
-/// Takes `gate_class` + `display_name` + `port_name` (rather than a
-/// `&CallParam`) so the `sig::check_args` port can call it from a bare `Param`
-/// (which doesn't carry a `CallParam::port`). `port_name` — the gate PORT name
-/// — keys the composite-shape lookup ("MeshColors"/"WeaponAmmoOverride");
-/// `display_name` — the source-level surface name — is what the WS028 message
-/// shows the author (these differ, e.g. surface `meshColors` binds the
-/// `MeshColors` port). `gate_class` isn't used by the composite check itself
-/// (kept for signature symmetry with `validate_data_driven_config`).
+/// Validate a composite constant-only config argument: it must fold to a
+/// constant of the expected shape (the fold lowering uses). `port_name`, the
+/// gate port, keys the shape lookup (`MeshColors`, `WeaponAmmoOverride`);
+/// `display_name`, the source name, is what WS028 shows (`meshColors` binds the
+/// `MeshColors` port).
 pub(super) fn validate_composite_config_arg(
-    ctx: &mut TypeCheckCtx,
-    gate_class: &str,
+    ctx: &mut TypeCheckCtx<'_>,
     display_name: &str,
     port_name: &str,
     e: &Expr,
 ) {
-    let _ = gate_class;
     let consts = ctx.const_lookup();
     let (ok, hint) = match port_name {
         "MeshColors" => (
-            crate::lower::fold_mesh_colors(e, &consts).is_some(),
+            crate::const_eval::fold_mesh_colors(e, &consts).is_some(),
             "a constant array of ColorSRGB(r, g, b, a) values",
         ),
         "WeaponAmmoOverride" => (
-            crate::lower::fold_ammo_override(e, &consts).is_some(),
+            crate::const_eval::fold_ammo_override(e, &consts).is_some(),
             "a constant record { overrideStartingAmmo: bool, resources: [{ loaded: int, reserve: int }] }",
         ),
         _ => (true, ""),
@@ -229,58 +197,28 @@ pub(super) fn validate_composite_config_arg(
     }
 }
 
-/// A plain scalar/asset config param — a non-wire settings-menu field that is
-/// neither enum-typed nor a composite (meshColors/ammoOverride). Its value
-/// bakes into the gate's data and cannot be wired, so it must be a constant.
-pub(super) fn is_scalar_config_param(
-    spec: &crate::catalog::calls::CallSpec,
-    param: &crate::catalog::calls::CallParam,
-) -> bool {
+/// A plain scalar or asset config parameter: a settings-menu field that is
+/// neither enum-typed nor composite. Its value bakes into the gate's data with
+/// no wire, so it must be constant.
+pub(super) fn is_scalar_config_param(spec: &CallSpec, param: &CallParam) -> bool {
     !crate::catalog::is_wire_input(spec.gate_class, param.port.as_str())
         && call_param_config_enum(spec, param).is_none()
         && !is_composite_config_param(spec, param)
 }
 
-/// Reject a non-constant value for a scalar/asset config param — it has no wire
-/// pin, so a variable or computed value would otherwise lower to a broken wire
-/// (a silent "Failed to connect wire" at load) with the config never applied.
-/// Uses the full const evaluator (`const_eval::eval_expr`, against the
-/// scoped-or-top-level constant environment PLUS a `const mod` call — e.g.
-/// `SendCustomEvent`'s channel name, `evtName("died")`), so this accepts
-/// everything the config lowering path does; a genuine `var` or a call to a
-/// non-const mod still errors and stays WS028.
+/// Reject a non-constant value for a scalar or asset config parameter: with no
+/// wire pin, a runtime value would lower to a broken wire and the config would
+/// never apply. Uses the full evaluator (`const_eval::eval_expr`) over the
+/// constant environment, `const mod` calls included (`evtName("died")` as a
+/// channel name), so it accepts what config lowering does; a `var` or a call to
+/// a non-const mod stays WS028. `display_name` is the source name WS028 shows.
 ///
-/// Takes `gate_class` + `display_name` + `port_name` (rather than a
-/// `&CallParam`) so the `sig::check_args` port can call it from a bare `Param`.
-/// `display_name` — the source-level surface name — is what the WS028 message
-/// shows; `gate_class`/`port_name` are unused by the constant check itself
-/// (kept for signature symmetry with `validate_composite_config_arg` /
-/// `validate_data_driven_config`, and for any future per-port scalar rule).
-///
-/// A `BudgetExceeded`/`Refused` failure is surfaced as ITS OWN code (WS048 /
-/// WS047) instead of the generic WS028 below — those only exist because a
-/// `const mod` call was attempted at all (a call chain too deep, or a
-/// certified evaluator declining the operands), so naming it precisely is
-/// more useful than the generic "not a constant" wording. Every other reason
-/// keeps the ORIGINAL WS028 wording — existing tests (e.g.
-/// `var_prefab_still_rejected_as_ws028`) pin that a plain runtime `var` here
-/// stays WS028, not WS046.
-///
-/// A successfully-evaluated value is additionally checked for scalar SHAPE via
-/// [`non_scalar_config_kind`] — see its doc comment for why being constant is
-/// not sufficient here.
-pub(super) fn validate_scalar_config_arg(
-    ctx: &mut TypeCheckCtx,
-    gate_class: &str,
-    display_name: &str,
-    port_name: &str,
-    e: &Expr,
-) {
-    let _ = (gate_class, port_name);
-    let lookup = |n: &str| ctx.resolve_mod(n);
-    let mut budget = crate::const_eval::Budget::default();
-    let cx = ctx.const_ctx(Some(&lookup));
-    match crate::const_eval::eval_expr(e, &cx, &mut budget) {
+/// A `BudgetExceeded` or `Refused` failure is its own code (WS048, WS047), since
+/// those arise only from attempting a `const mod` call; every other reason is
+/// WS028 (`var_prefab_still_rejected_as_ws028`). A value that evaluates is
+/// checked for scalar shape too ([`non_scalar_config_kind`]).
+pub(super) fn validate_scalar_config_arg(ctx: &mut TypeCheckCtx<'_>, display_name: &str, e: &Expr) {
+    match ctx.const_eval(e, Admit::All) {
         Ok(lit) => {
             if let Some(kind) = non_scalar_config_kind(&lit) {
                 ctx.emit(
@@ -293,8 +231,7 @@ pub(super) fn validate_scalar_config_arg(
             }
         }
         Err(err) => match err.reason {
-            crate::const_eval::ConstReason::BudgetExceeded
-            | crate::const_eval::ConstReason::Refused(_) => {
+            ConstReason::BudgetExceeded | ConstReason::Refused(_) => {
                 ctx.emit(err.code(), err.message(), err.range.clone());
             }
             _ => {
@@ -315,7 +252,7 @@ pub(super) fn validate_scalar_config_arg(
 /// fields validate their member against the schema; other scalars must be
 /// compile-time constants.
 pub(super) fn validate_data_driven_config(
-    ctx: &mut TypeCheckCtx,
+    ctx: &mut TypeCheckCtx<'_>,
     gate_class: &str,
     cfg: &crate::catalog::ConfigProperty,
     e: &Expr,
@@ -324,8 +261,8 @@ pub(super) fn validate_data_driven_config(
         validate_enum_config_arg(ctx, enum_type, &format!("setting `{}`", cfg.name), e);
         return;
     }
-    match crate::lower::expr_to_literal_in(e, &ctx.const_lookup()) {
-        // Constant, but check its SHAPE too — see `non_scalar_config_kind`.
+    match crate::const_eval::expr_to_literal_in(e, &ctx.const_lookup()) {
+        // Constant; its shape is checked too (`non_scalar_config_kind`).
         Some(lit) => {
             if let Some(kind) = non_scalar_config_kind(&lit) {
                 ctx.emit(

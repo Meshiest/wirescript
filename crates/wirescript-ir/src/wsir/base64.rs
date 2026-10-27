@@ -2,7 +2,7 @@
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-pub fn encode(bytes: &[u8]) -> String {
+pub(super) fn encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b = [
@@ -23,7 +23,7 @@ pub fn encode(bytes: &[u8]) -> String {
 }
 
 /// Decode `text`, or say which character is not base64.
-pub fn decode(text: &str) -> Result<Vec<u8>, String> {
+pub(super) fn decode(text: &str) -> Result<Vec<u8>, String> {
     let value = |c: u8| -> Result<u32, String> {
         match c {
             b'A'..=b'Z' => Ok(u32::from(c - b'A')),
@@ -35,7 +35,7 @@ pub fn decode(text: &str) -> Result<Vec<u8>, String> {
         }
     };
     let bytes = text.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err("base64 length is not a multiple of 4".into());
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);

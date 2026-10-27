@@ -4,8 +4,8 @@
 use super::*;
 
 /// Type of `port` as declared on its node (searching this module and any
-/// already-built chip children). Used to read an argument's ACTUAL lowered type.
-pub(in crate::lower) fn arg_port_type(ctx: &LowerCtx, port: PortRef) -> Option<Type> {
+/// already-built chip children): an argument's actual lowered type.
+pub(in crate::lower) fn arg_port_type(ctx: &LowerCtx<'_>, port: PortRef) -> Option<Type> {
     let n = ctx.find_node(port.node_id)?;
     let sym = port.port.sym();
     n.ports
@@ -19,7 +19,7 @@ pub(in crate::lower) fn arg_port_type(ctx: &LowerCtx, port: PortRef) -> Option<T
 /// this instantiation. A template build (`compile_chip_template`) lowers a
 /// generic body with no substitution and has no instantiation's types to
 /// read, so its frames and container fallbacks type the bindings it built.
-pub(in crate::lower) fn lowered_arg_type(ctx: &LowerCtx, e: &Expr) -> Type {
+pub(in crate::lower) fn lowered_arg_type(ctx: &LowerCtx<'_>, e: &Expr) -> Type {
     let recorded = || ctx.type_of(e);
     let binding = match e {
         Expr::Ident { name, .. } => ctx.scope.get(name),
@@ -33,20 +33,17 @@ pub(in crate::lower) fn lowered_arg_type(ctx: &LowerCtx, e: &Expr) -> Type {
         .unwrap_or_else(recorded)
 }
 
-/// The type a name's binding lowers to. A container binding records its
-/// element type (an array) or its whole `Map(K, V)`, so an array is rebuilt as
-/// `Array(elem)`: that is what a `T[]` param has to unify against.
-///
-/// The binding's type replaces `recorded` (typecheck's type, which in a
-/// template build is the last combination checked) only when the two have the
-/// same shape. A multi-output result bound by its first port (`ss.pop()`)
-/// has that port's scalar type but a record's type, so a record `recorded`
-/// is refined from the result's output ports instead.
-///
-/// A record binding has no type of its own, so inside a generic body its
-/// fields refine `recorded`. Outside one `recorded` is already the monomorph
-/// and is returned as is.
-fn binding_lowered_type(ctx: &LowerCtx, b: &Binding, recorded: impl Fn() -> Type) -> Option<Type> {
+/// The type a name's binding lowers to (an array binding rebuilt as
+/// `Array(elem)`, what a `T[]` param unifies against). It replaces `recorded`
+/// (typecheck's type) only when the two have the same shape; a multi-output
+/// result bound by its first port refines a record `recorded` from its output
+/// ports instead. Inside a generic body a record binding's fields refine
+/// `recorded`.
+fn binding_lowered_type(
+    ctx: &LowerCtx<'_>,
+    b: &Binding,
+    recorded: impl Fn() -> Type,
+) -> Option<Type> {
     let storage_type = |storage: VarStorage, inner: &Type| match storage {
         VarStorage::Array => Type::Array(Box::new(inner.clone())),
         VarStorage::Var | VarStorage::Buffer | VarStorage::Map => inner.clone(),
@@ -68,7 +65,7 @@ fn binding_lowered_type(ctx: &LowerCtx, b: &Binding, recorded: impl Fn() -> Type
     }
     if let Binding::Local(l) = b {
         return Some(refine_fields(&recorded, |name, _| {
-            let port = crate::lower::access::resolve_output_field_port(ctx, l.port.node_id, name)?;
+            let port = resolve_output_field_port(ctx, l.port.node_id, name)?;
             arg_port_type(ctx, port)
         }));
     }
@@ -128,16 +125,10 @@ fn refine_fields(template: &Type, field: impl Fn(&str, &Type) -> Option<Type>) -
 /// `template` with each field a record binding holds replaced by the type
 /// that field's binding lowers to. A field the binding cannot type (an enum
 /// payload record, a record array's columns) keeps its template type.
-fn refine_record(
-    ctx: &LowerCtx,
-    template: &Type,
-    fields: &HashMap<crate::intern::Sym, Binding>,
-) -> Type {
-    refine_fields(template, |name, ft| {
-        match fields.get(&crate::intern::intern(name))? {
-            Binding::Record(inner) => Some(refine_record(ctx, ft, inner)),
-            other => binding_lowered_type(ctx, other, || ft.clone()),
-        }
+fn refine_record(ctx: &LowerCtx<'_>, template: &Type, fields: &Fields) -> Type {
+    refine_fields(template, |name, ft| match fields.get(&intern(name))? {
+        Binding::Record(inner) => Some(refine_record(ctx, ft, inner)),
+        other => binding_lowered_type(ctx, other, || ft.clone()),
     })
 }
 
@@ -148,17 +139,17 @@ fn refine_record(
 /// generic body with no substitution, so its calls have no record; it infers
 /// them from the arguments' lowered types instead (see [`inferred_frame`]).
 pub(super) fn mono_frame(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     chip_decl: &ChipDecl,
     call: &SourceRange,
     positional_args: &[&Expr],
     type_args: &[TypeExpr],
 ) -> Option<MonoFrame> {
     let key = (
-        call.file.clone(),
+        std::sync::Arc::clone(&call.file),
         call.start.offset,
         call.end.offset,
-        ctx.resolution_subst.clone(),
+        std::sync::Arc::clone(&ctx.resolution_subst),
     );
     let params: Vec<String> = chip_decl
         .type_params
@@ -181,7 +172,7 @@ pub(super) fn mono_frame(
 /// under the empty key is checked once with no instantiation to miss, and a
 /// template build lowers generic bodies typecheck checked under other keys.
 pub(super) fn instantiation_checked(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     chip_decl: &ChipDecl,
     body_subst: &Arc<[Type]>,
 ) -> bool {
@@ -189,10 +180,10 @@ pub(super) fn instantiation_checked(
     body_subst.is_empty()
         || ctx.template_build
         || ctx.resolutions.checked_bodies.contains(&(
-            r.file.clone(),
+            std::sync::Arc::clone(&r.file),
             r.start.offset,
             r.end.offset,
-            body_subst.clone(),
+            std::sync::Arc::clone(body_subst),
         ))
 }
 
@@ -200,7 +191,7 @@ pub(super) fn instantiation_checked(
 /// never checked, whose types lowering has no record of. Typecheck checks
 /// every instantiation a call it accepted demands, so this is a compiler bug.
 pub(super) fn report_unchecked_instantiation(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     chip_decl: &ChipDecl,
     call: &SourceRange,
 ) -> PortRef {
@@ -213,7 +204,7 @@ pub(super) fn report_unchecked_instantiation(
         ),
         call.clone(),
     ));
-    crate::lower::expr::synthesise_unsupported_no_warn(ctx, call)
+    synthesise_unsupported_no_warn(ctx, call)
 }
 
 /// A template build's frame: the call's substitution rebuilt from the
@@ -221,7 +212,7 @@ pub(super) fn report_unchecked_instantiation(
 /// typecheck runs at a call (`types::mono::infer_call_subst`), or from
 /// explicit type arguments.
 fn inferred_frame(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     chip_decl: &ChipDecl,
     positional_args: &[&Expr],
     type_args: &[TypeExpr],
@@ -231,11 +222,9 @@ fn inferred_frame(
         .iter()
         .map(|tp| tp.name.clone())
         .collect();
-    // Explicit type arguments (`pick<int>(...)`): the caller pinned each type
-    // param. Typecheck already validated arity + mask, so bind each `T_i` to its
-    // resolved type arg directly — `resolve_local_type` monomorphizes a type
-    // argument that itself references an outer `T` (`inner<T>(...)` inside
-    // `outer<T>`'s body).
+    // Explicit type arguments (`pick<int>(...)`) bind each type param directly
+    // (typecheck validated arity and mask). `resolve_local_type` resolves an
+    // argument naming an outer `T` (`inner<T>(...)` inside `outer<T>`).
     if !type_args.is_empty() {
         let mut subst = crate::types::infer::Subst::new();
         for (tp, te) in chip_decl.type_params.iter().zip(type_args.iter()) {
@@ -279,13 +268,10 @@ fn inferred_frame(
     MonoFrame::of(chip_decl, param_names, subst)
 }
 
-/// Canonical cache/template key for one generic-chip instantiation: the chip
-/// name plus the concrete type each type param resolves to under this call's
-/// substitution (`Boxed<int>`, `Boxed<vector>`). `{:?}` on a resolved `Type` is
-/// a stable, unique-per-type string, so two instantiations collide iff they
-/// pick the same concrete types — exactly when their emitted grids are
-/// interchangeable and safe to dedup. A non-generic chip never calls this: its
-/// key stays the bare name.
+/// Cache/template key for one generic-chip instantiation: the chip name plus
+/// each type param's concrete type (`Boxed<int>`). `{:?}` on a resolved `Type`
+/// is stable and unique per type, so two instantiations share a key exactly
+/// when they pick the same concrete types.
 pub(super) fn mono_key(chip_decl: &ChipDecl, frame: &MonoFrame) -> String {
     let args: Vec<String> = frame
         .params

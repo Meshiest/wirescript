@@ -24,15 +24,17 @@
 
 use std::sync::Arc;
 
+use crate::collections::HashMap;
+use crate::intern::{intern, resolve};
+use crate::wsir::defaults;
+
 use super::build::{AddNodeOpts, ModuleBuilder};
 use super::module_tree::{ModuleTree, nest_bodies};
 use super::port_registry::WirePort;
 use super::{
-    GateIO, Literal, NodeId, NodeKind, PortRef, PortSide, Program, ProgramSettings, Type, Wire,
+    GateIO, Literal, Node, NodeId, NodeKind, PortRef, PortSide, Program, ProgramSettings, Type,
+    Wire,
 };
-use crate::collections::HashMap;
-use crate::intern::{intern, resolve};
-use crate::wsir::defaults;
 
 /// A module of the program being built: the root, or a chip's body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -114,7 +116,13 @@ impl ProgramBuilder {
 
     fn pin(&mut self, m: ModuleRef, name: &str, ty: Type, kind: NodeKind) -> NodeId {
         let id = self.take_id();
-        self.modules[m.0].add_pin_with_id(id, kind, name, ty, Default::default());
+        self.modules[m.0].add_pin_with_id(
+            id,
+            kind,
+            name,
+            ty,
+            crate::diagnostic::SourceRange::default(),
+        );
         self.home.insert(id, m.0);
         self.name(id, name);
         id
@@ -197,7 +205,7 @@ impl ProgramBuilder {
         }
     }
 
-    fn node_mut(&mut self, node: NodeId) -> Result<&mut super::Node, BuildError> {
+    fn node_mut(&mut self, node: NodeId) -> Result<&mut Node, BuildError> {
         let m = *self.home.get(&node).ok_or(BuildError::UnknownNode(node))?;
         Ok(self.modules[m]
             .module
@@ -206,7 +214,7 @@ impl ProgramBuilder {
             .expect("home lists only added nodes"))
     }
 
-    fn node(&self, node: NodeId) -> Result<&super::Node, BuildError> {
+    fn node(&self, node: NodeId) -> Result<&Node, BuildError> {
         let m = *self.home.get(&node).ok_or(BuildError::UnknownNode(node))?;
         Ok(&self.modules[m].module.nodes[&node])
     }
@@ -230,7 +238,7 @@ impl ProgramBuilder {
         to: NodeId,
         to_port: &str,
     ) -> Result<(), BuildError> {
-        let unknown = |n: &super::Node, side: PortSide, port: &str| {
+        let unknown = |n: &Node, side: PortSide, port: &str| {
             let ports = if side == PortSide::Input {
                 &n.ports.inputs
             } else {
@@ -319,7 +327,7 @@ impl ProgramBuilder {
                 .map(|o| o.ty.clone())
         };
         let any_pin = GateIO::pin(Type::Any);
-        let is_pin = |n: &super::Node| matches!(n.kind, NodeKind::Input | NodeKind::Output);
+        let is_pin = |n: &Node| matches!(n.kind, NodeKind::Input | NodeKind::Output);
         loop {
             let mut changed = false;
             for (target, source) in &wires {

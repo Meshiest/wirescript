@@ -1,10 +1,8 @@
 //! Operator resolution table.
 //!
-//! Maps surface-level operators (`&&`, `+`, `<`, etc.) to the concrete
-//! gate classes and port mappings they lower to. Also drives typecheck:
-//! given an operator and its operand types (after coercion), return the
-//! matching rule.
-//!
+//! Maps surface-level operators (`&&`, `+`, `<`, and so on) to the gate
+//! classes and port mappings they lower to. Typecheck resolves an operator and
+//! its coerced operand types to the matching rule.
 
 use std::sync::OnceLock;
 
@@ -14,11 +12,9 @@ use crate::ir::port_registry::WirePort;
 
 /// The operator spellings, named.
 ///
-/// Match on `op::SHL` rather than `"<<"`: a mistyped string literal is a match
-/// arm that silently never fires, while a mistyped constant does not compile.
-/// Prefer the qualified `op::NAME` form in patterns — a bare imported name in
-/// pattern position reads as a binding if it ever falls out of scope, which
-/// would turn one arm into an irrefutable catch-all.
+/// Match on `op::SHL` rather than `"<<"`: a mistyped string arm silently never
+/// fires, a mistyped constant does not compile. Use the qualified `op::NAME` in
+/// patterns, since a bare name that falls out of scope becomes a catch-all binding.
 pub mod op {
     // Arithmetic
     pub const ADD: &str = "+";
@@ -27,7 +23,7 @@ pub mod op {
     pub const DIV: &str = "/";
     pub const REM: &str = "%";
     pub const POW: &str = "**";
-    /// Unary negation — the same spelling as [`SUB`], distinguished by arity.
+    /// Unary negation: the same spelling as [`SUB`], distinguished by arity.
     pub const NEG: &str = "-";
     /// String concatenation.
     pub const CONCAT: &str = "..";
@@ -123,8 +119,8 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
             ports: BINARY_PORTS,
         },
         // bool -> int promotion (engine coerces bool wires to 0/1 on int ports).
-        // Both operands promote, so bool⊕bool is int-valued too — matching the
-        // mixed forms below and the bitwise ops, which already allow it.
+        // Both operands promote, so bool op bool is int-valued, like the mixed
+        // forms below and the bitwise ops.
         OpRule {
             operands: &[Type::Int, Type::Bool],
             result: Type::Int,
@@ -145,12 +141,9 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
         },
     ];
     if vec {
-        // Vector math runs on the same gate: MathAdd/Subtract/Multiply/Divide/
-        // Modulo take numeric wire-value inputs, whose member set includes
-        // Vector, f64 and i64. So vec⊕vec lowers component-wise, and mixing a
-        // vector with a scalar broadcasts the scalar across the components
-        // (e.g. `v * 2.0` scales) — all on the same `class_math` gate. The
-        // result is always a vector.
+        // The math gates' wire-value inputs include Vector, so vec op vec runs
+        // component-wise and a scalar operand broadcasts across the components
+        // (`v * 2.0` scales). The result is always a vector.
         rules.extend([
             OpRule {
                 operands: &[Type::Vector, Type::Vector],
@@ -219,11 +212,9 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
                 ports: BINARY_PORTS,
             },
         ]);
-        // Rotation family (quat / rotator) on the same PrimMath gate: the
-        // variant member set also covers rotations, so `q1 * q2` composes two
-        // rotations, etc. quat↔rotator are interchangeable rotation values, so
-        // same-type keeps its type and a mix yields a quat (the canonical
-        // rotation-math result, freely coercible back to a rotator).
+        // Quats and rotators run on the same PrimMath gate (`q1 * q2` composes
+        // two rotations). Same-type keeps its type; a mix yields a quat, which
+        // coerces back to a rotator.
         rules.extend([
             OpRule {
                 operands: &[Type::Quat, Type::Quat],
@@ -251,10 +242,9 @@ fn math_binary(op: &'static str, class_math: &'static str, vec: bool) -> OpSpec 
             },
         ]);
     }
-    // Object operands (players, entities, bricks…) don't coerce directly to an
-    // int on a math gate. Accept them here; `lower_binop` routes an object
-    // operand through `(obj || false)` so it still reduces to an int the gate
-    // takes — i.e. `1 + player` lowers to `add(1, or(player, false))`.
+    // Object operands do not coerce to an int on a math gate, so `lower_binop`
+    // routes each through `(obj || false)`: `1 + player` lowers to
+    // `add(1, or(player, false))`.
     const OBJECT_TYPES: &[Type] = &[Type::Entity, Type::Controller, Type::Character];
     for o in OBJECT_TYPES {
         rules.extend([
@@ -319,7 +309,7 @@ fn math_unary_op(op: &'static str, class_math: &'static str) -> OpSpec {
 }
 
 fn logical_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
-    use Type::*;
+    use Type::{Bool, Character, Controller, Entity, Exec, Float, Int, String};
     const LOGICAL_TYPES: &[Type] = &[
         Bool, Int, Float, Exec, String, Entity, Controller, Character,
     ];
@@ -405,12 +395,15 @@ fn bitwise_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
 }
 
 fn compare_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
-    use Type::*;
+    use Type::{
+        Any, Array, Bool, Brick, Character, Color, Controller, Entity, Float, Int, Map, Quat, Ref,
+        Rotator, String, Vector,
+    };
     const VARIANT_TYPES: &[Type] = &[Int, Float, Bool, String, Entity, Controller, Character];
     // Equality (`==`/`!=`) additionally compares the composite value variants by
     // content: the game's CompareEqual/CompareNotEqual gates are certified for
     // same-type vector/rotator/quat/color operands (`data/gate_semantics.json`).
-    // Ordering (`<`/`>`/`<=`/`>=`) stays scalar-only — those composites have no
+    // Ordering (`<`/`>`/`<=`/`>=`) stays scalar-only: those composites have no
     // certified ordering cases.
     const EQ_ONLY_TYPES: &[Type] = &[Vector, Rotator, Quat, Color];
     let mut rules = Vec::new();
@@ -460,15 +453,15 @@ fn compare_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
 fn build_operators() -> Vec<OpSpec> {
     vec![
         // Logical
-        logical_binary("&&", "BrickComponentType_Expr_LogicalAND"),
-        logical_binary("||", "BrickComponentType_Expr_LogicalOR"),
+        logical_binary(op::AND, gc::LOGICAL_AND),
+        logical_binary(op::OR, gc::LOGICAL_OR),
         {
-            use Type::*;
+            use Type::{Bool, Character, Controller, Entity, Exec, Float, Int, String};
             const NOT_TYPES: &[Type] = &[
                 Bool, Int, Float, Exec, String, Entity, Controller, Character,
             ];
             OpSpec {
-                op: "!",
+                op: op::NOT,
                 arity: 1,
                 rules: NOT_TYPES
                     .iter()
@@ -481,15 +474,15 @@ fn build_operators() -> Vec<OpSpec> {
                     .collect(),
             }
         },
-        logical_binary("^^", "BrickComponentType_Expr_LogicalXOR"),
+        logical_binary(op::XOR, gc::LOGICAL_XOR),
         // Bitwise
-        bitwise_binary("&", "BrickComponentType_Expr_BitwiseAND"),
-        bitwise_binary("|", "BrickComponentType_Expr_BitwiseOR"),
-        bitwise_binary("^", "BrickComponentType_Expr_BitwiseXOR"),
-        bitwise_binary("<<", "BrickComponentType_Expr_BitwiseShiftLeft"),
-        bitwise_binary(">>", "BrickComponentType_Expr_BitwiseShiftRight"),
+        bitwise_binary(op::BIT_AND, gc::BITWISE_AND),
+        bitwise_binary(op::BIT_OR, gc::BITWISE_OR),
+        bitwise_binary(op::BIT_XOR, gc::BITWISE_XOR),
+        bitwise_binary(op::SHL, gc::BITWISE_SHIFT_LEFT),
+        bitwise_binary(op::SHR, gc::BITWISE_SHIFT_RIGHT),
         OpSpec {
-            op: "~",
+            op: op::BIT_NOT,
             arity: 1,
             rules: vec![
                 OpRule {
@@ -513,19 +506,19 @@ fn build_operators() -> Vec<OpSpec> {
             ],
         },
         // Arithmetic
-        math_binary("+", "BrickComponentType_Expr_MathAdd", true),
-        math_binary("-", "BrickComponentType_Expr_MathSubtract", true),
-        math_binary("*", "BrickComponentType_Expr_MathMultiply", true),
-        math_binary("/", "BrickComponentType_Expr_MathDivide", true),
-        math_binary("%", "BrickComponentType_Expr_MathModulo", true),
+        math_binary(op::ADD, gc::MATH_ADD, true),
+        math_binary(op::SUB, gc::MATH_SUBTRACT, true),
+        math_binary(op::MUL, gc::MATH_MULTIPLY, true),
+        math_binary(op::DIV, gc::MATH_DIVIDE, true),
+        math_binary(op::REM, gc::MATH_MODULO, true),
         {
             const POW_PORTS: OpPorts = OpPorts {
                 inputs: &[WirePort::Input, WirePort::Exponent],
                 output: WirePort::Output,
             };
-            use Type::*;
+            use Type::{Float, Int};
             OpSpec {
-                op: "**",
+                op: op::POW,
                 arity: 2,
                 rules: vec![
                     OpRule {
@@ -555,20 +548,22 @@ fn build_operators() -> Vec<OpSpec> {
                 ],
             }
         },
-        math_unary_op("-u", "BrickComponentType_Expr_MathNegate"),
+        math_unary_op("-u", gc::MATH_NEGATE),
         // Comparison
-        compare_binary("==", "BrickComponentType_Expr_CompareEqual"),
-        compare_binary("!=", "BrickComponentType_Expr_CompareNotEqual"),
-        compare_binary("<", "BrickComponentType_Expr_CompareLess"),
-        compare_binary("<=", "BrickComponentType_Expr_CompareLessOrEqual"),
-        compare_binary(">", "BrickComponentType_Expr_CompareGreater"),
-        compare_binary(">=", "BrickComponentType_Expr_CompareGreaterOrEqual"),
+        compare_binary(op::EQ, gc::COMPARE_EQUAL),
+        compare_binary(op::NE, gc::COMPARE_NOT_EQUAL),
+        compare_binary(op::LT, gc::COMPARE_LESS),
+        compare_binary(op::LE, gc::COMPARE_LESS_OR_EQUAL),
+        compare_binary(op::GT, gc::COMPARE_GREATER),
+        compare_binary(op::GE, gc::COMPARE_GREATER_OR_EQUAL),
         // String concat. The game's String_Concatenate gate auto-converts any
-        // wire-variant input (numbers, bools, vectors, entities, characters,
-        // controllers, …) to a string, so accept every variant-able primitive
-        // on either side.
+        // wire-variant input (numbers, bools, vectors, objects) to a string, so
+        // either side accepts every variant-able primitive.
         {
-            use Type::*;
+            use Type::{
+                Bool, Character, Color, Controller, Entity, Float, Int, Quat, Rotator, String,
+                Vector,
+            };
             const CONCAT_TYPES: &[Type] = &[
                 String, Int, Float, Bool, Vector, Rotator, Quat, Color, Entity, Controller,
                 Character,
@@ -585,7 +580,7 @@ fn build_operators() -> Vec<OpSpec> {
                 }
             }
             OpSpec {
-                op: "..",
+                op: op::CONCAT,
                 arity: 2,
                 rules,
             }
@@ -599,18 +594,10 @@ pub fn operators() -> &'static [OpSpec] {
 }
 
 fn type_kind_matches(want: &Type, got: &Type) -> bool {
-    // `Type::Opaque` (an `Opaque(...)` probe result) is a wildcard: it
-    // matches whatever concrete type the rule expects at that operand
-    // position, so operators still resolve to a real gate instead of
-    // erroring on an operand the typechecker deliberately can't narrow.
-    //
-    // NOTE: `Type::Any` deliberately does *not* get this treatment. `Any`
-    // is the codebase's generic unknown/error-fallback type (~150
-    // producers: void array methods like `arr.clear()`, unresolved
-    // namespace calls, dynamic-access fallbacks) — treating it as an
-    // operator wildcard would silently defeat WS004 for all of them
-    // (e.g. `arr.clear() + 3` would compile into a broken circuit instead
-    // of erroring). Only the dedicated `Opaque` type gets the wildcard.
+    // `Type::Opaque` (an `Opaque(...)` probe result) matches any operand type,
+    // so operators on it still resolve to a real gate. `Type::Any` must not:
+    // it is also the error-fallback type, and a wildcard would let
+    // `arr.clear() + 3` past WS004 into a broken circuit.
     if matches!(want, Type::Opaque) || matches!(got, Type::Opaque) {
         return true;
     }
@@ -622,11 +609,8 @@ fn type_kind_matches(want: &Type, got: &Type) -> bool {
 /// for mixed-type arithmetic).
 pub fn resolve_op(op: &str, arg_types: &[Type]) -> Option<&'static OpRule> {
     let arity = arg_types.len() as u8;
-    // Unary `-` is keyed `-u` in the table (binary `-` is subtract). Reconcile the
-    // AST spelling here, at the single resolution point, so every caller resolves
-    // negate rather than only the ones that remember to remap. A `-x` inside a
-    // generic mod otherwise resolved to nothing and fell through to a stale
-    // fallback type: a silent miscompile.
+    // Unary `-` is keyed `-u` in the table (binary `-` is subtract); remapping
+    // here means no caller has to.
     let op = if op == "-" && arity == 1 { "-u" } else { op };
     let spec = operators()
         .iter()

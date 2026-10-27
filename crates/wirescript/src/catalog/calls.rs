@@ -1,16 +1,12 @@
 //! Built-in call catalog.
 //!
 //! Maps source-level call names (e.g. `displayText`, `sin`, `vec`) to the
-//! concrete gate class they lower to, their port-wiring shape, and whether
-//! the call is exec-form (chains into `currentExec`) or pure-expression
-//! (returns a value via an output port).
+//! gate class they lower to, their port wiring, and whether the call is
+//! exec-form (chains into the current exec) or pure (returns an output port).
 //!
-//! hand-authored, so we keep the Rust form structurally identical for
-//! easy cross-checking.
-//!
-//! This file holds the spec types, the shared `CallSpec` constructor helpers,
-//! and the lookup entry points. The specs themselves live in one module per
-//! domain, each exposing a `register(&mut map)` that `build_calls` chains.
+//! This file holds the spec types, the shared `CallSpec` constructors and the
+//! lookups. The specs live in one module per domain, each with a
+//! `register(&mut map)` that `build_calls` chains.
 
 use crate::collections::HashMap;
 use std::sync::OnceLock;
@@ -38,8 +34,7 @@ pub struct CallParam {
     /// Port name on the target gate to wire this argument into.
     pub port: WirePort,
     /// Accepted type. `Character` and `Controller` are interchangeable at a
-    /// param port — they wire directly into each other in Brickadia, so no
-    /// adapter gate is inserted.
+    /// param port: Brickadia wires them directly into each other.
     pub ty: Type,
     /// When true, callers may omit the argument; the gate's default stays.
     pub optional: bool,
@@ -69,9 +64,8 @@ pub struct CallOutput {
     pub port: WirePort,
     pub ty: Type,
     /// Record field this output binds to when the call returns a record
-    /// (e.g. `Edge`'s `rising`). Named outputs make the call result bind as
-    /// a field->port record, so field access resolves through the spec
-    /// instead of port-name matching. None for single-value outputs.
+    /// (e.g. `Edge`'s `rising`); field access on the result resolves through
+    /// it. None for single-value outputs.
     pub field: Option<&'static str>,
 }
 
@@ -128,11 +122,9 @@ impl CallSpec {
     }
 
     /// For a receiver method whose object binds to a NAMED param instead of the
-    /// first positional, that param's name. `entity.SendCustomEvent("x", …)`
-    /// binds the entity to `target` (the object-event recipient's grid), not the
-    /// first param (`eventName`), and leaves the positional args as the channel
-    /// name + data values. `None` = the ordinary first-param receiver form
-    /// (`entity.SetLocation(pos)`).
+    /// first positional, that param's name: `entity.SendCustomEvent("x", ...)`
+    /// binds the entity to `target`, leaving the positionals as channel name and
+    /// data. `None` for the ordinary first-param receiver form.
     pub fn receiver_target_param(&self) -> Option<&'static str> {
         match self.name {
             "SendCustomEvent" | "SendGlobalCustomEvent" => Some("target"),
@@ -169,9 +161,7 @@ fn vec_expr(
     }
 }
 
-/// A pure gate returning a record: one named output per field. The spec's
-/// return type is the record derived from `fields`, and lowering binds the
-/// result as a field->port record (no port-name matching).
+/// A pure gate returning a record, one named output per entry of `fields`.
 fn vec_expr_record(
     name: &'static str,
     gate_class: &'static str,

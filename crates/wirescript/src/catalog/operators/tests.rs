@@ -44,10 +44,8 @@ fn operator_rules() {
         ("-u", vec![Int], any_rule()),
         ("-u", vec![Float], any_rule()),
         ("-u", vec![Bool], Want::NoRule),
-        // The AST carries unary negate as "-" (same spelling as binary
-        // subtract); resolve_op maps it to the table's "-u" key by arity, so
-        // every caller resolves it (an un-remapped `-x` in a generic mod
-        // otherwise fell through to a stale fallback type).
+        // The AST spells unary negate "-"; resolve_op maps it to the table's
+        // "-u" key by arity.
         (
             "-",
             vec![Int],

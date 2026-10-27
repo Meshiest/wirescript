@@ -7,7 +7,7 @@
 //! the gates store (`Sky`, `Component_PointLight`), confirmed from the gates'
 //! own pickers. Component property lists come from the save schema, so they are
 //! a superset of the in-game picker (internal fields, flattened per-team
-//! bools); the environment lists of Sky, GroundPlate, Water and Ambience match
+//! bools); the environment lists of Sky, `GroundPlate`, Water and Ambience match
 //! the game's environment preset.
 
 use serde::Deserialize;
@@ -85,7 +85,7 @@ pub enum PropertyType {
 
 /// The type a program reads and writes `p` as.
 pub fn property_type(p: &Property) -> PropertyType {
-    use PropertyType::*;
+    use PropertyType::{Enum, Unsupported, Value};
     match p.ty.as_str() {
         "float" => Value(Type::Float),
         "int" => Value(Type::Int),

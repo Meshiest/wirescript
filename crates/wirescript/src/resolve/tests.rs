@@ -203,8 +203,8 @@ fn an_import_read_anywhere_is_not_reported_unused() {
                 &[],
                 &[],
             ),
-            // `on Clock(interval = TICK)` reads TICK in the handler's CONFIG args,
-            // which the usage scan skipped (it only walked the handler body).
+            // `on Clock(interval = TICK)` reads TICK in the handler's config
+            // args, outside the handler body.
             (
                 "read in an event config arg",
                 "let TICK = 0.15",
@@ -212,9 +212,7 @@ fn an_import_read_anywhere_is_not_reported_unused() {
                 &[],
                 &[],
             ),
-            // The same, nested in a chip body: the STATEMENT arm of the scan walked
-            // only the body, so a channel constant used by a handler inside a chip
-            // warned while the identical module-level handler did not.
+            // The same, for a handler nested in a chip body.
             (
                 "read in an event config arg inside a chip",
                 "const CH = \"chan.a\"",
@@ -230,9 +228,8 @@ fn an_import_read_anywhere_is_not_reported_unused() {
                 &["UNUSED"],
                 &[],
             ),
-            // The import walkers reached `if` and nothing else, so a name used only
-            // in a `match` arm or an `if let` reported WS014, and the dependency
-            // closure left the callee behind so the call lowered to `_Unsupported`.
+            // A name used only in a `match` arm or an `if let` is a use, and
+            // the dependency closure pulls its callee (else `_Unsupported`).
             (
                 "used only in a match arm",
                 "const K = 7\nmod helper() -> (r: int) { return 1 }\n",
@@ -281,7 +278,7 @@ fn an_import_read_anywhere_is_not_reported_unused() {
 #[test]
 fn transitive_import_decls_precede_importing_files_own_decls() {
     // A file's own declarations must come AFTER the ones it imports, at
-    // every level of the import graph — chips/mods register in source
+    // every level of the import graph: chips/mods register in source
     // order during lowering, so the reverse ordering makes a call to a
     // transitively imported helper a use-before-declaration (WS021).
     let loader = mem(&[
@@ -310,8 +307,7 @@ fn transitive_import_decls_precede_importing_files_own_decls() {
         "'helper' must precede its caller 'game_step'; decls: {:?}",
         r.ast.decls.iter().filter_map(decl_name).collect::<Vec<_>>()
     );
-    let tc =
-        crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
     assert!(
         !tc.diagnostics.iter().any(|d| d.code == "WS021"),
         "transitive import must not produce use-before-declaration: {:?}",
@@ -346,10 +342,9 @@ fn type_alias_not_leaked_transitively() {
     );
 }
 
-/// `imported_files` must list every file a resolve pulled in, TRANSITIVELY,
-/// keyed the same way `canonical_path` keys them — the LSP compares a
-/// changed file's canonical path against this to decide which open
-/// documents still need re-analysis.
+/// `imported_files` lists every file a resolve pulled in, transitively,
+/// keyed as `canonical_path` keys them: the LSP compares a changed file's
+/// canonical path against it to pick the open documents to re-analyze.
 #[test]
 fn imported_files_lists_the_transitive_import_set() {
     let loader = mem(&[
@@ -384,11 +379,10 @@ fn imported_files_lists_the_transitive_import_set() {
     );
 }
 
-/// Resolve imports, then type-check the result — the errors a user sees.
+/// Resolve imports, then type-check the result: the errors a user sees.
 fn check(main: &str, files: &[(&str, &str)]) -> Vec<crate::diagnostic::Diagnostic> {
     let r = resolve(main, "main.ws", &mem(files));
-    let tc =
-        crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
     r.diagnostics
         .into_iter()
         .chain(tc.diagnostics)
@@ -396,11 +390,9 @@ fn check(main: &str, files: &[(&str, &str)]) -> Vec<crate::diagnostic::Diagnosti
         .collect()
 }
 
-/// An alias body naming another alias (`type Rect = { a: Point, … }`) has
-/// to expand all the way down. A namespace import declares the module's
-/// aliases to the importer only as `Ns.Rect`, so a bare `Point` left inside
-/// the body resolved to nothing and the field silently typed `any` — every
-/// use of it then failed with "no overload for '==' on Any, Float".
+/// An alias body naming another alias (`type Rect = { a: Point, ... }`)
+/// expands all the way down: a namespace import declares the module's
+/// aliases only as `Ns.Rect`, so a bare `Point` left inside would type `any`.
 #[test]
 fn nested_alias_bodies_expand_through_a_namespace_import() {
     let lib = "type Point = { x: float, y: float }\n\
@@ -417,10 +409,8 @@ fn nested_alias_bodies_expand_through_a_namespace_import() {
     assert!(errs.is_empty(), "expected no errors, got {errs:?}");
 }
 
-/// A namespace member with no annotation used to type as `any` unless its
-/// initializer was a bare literal, and a destructuring `let` was not
-/// indexed at all — so `ns.origin.x` read as `any` even though lowering
-/// resolved the field and emitted the right value.
+/// A namespace member with no annotation, or bound by a destructuring `let`,
+/// keeps its inferred type, so `ns.origin.x` types as lowering resolves it.
 #[test]
 fn unannotated_and_destructured_namespace_members_keep_their_types() {
     let lib = "let origin = { x: 1.0, y: 2.0 }\n\
@@ -439,14 +429,9 @@ fn unannotated_and_destructured_namespace_members_keep_their_types() {
     assert!(errs.is_empty(), "expected no errors, got {errs:?}");
 }
 
-/// Expansion substitutes alias bodies into one another, so a
-/// self-referential or mutually recursive alias has to stop rather than
-/// expand forever. Reaching the assertions at all is most of the test:
-/// without the cycle guard this hangs or overflows the stack first.
-///
-/// The recursive field is left unexpanded and so still fails to resolve in
-/// the importing module (WS002). What must hold is that everything
-/// *around* the cycle still types.
+/// A self-referential or mutually recursive alias stops expanding instead
+/// of hanging or overflowing the stack. The recursive field stays
+/// unexpanded (WS002 in the importer); everything around the cycle types.
 #[test]
 fn recursive_alias_expansion_terminates() {
     let lib = "type Node = { v: int, next: Node }\n\
@@ -520,12 +505,9 @@ fn imported_files_is_empty_without_imports() {
 }
 
 /// A named import brings only the names it lists, so a module's `on`
-/// handlers stay behind, and it says so.
-///
-/// The spelling matters: a test harness imports a module's pure helpers
-/// precisely so it does NOT install that module's event surface, while a
-/// library written to install behaviour looks identical at the import
-/// site. Hence a warning rather than either behaviour changing.
+/// handlers stay behind, and it warns: a test harness imports pure helpers
+/// this way on purpose, but a library meant to install behaviour looks the
+/// same at the import site.
 #[test]
 fn a_named_import_leaves_handlers_behind_and_says_so() {
     let lib = "var counter: int = 0\non RoundStart() {\n  counter = 1\n}\n";
@@ -591,10 +573,9 @@ fn a_diamond_import_installs_a_handler_once() {
     assert_eq!(handlers, 1, "decls: {:?}", r.ast.decls.len());
 }
 
-/// Two modules that each bind the same top-level `let` collide, as they
-/// already did for a `mod`/`chip`. Imports merge into one flat scope, so
-/// otherwise one replaces the other and every reference in both files
-/// reads whichever came last.
+/// Two modules that each bind the same top-level `let` collide, as for a
+/// `mod`/`chip`: imports merge into one flat scope, where one would replace
+/// the other for every reference in both files.
 #[test]
 fn a_cross_file_duplicate_let_is_a_diagnostic() {
     let loader = mem(&[
@@ -602,8 +583,7 @@ fn a_cross_file_duplicate_let_is_a_diagnostic() {
         ("b.ws", "let K = 2\nmod gb() -> (r: int) { return K }\n"),
     ]);
     let r = resolve("import \"a\"\nimport \"b\"\n", "main.ws", &loader);
-    let tc =
-        crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics
             .iter()
@@ -621,8 +601,7 @@ fn a_top_level_redeclaration_is_ws108_and_a_body_let_may_shadow() {
     let loader = mem(&[]);
     let codes = |src: &str| {
         let r = resolve(src, "main.ws", &loader);
-        let tc =
-            crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+        let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
         tc.diagnostics
             .iter()
             .map(|d| d.code.clone())
@@ -635,8 +614,7 @@ fn a_top_level_redeclaration_is_ws108_and_a_body_let_may_shadow() {
     ] {
         assert_eq!(codes(src), ["WS108"], "{src}");
         let r = resolve(src, "main.ws", &loader);
-        let tc =
-            crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+        let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
         let msg = &tc.diagnostics[0].message;
         assert!(
             msg.contains("line 1") && tc.diagnostics[0].range.start.line == 2,
@@ -647,12 +625,9 @@ fn a_top_level_redeclaration_is_ws108_and_a_body_let_may_shadow() {
     assert!(codes(body).is_empty(), "{:?}", codes(body));
 }
 
-/// Doc comments from different files do not overwrite one another.
-///
-/// Imports merge several parses into one map, so a key of byte offset
-/// alone lets two declarations at the same offset in their own files
-/// collide. A chip's doc comment is baked into the world as its header
-/// text, so the loser comes out wearing the winner's title.
+/// Doc comments from different files do not overwrite one another, though
+/// imports merge several parses into one map and two declarations may share
+/// a byte offset. A chip's doc comment is baked in as its header text.
 #[test]
 fn doc_comments_from_two_files_do_not_collide() {
     // Both `mod` declarations start at the same byte offset in their own
@@ -694,10 +669,8 @@ fn doc_comments_from_two_files_do_not_collide() {
 }
 
 /// Two independently-authored modules that each define a private helper
-/// under one name are a genuine collision, not a diamond. The dependency
-/// closure used to skip the second module's helper because the FIRST
-/// module's was already bound under that name, so `useB` silently called
-/// `ma`'s `helper` and the answer depended on import order.
+/// under one name are a genuine collision, not a diamond: the dependency
+/// closure pulls both helpers and WS013 reports the collision.
 #[test]
 fn dependency_closure_keeps_two_modules_same_named_helpers_apart() {
     let loader = mem(&[
@@ -733,8 +706,7 @@ fn dependency_closure_keeps_two_modules_same_named_helpers_apart() {
         vec!["ma.ws".to_string(), "mb.ws".to_string()],
         "each module's own private helper must travel with it"
     );
-    let tc =
-        crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics
             .iter()
@@ -829,8 +801,7 @@ fn a_travelled_namespace_alias_collides_with_the_importers_own() {
 /// The boundary of the check above: `import * as` wraps what it pulls in a
 /// `NamespaceDecl`, and lowering scopes a namespaced mod's body against its
 /// own module's aliases first, so the importer and the module it imports
-/// genuinely may spell their alias the same. Reporting that would be a
-/// false error on a program that works today.
+/// may spell their alias the same without a report.
 #[test]
 fn a_namespace_import_may_reuse_the_alias_its_own_module_uses() {
     let loader = mem(&[
@@ -882,11 +853,9 @@ fn one_module_under_one_alias_from_two_files_is_not_a_conflict() {
     );
 }
 
-/// `import { addK, K as KK }` must not unbind the module's own `K`. The
-/// alias renames the single clone that gets pushed, so the exporting
-/// module's `x + K` has nothing left to resolve against unless the closure
-/// pass also pulls the original, which it can only do when the "already
-/// contributed" set is keyed on the post-alias name.
+/// `import { addK, K as KK }` must not unbind the module's own `K`: the
+/// alias renames the pushed clone, so the closure pass has to pull the
+/// original for the module's `x + K`.
 #[test]
 fn aliasing_an_imported_constant_keeps_the_modules_own_binding() {
     let loader = mem(&[(
@@ -909,8 +878,7 @@ fn aliasing_an_imported_constant_keeps_the_modules_own_binding() {
         r.ast.decls.iter().any(|d| decl_binds(d, "KK")),
         "the aliased view must be bound too"
     );
-    let tc =
-        crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
     let errors: Vec<_> = tc
         .diagnostics
         .iter()
@@ -919,10 +887,8 @@ fn aliasing_an_imported_constant_keeps_the_modules_own_binding() {
     assert!(errors.is_empty(), "typecheck errors: {errors:?}");
 }
 
-/// The silent half of the same bug: with the module's `K` unbound, an
-/// importer that happens to declare its own `K` captured the library's
-/// internals and the program compiled clean with the wrong wiring. Pulling
-/// the module's `K` back in makes the real collision visible instead.
+/// With the same aliasing, an importer that declares its own `K` does not
+/// capture the library's `K` silently; the collision is reported.
 #[test]
 fn aliasing_an_imported_constant_does_not_capture_the_importers_name() {
     let loader = mem(&[(
@@ -938,8 +904,7 @@ fn aliasing_an_imported_constant_does_not_capture_the_importers_name() {
         "main.ws",
         &loader,
     );
-    let tc =
-        crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+    let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
     assert!(
         tc.diagnostics.iter().any(|d| d.code == "WS013"),
         "the importer's `K` and the module's `K` collide and must be \
@@ -1091,8 +1056,7 @@ fn a_mod_sees_the_module_lets_its_body_reads() {
     for (label, main, uses_lib) in &rows {
         let files: &[(&str, &str)] = if *uses_lib { &[("lib.ws", &lib)] } else { &[] };
         let r = resolve(main, "main.ws", &mem(files));
-        let tc =
-            crate::typecheck::typecheck(&r.ast, "main.ws", &crate::typecheck::CeSlotMap::default());
+        let tc = crate::typecheck::typecheck(&r.ast, &crate::typecheck::CeSlotMap::default());
         let diags: Vec<String> = r
             .diagnostics
             .iter()

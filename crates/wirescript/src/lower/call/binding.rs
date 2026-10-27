@@ -2,7 +2,6 @@
 //! values a call captures.
 
 use super::*;
-use crate::collections::HashSet;
 
 /// Strips a call argument's `&` / `ref` sigil. `&x` names the same storage as
 /// bare `x`, but it parses as `Expr::RefOf`, which resolves to no binding at
@@ -36,7 +35,7 @@ pub(in crate::lower) enum RefArg {
 }
 
 pub(in crate::lower) fn classify_ref_arg(
-    ctx: &LowerCtx,
+    ctx: &LowerCtx<'_>,
     param_storage: Option<VarStorage>,
     arg: &Expr,
 ) -> RefArg {
@@ -45,9 +44,8 @@ pub(in crate::lower) fn classify_ref_arg(
         return classify_named(ctx, param_storage, operand).unwrap_or_else(|| ref_value(ctx, arg));
     }
     // The argument's binding decides: storage binds the parameter to itself,
-    // and a ref value (a ref-holding var passed by name, a field or pin that
-    // carries a ref) binds it to the var the ref points at. A `*T` `in` port
-    // carries a ref value.
+    // and a ref value (a ref-holding var, a field or pin carrying a ref,
+    // a `*T` `in` port) binds it to the ref's wire.
     match classify_named(ctx, param_storage, arg) {
         Some(RefArg::Input(_)) if matches!(ctx.type_of(arg), Type::Ref(_)) => RefArg::Value,
         Some(bound) => bound,
@@ -55,12 +53,10 @@ pub(in crate::lower) fn classify_ref_arg(
     }
 }
 
-/// `Unbound` for an array or map literal (`{}` for a map included), which has
-/// no storage behind it; `Value` otherwise. Only an argument typecheck accepted reaches here: a ref
-/// value (recorded as `Ref`) was bound above, and a scalar with neither a ref
-/// type nor storage behind it (`rr.n`, `m.get(k).Value` on a value map) is
-/// already WS008, so what is left carries a ref on its wire.
-fn ref_value(ctx: &LowerCtx, arg: &Expr) -> RefArg {
+/// `Unbound` for an array or map literal (`{}` included), which has no storage
+/// behind it; `Value` otherwise. A scalar with neither a ref type nor storage
+/// is typecheck's WS008, so any other argument here carries a ref on its wire.
+fn ref_value(ctx: &LowerCtx<'_>, arg: &Expr) -> RefArg {
     if matches!(
         ctx.with_map_literals(deref_arg(arg)).as_ref(),
         Expr::Array { .. } | Expr::MapLit { .. }
@@ -71,7 +67,11 @@ fn ref_value(ctx: &LowerCtx, arg: &Expr) -> RefArg {
     }
 }
 
-fn classify_named(ctx: &LowerCtx, param_storage: Option<VarStorage>, arg: &Expr) -> Option<RefArg> {
+fn classify_named(
+    ctx: &LowerCtx<'_>,
+    param_storage: Option<VarStorage>,
+    arg: &Expr,
+) -> Option<RefArg> {
     let wants_container = matches!(param_storage, Some(VarStorage::Array | VarStorage::Map));
     let binding = match arg {
         Expr::Ident { name, .. } => ctx.scope.get(name).cloned(),
@@ -92,7 +92,7 @@ fn classify_named(ctx: &LowerCtx, param_storage: Option<VarStorage>, arg: &Expr)
 }
 
 pub(super) fn resolve_caller_captures(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     chip_decl: &ChipDecl,
     args: &[CallArg],
 ) -> HashMap<String, VarRecord> {
@@ -103,10 +103,9 @@ pub(super) fn resolve_caller_captures(
             continue;
         };
 
-        // Must be the same lookup `wire_chip_args_and_outputs` and
-        // `explode_record_param_pins` use: if this loop disagrees about which
-        // params are record-shaped, the caller wires values where the body
-        // expects refs.
+        // The same lookup `wire_chip_args_and_outputs` and
+        // `explode_record_param_pins` use; disagreeing on which params are
+        // record-shaped wires values where the body expects refs.
         let resolved_record = ctx.record_or_tuple_fields(&param.typ);
 
         if let Some(fields) = &resolved_record {
@@ -117,11 +116,10 @@ pub(super) fn resolve_caller_captures(
                     if !ctx.ref_or_array(Some(chip_decl), &field.typ) {
                         continue;
                     }
-                    let field_sym = crate::intern::intern(&field.name);
+                    let field_sym = intern(&field.name);
                     // A var holding a ref is a ref value: it crosses on the pin.
                     if let Some(b @ Binding::Var(var_rec)) = rec_fields.get(&field_sym)
-                        && (var_rec.storage != VarStorage::Var
-                            || crate::lower::ref_fields::binds_place(b))
+                        && (var_rec.storage != VarStorage::Var || ref_fields::binds_place(b))
                     {
                         let port_name = format!("{}_{}", param.name, field.name);
                         captures.insert(port_name, var_rec.clone());
@@ -137,11 +135,10 @@ pub(super) fn resolve_caller_captures(
             if matches!(
                 ctx.declared_shape(Some(chip_decl), &param.typ),
                 TypeExpr::Array { .. }
-            ) {
-                if let Some(rec) = materialize_literal_container(ctx, arg, &param.name) {
-                    captures.insert(param.name.clone(), rec);
-                    continue;
-                }
+            ) && let Some(rec) = materialize_literal_container(ctx, arg, &param.name)
+            {
+                captures.insert(param.name.clone(), rec);
+                continue;
             }
             let storage = ctx.ref_storage(Some(chip_decl), &param.typ);
             if let RefArg::Static(var_rec) = classify_ref_arg(ctx, storage, arg_expr) {
@@ -154,10 +151,10 @@ pub(super) fn resolve_caller_captures(
 
 pub(crate) fn compute_scope_captures(module: &Module) -> Vec<NodeId> {
     let mut internal: HashSet<NodeId> =
-        HashSet::with_capacity_and_hasher(module.nodes.len(), Default::default());
+        HashSet::with_capacity_and_hasher(module.nodes.len(), rustc_hash::FxBuildHasher);
     internal.extend(module.nodes.keys().copied());
-    // `external` preserves first-seen order (instantiation remaps by index);
-    // the set only answers membership.
+    // `external` keeps first-seen order, so the list is deterministic; the
+    // set only answers membership.
     let mut external = Vec::new();
     let mut seen: HashSet<NodeId> = HashSet::default();
     let visit = |id: NodeId, external: &mut Vec<NodeId>, seen: &mut HashSet<NodeId>| {

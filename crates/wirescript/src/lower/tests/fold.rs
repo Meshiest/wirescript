@@ -12,7 +12,7 @@ const LOGICAL_OR: &str = "BrickComponentType_Expr_LogicalOR";
 type CountRow<'a> = (&'a str, FoldMode, &'a str, &'a [(&'a str, usize)]);
 
 #[track_caller]
-fn check_gate_counts(rows: &[CountRow]) {
+fn check_gate_counts(rows: &[CountRow<'_>]) {
     let mut failures = Vec::new();
     for (label, mode, src, counts) in rows {
         let r = lower_with(src, "test", *mode, &crate::resolve::FsLoader);
@@ -468,11 +468,11 @@ fn cross_chip_constant_folds_inside_named_chip() {
 }
 
 /// A `(label, source, baked text, classes that must be gone)` row: the source
-/// folds to one String_Concatenate carrier baked with the text, with no chip
+/// folds to one `String_Concatenate` carrier baked with the text, with no chip
 /// and no gate of each listed class anywhere in the tree.
 #[test]
 fn a_constant_string_folds_into_one_baked_carrier() {
-    let score = ((6 + 6) * (6 + 6) + 100) % 977;
+    let score = (6 + 6) * (6 + 6) + 100;
     let score_text = format!("score={score}");
     let rows: &[(&str, &str, &str, &[&str])] = &[
         (
@@ -559,7 +559,7 @@ fn float_prop(n: &crate::ir::Node, name: &str) -> Option<f64> {
 }
 
 /// A folded vector reaches its dataless `out` boundary through one baked
-/// MakeVector carrier, the same delivery a hand-written `Vec(...)` gets.
+/// `MakeVector` carrier, the same delivery a hand-written `Vec(...)` gets.
 #[test]
 fn a_constant_vector_folds_into_one_baked_make_vector() {
     let rows: &[(&str, &str, &str, [f64; 3])] = &[
@@ -681,7 +681,7 @@ fn annotated_empty_chip_is_kept() {
     );
 }
 
-// --- `inline_orphan_literals` cross-module guard ---
+// `inline_orphan_literals` cross-module guard
 
 #[test]
 fn cross_module_literal_inline_skips_orphan_deletion() {
@@ -738,8 +738,8 @@ fn cross_module_literal_inline_skips_orphan_deletion() {
          untouched: {wires_into_add:?}"
     );
 
-    // Unfolded: `2 + 2` stays a real same-module MathAdd, never exposed to the
-    // bug; the value still reaches `v` over a live wire.
+    // Unfolded: `2 + 2` stays a real same-module MathAdd, and the value reaches
+    // `v` over a live wire.
     let unfolded = compile_ok(src);
     let child2 = only_chip(&unfolded, "one Passthrough instance");
     let mc_input2 = child2
@@ -758,7 +758,7 @@ fn cross_module_literal_inline_skips_orphan_deletion() {
 }
 
 /// `Dot`/`Cross`/`ScaleVec` take literal Vector arguments as baked, unwired
-/// properties (`lower/call.rs::literal_for_property_port`); `resolve_data_input`
+/// properties (`lower/expr.rs::literal_for_property_port`); `resolve_data_input`
 /// reads the baked property, so the gate folds. `Dot` is the smallest case; its
 /// scalar result materializes via the `MathAdd(n, 0)` carrier.
 #[test]
@@ -945,7 +945,7 @@ fn constant_string_operand_inlines_into_its_concat_consumer() {
         r.module
             .nodes
             .values()
-            .map(|n| (n.gate_class, n.properties.clone()))
+            .map(|n| (n.gate_class, std::sync::Arc::clone(&n.properties)))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -959,19 +959,15 @@ fn constant_string_operand_inlines_into_its_concat_consumer() {
         r.module
             .nodes
             .values()
-            .map(|n| n.properties.clone())
+            .map(|n| std::sync::Arc::clone(&n.properties))
             .collect::<Vec<_>>()
     );
 }
 
 /// The fold pass does not delete a self-firing gate or the handler it drives.
-///
-/// `sweep_dead_exec` seeds every gate with an unwired exec input as
-/// untriggered. A `Timer`'s `restart`/`pause`/`resume` are optional controls
-/// on a countdown that runs regardless, so an ordinary program wires none of
-/// them: the Timer was seeded dead, and the cascade took its whole
-/// `on t.Expired` handler with it. `Timer(10.0)` plus a handler compiled to
-/// one node, with the fold pass on by default and no diagnostic anywhere.
+/// `sweep_dead_exec` seeds every gate with an unwired exec input as untriggered,
+/// but a `Timer`'s `restart`/`pause`/`resume` are optional controls on a
+/// countdown that runs regardless, so a Timer with none wired is live.
 #[test]
 fn folding_keeps_a_self_firing_gate_and_its_handler() {
     let src = "let t = Timer(10.0)\nvar n: int\non t.Expired {\n  n = 1 + 1\n}\n";

@@ -34,7 +34,7 @@ fn handler_allocates_handler_body_scope() {
     assert_eq!(hb.parent, Some(crate::ir::ROOT_SCOPE_ID));
 }
 
-/// An `if` in a handler makes an IfGroup scope with IfCond/IfThen/IfElse
+/// An `if` in a handler makes an `IfGroup` scope with IfCond/IfThen/IfElse
 /// children, each branch owns its body's nodes, and every node's scope id is
 /// one the module holds.
 #[test]
@@ -90,13 +90,10 @@ fn if_creates_an_if_group_whose_branches_own_their_nodes() {
     );
 }
 
-// ── block-scoped storage shadowing (regression) ──
-// A `var`/array/map/buffer declared inside a handler/`if`/block whose name
-// matches an ancestor storage binding must get its OWN gate, not silently
-// reuse the ancestor's. The old `needs_declaration` walked the whole frame
-// chain, found the ancestor, and skipped the declaration — so the inner var
-// wrote the outer's storage (type-divergent writes, a `static var` reset every
-// call, a load-breaking buffer fan-in).
+// Block-scoped storage shadowing: a `var`/array/map/buffer declared inside a
+// handler, `if` or block whose name matches an ancestor storage binding gets
+// its own gate. Reusing the ancestor's would give type-divergent writes, a
+// `static var` reset every call, and a load-breaking buffer fan-in.
 
 const PVAR: &str = gc::VAR;
 const BUF: &str = gc::BUFFER_TICKS;
@@ -124,9 +121,8 @@ fn block_local_var_shadowing_ancestor_gets_its_own_gate() {
         2,
         "the outer and inner `x` must be two distinct storage gates"
     );
-    // The outer (untouched) gate has zero write consumers; the inner has both
-    // the reset Set and the increment — so the int writes never reach the
-    // string gate.
+    // The outer (untouched) gate has zero write consumers; the inner has both the
+    // reset Set and the increment, so the int writes never reach the string gate.
     let consumers: Vec<usize> = r
         .module
         .nodes
@@ -148,7 +144,7 @@ fn buffer_shadowing_ancestor_gets_its_own_gate_no_fanin() {
         2,
         "the block-local buffer must be its own gate"
     );
-    // No buffer Input may have two drivers — that fan-in fails to load in-game.
+    // No buffer Input may have two drivers: that fan-in fails to load in game.
     for (id, _) in r.module.nodes.iter().filter(|(_, n)| n.gate_class == BUF) {
         let drivers = r
             .module

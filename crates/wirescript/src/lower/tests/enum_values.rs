@@ -551,9 +551,9 @@ fn wire_shape(r: &LowerResult) -> Vec<String> {
 }
 
 /// An enum element passed straight to a call binds exactly as the same
-/// element bound by a `let` first does: a mod or generic mod parameter, a
-/// builtin argument, a container method's value, at a constant or runtime
-/// index, and a map value. It was an `_Unsupported` placeholder.
+/// element bound by a `let` first does, never as a placeholder: a mod or generic
+/// mod parameter, a builtin argument, a container method's value, at a constant
+/// or runtime index, and a map value.
 #[test]
 fn an_enum_element_passed_straight_to_a_call_binds_as_through_a_let() {
     let prelude = "enum Hue { Red, Green, Blue }\nvar hs: Hue[]\nvar m: Map<int, Hue>\nvar n: int = 0\n\

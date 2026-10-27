@@ -1,7 +1,7 @@
 use super::*;
 use crate::diagnostic::{Pos, SourceRange};
 use crate::ir::port_registry::WirePort;
-use crate::ir::{GateIO, Literal, Module, Node, NodeKind, PortRef, ROOT_SCOPE_ID, ScopeId};
+use crate::ir::{GateIO, Module, Node, NodeKind, PortRef, ROOT_SCOPE_ID};
 use std::sync::Arc;
 
 fn make_node(gate_class: &'static str, offset: usize) -> Node {
@@ -48,7 +48,7 @@ fn make_wire(src: NodeId, dst: NodeId) -> Wire {
     }
 }
 
-fn leaf_region<'a>(module: &'a Module) -> super::super::region::Region<'a> {
+fn leaf_region(module: &Module) -> super::super::region::Region<'_> {
     super::super::region::build_region_tree(module)
 }
 
@@ -103,9 +103,9 @@ fn buffer_cycle_drops_buffer_edge_and_does_not_panic() {
 
 #[test]
 fn multi_cycle_scc_breaks_all_cycles_without_panicking() {
-    // One SCC, two distinct cycles sharing node a: a -> b -> a and a -> c -> a.
-    // A single edge removal leaves the second cycle — layout must iterate
-    // until the graph is acyclic instead of panicking in toposort.
+    // One SCC, two distinct cycles sharing node a: a -> b -> a and a -> c -> a. A single edge
+    // removal leaves the second cycle, so layout must iterate until the graph is acyclic
+    // instead of panicking in toposort.
     let a = make_node("G", 0);
     let b = buffer_node(1);
     let c = buffer_node(2);
@@ -132,7 +132,7 @@ fn multi_cycle_scc_breaks_all_cycles_without_panicking() {
 
 #[test]
 fn non_buffer_cycle_falls_back_and_warns() {
-    // Two regular gates forming a cycle — no buffer available.
+    // Two regular gates forming a cycle, with no buffer available.
     let a = make_node("G", 0);
     let b = make_node("G", 1);
     let a_id = a.id;
@@ -213,8 +213,8 @@ fn layout_is_deterministic() {
 
 #[test]
 fn source_order_breaks_y_ties() {
-    // Two nodes both at dx=0 (no predecessors) — the one with the
-    // earlier source_range must get the smaller dy.
+    // Two nodes both at dx=0 (no predecessors): the one with the earlier source_range must
+    // get the smaller dy.
     let early = make_node("G", 0);
     let late = make_node("G", 100);
     let early_id = early.id;
@@ -226,6 +226,4 @@ fn source_order_breaks_y_ties() {
     let early_p = lay.local[&early_id];
     let late_p = lay.local[&late_id];
     assert!(early_p.dy < late_p.dy, "early should come first on y axis");
-    // Unused-import guard for Literal/ScopeId.
-    let _ = (Literal::Bool(false), ROOT_SCOPE_ID as ScopeId);
 }

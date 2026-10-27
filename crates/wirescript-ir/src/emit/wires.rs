@@ -1,14 +1,48 @@
 //! Wire-end resolution and the gutter-bus lane bricks.
 
-use super::*;
+use brdb::{
+    BString, BrickType, Color, Position, WireConnection, WirePort as BrdbWirePort,
+    assets::LiteralComponent,
+};
 
-/// One rerouter brick per [`crate::layout::BusNode`], in `BusNodeId` order —
-/// the gutter lanes that carry a value to its consumers in place of one long
-/// diagonal wire each. Returns each lane node's brick id, indexed by
-/// `BusNodeId`, for the wire pass to address.
+use crate::collections::HashMap;
+use crate::intern::{resolve, sym};
+use crate::ir::port_registry::WirePort;
+use crate::ir::{Literal, Module, NodeId, NodeKind, Wire, gate_class as gc};
+use crate::layout::BusLayout;
+
+use super::colors::color_for_node;
+use super::options::EmitError;
+
+/// The brick asset every rerouter is placed as.
+pub(super) const REROUTE_NODE_ASSET: &str = "B_1x1_Reroute_Node";
+pub(super) const RER_INPUT: &str = "RER_Input";
+pub(super) const RER_OUTPUT: &str = "RER_Output";
+
+/// The rerouter-style port a wire leaves from (`as_source`) or arrives at.
+pub(super) fn rer_port_name(as_source: bool) -> &'static str {
+    if as_source { RER_OUTPUT } else { RER_INPUT }
+}
+
+/// The wire end at `port` of the `component` on brick `brick_id`.
+pub(super) fn brick_port(
+    brick_id: usize,
+    component: &'static str,
+    port: &'static str,
+) -> BrdbWirePort {
+    BrdbWirePort {
+        brick_id,
+        component_type: BString::Static(component),
+        port_name: BString::Static(port),
+    }
+}
+
+/// One rerouter brick per [`crate::layout::BusNode`], in `BusNodeId` order: the gutter lanes
+/// that carry a value to its consumers in place of one long diagonal wire each. Returns each
+/// lane node's brick id, indexed by `BusNodeId`, for the wire pass to address.
 ///
-/// Positions are min-corner like every other brick the layout hands over, so
-/// the brick centre sits a rerouter half-extent (1) in on both axes.
+/// Positions are min-corner like every other brick the layout hands over, so the brick
+/// centre sits a rerouter half-extent (1) in on both axes.
 pub(super) fn emit_bus(
     bricks: &mut Vec<brdb::Brick>,
     bus: &BusLayout,
@@ -21,9 +55,8 @@ pub(super) fn emit_bus(
             .color_of
             .map(|id| match module.nodes.get(&id) {
                 Some(n) => color_for_node(n, module, wire_target_index),
-                // The allocator named a node this module doesn't own, so
-                // the lane can't mirror its colour — say so rather than
-                // leaving a silently default-coloured lane to explain.
+                // The allocator named a node this module does not own, so the lane cannot mirror its
+                // color; say so rather than leave a silently default-colored lane unexplained.
                 None => {
                     eprintln!(
                         "[bus] colour source {id} is not a node of module {}; using the default",
@@ -53,7 +86,7 @@ pub(super) fn rerouter_brick(
     color: Color,
 ) -> (brdb::Brick, usize) {
     let (mut brick, id) = brdb::Brick {
-        asset: BrickType::from("B_1x1_Reroute_Node"),
+        asset: BrickType::from(REROUTE_NODE_ASSET),
         position,
         color,
         rotation,
@@ -69,7 +102,7 @@ pub(super) fn rerouter_brick(
 /// a wire to a chip's port lands on the pin brick inside it.
 pub(super) type PortIndex = HashMap<(NodeId, &'static str), (usize, &'static str, &'static str)>;
 
-/// Pre-build index: (chip_node_id, port_name) -> (brick_id, component_class, remapped_port)
+/// Builds the [`PortIndex`] over the pin bricks of every chip node in `module`.
 pub(super) fn build_port_index(
     module: &Module,
     node_brick_ids: &HashMap<NodeId, usize>,
@@ -80,9 +113,8 @@ pub(super) fn build_port_index(
         if node.kind != NodeKind::Chip {
             continue;
         }
-        let child = match module.chips.get(chip_nid) {
-            Some(c) => c,
-            None => continue,
+        let Some(child) = module.chips.get(chip_nid) else {
+            continue;
         };
         for (child_nid, child_node) in child.nodes_in_order() {
             let is_output = child_node.kind == NodeKind::Output;
@@ -110,7 +142,7 @@ pub(super) fn build_port_index(
                 } else {
                     gc::MICROCHIP_INPUT
                 };
-                let remap_port: &'static str = if is_output { "RER_Output" } else { "RER_Input" };
+                let remap_port = rer_port_name(is_output);
                 idx.insert((*chip_nid, label), (brick_id, class, remap_port));
             }
         }
@@ -125,9 +157,9 @@ pub fn is_spawnable(kind: NodeKind, gate_class: &str) -> bool {
     kind.has_brick() && kind != NodeKind::Chip && !gc::is_inline_only(gate_class)
 }
 
-/// Resolve one wire end — an IR node plus the port on it — to the emitted
-/// brick port, applying the chip-port remap in `port_index` when the node is
-/// a chip and the port one of its declared pins.
+/// Resolve one wire end (an IR node plus the port on it) to the emitted brick port,
+/// applying the chip-port remap in `port_index` when the node is a chip and the port one of
+/// its declared pins.
 pub(super) fn resolve_wire_end(
     node_id: NodeId,
     port_idx: WirePort,
@@ -137,11 +169,7 @@ pub(super) fn resolve_wire_end(
 ) -> Result<BrdbWirePort, EmitError> {
     let port_str: &'static str = port_idx.as_str();
     if let Some(&(brick_id, cls, remapped)) = port_index.get(&(node_id, port_str)) {
-        return Ok(BrdbWirePort {
-            brick_id,
-            component_type: BString::Static(cls),
-            port_name: BString::Static(remapped),
-        });
+        return Ok(brick_port(brick_id, cls, remapped));
     }
     let brick_id = *node_brick_ids
         .get(&node_id)
@@ -149,11 +177,7 @@ pub(super) fn resolve_wire_end(
     let cls = *class_index
         .get(&node_id)
         .ok_or_else(|| EmitError::UnknownWireNode(node_id.to_string()))?;
-    Ok(BrdbWirePort {
-        brick_id,
-        component_type: BString::Static(cls),
-        port_name: BString::Static(port_str),
-    })
+    Ok(brick_port(brick_id, cls, port_str))
 }
 
 pub(super) fn wire_to_connection_indexed(

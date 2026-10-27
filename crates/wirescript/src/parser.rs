@@ -1,7 +1,7 @@
 //! Hand-written recursive-descent + Pratt parser for wirescript.
 
 use crate::ast::*;
-use crate::diagnostic::{Diagnostic, Pos, Severity, SourceRange};
+use crate::diagnostic::{Diagnostic, Pos, Severity, SourceRange, StartKey};
 use crate::lexer::{InterpPart as LexInterpPart, Token, TokenKind, TokenValue, lex};
 
 use crate::collections::HashMap;
@@ -24,11 +24,11 @@ mod stmt;
 /// The file is part of the key because imports merge several parses into one
 /// map, so an offset alone collides across files and the last writer wins. A
 /// chip's doc comment is baked into the world as its header text.
-pub type DocComments = HashMap<(std::sync::Arc<str>, usize), String>;
+pub type DocComments = HashMap<StartKey, String>;
 
 /// The key [`DocComments`] stores a declaration under.
-pub fn doc_key(range: &SourceRange) -> (std::sync::Arc<str>, usize) {
-    (range.file.clone(), range.start.offset)
+pub fn doc_key(range: &SourceRange) -> StartKey {
+    range.start_key()
 }
 
 pub struct ParseResult {
@@ -61,7 +61,7 @@ pub fn parse_pattern_str(s: &str) -> Pattern {
     p.parse_pattern()
 }
 
-// ---------- parser state ----------
+// Parser state
 
 struct Parser<'a> {
     tokens: Vec<Token>,
@@ -80,14 +80,11 @@ struct Parser<'a> {
     /// place of the name.
     event_aliases: HashMap<String, (Trigger, Vec<HandlerConfigArg>)>,
     /// When true, a trailing `{ ... }` after a path expression is NOT parsed as
-    /// braced enum-variant construction (`Enum.Variant { f: v }`) - the `{` is
+    /// braced enum-variant construction (`Enum.Variant { f: v }`); the `{` is
     /// left for the surrounding block header instead. Set only while parsing a
-    /// header/condition expression (an `if` condition, a `match` scrutinee, a
-    /// `for` source; extend to a `while` header if one is added), so
-    /// `if f.bar { }` reads as an `if` with a body, not a construction. Reset
-    /// to false inside any bracketed sub-expression (`( )`, `[ ]`, call args, a
-    /// record/map/array body), where a trailing `{` is unambiguous again. The
-    /// Go-style composite-literal disambiguation.
+    /// header expression (an `if` condition, a `match` scrutinee, a `for`
+    /// source), so `if f.bar { }` reads as an `if` with a body. Reset inside
+    /// any bracketed sub-expression, where a trailing `{` is unambiguous.
     no_brace_construct: bool,
     /// When true, a bare `..` terminates `parse_binary` rather than being
     /// consumed as its infix operator. Set only by
@@ -97,8 +94,8 @@ struct Parser<'a> {
     /// inside any bracketed sub-expression, where a `..` is unambiguous again.
     stop_at_dotdot: bool,
     /// When true, a bare `as` terminates `parse_binary` rather than starting a
-    /// conversion. Set for a `for` source, so the retired `for .. as run` form
-    /// reaches a diagnostic instead of parsing as a conversion to a type
+    /// conversion. Set for a `for` source, so the unsupported `for .. as run`
+    /// form reaches a diagnostic instead of parsing as a conversion to a type
     /// `run`. Reset inside any bracketed sub-expression, like `stop_at_dotdot`.
     stop_at_as: bool,
     /// The operator of the outermost `BinOp` the last `parse_binary` call built
@@ -119,15 +116,10 @@ struct Parser<'a> {
 
 /// The deepest nesting the parser will build.
 ///
-/// Every later pass walks this tree recursively, typecheck, the analysis
-/// walkers, and `Drop` on the boxed nodes themselves, so the depth the parser
-/// accepts is the depth all of them have to survive. A stack overflow is not a
-/// panic: it aborts the process, `catch_unwind` cannot see it, and an editor
-/// running analysis on a 2 MiB worker thread dies without reporting anything.
-/// Measured on that stack, the cliff is around 800 nested parens, 2000 `else
-/// if` arms and 3000 `+` operands; this leaves headroom under the tightest of
-/// those while sitting far above anything real code writes: across every `.ws`
-/// file in the example and project corpus the deepest is 76.
+/// Every later pass (typecheck, the analysis walkers, `Drop` on the boxed
+/// nodes) recurses over this tree, and a stack overflow aborts the process
+/// where `catch_unwind` cannot see it. On a 2 MiB worker stack the limit is
+/// about 800 nested parens, 2000 `else if` arms or 3000 `+` operands.
 pub(crate) const MAX_NEST_DEPTH: usize = 400;
 
 impl<'a> Parser<'a> {
@@ -195,7 +187,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // --- token helpers ---
+    // Token helpers
 
     fn peek(&self) -> &Token {
         self.tokens
@@ -209,7 +201,7 @@ impl<'a> Parser<'a> {
             .unwrap_or_else(|| self.tokens.last().expect("at least EOF"))
     }
 
-    #[allow(dead_code)]
+    /// The next token that is not a newline.
     fn peek_non_nl(&self) -> &Token {
         let mut i = self.pos;
         while i < self.tokens.len() && self.tokens[i].kind == TokenKind::Newline {
@@ -234,8 +226,8 @@ impl<'a> Parser<'a> {
             return Token {
                 kind: TokenKind::Eof,
                 text: String::new(),
-                start: Default::default(),
-                end: Default::default(),
+                start: Pos::default(),
+                end: Pos::default(),
                 value: None,
             };
         }
@@ -327,7 +319,7 @@ impl<'a> Parser<'a> {
         let t = self.peek().clone();
         let want = text
             .map(|s| format!("'{s}'"))
-            .unwrap_or_else(|| format!("{:?}", kind));
+            .unwrap_or_else(|| format!("{kind:?}"));
         self.error(
             format!("expected {want}, got '{}' ({:?})", t.text, t.kind),
             t.start,
@@ -461,14 +453,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // ---------- top level ----------
+    // Top level
 
     fn parse_script(&mut self) -> Script {
         let start = self.peek().start;
         let mut decls: Vec<TopDecl> = Vec::new();
         self.eat_newlines();
         // A leading `///` block separated from the first declaration by a blank
-        // line documents the module, not the first decl — so it doesn't merge
+        // line documents the module, not the first decl, so it does not merge
         // into it.
         let module_doc = self.collect_module_doc();
         let module_anns = self.collect_module_annotations();
@@ -496,16 +488,10 @@ impl<'a> Parser<'a> {
                 self.synchronize();
             }
             self.eat_newlines();
-            // Neither arm guarantees progress. Recovery paths deliberately
-            // leave a closing token in place (see `parse_primary`'s error
-            // arm), so `parse_top_decl` can return a decl built entirely from
-            // lookahead, and `synchronize` stops without consuming when it is
-            // already sitting on a resync token. Either way the loop would
-            // append one decl per iteration until memory ran out. `parse_block`
-            // has the same backstop, but it can break out and let
-            // `expect(RBrace)` report; the top level has no closing token, so
-            // it reports here and skips the token to keep parsing the rest of
-            // the file.
+            // Neither arm guarantees progress: recovery can leave a closing
+            // token in place and `synchronize` may not consume, so without this
+            // the loop appends one decl per iteration forever. The top level
+            // has no closing token to stop at, so report and skip the token.
             if self.pos == before {
                 let t = self.peek().clone();
                 self.error(
@@ -529,7 +515,7 @@ impl<'a> Parser<'a> {
             module_label: module_exprs.label,
             module_color: module_exprs.color,
             module_material: module_exprs.material,
-            imports: Default::default(),
+            imports: std::sync::Arc::default(),
         }
     }
 }

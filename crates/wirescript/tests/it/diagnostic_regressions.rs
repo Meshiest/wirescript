@@ -1,8 +1,8 @@
-//! Diagnostic-behaviour regressions for record, namespace, and control-flow
-//! fixes. Each test asserts either that a false positive is gone (the code is
-//! ABSENT) or that a former silent miscompile now surfaces (the code is
-//! PRESENT). The full pipeline runs (parse -> resolve -> typecheck -> lower ->
-//! cycle-analyze) so lowering-stage diagnostics are included.
+//! Diagnostic behaviour for record, namespace, and control-flow code. Each test
+//! asserts either that a code is absent (no false positive) or that it is
+//! present (a silent miscompile is reported). The full pipeline runs (parse,
+//! resolve, typecheck, lower, cycle-analyze) so lowering-stage diagnostics are
+//! included.
 
 use wirescript::{CompileError, compile};
 
@@ -114,8 +114,7 @@ diag_case!(a_var_passed_to_a_ref_param_stays_clean:
     "mod inc(v: *int) { v = v + 1 }\nin go: exec\nvar a: int = 0\non go { inc(a) }\n" => lacks "WS008");
 
 // Each record field is its own storage gate, so `&p.a` names real storage
-// and lowers to a correctly wired write. The `&` check accepted only a bare
-// name, an index, and a namespaced member, so it rejected this valid form.
+// and lowers to a correctly wired write; the `&` check accepts a field path.
 diag_case!(record_field_to_ref_param_is_clean: "type P = { a: int, b: int }
 mod inc(v: *int) { v = v + 1 }
 in go: exec
@@ -156,14 +155,13 @@ diag_case!(awaiting_a_value_from_a_valueless_signal_is_ws056:
     "let sig: exec\nstatic var captured: int = 0\non start { emit sig }\non go {\n  let v = await sig\n  captured = v\n}\nin start: exec\nin go: exec\n" => has "WS056");
 
 // --- A tuple `return` to a mod with named multi-outputs distributes each
-//     element to the matching output; `let (a, b) = f()` used to read
-//     `_Unsupported` placeholders.
+//     element to the matching output, so `let (a, b) = f()` reads real values.
 diag_case!(tuple_return_named_outputs_no_placeholder:
     "mod pair(x: int) -> (a: int, b: int) {\n  return (x, x + 1)\n}\nstatic var res: int = 0\nin go: exec\non go {\n  let (a, b) = pair(3)\n  res = a * 10 + b\n}\n" => lacks "WSP001");
 
 // --- A component field borrowed from another component type (or a typo)
-//     is WS010, not a silent SplitColor/SplitVector fed the wrong-typed value.
-//     `v.r` on a vector previously compiled clean and emitted a SplitColor.
+//     is WS010, not a silent SplitColor/SplitVector fed the wrong-typed value
+//     (`v.r` on a vector must not emit a SplitColor).
 diag_case!(a_component_field_borrowed_from_another_type_is_ws010:
     "in go: exec\nvar v: vector = Vec(1.0,2.0,3.0)\nvar f: float = 0.0\non go { f = v.r }\n",
     "in go: exec\nvar c: color = Color(1.0,0.0,0.0)\nvar f: float = 0.0\non go { f = c.x }\n" => has "WS010");
@@ -193,11 +191,9 @@ diag_case!(assigning_to_a_var_field_or_element_stays_clean:
 // --- Two sources into one input port (here a duplicate `out o`) is rejected,
 //     not a format-valid `.brz` the game rejects at load.
 //
-//     Typecheck now catches it as WS013 at the second `out`, naming the port
-//     and the line. It used to reach emit and surface as a `FanIn` naming
-//     brick ids the user cannot see, so this asserts the earlier, nameable
-//     diagnostic and keeps the emit check as the backstop it was always meant
-//     to be.
+//     Typecheck reports it as WS013 at the second `out`, naming the port and
+//     the line, rather than letting emit report a `FanIn` that names brick ids
+//     the user cannot see. The emit check remains as the backstop.
 #[test]
 fn two_drivers_on_one_out_port_is_rejected() {
     let input = common::input("in x: int\nout o = x + 1\nout o = x + 2\n", "fan_in.ws");
@@ -210,7 +206,7 @@ fn two_drivers_on_one_out_port_is_rejected() {
             assert!(
                 format!("{e:?}").contains("FanIn"),
                 "expected FanIn, got {e:?}"
-            )
+            );
         }
         Ok(_) => panic!("fan-in must be rejected, not compiled to a broken .brz"),
     }
@@ -454,8 +450,8 @@ diag_case!(bare_unit_variant_and_lowercase_catch_all_are_not_ws067:
 
 // --- An array literal element is BAKED as a constant, so a `ViaString`
 //     coercion has no `FormatText` gate to run through and emit renders the
-//     value as `""`. `var s: string[] = [1, 2]` type-checks clean and ships two
-//     empty strings; the map path already had this rule.
+//     value as `""`. `var s: string[] = [1, 2]` must not type-check clean and
+//     ship two empty strings.
 #[test]
 fn string_array_initializer_with_int_elements_is_ws003() {
     let src = "static var s: string[] = [1, 2]\non RoundStart() { PrintToConsole(s[0]) }\n";
@@ -471,7 +467,7 @@ fn string_array_initializer_with_int_elements_is_ws003() {
 }
 
 // The whole-array coerce only inspects element 0, so a `string`-typed first
-// element used to carry the rest of the literal through unchecked.
+// element must not carry the rest of the literal through unchecked.
 diag_case!(string_array_literal_with_a_non_string_element_is_ws003_in_exec_context:
     "static var s: string[] = []\nin go: exec\non go {\n  s = [\"a\", 2]\n}\n" => has "WS003");
 

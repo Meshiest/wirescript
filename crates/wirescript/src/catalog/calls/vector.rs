@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
-    // ---- Vector constructors / ops (pure expression) --------------------
+    // Vector constructors / ops (pure expression)
     m.insert(
         "Vec",
         vec_expr(
@@ -91,7 +91,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Rotation / quaternion -----------------------------
+    // Rotation / quaternion
     // `rotator` = euler (Pitch/Yaw/Roll, used by entity rotation); `quat` =
     // quaternion produced by the conversion gates.
     m.insert(
@@ -249,7 +249,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         ),
     );
 
-    // ---- Vector (additional) --------------------------------------------
+    // Vector (additional)
     m.insert(
         "DistanceSq",
         vec_recv(
@@ -273,7 +273,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             Type::Float,
         ),
     );
-    // ---- Vector (split) --------------------------------------------------
+    // Vector (split)
     m.insert(
         "SplitVec",
         CallSpec {
@@ -293,7 +293,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
         },
     );
 
-    // ---- Quaternion make/split/dot -------------------------------
+    // Quaternion make/split/dot
     m.insert(
         "Quat",
         vec_expr(

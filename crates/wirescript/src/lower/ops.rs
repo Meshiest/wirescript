@@ -1,21 +1,22 @@
+use std::fmt::Write as _;
+
 use super::*;
 use crate::catalog::operators::OpRule;
 use crate::lower::fold::eval::{FORMAT_SLOTS, interp_groups};
 
-/// The operator rule for the CURRENT monomorph. Non-generic bodies read the
-/// baked `op_resolutions` map, including one inlined from a generic caller:
-/// its operands may be the caller's ports, but typecheck resolved its
-/// operators once, against its declared types. Inside a generic mod's body
-/// that map holds the STALE last-mask-member rule — the per-mask-member body
-/// check in typecheck re-resolves every operator once per member and the last
-/// write wins (`Numeric` -> Color, `Scalar` -> Float, an unbounded `T` ->
-/// Prefab), so a `square<int>` monomorph would otherwise emit a Color
-/// MathMultiply. Re-resolve from each operand's type in this instantiation
-/// (`LowerCtx::type_of`), as typecheck resolves it; an operand that has none
-/// takes its lowered port's type. A port can carry a narrower type than its
-/// operand has: an `int` argument given for a `float` parameter reaches the
-/// body on its `int` port, and `x / 2` there still divides as floats.
-fn mono_op_rule(ctx: &LowerCtx, e: &Expr, op: &str, operand_ports: &[PortRef]) -> Option<OpRule> {
+/// The operator rule for the current monomorph. A non-generic body (including
+/// one inlined from a generic caller) reads the baked `op_resolutions` map.
+/// Inside a generic mod that map holds the last mask member's rule (a
+/// `square<int>` would emit a Color `MathMultiply`), so the rule is re-resolved
+/// from each operand's type in this instantiation, else its port's type. The
+/// operand type wins over a narrower port: an `int` passed for a `float`
+/// parameter still makes `x / 2` divide as floats.
+fn mono_op_rule(
+    ctx: &LowerCtx<'_>,
+    e: &Expr,
+    op: &str,
+    operand_ports: &[PortRef],
+) -> Option<OpRule> {
     if ctx.mono_stack.is_empty() {
         return ctx.op_for(e).cloned();
     }
@@ -60,7 +61,7 @@ fn operand_type(t: &Type) -> Type {
     }
 }
 
-pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
+pub(super) fn lower_binop(ctx: &mut LowerCtx<'_>, e: &Expr) -> PortRef {
     let Expr::BinOp { left, right, .. } = e else {
         return synthesise_unsupported(ctx, e);
     };
@@ -82,13 +83,13 @@ pub(super) fn lower_binop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         };
         return binop_gate_of(ctx, e, left_port, right_port);
     }
-    let ports = crate::lower::ordered::lower_in_order(ctx, &[left, right]);
+    let ports = ordered::lower_in_order(ctx, &[left, right]);
     binop_gate(ctx, e, ports[0], ports[1])
 }
 
 /// The gate of the binary operator `e` over its lowered operands.
 pub(super) fn binop_gate(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     e: &Expr,
     left_port: PortRef,
     right_port: PortRef,
@@ -98,7 +99,7 @@ pub(super) fn binop_gate(
 
 /// [`binop_gate`], an operand of `None` leaving its input unwired.
 fn binop_gate_of(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     e: &Expr,
     left_port: Option<PortRef>,
     right_port: Option<PortRef>,
@@ -114,12 +115,9 @@ fn binop_gate_of(
         return synthesise_unsupported(ctx, e);
     };
 
-    // Players (and other objects) don't cast directly to ints on a math gate,
-    // so an object math operand is routed through `(obj || false)` first — that
-    // LogicalOR coerces it to a value the gate accepts. `1 + player` becomes
-    // `add(1, or(player, false))`. Only applies to the Math* gates; logical and
-    // comparison gates take object operands natively.
-    let operand = |ctx: &mut LowerCtx, port: Option<PortRef>, ty: &Type| match port {
+    // An object operand of a Math* gate goes through `(obj || false)` first
+    // (see `wrap_object_for_math`): `1 + player` becomes `add(1, or(player, false))`.
+    let operand = |ctx: &mut LowerCtx<'_>, port: Option<PortRef>, ty: &Type| match port {
         Some(p) => {
             let (p, t) = wrap_object_for_math(ctx, p, ty, rule.gate_class, range);
             (Some(p), t)
@@ -129,42 +127,22 @@ fn binop_gate_of(
     let (left_port, left_ty) = operand(ctx, left_port, &rule.operands[0]);
     let (right_port, right_ty) = operand(ctx, right_port, &rule.operands[1]);
 
-    let in_a = rule.ports.inputs[0];
-    let in_b = rule.ports.inputs[1];
-    let out = rule.ports.output;
-    let in_a_sym = in_a.sym();
-    let in_b_sym = in_b.sym();
-    let out_sym = out.sym();
-    let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class: rule.gate_class,
-        source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![
-                PortSpec::new(in_a_sym, left_ty),
-                PortSpec::new(in_b_sym, right_ty),
-            ],
-            outputs: vec![PortSpec::new(out_sym, rule.result.clone())],
-        },
-        note: None,
-        ..Default::default()
-    });
-    if let Some(p) = left_port {
-        ctx.connect(p, node_id.port(in_a));
-    }
-    if let Some(p) = right_port {
-        ctx.connect(p, node_id.port(in_b));
-    }
-    node_id.port(out)
+    rule_gate(
+        ctx,
+        &rule,
+        &[left_port, right_port],
+        &[left_ty, right_ty],
+        None,
+        range,
+    )
 }
 
-/// Players and other object operands don't coerce directly to ints on a math
-/// gate, so route an object operand through `(obj || false)` — a LogicalOR with a
-/// `false` literal — which coerces it to a value the math gate accepts. Returns
-/// the (possibly rewritten) port and its effective wire type. No-op for
-/// non-object operands or non-math gates (logical/compare gates take objects
-/// natively).
+/// An object operand does not coerce to a number on a math gate, so it is
+/// routed through `(obj || false)`, a `LogicalOR` whose output the gate
+/// accepts. Returns the port and its wire type. Non-object operands and
+/// non-math gates (logical and compare gates take objects natively) pass through.
 fn wrap_object_for_math(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     port: PortRef,
     operand_ty: &Type,
     gate_class: &str,
@@ -174,7 +152,7 @@ fn wrap_object_for_math(
         operand_ty,
         Type::Entity | Type::Controller | Type::Character
     );
-    let is_math = gate_class.starts_with("BrickComponentType_Expr_Math");
+    let is_math = gate_class.starts_with(gc::EXPR_MATH_PREFIX);
     if !(is_object && is_math) {
         return (port, operand_ty.clone());
     }
@@ -184,7 +162,7 @@ fn wrap_object_for_math(
 
     // (obj || false) -> LogicalOR coerces the object to an int/bool the gate takes.
     let or_id = ctx.add_gate(AddNodeOpts {
-        gate_class: "BrickComponentType_Expr_LogicalOR",
+        gate_class: gc::LOGICAL_OR,
         source_range: range.clone(),
         ports: GateIO {
             inputs: vec![
@@ -204,10 +182,9 @@ fn wrap_object_for_math(
     (or_id.port(WirePort::BOutput), Type::Int)
 }
 
-pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
-    let (op, operand, range) = match e {
-        Expr::UnOp { op, operand, range } => (op, operand, range),
-        _ => return synthesise_unsupported(ctx, e),
+pub(super) fn lower_unop(ctx: &mut LowerCtx<'_>, e: &Expr) -> PortRef {
+    let Expr::UnOp { op, operand, range } = e else {
+        return synthesise_unsupported(ctx, e);
     };
     // Fuse !(a && b) -> LogicalNAND, !(a || b) -> LogicalNOR
     // Fuse ~(a & b) -> BitwiseNAND,  ~(a | b) -> BitwiseNOR
@@ -222,25 +199,25 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
     {
         let fused = match (op.as_str(), inner_op.as_str()) {
             ("!", "&&") => Some((
-                "BrickComponentType_Expr_LogicalNAND",
+                gc::LOGICAL_NAND,
                 WirePort::BInputA,
                 WirePort::BInputB,
                 WirePort::BOutput,
             )),
             ("!", "||") => Some((
-                "BrickComponentType_Expr_LogicalNOR",
+                gc::LOGICAL_NOR,
                 WirePort::BInputA,
                 WirePort::BInputB,
                 WirePort::BOutput,
             )),
             ("~", "&") => Some((
-                "BrickComponentType_Expr_BitwiseNAND",
+                gc::BITWISE_NAND,
                 WirePort::InputA,
                 WirePort::InputB,
                 WirePort::Output,
             )),
             ("~", "|") => Some((
-                "BrickComponentType_Expr_BitwiseNOR",
+                gc::BITWISE_NOR,
                 WirePort::InputA,
                 WirePort::InputB,
                 WirePort::Output,
@@ -268,10 +245,10 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
                 source_range: inner_range.clone(),
                 ports: GateIO {
                     inputs: vec![
-                        PortSpec::new(in_a_sym, lhs_ty.clone()),
-                        PortSpec::new(in_b_sym, rhs_ty.clone()),
+                        PortSpec::new(in_a_sym, lhs_ty),
+                        PortSpec::new(in_b_sym, rhs_ty),
                     ],
-                    outputs: vec![PortSpec::new(out_sym, out_ty.clone())],
+                    outputs: vec![PortSpec::new(out_sym, out_ty)],
                 },
                 note: None,
                 ..Default::default()
@@ -292,43 +269,22 @@ pub(super) fn lower_unop(ctx: &mut LowerCtx, e: &Expr) -> PortRef {
         && ctx
             .op_for(e)
             .is_some_and(|r| r.operands.first() == Some(&Type::Int))
+        && let (Ok(Literal::Int(n)), budget) = ctx.const_eval_budget(e, ConstScope::Certified)
+        && !budget.uncertified
     {
-        let lookup = |n: &str| ctx.resolve_mod(n);
-        let cx = ctx.certified_const_ctx(Some(&lookup));
-        let mut budget = crate::const_eval::Budget::default();
-        if crate::const_eval::integer_ops_certified(e, &cx)
-            && let Ok(Literal::Int(n)) = crate::const_eval::eval_expr(e, &cx, &mut budget)
-        {
-            return literal_node_range(ctx, range, Type::Int, Literal::Int(n));
-        }
+        return literal_node_range(ctx, range, Type::Int, Literal::Int(n));
     }
     let in_port = lower_expr(ctx, operand);
-    let rule = match mono_op_rule(ctx, e, op, &[in_port]) {
-        Some(r) => r,
-        None => return synthesise_unsupported(ctx, e),
+    let Some(rule) = mono_op_rule(ctx, e, op, &[in_port]) else {
+        return synthesise_unsupported(ctx, e);
     };
-    let in_a = rule.ports.inputs[0];
-    let out = rule.ports.output;
-    let in_a_sym = in_a.sym();
-    let out_sym = out.sym();
-    let node_id = ctx.add_gate(AddNodeOpts {
-        gate_class: rule.gate_class,
-        source_range: range.clone(),
-        ports: GateIO {
-            inputs: vec![PortSpec::new(in_a_sym, rule.operands[0].clone())],
-            outputs: vec![PortSpec::new(out_sym, rule.result.clone())],
-        },
-        note: None,
-        ..Default::default()
-    });
-    ctx.connect(in_port, node_id.port(in_a));
-    node_id.port(out)
+    rule_gate(ctx, &rule, &[Some(in_port)], rule.operands, None, range)
 }
 
-/// Build one FormatText gate from a finished format string and its already
+/// Build one `FormatText` gate from a finished format string and its already
 /// lowered substitution ports (`slots.len()` must be `<= FORMAT_SLOTS.len()`).
 pub(super) fn build_format_text(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     format_string: String,
     slots: Vec<PortRef>,
     range: &SourceRange,
@@ -357,10 +313,14 @@ pub(super) fn build_format_text(
     node_id.port(WirePort::Output)
 }
 
-/// Concatenate string ports into one, chaining FormatText gates in groups of
+/// Concatenate string ports into one, chaining `FormatText` gates in groups of
 /// `FORMAT_SLOTS.len()` (recursively) so any number of parts fits the 7-input
 /// gate.
-fn concat_string_ports(ctx: &mut LowerCtx, ports: Vec<PortRef>, range: &SourceRange) -> PortRef {
+fn concat_string_ports(
+    ctx: &mut LowerCtx<'_>,
+    ports: Vec<PortRef>,
+    range: &SourceRange,
+) -> PortRef {
     if ports.len() <= 1 {
         return ports.into_iter().next().expect("at least one part");
     }
@@ -369,7 +329,10 @@ fn concat_string_ports(ctx: &mut LowerCtx, ports: Vec<PortRef>, range: &SourceRa
         if chunk.len() == 1 {
             outs.push(chunk[0]);
         } else {
-            let fmt: String = (0..chunk.len()).map(|i| format!("{{{i}}}")).collect();
+            let fmt = (0..chunk.len()).fold(String::new(), |mut fmt, i| {
+                let _ = write!(fmt, "{{{i}}}");
+                fmt
+            });
             outs.push(build_format_text(ctx, fmt, chunk.to_vec(), range));
         }
     }
@@ -377,7 +340,7 @@ fn concat_string_ports(ctx: &mut LowerCtx, ports: Vec<PortRef>, range: &SourceRa
 }
 
 pub(super) fn lower_interp(
-    ctx: &mut LowerCtx,
+    ctx: &mut LowerCtx<'_>,
     parts: &[InterpPart],
     range: &SourceRange,
 ) -> PortRef {
@@ -394,7 +357,7 @@ pub(super) fn lower_interp(
             InterpPart::Lit(_) => None,
         })
         .collect();
-    let mut ports = crate::lower::ordered::lower_in_order(ctx, &exprs).into_iter();
+    let mut ports = ordered::lower_in_order(ctx, &exprs).into_iter();
     let Ok(groups) = interp_groups(parts, |_| Ok::<_, std::convert::Infallible>(ports.next()));
     let outs: Vec<PortRef> = groups
         .into_iter()

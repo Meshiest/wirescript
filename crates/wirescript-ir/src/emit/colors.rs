@@ -1,8 +1,13 @@
 //! Brick colour policy for emitted nodes.
 
-use super::*;
+use brdb::Color;
 
-// ---------- semantic colouring ----------
+use crate::collections::HashMap;
+use crate::intern::{resolve, sym};
+use crate::ir::port_registry::WirePort;
+use crate::ir::{Module, Node, NodeId, NodeKind, Type};
+
+// Semantic colors
 
 // Brickadia renders stored brick-colour bytes as sRGB directly (a raw
 // paint value like 60,160,240 shows up as that same bright blue in-game),
@@ -26,32 +31,32 @@ const C_INT: Color = Color {
     r: 39,
     g: 184,
     b: 199,
-}; // int — cyan
+}; // int: cyan
 const C_FLOAT: Color = Color {
     r: 39,
     g: 145,
     b: 72,
-}; // float — green
+}; // float: green
 const C_BOOL: Color = Color {
     r: 176,
     g: 39,
     b: 39,
-}; // bool — red
+}; // bool: red
 const C_STRING: Color = Color {
     r: 184,
     g: 161,
     b: 28,
-}; // string — yellow
+}; // string: yellow
 const C_CHARACTER: Color = Color {
     r: 21,
     g: 28,
     b: 138,
-}; // character — deep blue
+}; // character: deep blue
 const C_STRUCT: Color = Color {
     r: 184,
     g: 109,
     b: 28,
-}; // vector/struct/entity — orange
+}; // vector/struct/entity: orange
 
 /// Storage-style gates (vars, buffers, queues, smoothing, stopwatch, custom
 /// events), coloured by the type of their `Value`/`Output` port.
@@ -72,13 +77,13 @@ const TYPE_COLORED_STORAGE: &[&str] = &[
     crate::ir::gate_class::SEND_CUSTOM_EVENT_GLOBAL,
 ];
 
-/// Choose a brick colour for `node` following the scheme:
-/// - Events + chip I/O -> yellow
-/// - Branch / union / select -> white
-/// - Storage gates ([`TYPE_COLORED_STORAGE`]) -> coloured by inner type
-/// - Var_Get / Var_Set / Var_Increment -> coloured by the var they touch
-/// - Other exec-taking statement gates -> grey
-/// - Pure expressions -> coloured by their output type
+/// Choose a brick color for `node`:
+/// - Events and chip I/O: yellow
+/// - Branch / union / select: white
+/// - Storage gates ([`TYPE_COLORED_STORAGE`]): by inner type
+/// - `Var_Get` / `Var_Set` / `Var_Increment`: by the var they touch
+/// - Other exec-taking statement gates: grey
+/// - Pure expressions: by their output type
 pub(super) fn color_for_node(
     node: &Node,
     module: &Module,
@@ -103,10 +108,7 @@ pub(super) fn color_for_node(
             .ports
             .outputs
             .iter()
-            .find(|p| {
-                let pn = resolve(p.name);
-                pn == "Value" || pn == "Output"
-            })
+            .find(|p| p.name == *sym::VALUE || p.name == *sym::OUTPUT)
             .map(|p| &p.ty)
         {
             return color_for_type(t);
@@ -117,19 +119,19 @@ pub(super) fn color_for_node(
         if let Some(ty) = var_ref_target_type(node, module, wire_target_index) {
             return color_for_type(&ty);
         }
-        if let Some(ref_port) = node.ports.inputs.iter().find(|p| {
-            let pn = resolve(p.name);
-            pn == "VarRef" || pn == "ArrayVarRef"
-        }) {
+        if let Some(ref_port) = node
+            .ports
+            .inputs
+            .iter()
+            .find(|p| p.name == *sym::VAR_REF || p.name == *sym::ARRAY_VAR_REF)
+        {
             return color_for_type(&ref_port.ty);
         }
     }
-    // Map access gates (`MapVar_Get`/`_Has`/`_GetLength`/…) carry the value they
-    // read or test on their own non-exec output (a `.get` on a `Map<_, string>`
-    // outputs a string), so colour by that instead of the neutral exec-gate grey
-    // below — matching how Var/ArrayVar access gates colour by the value they
-    // touch. A gate with no non-exec output (`MapVar_Set`/`_Clear`) still falls
-    // through to grey.
+    // Map access gates (`MapVar_Get`/`_Has`/`_GetLength`/...) carry the value they read or
+    // test on their own non-exec output (a `.get` on a `Map<_, string>` outputs a string), so
+    // color by that, as Var/ArrayVar access gates do. A gate with no non-exec output
+    // (`MapVar_Set`/`_Clear`) falls through to grey.
     if node.gate_class.contains("Exec_MapVar_")
         && let Some(p) = node
             .ports
@@ -151,9 +153,9 @@ pub(super) fn color_for_node(
         .unwrap_or(C_GREY)
 }
 
-/// For a Var_Get/Var_Set style gate, follow its `VarRef` / `ArrayVarRef`
-/// input wire back to the Pseudo_Var source and return that var's inner
-/// type. Uses pre-built wire_target_index for O(1) lookup.
+/// For a `Var_Get/Var_Set` style gate, follow its `VarRef` / `ArrayVarRef`
+/// input wire back to the `Pseudo_Var` source and return that var's inner
+/// type. Uses pre-built `wire_target_index` for O(1) lookup.
 fn var_ref_target_type(
     node: &Node,
     module: &Module,
@@ -163,10 +165,7 @@ fn var_ref_target_type(
         .ports
         .inputs
         .iter()
-        .find(|p| {
-            let pn = resolve(p.name);
-            pn == "VarRef" || pn == "ArrayVarRef"
-        })
+        .find(|p| p.name == *sym::VAR_REF || p.name == *sym::ARRAY_VAR_REF)
         .map(|p| p.name)?;
     let ref_port_idx = WirePort::from_name(resolve(ref_port_sym));
     let src = wire_target_index.get(&(node.id, ref_port_idx))?;
@@ -175,10 +174,7 @@ fn var_ref_target_type(
         .ports
         .outputs
         .iter()
-        .find(|p| {
-            let pn = resolve(p.name);
-            pn == "Value" || pn == "Output"
-        })
+        .find(|p| p.name == *sym::VALUE || p.name == *sym::OUTPUT)
         .map(|p| p.ty.clone())
 }
 
@@ -249,9 +245,9 @@ mod tests {
         }
     }
 
-    /// A map access gate colours by the value it reads (its own non-exec
-    /// output), not the neutral exec-gate grey — so `m.get(k)` on a string map
-    /// reads green like any other string source.
+    /// A map access gate colors by the value it reads (its own non-exec output), not the
+    /// neutral exec-gate grey, so `m.get(k)` on a string map reads green like any other string
+    /// source.
     #[test]
     fn map_access_gate_colours_by_its_value_not_grey() {
         let module = Module::new("t");

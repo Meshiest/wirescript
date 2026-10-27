@@ -2,7 +2,7 @@
 //! dispatch to the code-shaped layout engine (row = source line) instead of
 //! the default flat DAG layout, and the dispatch must be deterministic.
 
-use wirescript::compile::{CompileInput, FoldMode, compile, compile_to_world};
+use wirescript::compile::{CompileInput, compile, compile_to_world};
 
 use crate::common;
 
@@ -38,12 +38,7 @@ let report = Report(tick)
 /// not root placements, so this is what catches them drifting.
 fn brick_counts(source: &str, file: &str) -> Vec<usize> {
     let r = compile_to_world(
-        CompileInput {
-            source,
-            file,
-            module_name: None,
-            fold_mode: FoldMode::Auto,
-        },
+        CompileInput::new(source, file),
         wirescript::EmitOptions::default(),
     )
     .expect("compile to world");
@@ -56,10 +51,9 @@ fn brick_counts(source: &str, file: &str) -> Vec<usize> {
 fn code_layout_compiles_and_orders_lines_top_down() {
     let r = compile(common::input(SRC, "code_layout_emit.ws")).expect("compile");
     assert!(!r.brz.is_empty());
-    // Placements occupy >= 4 distinct Placement.x rows (4+ occupied source
-    // lines) under code layout — the Dag layout of this program yields a
-    // different, wider shape. Then assert determinism: a second compile
-    // gives identical placements.
+    // Code layout occupies at least 4 distinct Placement.x rows (one per source
+    // line); the Dag layout of this program is wider. A second compile must give
+    // identical placements.
     let rows: std::collections::HashSet<i32> = r.placements.values().map(|p| p.x).collect();
     assert!(
         rows.len() >= 4,
@@ -76,7 +70,7 @@ fn code_layout_compiles_and_orders_lines_top_down() {
     // coordinate multisets: both runs must place the same set of positions.
     let coords = |r: &wirescript::CompileResult| -> Vec<(i32, i32, i32)> {
         let mut v: Vec<(i32, i32, i32)> = r.placements.values().map(|p| (p.x, p.y, p.z)).collect();
-        v.sort();
+        v.sort_unstable();
         v
     };
     assert_eq!(
@@ -94,8 +88,8 @@ fn code_layout_compiles_and_orders_lines_top_down() {
         "identical brick counts both runs"
     );
 
-    // …and confirm the fixture's comments actually reach the plane, or the
-    // comparison above would be blind to the annotation path.
+    // The fixture's comments must reach the plane, or the comparison above
+    // cannot see the annotation path.
     let stripped: String = SRC
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
@@ -109,11 +103,9 @@ fn code_layout_compiles_and_orders_lines_top_down() {
     );
 }
 
-/// Same program, minus the `@layout("code")` annotation — the node set
-/// (placement count) must be identical (layout mode changes geometry, never
-/// which nodes get placed), and the Dag layout's row count must NOT reach
-/// the code-layout threshold above, so the two modes are observably
-/// different for the same source.
+/// Same program without the `@layout("code")` annotation: the placed node set
+/// is identical (layout mode changes geometry, not which nodes are placed), and
+/// the Dag layout's row count stays below the code-layout threshold above.
 #[test]
 fn without_annotation_dag_layout_is_unchanged() {
     let dag_src = SRC.strip_prefix("@layout(\"code\")\n\n").expect("prefix");

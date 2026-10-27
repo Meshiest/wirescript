@@ -1,9 +1,8 @@
 use super::references::find_name_range;
 use super::symbols::SymbolDef;
 use super::text::{cursor_byte_offset, word_at};
+use super::visit::visit_program;
 use crate::ast::*;
-use crate::catalog::calls::calls;
-use crate::catalog::events::find_event;
 use crate::diagnostic::SourceRange;
 use crate::resolve::FileLoader;
 
@@ -132,16 +131,8 @@ pub fn definition_at(
     // AFTER the symbol loop so a value binding of the same name still wins
     // (the compiler's own shadow rule). A built-in game/prelude enum
     // (`EasingFunction`, `Option`, ...) has no source location - `find_enum_decl`
-    // only matches a real `TopDecl::Enum`, so it falls through to `None` below.
-    if let Some(loc) = resolve_enum_type_definition(pre_resolve_ast, source, &word) {
-        return Some(loc);
-    }
-
-    if find_event(&word).is_some() || calls().get(word.as_str()).is_some() {
-        return None;
-    }
-
-    None
+    // only matches a real `TopDecl::Enum`, so it yields `None`.
+    resolve_enum_type_definition(pre_resolve_ast, source, &word)
 }
 
 /// Find a top-level `enum` decl named `name` in `decls`, recursing into
@@ -172,13 +163,10 @@ fn resolve_enum_type_definition(ast: &Script, source: &str, word: &str) -> Optio
     Some(source_range_to_location(&r, None))
 }
 
-/// The identifier immediately before the `.` that the cursor's word follows:
-/// the `Shape` of `Shape.Circle`, the `ns` of `ns.name`. `None` unless the
-/// cursor's word is preceded by a dot and the dot by a non-empty identifier.
-///
-/// Deliberately NOT [`crate::analysis::member_receiver_at`], which the
-/// completion path uses: that one also unwraps an index (`arr[i].` reports
-/// `arr[]`). Go-to-definition wants the plain `Ident.member` shape only.
+/// The identifier just before the `.` the cursor's word follows: `Shape` in
+/// `Shape.Circle`, `ns` in `ns.name`. `None` unless the word follows a dot that
+/// follows an identifier. Unlike [`crate::analysis::member_receiver_at`], it
+/// does not unwrap an index (`arr[i].`): go-to-definition wants `Ident.member`.
 fn receiver_before_cursor_word(source: &str, line: usize, col: usize) -> Option<&str> {
     let l = source.lines().nth(line)?;
     let c = l.char_indices().nth(col).map(|(i, _)| i).unwrap_or(l.len());
@@ -252,16 +240,12 @@ fn record_lit_field_key_span(f: &RecordLitField) -> Option<(&str, usize, usize)>
     }
 }
 
-/// Go-to-definition for a named payload FIELD's KEY in an enum-variant
-/// CONSTRUCTION (`Shape.Box { w: 1.0, h: 2.0 }` - the `w`/`h`): jumps to that
-/// field's own `SourceRange` inside `enum Shape { Box { w: float, ... } }`.
-///
-/// AST-based rather than the text-heuristic style the resolvers above use:
-/// the enum + variant names are only recoverable from the `VariantCtor`'s own
-/// `path` sub-expression, so this walks the AST (via `visit::visit_program`,
-/// which fires `on_call` on `Expr::VariantCtor` itself) looking for
-/// the field whose key span (see [`record_lit_field_key_span`]) contains the
-/// cursor.
+/// Go-to-definition for a named payload field's key in a variant construction
+/// (`Shape.Box { w: 1.0, h: 2.0 }`, on `w` or `h`): the field's range in
+/// `enum Shape { Box { w: float, ... } }`. The enum and variant come from the
+/// `VariantCtor`'s `path`, so this walks the AST (`visit::visit_program` fires
+/// on `Expr::VariantCtor`) for the field whose key span
+/// ([`record_lit_field_key_span`]) contains the cursor.
 fn resolve_enum_field_construction_definition(
     ast: &Script,
     source: &str,
@@ -270,7 +254,7 @@ fn resolve_enum_field_construction_definition(
 ) -> Option<Location> {
     let off = cursor_byte_offset(source, line, col);
     let mut hit: Option<(&Expr, &str)> = None; // (Enum.Variant path, field name)
-    super::visit::visit_program(ast, &mut |_h| {}, &mut |e| {
+    visit_program(ast, &mut |_h| {}, &mut |e| {
         if hit.is_some() {
             return;
         }
@@ -298,27 +282,17 @@ fn resolve_enum_field_construction_definition(
     Some(source_range_to_location(&r, None))
 }
 
-/// Go-to-definition for a named payload FIELD's KEY in a match PATTERN
-/// (`match s { Box { w, h } => ... }` - the `w`/`h`): jumps to that field's
-/// declaration inside the owning `enum`. Best-effort, for two reasons:
+/// Go-to-definition for a named payload field's key in a match pattern
+/// (`match s { Box { w, h } => ... }`, on `w` or `h`): the field's declaration in
+/// the owning enum. Two limits:
 ///
-/// - **Enum resolution.** `definition_at` has no typechecked scrutinee type
-///   available here (only `symbols`/`pre_resolve_ast` - no `type_of_expr`
-///   map is threaded through), so the owning enum can't be read off the
-///   `match`'s scrutinee the way a real type-directed resolver would. Instead
-///   this resolves the variant name the same way lowering/const-eval resolve
-///   a BARE variant name: [`crate::typecheck::enums::resolve_bare_variant_enum`],
-///   which only succeeds when exactly one enum in the file declares a variant
-///   with this name. Two enums sharing a variant name makes this genuinely
-///   ambiguous without the scrutinee's real type, so it returns `None` rather
-///   than guessing.
-/// - **Field-key detection.** The parser only keeps a source range for a
-///   named pattern-field's bound `Pattern`, not for its key token (see
-///   `parser::pattern::parse_pattern`) - and in the SHORTHAND branch
-///   (`Box { w, h }`) the bound pattern's range IS the key's own token range
-///   (`Pattern::Binding { name: field_tok.text.clone(), range: <field_tok's
-///   range> }`). An explicit rebinding (`Box { w: renamed }`) has no AST
-///   range for the `w` key at all, so only the shorthand form resolves here.
+/// - No scrutinee type is available here, so the variant name is resolved as a
+///   bare variant ([`crate::typecheck::enums::resolve_bare_variant_enum`]),
+///   which needs exactly one enum in the file to declare it; otherwise `None`.
+/// - The parser keeps a range for a pattern field's bound pattern, not its key
+///   (`parser::pattern::parse_pattern`). In the shorthand form (`Box { w, h }`)
+///   that range is the key's token; a rebinding (`Box { w: renamed }`) has no
+///   range for `w`, so only the shorthand resolves.
 fn resolve_enum_pattern_field_definition(
     ast: &Script,
     source: &str,
@@ -327,7 +301,7 @@ fn resolve_enum_pattern_field_definition(
 ) -> Option<Location> {
     let off = cursor_byte_offset(source, line, col);
     let mut hit: Option<(&str, &str)> = None; // (variant name, field name)
-    super::visit::visit_program(ast, &mut |_h| {}, &mut |e| {
+    visit_program(ast, &mut |_h| {}, &mut |e| {
         if hit.is_some() {
             return;
         }
@@ -380,11 +354,9 @@ fn find_import_definition(
     col: usize,
 ) -> Option<Location> {
     let cursor_line = (line + 1) as u32;
-    // The specifier under the cursor. A named import lists many bindings on one
-    // (possibly multi-line) statement, so the column is what disambiguates
-    // WHICH one is clicked — without it, every click resolved to the first
-    // binding that happened to have a matching decl (e.g. `onCheckpoint`
-    // jumping to an earlier `doReset`).
+    // The specifier under the cursor: a named import lists several bindings in
+    // one statement, possibly over several lines, so the column picks the one
+    // clicked rather than the first binding with a matching declaration.
     let cursor_word = word_at(source, line, col);
 
     for d in &ast.decls {
@@ -400,33 +372,33 @@ fn find_import_definition(
             format!("{}.ws", imp.path)
         };
 
-        if let ImportKind::Named(bindings) = &imp.kind {
-            if let Ok(file_src) = loader.load(&imp.path, current_file) {
-                let target_ast = crate::parse(&file_src, &import_path);
-                for b in bindings {
-                    // Only the binding the cursor is actually on. For
-                    // `orig as alias`, clicking either name resolves `orig`'s
-                    // decl. If the cursor isn't on a specifier (the path, a
-                    // keyword, whitespace), no binding matches and we fall
-                    // through to the file location below.
-                    let surface = b.alias.as_deref().unwrap_or(&b.name);
-                    if cursor_word.as_deref() != Some(surface)
-                        && cursor_word.as_deref() != Some(b.name.as_str())
-                    {
-                        continue;
-                    }
-                    for td in &target_ast.ast.decls {
-                        if top_decl_name(td) == Some(&b.name) {
-                            let r = find_name_range(&file_src, td.range(), &b.name)
-                                .unwrap_or_else(|| td.range().clone());
-                            return Some(source_range_to_location(&r, Some(import_path.clone())));
-                        }
-                    }
-                    // The clicked specifier's decl kind isn't resolvable here
-                    // (e.g. an imported `var`); stop rather than falling on to a
-                    // later binding, and jump to the file below.
-                    break;
+        if let ImportKind::Named(bindings) = &imp.kind
+            && let Ok(file_src) = loader.load(&imp.path, current_file)
+        {
+            let target_ast = crate::parse(&file_src, &import_path);
+            for b in bindings {
+                // Only the binding the cursor is actually on. For
+                // `orig as alias`, clicking either name resolves `orig`'s
+                // decl. If the cursor isn't on a specifier (the path, a
+                // keyword, whitespace), no binding matches and we fall
+                // through to the file location below.
+                let surface = b.alias.as_deref().unwrap_or(&b.name);
+                if cursor_word.as_deref() != Some(surface)
+                    && cursor_word.as_deref() != Some(b.name.as_str())
+                {
+                    continue;
                 }
+                for td in &target_ast.ast.decls {
+                    if top_decl_name(td) == Some(&b.name) {
+                        let r = find_name_range(&file_src, td.range(), &b.name)
+                            .unwrap_or_else(|| td.range().clone());
+                        return Some(source_range_to_location(&r, Some(import_path)));
+                    }
+                }
+                // The clicked specifier's decl kind isn't resolvable here
+                // (e.g. an imported `var`); stop rather than falling on to a
+                // later binding, and jump to the file below.
+                break;
             }
         }
 
@@ -458,14 +430,13 @@ fn name_preceded_by(source: &str, line: usize, col: usize, byte: u8) -> bool {
     start > 0 && l.as_bytes().get(start - 1) == Some(&byte)
 }
 
-/// The referenceable name a top-level declaration binds, if any. Covers every
-/// importable / namespaced member kind so go-to-definition resolves to the
-/// specifier's own decl — not just `mod`/`chip`/`let`, but also `var`/`array`/
-/// `map`/`buffer`, root `in`/`out` ports, and `type` aliases.
+/// The name a top-level declaration binds, if any, for every importable or
+/// namespaced kind, so go-to-definition reaches the specifier's own
+/// declaration: `mod`, `chip`, `let`, `var`, `array`, `map`, `buffer`, root
+/// `in`/`out` ports and `type` aliases.
 fn top_decl_name(td: &TopDecl) -> Option<&str> {
     match td {
         TopDecl::Chip(c) => Some(&c.name),
-        TopDecl::Fn(f) => Some(&f.name),
         TopDecl::Let(l) => match &l.binding {
             LetBinding::Ident { name, .. } => Some(name),
             _ => None,
@@ -551,31 +522,31 @@ fn resolve_field_definition(
     let start_line = type_sym.range.start.line.saturating_sub(1) as usize;
     let end_line = (type_sym.range.end.line as usize).min(search_src.lines().count());
     for line_idx in start_line..end_line {
-        if let Some(line_str) = search_src.lines().nth(line_idx) {
-            if let Some(pos) = line_str.find(field) {
-                let before = if pos > 0 {
-                    line_str.as_bytes()[pos - 1]
-                } else {
-                    b' '
-                };
-                let after = line_str
-                    .as_bytes()
-                    .get(pos + field.len())
-                    .copied()
-                    .unwrap_or(b' ');
-                if !before.is_ascii_alphanumeric()
-                    && before != b'_'
-                    && !after.is_ascii_alphanumeric()
-                    && after != b'_'
-                {
-                    return Some(Location {
-                        start_line: line_idx,
-                        start_col: pos,
-                        end_line: line_idx,
-                        end_col: pos + field.len(),
-                        file,
-                    });
-                }
+        if let Some(line_str) = search_src.lines().nth(line_idx)
+            && let Some(pos) = line_str.find(field)
+        {
+            let before = if pos > 0 {
+                line_str.as_bytes()[pos - 1]
+            } else {
+                b' '
+            };
+            let after = line_str
+                .as_bytes()
+                .get(pos + field.len())
+                .copied()
+                .unwrap_or(b' ');
+            if !before.is_ascii_alphanumeric()
+                && before != b'_'
+                && !after.is_ascii_alphanumeric()
+                && after != b'_'
+            {
+                return Some(Location {
+                    start_line: line_idx,
+                    start_col: pos,
+                    end_line: line_idx,
+                    end_col: pos + field.len(),
+                    file,
+                });
             }
         }
     }
@@ -586,11 +557,11 @@ fn resolve_field_definition(
 
 // ---------- custom-event send-site -> receiver navigation ----------
 
-/// If `call` is a `SendCustomEvent(...)` / `SendGlobalCustomEvent(...)` send and
-/// `off` sits on its channel-name string literal, return that channel name plus
-/// the RECEIVER trigger word (`CustomEvent` / `GlobalCustomEvent`) — the two are
-/// separate channel namespaces, so a send only jumps to its own kind of receiver.
-fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<(&'a str, &'static str)> {
+/// If `call` is a `SendCustomEvent(...)` or `SendGlobalCustomEvent(...)` and
+/// `off` is on its channel-name literal, that name and the receiver trigger word
+/// (`CustomEvent` or `GlobalCustomEvent`). The two are separate channel
+/// namespaces, so a send jumps only to its own kind of receiver.
+fn send_event_name_at(call: &Expr, off: usize) -> Option<(&str, &'static str)> {
     let Expr::Call { callee, args, .. } = call else {
         return None;
     };
@@ -607,18 +578,7 @@ fn send_event_name_at<'a>(call: &'a Expr, off: usize) -> Option<(&'a str, &'stat
         _ => return None,
     };
     // The channel name is a named `eventName = ...`, else the first positional arg.
-    let name_expr = args
-        .iter()
-        .find_map(|a| match a {
-            CallArg::Named { name, value, .. } if name == "eventName" => Some(value),
-            _ => None,
-        })
-        .or_else(|| {
-            args.iter().find_map(|a| match a {
-                CallArg::Positional(e) => Some(e),
-                _ => None,
-            })
-        })?;
+    let name_expr = args.arg_for("eventName", 0)?;
     match name_expr {
         Expr::StringLit { value, range }
             if range.start.offset <= off && off <= range.end.offset =>
@@ -653,7 +613,7 @@ fn custom_event_send_definition(
     // 1. Resolve the channel name under the cursor (must be a SendCustomEvent
     //    channel-name string).
     let mut name: Option<(String, &'static str)> = None;
-    super::visit::visit_program(ast, &mut |_h| {}, &mut |call| {
+    visit_program(ast, &mut |_h| {}, &mut |call| {
         if name.is_none()
             && let Some((n, tw)) = send_event_name_at(call, off)
         {
@@ -663,7 +623,7 @@ fn custom_event_send_definition(
     let (name, trigger_word) = name?;
     // 2. Find the matching receiver handler in the SAME namespace in this file.
     let mut target: Option<SourceRange> = None;
-    super::visit::visit_program(
+    visit_program(
         ast,
         &mut |h| {
             if target.is_none()

@@ -4,20 +4,15 @@
 
 use crate::common;
 
+use wirescript::FoldMode;
 use wirescript::compile::{CompileInput, compile};
 use wirescript::ir::Module;
-use wirescript::lower::FoldMode;
 
 /// Count nodes, wires, chips, and BRZ size for a source string, folding off:
 /// `compile` gives the BRZ bytes and `lower` the IR stats, counted through
 /// every nested chip.
 fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
-    let input = CompileInput {
-        source: src,
-        file: "test.ws",
-        module_name: None,
-        fold_mode: FoldMode::ForceOff,
-    };
+    let input = CompileInput::new(src, "test.ws").fold_mode(FoldMode::ForceOff);
     let result = compile(input).expect("should compile");
     let brz_size = result.brz.len();
 
@@ -41,7 +36,7 @@ fn compile_stats(src: &str) -> (usize, usize, usize, usize) {
 /// own internals and wiring.
 #[test]
 fn ten_chip_calls_make_ten_instances() {
-    let src = r#"
+    let src = r"
 chip Inc(x: int) -> (r: int) { out r = x + 1 }
 let v0 = Inc(0)
 let v1 = Inc(v0.r)
@@ -54,7 +49,7 @@ let v7 = Inc(v6.r)
 let v8 = Inc(v7.r)
 let v9 = Inc(v8.r)
 out result = v9.r
-"#;
+";
     let (nodes, wires, chips, brz) = compile_stats(src);
     assert!(brz > 0, "empty output");
     // 29 wires, not 30: the first call's literal arg (`Inc(0)`) inlines as a

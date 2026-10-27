@@ -1,16 +1,8 @@
-//! Gate layout pass.
-//!
-//! Flat topological placement: every node in the module lands in a
-//! single DAG layout ordered by longest-path depth. Bricks are sized
-//! per-node from the gate inventory so variable-width gates
-//! (FormatText, DisplayText) don't overlap neighbours.
-//!
-//! Pin rules applied on top of the topo layout:
-//! - `NodeKind::Input` -> leftmost column.
-//! - `NodeKind::Output` -> rightmost column.
-//! - Storage nodes (Var, ArrayVar, BufferTicks) -> bottom row.
-//!
-//! The region tree (`region.rs`) is built only by the layout tests.
+//! Gate layout pass, with one engine per [`LayoutMode`]: `Dag` (flat
+//! topological placement by longest-path depth, inputs pinned left, outputs
+//! right, storage on the bottom row), `Code` (see [`code`]) and `Cube`.
+//! Bricks are sized from the gate inventory so variable-width gates do not
+//! overlap. The region tree (`region.rs`) is built only by the layout tests.
 
 pub mod bus;
 pub mod code;
@@ -30,10 +22,16 @@ pub mod internals {
     pub use super::*;
 }
 
-use crate::collections::HashMap;
+use std::sync::Arc;
 
+use crate::catalog::node_half_size;
+use crate::collections::HashMap;
 use crate::emit::Placement;
-use crate::ir::{Module, Node, NodeId, NodeKind, ROOT_SCOPE_ID, Type};
+use crate::intern::sym;
+use crate::ir::{
+    Literal, Module, Node, NodeId, NodeKind, ProgramSettings, ROOT_SCOPE_ID, SourceMap, Type,
+    gate_class as gc,
+};
 
 use self::dag::{LocalPlacement, RegionLayout, layout_leaf};
 use self::region::Region;
@@ -46,19 +44,16 @@ const DEFAULT_HALF_SIZE: i32 = 5;
 pub const Z_PLANE: i32 = 2;
 
 /// True for pseudo-nodes that represent persistent STORAGE (var, buffer,
-/// array). Pseudo_Literal is NOT in this bucket — literals are sources
-/// that should align with their consumer, not get pinned to the bottom.
+/// array). `Pseudo_Literal` is NOT: literals are sources that align with their
+/// consumer rather than being pinned to the bottom.
 fn is_pseudo_storage(node: &Node) -> bool {
-    matches!(
-        node.gate_class,
-        "BrickComponentType_Var" | "BrickComponentType_BufferTicks" | "BrickComponentType_ArrayVar"
-    )
+    matches!(node.gate_class, gc::VAR | gc::BUFFER_TICKS | gc::ARRAY_VAR)
 }
 
 /// Look up a node's brick half-size from the gate inventory (a procedural
 /// gate's chosen variant), falling back to the standard 1×1 half-size.
 pub fn brick_half_size(node: &Node) -> (i32, i32) {
-    crate::catalog::node_half_size(node)
+    node_half_size(node)
         .map(|h| (h.x, h.y))
         .unwrap_or((DEFAULT_HALF_SIZE, DEFAULT_HALF_SIZE))
 }
@@ -67,7 +62,7 @@ pub fn brick_half_size(node: &Node) -> (i32, i32) {
 /// only engine that stacks bricks along `z`, so it is the only one that can
 /// collide along it.
 fn brick_half_height(node: &Node) -> i32 {
-    crate::catalog::node_half_size(node)
+    node_half_size(node)
         .map(|h| h.z)
         .unwrap_or(DEFAULT_HALF_SIZE)
 }
@@ -88,7 +83,7 @@ pub struct Extent {
 
 impl Extent {
     /// Covers nothing; the first box sets it.
-    pub const EMPTY: Extent = Extent {
+    pub const EMPTY: Self = Self {
         min: IntVec3 {
             x: i32::MAX,
             y: i32::MAX,
@@ -103,7 +98,7 @@ impl Extent {
 
     /// Covers the one point `(x, y, z)`.
     pub fn point(x: i32, y: i32, z: i32) -> Self {
-        Extent {
+        Self {
             min: IntVec3 { x, y, z },
             max: IntVec3 { x, y, z },
         }
@@ -128,8 +123,9 @@ impl Extent {
     }
 
     /// Moved by `dx`, `dy` in the plane.
+    #[must_use]
     pub fn shifted(self, dx: i32, dy: i32) -> Self {
-        Extent {
+        Self {
             min: IntVec3 {
                 x: self.min.x + dx,
                 y: self.min.y + dy,
@@ -146,8 +142,8 @@ impl Extent {
 
 /// A free-floating text label the layout wants on the plane, in the same
 /// coordinate space as the module's [`Placement`]s (`x`/`y` are the
-/// carrier brick's min corner). Only [`LayoutMode::Code`] produces these —
-/// one per own-line source comment.
+/// carrier brick's min corner). Only [`LayoutMode::Code`] produces these, one
+/// per own-line source comment.
 #[derive(Clone, Debug)]
 pub struct TextAnnotation {
     pub x: i32,
@@ -160,47 +156,36 @@ pub struct TextAnnotation {
 ///
 /// A rerouter faces what it FEEDS, so the turn is chosen from the direction
 /// the value travels next: `Deg0` faces `+Y` (screen right), `Deg90` faces
-/// down, `Deg180` faces `−Y` (screen left), `Deg270` faces up.
+/// down, `Deg180` faces `-Y` (screen left), `Deg270` faces up.
 ///
-/// FOOTPRINT: only the QUARTER turns swap a brick's x and y half-sizes.
-/// `Deg90` and `Deg270` swap; `Deg0` and `Deg180` do not — a half turn lands
-/// the brick the way round it started. Every site that measures or reserves a
-/// cell must spell out all four arms rather than leaning on a catch-all,
-/// because which side of that split a facing falls on is exactly the mistake
-/// the overlap sweeps exist to catch.
-///
-/// `brdb::Brick::local_bounds()` does NOT account for rotation at all. Layout
-/// owns this decision precisely so it can reserve the swapped cell; emit must
-/// apply the identical swap when centering the brick. Read the footprint
-/// through [`Placement`]-space helpers rather than the raw catalog half-size
-/// whenever a node may be rotated.
+/// FOOTPRINT: only the QUARTER turns (`Deg90`, `Deg270`) swap a brick's x and
+/// y half-sizes; match all four arms explicitly wherever a cell is measured.
+/// `brdb::Brick::local_bounds()` ignores rotation, so layout reserves the
+/// swapped cell and emit must apply the identical swap when centering.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum NodeRotation {
-    /// Faces `+Y` — screen right. Default gate orientation, and the gutter
+    /// Faces `+Y` (screen right). Default gate orientation, and the gutter
     /// bus's taps, whose runs go rightward into the body.
     #[default]
     Deg0,
     /// Faces down: a line's exec spine, and the chain of a gutter lane whose
     /// taps sit below its source. Footprint swapped.
     Deg90,
-    /// Faces `−Y` — screen left. The mini-bus corners, whose runs go leftward
+    /// Faces `-Y` (screen left). The mini-bus corners, whose runs go leftward
     /// into the statement gate at their line's indent column.
     Deg180,
     /// Faces up: the chain of a gutter lane whose taps ALL sit above its
-    /// source, so the value really does travel upward. Footprint swapped, the
-    /// same as `Deg90`.
+    /// source. Footprint swapped, like `Deg90`.
     Deg270,
 }
 
 impl NodeRotation {
     /// The `(x, y)` half-extents of a brick turned this way, from its
-    /// unturned ones. Only the QUARTER turns swap them: a half turn lands the
-    /// brick the way round it started, so Deg180 measures exactly like Deg0
-    /// and Deg270 exactly like Deg90.
+    /// unturned ones. Only the QUARTER turns swap them.
     pub fn footprint(self, (x, y): (i32, i32)) -> (i32, i32) {
         match self {
-            NodeRotation::Deg0 | NodeRotation::Deg180 => (x, y),
-            NodeRotation::Deg90 | NodeRotation::Deg270 => (y, x),
+            Self::Deg0 | Self::Deg180 => (x, y),
+            Self::Deg90 | Self::Deg270 => (y, x),
         }
     }
 }
@@ -208,10 +193,10 @@ impl NodeRotation {
 impl From<NodeRotation> for brdb::Rotation {
     fn from(r: NodeRotation) -> Self {
         match r {
-            NodeRotation::Deg0 => brdb::Rotation::Deg0,
-            NodeRotation::Deg90 => brdb::Rotation::Deg90,
-            NodeRotation::Deg180 => brdb::Rotation::Deg180,
-            NodeRotation::Deg270 => brdb::Rotation::Deg270,
+            NodeRotation::Deg0 => Self::Deg0,
+            NodeRotation::Deg90 => Self::Deg90,
+            NodeRotation::Deg180 => Self::Deg180,
+            NodeRotation::Deg270 => Self::Deg270,
         }
     }
 }
@@ -221,7 +206,7 @@ pub struct LayoutResult {
     /// Placements for every node in the root module.
     pub placements: HashMap<NodeId, Placement>,
     /// Per-chip sub-layouts keyed by chip node id.
-    pub chip_layouts: HashMap<NodeId, LayoutResult>,
+    pub chip_layouts: HashMap<NodeId, Self>,
     /// Text labels with no node of their own. Empty outside
     /// [`LayoutMode::Code`].
     pub annotations: Vec<TextAnnotation>,
@@ -241,7 +226,7 @@ impl LayoutResult {
     /// A module with nothing of its own to place. Its chips may still have
     /// content, so their layouts are passed in; everything else is the zero,
     /// `rotations` and `bus` included, since only Code mode ever fills those.
-    pub(super) fn empty(chip_layouts: HashMap<NodeId, LayoutResult>) -> Self {
+    pub(super) fn empty(chip_layouts: HashMap<NodeId, Self>) -> Self {
         Self {
             placements: HashMap::default(),
             chip_layouts,
@@ -260,9 +245,9 @@ pub use crate::ir::LayoutMode;
 pub struct LayoutOptions {
     pub mode: LayoutMode,
     /// The entry file's source map, when the caller has one. Only
-    /// [`LayoutMode::Code`] reads it — for a line's true indentation.
+    /// [`LayoutMode::Code`] reads it, for a line's true indentation.
     /// `None` falls back to the first node's source column.
-    pub source_map: Option<std::sync::Arc<crate::ir::SourceMap>>,
+    pub source_map: Option<Arc<SourceMap>>,
     /// Set by [`recurse_chips`] while laying out a chip's interior. Only the
     /// outermost module takes ownership of source comments that fall outside
     /// every row, so a file's leading notes land on one plane, not all of them.
@@ -271,11 +256,9 @@ pub struct LayoutOptions {
     /// value names the chip node that owns it, or `None` for the outermost
     /// module.
     ///
-    /// Decided ONCE for the whole tree, because it cannot be decided locally:
-    /// a module's line span is a min/max envelope over rows that may be
-    /// sparse, so sibling envelopes overlap and each sibling would claim the
-    /// same comment. Built by the outermost `layout_code` and handed down.
-    pub comment_owner: Option<std::sync::Arc<HashMap<i32, Option<NodeId>>>>,
+    /// Decided ONCE for the whole tree by the outermost `layout_code`: sibling
+    /// modules' line spans can overlap, so each would claim the same comment.
+    pub comment_owner: Option<Arc<HashMap<i32, Option<NodeId>>>>,
     /// The chip node this module was reached through; `None` at the root.
     /// Matched against [`Self::comment_owner`] to decide what this plane
     /// renders.
@@ -285,7 +268,7 @@ pub struct LayoutOptions {
 impl LayoutOptions {
     /// The options a program's own settings ask for: its layout engine and,
     /// for code layout, its source map.
-    pub fn for_program(settings: &crate::ir::ProgramSettings) -> Self {
+    pub fn for_program(settings: &ProgramSettings) -> Self {
         Self {
             mode: settings.layout,
             source_map: settings.source_map.clone(),
@@ -299,10 +282,9 @@ pub fn layout(module: &Module) -> LayoutResult {
     layout_with_opts(module, &LayoutOptions::default())
 }
 
-/// Fast 3D grid layout for large modules — places nodes in a cube arrangement
-/// using actual brick sizes from the inventory, skipping expensive DAG analysis.
-/// The resulting brick mass is centered around the origin so it sits in the
-/// middle of the microchip plane, not offset to a corner.
+/// 3D grid layout: nodes packed in a cube using real brick sizes from the
+/// inventory, with no DAG analysis. Centered on the origin, the middle of the
+/// microchip plane.
 fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutResult {
     let spawnable: Vec<(&NodeId, &Node)> = module
         .nodes_in_order()
@@ -314,20 +296,16 @@ fn layout_grid_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> Lay
     let mut placements: HashMap<NodeId, Placement> = HashMap::default();
     let mut x = 0i32;
     let mut y = 0i32;
-    // The BOTTOM plane of the current layer. `Placement::z` is a brick CENTRE
-    // (emit offsets x and y by their half-extents but passes z straight
-    // through), so each brick sits half its own height above this. Sharing one
-    // centre across a layer hangs a tall brick down into the layer below, and
-    // the game drops intersecting bricks at load with no error.
+    // The BOTTOM plane of the current layer. `Placement::z` is a brick CENTER
+    // (emit passes z straight through), so each brick sits half its own height
+    // above this; the game silently drops intersecting bricks at load.
     let mut layer_base = Z_PLANE;
     let mut row_height = 0i32;
     let mut col = 0usize;
     let mut row_in_layer = 0usize;
     let mut extent = Extent::point(0, 0, layer_base);
-    // Layers are spaced by the tallest brick actually in the layer, floored at
-    // the nominal step. A fixed step would be silently wrong for the few bricks
-    // taller than it — and bricks that intersect are DROPPED by the game with
-    // no error, so the clearance has to come from the contents, not a constant.
+    // Layers are spaced by the tallest brick in the layer, floored at the
+    // nominal step, so a brick taller than the step cannot intersect the next.
     const Z_STEP_MIN: i32 = 12;
     let mut layer_depth = 0i32;
 
@@ -404,12 +382,10 @@ pub fn layout_with_opts(module: &Module, opts: &LayoutOptions) -> LayoutResult {
 /// A Function Call maps its `Input0..7` and `Output0..7` onto the plane's
 /// `FunctionInput` / `FunctionOutput` bricks by position, not `PortOrder`:
 /// the brick with the highest local X (the top of the board) is slot 0
-/// (measured in game 2026-10-08). The bricks are all 1x1, so this permutes
-/// the positions layout gave them among themselves, highest X to the lowest
-/// slot.
+/// (measured in game). The bricks are all 1x1, so this permutes their
+/// positions among themselves, highest X to the lowest slot.
 fn order_function_ports(module: &Module, result: &mut LayoutResult) {
-    use crate::ir::gate_class as gc;
-    let port_order = crate::intern::intern("PortOrder");
+    let port_order = *sym::PORT_ORDER;
     for (id, child) in &module.chips {
         let Some(sub) = result.chip_layouts.get_mut(id) else {
             continue;
@@ -425,7 +401,7 @@ fn order_function_ports(module: &Module, result: &mut LayoutResult) {
                     .values()
                     .filter(|n| n.gate_class == class && n.kind == NodeKind::Gate)
                     .filter_map(|n| match n.properties.get(&port_order) {
-                        Some(crate::ir::Literal::Int(k)) => Some((*k, n.id)),
+                        Some(Literal::Int(k)) => Some((*k, n.id)),
                         _ => None,
                     })
                     .collect();
@@ -449,8 +425,8 @@ fn order_function_ports(module: &Module, result: &mut LayoutResult) {
 fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutResult {
     match opts.mode {
         LayoutMode::Code => return code::layout_code(module, opts, recurse),
-        // Asking for the cube gets it at any size, including the empty module —
-        // the size fallback below is a ceiling on DAG cost, not the only route.
+        // An explicit cube applies at any size; the size fallback below only
+        // caps DAG cost.
         LayoutMode::Cube => return layout_grid_impl(module, opts, recurse),
         LayoutMode::Dag => {}
     }
@@ -458,8 +434,7 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
         return layout_grid_impl(module, opts, recurse);
     }
 
-    // Flat DAG layout over the whole module — block structure is
-    // ignored for placement purposes in this pass.
+    // Flat DAG layout over the whole module; block structure is ignored.
     assert!(
         module.scopes.contains_key(&ROOT_SCOPE_ID),
         "module must have a root scope"
@@ -533,9 +508,9 @@ fn layout_impl(module: &Module, opts: &LayoutOptions, recurse: bool) -> LayoutRe
 
 /// Compact the rank axis by pulling source nodes (no predecessors in the
 /// layout) to the same `dy` as their primary consumer, so sources don't
-/// stack into their own long vertical strip. Skips pinned-to-be-pinned
-/// kinds (inputs / outputs / pseudo-vars) — those get their own row.
-/// Runs a few passes so downstream moves propagate back.
+/// stack into their own long vertical strip. Skips the pinned kinds (inputs,
+/// outputs, pseudo-vars), which get their own row. Runs a few passes so
+/// downstream moves propagate back.
 fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
     fn is_pinned(node: &Node) -> bool {
         matches!(node.kind, NodeKind::Input | NodeKind::Output) || is_pseudo_storage(node)
@@ -577,7 +552,7 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
     // A move claims a cell its later rivals then skip, so the visit order
     // picks the winner. Id order, not map order: map order differs between
     // 32-bit and 64-bit targets, and the wasm builds would lay out differently.
-    let mut ids: Vec<NodeId> = laid.local.keys().cloned().collect();
+    let mut ids: Vec<NodeId> = laid.local.keys().copied().collect();
     ids.sort_unstable();
     for _ in 0..4 {
         let mut changed = false;
@@ -601,12 +576,9 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
             };
             let target = laid.local[target_id];
             let me = laid.local[id];
-            // Try two candidate placements in order of preference:
-            //   1. One column left of the consumer, same row — so the
-            //      source sits immediately feeding into it.
-            //   2. Same column as today, but at the consumer's row —
-            //      keeps the source in its natural depth if (1) collides.
-            // First candidate without a collision wins.
+            // Candidates in order, first free one wins: one column left of
+            // the consumer on its row, then the source's own column on the
+            // consumer's row.
             let candidates: [(i32, i32); 2] = [(target.dx - 1, target.dy), (me.dx, target.dy)];
             let mut moved = false;
             for (cx, cy) in candidates {
@@ -641,10 +613,9 @@ fn align_sources_to_consumers(laid: &mut RegionLayout, module: &Module) {
     }
 }
 
-/// Max columns a single row of the layout may span before we wrap the
-/// excess into a new "super-row" below. Measured in cell units where
-/// each cell is 10 world units, so 128 columns ≈ 1280 world
-/// units — well inside a single 2048-unit chunk.
+/// Max columns a single row of the layout may span before the excess wraps into a new
+/// "super-row" below. Measured in cells of 10 world units, so 128 columns is about 1280
+/// world units, inside a single 2048-unit chunk.
 const MAX_COLS_PER_ROW: i32 = 128;
 /// Empty-cell gutter between super-rows.
 const WRAP_GUTTER_ROWS: i32 = 1;
@@ -717,7 +688,7 @@ fn pin_specials(laid: &mut RegionLayout, module: &Module) {
     let mut inputs: Vec<NodeId> = Vec::new();
     let mut outputs: Vec<NodeId> = Vec::new();
     let mut vars: Vec<NodeId> = Vec::new();
-    for id in laid.local.keys().cloned().collect::<Vec<_>>() {
+    for id in laid.local.keys().copied().collect::<Vec<_>>() {
         let Some(node) = module.nodes.get(&id) else {
             continue;
         };
@@ -746,8 +717,8 @@ fn pin_specials(laid: &mut RegionLayout, module: &Module) {
     // Shift normal nodes right by one column if we have inputs to pin,
     // and shift them down by one row to make room for the vars strip at
     // the bottom of the layout (dy = 0).
-    let shift_right = if inputs.is_empty() { 0 } else { 1 };
-    let shift_down = if vars.is_empty() { 0 } else { 1 };
+    let shift_right = i32::from(!inputs.is_empty());
+    let shift_down = i32::from(!vars.is_empty());
     if shift_right != 0 || shift_down != 0 {
         for p in laid.local.values_mut() {
             p.dx += shift_right;
@@ -792,12 +763,9 @@ fn pin_specials(laid: &mut RegionLayout, module: &Module) {
 }
 
 /// Turn cell coordinates `(dx, dy)` into placement-unit coordinates
-/// `(px, py)` using per-column / per-row sizes from the inventory.
-///
-/// Each column's width is `max(half_size.y * 2)` across its nodes;
-/// each row's height is `max(half_size.x * 2)`. Offsets accumulate
-/// deterministically in ascending `dx` / `dy` order. Returned tuple:
-/// `(placements, total_width_in_placement_units, total_height_in_placement_units)`.
+/// `(px, py)`: each column is as wide as its widest node's `y` extent and each
+/// row as tall as its tallest `x` extent, accumulated in ascending order.
+/// Returns `(placements, total_x, total_y)`.
 fn resolve_variable_sizes(
     laid: &RegionLayout,
     module: &Module,
@@ -823,7 +791,7 @@ fn resolve_variable_sizes(
     }
 
     let mut sorted_dys: Vec<i32> = row_thickness.keys().copied().collect();
-    sorted_dys.sort();
+    sorted_dys.sort_unstable();
     let mut row_off: HashMap<i32, i32> = HashMap::default();
     let mut total_x = 0i32;
     for dy in &sorted_dys {
@@ -832,7 +800,7 @@ fn resolve_variable_sizes(
     }
 
     let mut sorted_dxs: Vec<i32> = col_thickness.keys().copied().collect();
-    sorted_dxs.sort();
+    sorted_dxs.sort_unstable();
     let mut col_off: HashMap<i32, i32> = HashMap::default();
     let mut total_y = 0i32;
     for dx in &sorted_dxs {
@@ -850,9 +818,8 @@ fn resolve_variable_sizes(
 }
 
 /// Sub-layouts for the module's chips, or nothing when the caller wanted a
-/// single level. Every `LayoutResult` in the crate fills `chip_layouts` this
-/// way; going through one function is what keeps a new layout mode from
-/// forgetting the `recurse` flag.
+/// single level. Every layout mode fills `chip_layouts` through this, so none
+/// can ignore the `recurse` flag.
 pub(super) fn chip_layouts_of(
     module: &Module,
     opts: &LayoutOptions,

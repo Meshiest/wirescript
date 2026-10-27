@@ -1,7 +1,24 @@
 //! The gutter-bus planner: replace long value wires with lanes of rerouters
 //! standing beside the code body.
+#![cfg_attr(
+    not(feature = "test-internals"),
+    expect(unreachable_pub, reason = "public only for the test-internals export")
+)]
 
-use super::*;
+use crate::collections::HashMap;
+use crate::emit::Placement;
+use crate::ir::port_registry::WirePort;
+use crate::ir::{Module, Node, NodeId, NodeKind, PortRef, gate_class};
+use crate::layout::bus::{BusDemand, allocate_lanes};
+use crate::layout::{BusEnd, BusLayout, BusNode, BusNodeId, BusRole, BusWire, NodeRotation};
+
+use super::adjacency::targets_exec;
+use super::nodes::{cell_half_size, is_spawnable, rotation_of};
+use super::pages::PageInfo;
+use super::{
+    BUS_BAND_GUTTER, LANE_PAIR_HEIGHT, LANE_PITCH, MIN_LANE_TRAVEL, REROUTER_HALF, STAGGER_STEP,
+    TAP_GAP, TAP_RESERVE,
+};
 
 /// One module wire a lane replaces, and where its target sits.
 struct BusTap {
@@ -23,15 +40,15 @@ struct BusGroup {
     source_anchor: NodeId,
     /// The row that anchor stands in on this page, where it stands in one.
     /// The source-side rerouter claims a cell on that row, so a producer
-    /// without one — an edge pin, placed later and stacked on the far side
-    /// of the band — has no cell to claim and takes no such brick.
+    /// without one (an edge pin, placed later on the far side of the band)
+    /// takes no such brick.
     source_row: Option<usize>,
     page: usize,
     taps: Vec<BusTap>,
-    /// The value crosses a chip wall — it leaves one, or some tap delivers
-    /// into one — rather than running gate to gate across this body.
+    /// The value crosses a chip wall (it leaves one, or some tap delivers
+    /// into one) rather than running gate to gate across this body.
     crosses_chip: bool,
-    /// Position of the group's first wire in `module.wires` — a stable
+    /// Position of the group's first wire in `module.wires`: a stable
     /// tiebreak for lane allocation.
     order: usize,
 }
@@ -51,11 +68,8 @@ fn is_bus_worthy_source(n: &Node) -> bool {
 /// Every node standing inside a chip nested under `module`, mapped to the
 /// chip node that represents it HERE.
 ///
-/// A wire out of this module's body into a chip targets a boundary pin in
-/// the CHILD module, which holds no row of its own here. The chip brick the
-/// value enters through does, so that is what the wire's tap anchors on.
-/// Node ids are unique to one module, so the walk order cannot change the
-/// result.
+/// A wire into a chip targets a boundary pin in the CHILD module, which has no
+/// row here, so its tap anchors on the chip brick instead.
 pub fn chip_owners(module: &Module) -> ChipSubtree {
     let mut out = ChipSubtree::default();
     let mut stack: Vec<(NodeId, &Module)> = module.chips.iter().map(|(id, c)| (*id, c)).collect();
@@ -73,8 +87,8 @@ pub fn chip_owners(module: &Module) -> ChipSubtree {
 
 /// The chip subtree under a module, indexed two ways.
 ///
-/// `owner` is the chip brick THIS module sees a foreign node through — what a
-/// wire's tap anchors on. `class` is that node's real gate class, which the
+/// `owner` is the chip brick THIS module sees a foreign node through, which is
+/// what a wire's tap anchors on. `class` is that node's real gate class, which the
 /// anchor cannot stand in for: a chip node is always bussable, so checking the
 /// anchor's class says nothing about whether the endpoint is a literal.
 #[derive(Default)]
@@ -84,13 +98,13 @@ pub struct ChipSubtree {
 }
 
 impl ChipSubtree {
-    /// True when a node may carry a bus wire — it is neither inlined into its
+    /// True when a node may carry a bus wire: it is neither inlined into its
     /// consumer's data (a literal) nor unrepresented (unsupported). Resolves
     /// through the subtree, so a FOREIGN endpoint is judged on its own class
     /// rather than on the chip brick it is reached through.
     ///
     /// A node this module has never heard of is not bussable: emit gives it no
-    /// brick, so a lane claiming it would leave pass 3b with nothing to wire.
+    /// brick, so emit's bus-wire pass would have nothing to wire.
     fn is_bussable(&self, module: &Module, id: NodeId) -> bool {
         let class = match module.nodes.get(&id) {
             Some(n) => Some(n.gate_class),
@@ -102,16 +116,13 @@ impl ChipSubtree {
 
 /// Group the module's value wires by `(page, source port)`.
 ///
-/// Exec edges are left out only when they are SPINE SEQUENCING — one body
-/// brick handing the chain to the next. That sequences adjacent statements
-/// rather than fanning a value across rows, and re-routing it through the
-/// gutter would take the spine off its own line.
+/// Exec edges are left out only when they are SPINE SEQUENCING: one body
+/// brick handing the chain to the next. Re-routing those through the gutter
+/// would take the spine off its own line.
 ///
-/// Everything else carrying exec is a DELIVERY and buses like any value: a
-/// wire into a chip (a crossing out of this body), and a wire out of an
-/// input port or a boundary pin (a crossing INTO the body, from a brick
-/// stacked on the page's edge). The test is on the wire's source, not on
-/// its target's port type.
+/// Every other exec wire is a DELIVERY and buses like any value: a wire into
+/// a chip, or a wire out of an input port or boundary pin (stacked on the
+/// page's edge). The test is on the wire's source, not its target's port type.
 fn collect_bus_groups(
     module: &Module,
     placements: &HashMap<NodeId, Placement>,
@@ -160,39 +171,21 @@ fn collect_bus_groups(
                 .nodes
                 .get(&source_anchor)
                 .is_some_and(|n| n.kind == NodeKind::Chip);
-        // An exec edge stays direct only when it is genuine SPINE SEQUENCING:
-        // one body brick handing the chain to the next, which has to stay a
-        // short wire on its own line. That is decided by the SOURCE, not by
-        // the target's port type.
-        //
-        // A wire out of an input PORT is not sequencing — it is a DELIVERY
-        // into the body, the same shape as a delivery into a chip. The port
-        // stacks on the page's left edge, so its direct wire is exactly the
-        // long diagonal across the whole body that the gutter exists to
-        // remove.
-        //
-        // `is_bus_worthy_source` is the one spelling of "a source worth a lane
-        // on its own merit", shared with the single-row filter in `plan_bus`.
-        // Its storage clauses are inert on an exec wire — no variable or
-        // buffer gate has an exec output — so what it selects here is the
-        // declared input ports and the synthesized boundary pins.
-        //
-        // A chip EXIT is deliberately NOT in that set: `source_anchor` is the
-        // chip brick, an ordinary body brick of this module carrying the spine
-        // on to the next statement, so exec handed back out of a chip keeps
-        // its direct wire.
+        // Exec out of an input port or boundary pin is a delivery from the
+        // page's edge and buses. `is_bus_worthy_source` selects exactly those
+        // here, since no storage gate has an exec output. A chip exit's
+        // `source_anchor` is the chip brick, a body brick carrying the spine,
+        // so exec handed back out of a chip keeps its direct wire.
         let source_delivers = module
             .nodes
             .get(&source_anchor)
             .is_some_and(is_bus_worthy_source);
-        if !into_chip && !source_delivers && targets_exec(module, &w.target) {
+        if !into_chip && !source_delivers && targets_exec(module, w.target) {
             continue;
         }
-        // Both the anchors (the bricks this module places) and the REAL
-        // endpoints (which may live in a child chip). Checking only the anchor
-        // passes every foreign literal, because a chip node is always bussable
-        // — and emit gives a literal no brick, so the lane's wire would fail to
-        // resolve and abort the build.
+        // Check the REAL endpoints as well as the anchors: a chip anchor is
+        // always bussable, but a foreign literal gets no brick from emit, so
+        // its lane wire would fail to resolve and abort the build.
         if !owners.is_bussable(module, source_anchor)
             || !owners.is_bussable(module, anchor)
             || !owners.is_bussable(module, w.source.node_id)
@@ -246,7 +239,8 @@ fn collect_bus_groups(
     groups
 }
 
-/// A lane brick is identified by the colour it mirrors, not by a name.
+/// Push one lane brick and return its id. A lane brick is identified by the
+/// node whose color it mirrors, not by a name.
 fn push_bus_node(
     bus: &mut BusLayout,
     x: i32,
@@ -289,19 +283,14 @@ fn claim_column(cells: &mut LaneCells, key: (usize, usize), lo: i32, hi: i32) ->
     true
 }
 
-/// Where a lane stops on its way down: the rows it taps, each with the `x`
-/// its tap rerouter — and the gate-side rerouters that tap rerouter feeds —
-/// stands at. That `x` is the row's own first consumer, so the run out to
-/// the gates stays on the row it serves.
+/// Where a lane stops on its way down: the rows it taps, each with the `x` its
+/// tap rerouter (and the gate-side rerouters it feeds) stands at. That `x` is
+/// the row's first consumer, so the run out to the gates stays on its row.
 ///
-/// Consecutive rows landing inside one rerouter's footprint repeat an `x`,
-/// which shares a stop instead of stacking two bricks. Within one band this
-/// cannot fire: `assemble_bands` spaces consecutive sub-rows by the taller
-/// row's own height, so a row's tap `x` is lower than the row above it by at
-/// least the lower row's brick height. It is here because a page may carry
-/// several bands, and `assemble_pages` leaves each band's sub-row offsets
-/// starting from zero, so offsets from different bands interleave on one
-/// page.
+/// Consecutive rows landing inside one rerouter's footprint repeat an `x` and
+/// share a stop instead of stacking two bricks. Within one band rows never do
+/// that; it happens where `assemble_pages` puts several bands on one page,
+/// since each band's sub-row offsets start from zero and interleave.
 fn lane_stops(group: &BusGroup, demand: &BusDemand) -> Vec<(usize, i32)> {
     let mut stops: Vec<(usize, i32)> = Vec::new();
     for &row in &demand.rows {
@@ -322,56 +311,26 @@ fn lane_stops(group: &BusGroup, demand: &BusDemand) -> Vec<(usize, i32)> {
 }
 
 /// Lay one value's lane: a left-pointing rerouter beside the producer, a head
-/// rerouter out in the lane's column level with it, then a pair of rerouters
-/// at every stop down that column — a right-pointing tap standing on the row's
-/// own level, running out to the gate-side rerouters that feed that row's
-/// consumers, and a down-pointing link stacked on top of it carrying the chain
-/// on.
+/// rerouter in the lane's column level with it, then a pair at every stop down
+/// that column: a right-pointing tap on the row's level, feeding the gate-side
+/// rerouters of that row's consumers, and a down-pointing link above it
+/// carrying the chain on.
 ///
-/// The whole run reads as right angles: the value turns out of its producer
-/// beside the gate that makes it, crosses to the band on that gate's own
-/// level, drops straight down one column, turns right once inside the band,
-/// and crosses to the gates on the consuming row's level.
+/// A tap is a BRANCH off its link and never hands the lane on, so no `Deg0`
+/// node drives a `Deg90` one. Every rerouter and consumer port takes exactly
+/// one inbound wire.
 ///
-/// The lane itself runs through the down-pointing links and nothing else. A
-/// tap is a BRANCH: its link fans out to it, it carries the value right to
-/// that one row, and it stops there — it never hands the lane on to the next
-/// stop. So every `Deg90` node is driven by another `Deg90` node or by the
-/// real port that heads the lane, and no `Deg0` node ever drives a `Deg90`
-/// one.
-///
-/// Every rerouter takes exactly one inbound wire — the previous link in its
-/// chain, its link for a tap, or the source-side rerouter (failing that, the
-/// value's source itself) for the head — and each consumer port takes exactly
-/// one, from the tap beside it. Fanning one link's output out to both the next
-/// link and its own branch is legal and is what keeps that true.
-///
-/// The source-side rerouter is the one brick standing OUTSIDE the chain on the
-/// producer's side. It feeds the head and nothing else, so the chain still
-/// begins at that head: a lane's head may be driven from outside it, and every
-/// other node of a lane is driven by a node of the same lane.
-///
-/// Nothing here ever moves a tap off its stop: the game drops overlapping
-/// bricks silently, so a brick that does not fit is left out instead.
-/// `line_groups` opens a `TAP_RESERVE` in front of every column of a line, so
-/// the cell a gate-side rerouter wants is normally there for the taking. What
-/// it cannot reserve is a SECOND one: a gate reading two bussed values at once
-/// has two lanes wanting that one cell, and the lane that arrives later leaves
-/// its rerouter out and hangs its consumers off whichever rerouter precedes it
-/// along the row — a longer run, and the same value. `row_cells` is what holds
-/// the cells, gates and rerouters alike.
-///
-/// The head and the stop links are the bricks the band adds beyond the tap
-/// column, and `lane_cells` drops either of those if its column cell is held;
-/// a tap's own cell is reserved before any of them is offered one.
-///
-/// Lane 0 is the LEFTMOST column, so the widest-span and hottest values —
-/// the ones `allocate_lanes` hands the low indices — hold the outside of the
-/// band and the short-lived ones churn nearest the body.
-#[allow(clippy::too_many_arguments)]
+/// The game silently drops overlapping bricks, so a brick whose cell is taken
+/// (`row_cells` for row cells, `lane_cells` for the column) is left out, never
+/// moved; a consumer whose gate-side rerouter is skipped hangs off the
+/// previous rerouter on the row. Lane 0 is the LEFTMOST column.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a lane reads its group, stops and page and writes both cell maps"
+)]
 fn emit_lane(
     bus: &mut BusLayout,
-    body: &Body,
+    body: &Body<'_>,
     group: &BusGroup,
     demand: &BusDemand,
     stops: &[(usize, i32)],
@@ -384,19 +343,14 @@ fn emit_lane(
     let placements = body.placements;
     let (body_min_y, z) = (body.page_infos[page].min_y, body.page_infos[page].z);
     let lane_y = body_min_y - BUS_BAND_GUTTER - (lanes_used - lane) as i32 * LANE_PITCH;
-    // Colour and head position both read the anchor, not the port: a value
+    // Color and head position both read the anchor, not the port: a value
     // read back out of a chip is produced in the child module, which this
-    // module cannot place or colour from.
+    // module cannot place or color from.
     let color_of = Some(group.source_anchor);
 
-    // Which way this lane travels. Every tap above the source means the value
-    // really does run upward out of its producer, and the chain should say so
-    // rather than pointing down a run that goes up.
-    //
-    // Only the CHAIN turns. A tap and the gate-side rerouters it drives still
-    // hand the value rightward into the gate beside them whichever way the
-    // lane arrived, so flipping the whole lane would point every leaf away
-    // from the thing it feeds — the one rule a rerouter's facing has to obey.
+    // The chain points up when every tap is above the source. Only the CHAIN
+    // turns: taps and gate-side rerouters still face right into the gate they
+    // feed, because a rerouter must face the thing it feeds.
     let chain_rotation = match placements.get(&group.source_anchor) {
         Some(p) if !group.taps.is_empty() && group.taps.iter().all(|t| t.x > p.x) => {
             NodeRotation::Deg270
@@ -410,74 +364,57 @@ fn emit_lane(
     // begins the chain there. A source standing level with a stop is already
     // served by that stop's tap, which holds the cell, so there the source
     // drives the first stop directly.
-    if let Some(p) = placements.get(&group.source_anchor) {
-        if claim_column(lane_cells, (page, lane), p.x, p.x + 2 * REROUTER_HALF) {
-            // The source-side rerouter, the mirror of the gate-side ones
-            // below: one tap reserve to the producer's LEFT, on the producer's
-            // own level. The gate wires into it and it hands the value on, so
-            // a value leaving a gate reads as a right angle at the gate rather
-            // than as a wire off its port heading for the gutter.
-            //
-            // It faces `−Y`, by the same rule that turns the leaves the other
-            // way: a rerouter faces the direction its value travels, and from
-            // here the value travels left into the band.
-            //
-            // Offered only where the head itself stands, so the two share the
-            // producer's level and the run between them is horizontal — with
-            // the head dropped, the lane's first brick is a stop's link out on
-            // another level, and inserting this one would draw a diagonal
-            // instead of removing one.
-            //
-            // The cell comes out of the same `row_cells` reservation the
-            // gate-side rerouters claim, so nothing is placed unreserved.
-            // `line_groups` opens a `TAP_RESERVE` in front of every column, so
-            // it is normally free; where it is not — the producer also CONSUMES
-            // a bussed value there, or a second lane leaves the same brick by
-            // another port — the brick is left out and the producer drives the
-            // head directly, exactly as before.
-            if let Some(row) = group.source_row {
-                let src_y = p.y - TAP_RESERVE;
-                let cell: Cell = (
-                    p.x,
-                    p.x + 2 * REROUTER_HALF,
-                    src_y,
-                    src_y + 2 * REROUTER_HALF,
-                );
-                let claimed = row_cells.entry((page, row)).or_default();
-                if !claimed.iter().any(|&c| cells_overlap(c, cell)) {
-                    claimed.push(cell);
-                    let src_id = push_bus_node(
-                        bus,
-                        p.x,
-                        src_y,
-                        z,
-                        NodeRotation::Deg180,
-                        BusRole::Source,
-                        color_of,
-                    );
-                    bus.wires.push(BusWire {
-                        source: upstream,
-                        target: BusEnd::Bus(src_id),
-                    });
-                    upstream = BusEnd::Bus(src_id);
-                }
-            }
-
-            let id = push_bus_node(
-                bus,
+    if let Some(p) = placements.get(&group.source_anchor)
+        && claim_column(lane_cells, (page, lane), p.x, p.x + 2 * REROUTER_HALF)
+    {
+        // The source-side rerouter: one tap reserve to the producer's LEFT on
+        // its own level, facing `-Y` (the way the value travels, into the
+        // band). Offered only when the head is placed, so the run between them
+        // is horizontal. Its cell is claimed from `row_cells`; when taken (the
+        // producer also consumes a bussed value there, or a second lane leaves
+        // the same brick) it is left out and the producer drives the head.
+        if let Some(row) = group.source_row {
+            let src_y = p.y - TAP_RESERVE;
+            let cell: Cell = (
                 p.x,
-                lane_y,
-                z,
-                chain_rotation,
-                BusRole::Gutter,
-                color_of,
+                p.x + 2 * REROUTER_HALF,
+                src_y,
+                src_y + 2 * REROUTER_HALF,
             );
-            bus.wires.push(BusWire {
-                source: upstream,
-                target: BusEnd::Bus(id),
-            });
-            upstream = BusEnd::Bus(id);
+            let claimed = row_cells.entry((page, row)).or_default();
+            if !claimed.iter().any(|&c| cells_overlap(c, cell)) {
+                claimed.push(cell);
+                let src_id = push_bus_node(
+                    bus,
+                    p.x,
+                    src_y,
+                    z,
+                    NodeRotation::Deg180,
+                    BusRole::Source,
+                    color_of,
+                );
+                bus.wires.push(BusWire {
+                    source: upstream,
+                    target: BusEnd::Bus(src_id),
+                });
+                upstream = BusEnd::Bus(src_id);
+            }
         }
+
+        let id = push_bus_node(
+            bus,
+            p.x,
+            lane_y,
+            z,
+            chain_rotation,
+            BusRole::Gutter,
+            color_of,
+        );
+        bus.wires.push(BusWire {
+            source: upstream,
+            target: BusEnd::Bus(id),
+        });
+        upstream = BusEnd::Bus(id);
     }
 
     // The tap of the stop being served, and the level it stands at, so rows
@@ -586,10 +523,9 @@ fn emit_lane(
 
 /// The lanes a code body owes, resolved before its edge pins are placed.
 ///
-/// The two halves are split because they straddle the pin stack: the stack
-/// has to clear the band the lanes claim, and a lane head has to stand at
-/// its source's own row — which an edge-pin source only has once the stack
-/// itself is placed.
+/// Planning and laying are split around the pin stack: the stack has to clear
+/// the band the lanes claim, and a lane head stands at its source's row, which
+/// an edge-pin source only has once the stack is placed.
 #[derive(Default)]
 pub(super) struct BusPlan {
     /// The lanes planned on each page.
@@ -636,20 +572,15 @@ pub(super) struct Body<'a> {
 /// bussed value, packed into the band between the code body's left edge and
 /// the input-pin stack.
 ///
-/// Lanes are allocated per page, so a value read on two pages heads a lane
-/// on each: a page is a separate plane in z, and a lane's column is measured
-/// from its own page's left edge.
+/// Lanes are allocated per page (a separate plane in z), so a value read on
+/// two pages heads a lane on each.
 ///
-/// KNOWN DEVIATION: a page's `page_w`/`page_h` and its [`PageInfo`] are
-/// measured before this runs — the lanes read the body's final placements, so
-/// they cannot be measured with it — and are never widened afterwards. Nothing
-/// collides: `band_widths` is what the input-pin stack clears, and the layout
-/// bounds sweep the bus nodes directly. What it costs is centring: on a
-/// paginated layout each page is centred on its body alone, so pages whose
-/// bands claim different numbers of lanes sit slightly off-centre relative to
-/// one another. Single-page layouts — every code layout inside the default
-/// budgets — are unaffected.
-pub(super) fn plan_bus(body: &Body) -> BusPlan {
+/// KNOWN DEVIATION: a page's size and [`PageInfo`] are measured before the
+/// lanes exist and are never widened for them. Nothing collides (the pin stack
+/// clears `band_width`, and layout bounds include bus nodes), but each page of
+/// a paginated layout is centered on its body alone, so pages with different
+/// lane counts sit slightly off-center from one another.
+pub(super) fn plan_bus(body: &Body<'_>) -> BusPlan {
     let Body {
         module,
         placements,
@@ -687,7 +618,7 @@ pub(super) fn plan_bus(body: &Body) -> BusPlan {
     // row's band, so only that row's gates can collide with it.
     let mut row_cells: HashMap<(usize, usize), Vec<Cell>> = HashMap::default();
     let mut row_top: HashMap<(usize, usize), i32> = HashMap::default();
-    for (id, &(page, down)) in node_row.iter() {
+    for (id, &(page, down)) in node_row {
         let (Some(p), Some(n), Some(&row)) = (
             placements.get(id),
             module.nodes.get(id),
@@ -695,7 +626,7 @@ pub(super) fn plan_bus(body: &Body) -> BusPlan {
         ) else {
             continue;
         };
-        let (hsx, hsy) = cell_half_size(n, rotation_of(rotations, id));
+        let (hsx, hsy) = cell_half_size(n, rotation_of(rotations, *id));
         row_cells
             .entry((page, row))
             .or_default()
@@ -727,9 +658,8 @@ pub(super) fn plan_bus(body: &Body) -> BusPlan {
             rows.dedup();
             // A value confined to one row only earns a lane if it is a
             // stored value, a port, or crosses a chip wall; anything else
-            // already reads as a short in-line wire. A crossing never does —
-            // it runs between this body and a chip brick, which is the long
-            // diagonal the band exists to replace.
+            // is already a short in-line wire. A chip crossing runs to the
+            // chip brick, a long diagonal, so it always gets a lane.
             if rows.is_empty() || (rows.len() < 2 && !g.crosses_chip && !is_bus_worthy_source(src))
             {
                 continue;
@@ -771,7 +701,7 @@ pub(super) fn plan_bus(body: &Body) -> BusPlan {
 
 /// Lay the planned lanes out as rerouters and wires, and record the module
 /// wires they replace.
-pub(super) fn lay_bus(body: &Body, plan: &mut BusPlan) -> (BusLayout, usize) {
+pub(super) fn lay_bus(body: &Body<'_>, plan: &mut BusPlan) -> (BusLayout, usize) {
     let Body {
         placements,
         page_infos,
@@ -789,39 +719,10 @@ pub(super) fn lay_bus(body: &Body, plan: &mut BusPlan) -> (BusLayout, usize) {
         if page_infos.get(pi).is_none() {
             continue;
         }
-        // Every stop's tap holds its column cell before any head or link is
-        // offered one: a tap stands on the row it serves and may not be
-        // moved off it, while the other two are droppable.
-        //
-        // Consecutive stops may repeat an `x` — `lane_stops` merges rows that
-        // land inside one rerouter's footprint and `emit_lane` reuses the one
-        // tap brick for them — so a repeat is claimed once and kept. Any OTHER
-        // contention is two taps wanting one cell, and `emit_lane` pushes a tap
-        // unconditionally, so it would stack two rerouters in the same cell and
-        // the game would silently drop one of them.
-        //
-        // It cannot arise while a lane's stop `x` descends monotonically down
-        // its rows, which holds within a band: a row's own height is at least
-        // the tallest brick standing in it, so the next row's `down` has
-        // already cleared this row's bricks and `x = page_h - down - height`
-        // strictly decreases. Row keys are `(page, down)` and `assemble_pages`
-        // restarts each band's offsets at zero, so two bands sharing a page
-        // interleave their rows under one key set and that ordering is the one
-        // thing that can break it. A stop whose cell is taken is DROPPED rather
-        // than stacked: `emit_lane` never reaches it, so it suppresses nothing
-        // and its consumers keep the direct wires they came with.
-        // A lane has to go somewhere. A group whose source and taps sit at
-        // the same height was already an inline hop, and routing it out to the
-        // gutter and back spends two rerouters to lengthen a wire that was
-        // short to begin with.
-        //
-        // Measured HERE rather than in `plan_bus` because only here are the
-        // placements final: an edge pin has none until `place_edge_pins` runs,
-        // and a port delivery is exactly the long run the band exists for, so
-        // measuring it early would read zero and throw the lane away. Skipping
-        // the lane is all-or-nothing by construction — `emit_lane` is what
-        // lays bricks AND records suppression, so a lane never entered lays
-        // nothing and suppresses nothing, and its wires stay as they were.
+        // A lane whose source and taps span less than `MIN_LANE_TRAVEL` is
+        // already a short hop and keeps its direct wires. Measured here, not
+        // in `plan_bus`, because edge pins have no placement until
+        // `place_edge_pins` runs. A skipped lane lays and suppresses nothing.
         let lanes: Vec<&(usize, BusDemand, usize)> = lanes
             .iter()
             .filter(|(gi, _, _)| {
@@ -841,45 +742,29 @@ pub(super) fn lay_bus(body: &Body, plan: &mut BusPlan) -> (BusLayout, usize) {
             .map(|(gi, demand, _)| lane_stops(&plan.groups[*gi], demand))
             .collect();
 
-        // Several lanes tapping ONE row is the normal case, and every one of
-        // their runs leaves the gutter horizontally toward that row. At a
-        // single level those runs are drawn on top of each other. Give each
-        // its own level, a rerouter's height apart.
+        // Lanes tapping one row each get their own level, a rerouter apart,
+        // so their runs are not drawn over each other. The whole stop moves
+        // (tap, link and gate-side rerouters all derive from `stop_x`), which
+        // keeps the run horizontal.
         //
-        // The whole stop moves: `stop_x` is what the tap, the link stacked
-        // above it and every gate-side rerouter along the row are all derived
-        // from, so shifting it keeps them level with EACH OTHER — which is
-        // what keeps the run out of the gutter horizontal. Shifting one end
-        // alone would put back the diagonals this feature exists to remove.
-        //
-        // Choosing the level and claiming the lane column are ONE step, so the
-        // two constraints cannot disagree. Levels are tried upward from the
-        // stop's own row, bounded by that row's top edge so a run never climbs
-        // out of the row it serves, and each candidate must be both unused on
-        // the row and free in the lane's column. A lane whose stops do not
-        // descend monotonically — possible only where two bands share a page
-        // and interleave their row keys — simply finds its next free level
-        // instead of stacking two rerouters in one cell.
-        //
-        // Falling back, in order: the base level un-staggered (the spec's
-        // preference — a shared level is a drawing problem, leaving the row is
-        // a correctness one), then dropping the stop, which suppresses nothing
-        // and leaves its consumers the direct wires they came with.
+        // Choosing a level and claiming the lane's column cell are one step.
+        // Levels go upward from the stop's row and never past the row's top
+        // edge. `emit_lane` places a tap unconditionally, so a stop with no
+        // free cell is DROPPED here; its consumers keep their direct wires.
         let mut used: HashMap<usize, Vec<i32>> = HashMap::default();
         for ((_, _, lane), stops_for_lane) in lanes.iter().zip(stops.iter_mut()) {
-            // (original x, the x it was given) of the stop above, so a SHARED
-            // stop — `lane_stops` repeats an x when consecutive rows fall
-            // inside one rerouter — keeps sharing the one brick after the
-            // shift, and does not claim the cell twice.
+            // (original x, the x it was given) of the stop above, so a stop
+            // `lane_stops` SHARED between rows keeps sharing the one brick
+            // after the shift and does not claim the cell twice.
             let mut prev: Option<(i32, i32)> = None;
             stops_for_lane.retain_mut(|(row, x)| {
                 let base = *x;
-                if let Some((prev_base, prev_final)) = prev {
-                    if prev_base == base {
-                        *x = prev_final;
-                        used.entry(*row).or_default().push(prev_final);
-                        return true;
-                    }
+                if let Some((prev_base, prev_final)) = prev
+                    && prev_base == base
+                {
+                    *x = prev_final;
+                    used.entry(*row).or_default().push(prev_final);
+                    return true;
                 }
                 let ceiling = plan
                     .row_top
@@ -904,18 +789,10 @@ pub(super) fn lay_bus(body: &Body, plan: &mut BusPlan) -> (BusLayout, usize) {
                     }
                     level += STAGGER_STEP;
                 }
-                // Overflow: every level in the band already carries a run. A
-                // row can hold far more taps than it has levels — its band is
-                // only as tall as its tallest brick — so this is reached on
-                // any hot row, and what happens here decides how bad the
-                // residual looks.
-                //
-                // Spread, do not pile. Taking the LEAST loaded level divides a
-                // hot row's leftover overlap across the whole band instead of
-                // stacking every one of them back onto the base level. The
-                // bound is unchanged: the candidates ARE the band, so nothing
-                // drifts into the row above, and the column claim still has
-                // the last word.
+                // Overflow: every level on the row already carries a run (a
+                // hot row has more taps than levels). Take the LEAST loaded
+                // level so the overlap spreads across the row's band; the
+                // candidates stay within the row and the column claim decides.
                 if chosen.is_none() {
                     let mut candidates: Vec<i32> = Vec::new();
                     let mut level = base;
@@ -963,32 +840,20 @@ pub(super) fn lay_bus(body: &Body, plan: &mut BusPlan) -> (BusLayout, usize) {
 }
 
 /// Route a line's expression values DOWN into the statement gate consuming
-/// them — the gutter bus in miniature, inside one line's own block.
+/// them: the gutter bus in miniature, inside one line's own block.
 ///
-/// `line_groups` drops a statement's exec gate to the bottom row of its group,
-/// below the expression columns feeding it. That is what makes the value flow
-/// read as a descent, but it turns each operand wire into a down-AND-left
-/// diagonal across the block. One rerouter straightens it: standing where the
-/// operand's COLUMN meets the sink's ROW, it takes the value straight down and
-/// hands it straight left. The sink's row carries nothing but the sink itself,
-/// so that leftward run crosses no gate.
+/// `line_groups` drops a statement's exec gate below the expression columns
+/// feeding it, which makes each operand wire a down-and-left diagonal. One
+/// rerouter where the operand's COLUMN meets the sink's ROW turns it into a
+/// straight drop and a straight run left; the sink's row holds only the sink,
+/// so the run crosses no gate.
 ///
-/// Same rules as the lanes, which is why it shares their `BusLayout`: the
-/// rerouter is a `Deg0` leaf feeding exactly one port, it takes exactly one
-/// inbound wire, and the module wire it replaces is suppressed so emit draws
-/// one path and not two.
-///
-/// What it deliberately leaves alone:
-/// - anything the gutter already suppressed — that consumer has its one
-///   replacement path and a second would be fan-in;
-/// - statement-to-statement exec, where source and sink share column 0. Those
-///   run straight DOWN the spine already, and detouring them is the spec's
-///   stated non-goal. The `src.y > sink.y` test is what separates the two: an
-///   operand is strictly right of the spine, a preceding statement is level
-///   with it.
+/// The rerouter takes one inbound wire and feeds one port, and the replaced
+/// module wire is suppressed so emit draws one path. Consumers the gutter
+/// already suppressed are skipped (a second path would be fan-in).
 pub(super) fn lay_mini_bus(
     bus: &mut BusLayout,
-    body: &Body,
+    body: &Body<'_>,
     node_line: &HashMap<NodeId, usize>,
     plan: &mut BusPlan,
 ) {
@@ -1020,7 +885,7 @@ pub(super) fn lay_mini_bus(
             continue;
         }
         // Only the sink that MOVED, and only from its own line's block.
-        if rotation_of(rotations, &w.target.node_id) != NodeRotation::Deg90 {
+        if rotation_of(rotations, w.target.node_id) != NodeRotation::Deg90 {
             continue;
         }
         let (Some(&src_line), Some(&sink_line)) = (
@@ -1048,8 +913,8 @@ pub(super) fn lay_mini_bus(
         ) else {
             continue;
         };
-        // ...and strictly right of the spine, which is what makes it an
-        // operand rather than the statement before this one.
+        // Strictly right of the spine: an operand, not the preceding
+        // statement.
         if src_at.y <= sink_at.y {
             continue;
         }
@@ -1060,22 +925,15 @@ pub(super) fn lay_mini_bus(
             continue;
         };
 
-        // Two operands dropping into ONE statement leave their corners on that
-        // statement's row, and at a single level their runs into it are drawn
-        // on top of each other — the gutter's collision, in the line's own
-        // block. So each corner takes its own level, a rerouter apart, bounded
-        // by the sink's own top edge: a corner outside the sink's extent is a
-        // run that no longer arrives at the gate it feeds.
-        //
-        // Rows are checked as one set, so a corner can never land inside a
-        // gate — or inside a gutter tap already standing on this row. A
-        // corner that fits at no level keeps its direct diagonal: a longer
-        // read, never a lost one.
+        // Corners into one sink each take their own level, a rerouter apart,
+        // within the sink's extent so the run still arrives at its gate. Cells
+        // are checked against the row's gates and gutter taps; a corner that
+        // fits nowhere keeps its direct wire.
         let Some(sink) = module.nodes.get(&w.target.node_id) else {
             continue;
         };
         let sink_top =
-            sink_at.x + cell_half_size(sink, rotation_of(rotations, &w.target.node_id)).0 * 2;
+            sink_at.x + cell_half_size(sink, rotation_of(rotations, w.target.node_id)).0 * 2;
         let taken = sink_levels.entry(w.target.node_id).or_default();
         let cell_at = |level: i32| -> Cell {
             (
@@ -1101,10 +959,8 @@ pub(super) fn lay_mini_bus(
             }
             level += STAGGER_STEP;
         };
-        // Overflow, same rule as the gutter: rather than give up when every
-        // level is spoken for, take the LEAST loaded one whose cell is still
-        // clear. A shared level draws two runs over each other; no corner at
-        // all leaves a diagonal across the block, which is worse.
+        // Overflow: when every level is taken, share the LEAST loaded one
+        // whose cell is clear.
         if corner_x.is_none() {
             let mut candidates: Vec<i32> = Vec::new();
             let mut level = sink_at.x;
@@ -1127,11 +983,8 @@ pub(super) fn lay_mini_bus(
             .or_default()
             .push(cell);
 
-        // Faces LEFT: the corner stands in its operand's column, out to the
-        // right of the statement, and the run from here goes leftward into it.
-        // A rerouter faces what it feeds, so this is the half turn — and it is
-        // the one place the two buses differ, since a gutter tap runs the
-        // other way.
+        // Faces LEFT: the corner stands right of the statement and a rerouter
+        // faces what it feeds (a gutter tap faces the other way).
         let id = push_bus_node(
             bus,
             corner_x,
