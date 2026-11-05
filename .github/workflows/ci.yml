@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Line tables keep a failing test's backtrace readable at a fraction of full
+  # debug info's compile and link time.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -20,7 +26,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ci-v1
+          key: ci-v2
 
       - uses: actions/setup-node@v4
         with:
@@ -36,12 +42,35 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-      # Not `-D warnings`: the tree carries a long tail of style warnings that
-      # predate this gate. What this catches is clippy's deny-by-default lints
-      # (real bug smells like `never_loop`), plus any compile break in a crate
-      # `cargo test` does not reach.
+      # The doc checks run the CLIs and one example from the test build above,
+      # instead of building the compiler again in release. The build names the
+      # test targets so its features match `cargo test`'s and nothing
+      # recompiles; without them, dev-dependency features drop out.
+      - name: Doc examples type-check
+        env:
+          WIRESCRIPT_BIN_PROFILE: debug
+        run: |
+          cargo build --workspace --lib --bins --tests --examples
+          just doc-check-run
+
+  # Not `-D warnings`: the tree carries a long tail of style warnings that
+  # predate this gate. What this catches is clippy's deny-by-default lints
+  # (real bug smells like `never_loop`), plus any compile break in a crate
+  # `cargo test` does not reach. Its own job, so it runs beside the tests.
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-clippy-v1
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets
-
-      - name: Doc examples type-check
-        run: just doc-check

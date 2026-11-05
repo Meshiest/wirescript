@@ -39,8 +39,11 @@ export function filesUnder(dir, ext, { skip = [] } = {}) {
   return out.sort();
 }
 
-/** A binary this workspace builds, under `target/<profile>`. */
-export function binPath(name, profile = 'release') {
+/**
+ * A binary this workspace builds, under `target/<profile>`: `release` unless
+ * WIRESCRIPT_BIN_PROFILE names another.
+ */
+export function binPath(name, profile = process.env.WIRESCRIPT_BIN_PROFILE || 'release') {
   return join(repoRoot, 'target', profile, process.platform === 'win32' ? `${name}.exe` : name);
 }
 

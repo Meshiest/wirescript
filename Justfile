@@ -67,10 +67,10 @@ vscode-try *FOLDER: vscode-package
     code --extensions-dir editors/vscode/.vscode-test/extensions --user-data-dir editors/vscode/.vscode-test/user --install-extension editors/vscode/brickadia-wirescript.vsix --force
     code --extensions-dir editors/vscode/.vscode-test/extensions --user-data-dir editors/vscode/.vscode-test/user {{FOLDER}}
 
-# Build the check and compile CLIs (release)
+# Build the check and compile CLIs (release), in one build so the crates they
+# share compile once
 check-bin:
-    cargo build --release -p wirescript --bin wirescript-check
-    cargo build --release -p wirescript-cli
+    cargo build --release -p wirescript --bin wirescript-check -p wirescript-cli
 
 # Time every compile stage on generated programs at 4k/8k/16k and fail a stage
 # that grows faster than linearly (--update writes the baseline)
@@ -95,7 +95,15 @@ doc-links:
     node crates/wirescript/scripts/gen_doc_links.mjs
 
 # Type-check every ```wirescript example in docs/src (CI gate)
-doc-check: check-bin
+doc-check: check-bin doc-check-run
+
+# The environment page's check: through cargo, or the example binary already
+# built under target/$WIRESCRIPT_BIN_PROFILE
+env_doc_check := if env("WIRESCRIPT_BIN_PROFILE", "") == "" { "cargo run -q -p wirescript --example gen_environment_doc -- --check" } else { "target/" + env("WIRESCRIPT_BIN_PROFILE") + "/examples/gen_environment_doc --check" }
+
+# doc-check's checks, against binaries already built: release, or the profile
+# WIRESCRIPT_BIN_PROFILE names (CI reuses its test build's `debug`)
+doc-check-run:
     node crates/wirescript/scripts/check_docs.mjs
     node crates/wirescript/scripts/check_learn.mjs
     node crates/wirescript/scripts/gen_doc_toc.mjs --check
@@ -103,7 +111,7 @@ doc-check: check-bin
     node crates/wirescript/scripts/gen_learn_tree.mjs --check
     node crates/wirescript/scripts/gen_tm_grammar.mjs --check
     node crates/wirescript/scripts/gen_doc_links.mjs --check
-    cargo run -q -p wirescript --example gen_environment_doc -- --check
+    {{ env_doc_check }}
 
 # Regenerate the reference half of docs/src/environment.md from the game's
 # property map (after a game build's property map is refreshed)
