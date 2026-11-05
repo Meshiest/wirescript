@@ -90,6 +90,12 @@ pub struct ResolveResult {
     /// through [`Suppressions::apply`] at whichever point a caller aggregates
     /// them.
     pub suppressions: Suppressions,
+    /// The key of every `if` a `testing.*` statement became, in every file
+    /// this resolve read (see [`crate::testing`]). Lowering drops them from a
+    /// build that is not a test build.
+    pub testing_stmts: HashSet<crate::diagnostic::RangeKey>,
+    /// The `testing.*` statements whose code waits on a type check.
+    pub(crate) testing_pending: Vec<crate::testing::Pending>,
 }
 
 /// Collect one file's `ws-ignore` directives off the comments its lex already
@@ -127,6 +133,10 @@ fn is_importable(d: &TopDecl) -> bool {
     )
 }
 
+fn is_test_decl(d: &TopDecl) -> bool {
+    matches!(d, TopDecl::Chip(c) if c.is_test)
+}
+
 /// A declaration that installs behaviour by existing rather than by being
 /// named: a top-level `on` handler, or an anonymous `chip { ... }`. Importing a
 /// library at all brings these in, there is no name to select them by, and
@@ -150,7 +160,7 @@ fn decl_names(d: &TopDecl) -> Vec<String> {
 }
 
 /// Whether `d` introduces the top-level name `name`.
-fn decl_binds(d: &TopDecl, name: &str) -> bool {
+pub(crate) fn decl_binds(d: &TopDecl, name: &str) -> bool {
     decl_names(d).iter().any(|n| n == name)
 }
 
@@ -266,6 +276,10 @@ fn bound_namespace<'a>(decls: &'a [TopDecl], name: &str) -> Option<&'a Namespace
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a file read writes every resolve-wide table"
+)]
 fn resolve_file(
     path: &str,
     relative_to: &str,
@@ -274,6 +288,7 @@ fn resolve_file(
     stack: &mut HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
     scope: &mut ImportScope,
+    testing: &mut crate::testing::Rewritten,
 ) -> Option<String> {
     let canon = loader.canonical_path(path, relative_to);
     if stack.contains(&canon) {
@@ -286,11 +301,12 @@ fn resolve_file(
         return None;
     };
     stack.insert(canon.clone());
-    let parsed = parse(&source, &canon);
+    let mut parsed = parse(&source, &canon);
     // The imported file's own parse diagnostics, with ranges into that file.
     // Each file is parsed once (the cache check above returns first), so these
     // are collected once.
     diagnostics.extend(parsed.diagnostics.iter().cloned());
+    crate::testing::rewrite(&mut parsed.ast, &source, testing, diagnostics);
 
     let mut imported_ast = parsed.ast.clone();
     let mut sub_imports = Vec::new();
@@ -318,6 +334,7 @@ fn resolve_file(
             &mut sub_decls,
             &mut HashMap::default(),
             scope,
+            testing,
         );
     }
     if !sub_decls.decls.is_empty() {
@@ -368,6 +385,7 @@ fn resolve_import(
     target: &mut DeclAccum,
     target_doc_comments: &mut crate::parser::DocComments,
     scope: &mut ImportScope,
+    testing: &mut crate::testing::Rewritten,
 ) {
     let canon = loader.canonical_path(&imp.path, relative_to);
     if stack.contains(&canon) {
@@ -387,6 +405,7 @@ fn resolve_import(
         stack,
         diagnostics,
         scope,
+        testing,
     ) else {
         diagnostics.push(Diagnostic::error(
             "WS012",
@@ -461,7 +480,22 @@ fn resolve_import(
 
     match &imp.kind {
         ImportKind::All => {
+            // A module's tests stay with it: a whole-module import leaves
+            // behind each `@test` that none of the module's other
+            // declarations call.
+            let mut module_uses = HashSet::default();
+            if importable.iter().any(|d| is_test_decl(d)) {
+                for d in importable.iter().filter(|d| !is_test_decl(d)) {
+                    collect_idents(walk::Node::Decl(d), Uses::Code, &mut module_uses);
+                }
+            }
             for d in importable {
+                if let TopDecl::Chip(c) = d
+                    && c.is_test
+                    && !module_uses.contains(&c.name)
+                {
+                    continue;
+                }
                 // Diamond-import dedup: skip a decl already merged under its
                 // names (one module reached via two import paths). A same-named
                 // decl from a different file is a real collision and is kept so
@@ -812,14 +846,21 @@ fn rename_decl(d: &mut TopDecl, new_name: &str) {
 }
 
 pub fn resolve(source: &str, file: &str, loader: &dyn FileLoader) -> ResolveResult {
-    resolve_parsed(parse(source, file), file, loader)
+    resolve_parsed(parse(source, file), source, file, loader)
 }
 
 /// `resolve` for a caller that already parsed the entry file (the LSP keeps
 /// the pre-resolve AST for local analysis), so the buffer is not parsed twice.
 /// Consumes the `ParseResult`; clone it first if you need it.
-pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) -> ResolveResult {
+pub fn resolve_parsed(
+    mut parsed: ParseResult,
+    source: &str,
+    file: &str,
+    loader: &dyn FileLoader,
+) -> ResolveResult {
     let mut diagnostics = parsed.diagnostics.clone();
+    let mut testing = crate::testing::Rewritten::default();
+    crate::testing::rewrite(&mut parsed.ast, source, &mut testing, &mut diagnostics);
     let mut doc_comments = parsed.doc_comments.clone();
 
     let mut merged = DeclAccum::default();
@@ -843,6 +884,7 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
                 &mut merged,
                 &mut doc_comments,
                 &mut import_scope,
+                &mut testing,
             );
         } else {
             main_decls.push(d.clone());
@@ -931,6 +973,8 @@ pub fn resolve_parsed(parsed: ParseResult, file: &str, loader: &dyn FileLoader) 
         // import set.
         imported_files: cache.into_keys().collect(),
         suppressions,
+        testing_stmts: testing.keys,
+        testing_pending: testing.pending,
     }
 }
 

@@ -2,7 +2,7 @@
   "name": "brickadia-wirescript",
   "displayName": "Brickadia Wirescript",
   "description": "Language support for Wirescript, a language that compiles to Brickadia's logic gates: errors as you type, completion, hover, formatting and one-key compile to a .brz",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "brickadia-community",
   "icon": "icon.png",
   "license": "CC0-1.0",
@@ -46,7 +46,9 @@
   ],
   "activationEvents": [
     "onLanguage:wirescript",
-    "onUri"
+    "onLanguage:wirescript-ir",
+    "onUri",
+    "workspaceContains:**/*.ws"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -69,6 +71,21 @@
         "icon": {
           "light": "./media/wirescript-file-light.svg",
           "dark": "./media/wirescript-file-dark.svg"
+        }
+      },
+      {
+        "id": "wirescript-ir",
+        "aliases": [
+          "Wirescript IR",
+          "wsir"
+        ],
+        "extensions": [
+          ".wsir"
+        ],
+        "configuration": "./wsir-language-configuration.json",
+        "icon": {
+          "light": "./media/wirescript-ir-file-light.svg",
+          "dark": "./media/wirescript-ir-file-dark.svg"
         }
       }
     ],
@@ -102,7 +119,7 @@
         "command": "wirescript.compileAndCopy",
         "key": "ctrl+shift+b",
         "mac": "cmd+shift+b",
-        "when": "editorLangId == wirescript"
+        "when": "editorLangId == wirescript || editorLangId == wirescript-ir"
       }
     ],
     "configuration": {
@@ -164,7 +181,7 @@
   "scripts": {
     "build": "node scripts/copy-docs.mjs && tsc -p . && node scripts/bundle.mjs",
     "vscode:prepublish": "npm run build",
-    "test": "tsc -p . && node --test out/clipboard.test.js out/wasmMemory.test.js out/docsIndex.test.js out/markdownPreview.test.js out/bufferStream.test.js out/wasiPaths.test.js out/docLinks.test.js"
+    "test": "tsc -p . && node --test out/clipboard.test.js out/wasmMemory.test.js out/docsIndex.test.js out/markdownPreview.test.js out/bufferStream.test.js out/wasiPaths.test.js out/docLinks.test.js out/testIds.test.js"
   },
   "dependencies": {
     "@vscode/wasm-wasi": "1.0.2",
@@ -177,7 +194,10 @@
     "@types/node": "^25.6.0",
     "@types/vscode": "~1.91.0",
     "@vscode/vsce": "4.0.0",
-    "esbuild": "0.24.2",
+    "esbuild": "0.28.2",
     "typescript": "^5.0.0"
+  },
+  "overrides": {
+    "minimatch": "11.0.1"
   }
 }

@@ -54,7 +54,7 @@ fn requests(src: &str) -> Vec<(&'static str, Duration)> {
     let mut tc = None;
     // Parse, resolve and typecheck, as the language server does per edit.
     time("front end", &mut || {
-        let r = resolve_parsed(wirescript::parse(src, FILE), FILE, &FsLoader);
+        let r = resolve_parsed(wirescript::parse(src, FILE), src, FILE, &FsLoader);
         tc = Some(wirescript::typecheck_with_inference(&r.ast).0);
         resolved = Some(r);
     });

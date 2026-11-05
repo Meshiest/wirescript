@@ -455,6 +455,10 @@ pub struct ChipDecl {
     /// through a Function Call gate at each call site, where a `mod` is
     /// inlined. Shares the `mod` grammar and `inline: true`.
     pub is_fn: bool,
+    /// `@test fn` / `@test mod` / `@test chip`: a test. Uncalled, it emits
+    /// nothing, and no diagnostic reports it unused; `CompileInput::test_entry`
+    /// compiles the program with a load-time call to one.
+    pub is_test: bool,
 }
 
 impl ChipDecl {

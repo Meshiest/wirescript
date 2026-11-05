@@ -1,0 +1,16 @@
+damage 45.5 of 150
+capped 150 healed 0
+damage 45.5 of 100
+capped 100 healed 0
+ammo 15 2 chamber 4 0
+same true true true
+differ true true
+slot 0
+same true true false
+differ true false
+slot 3
+aim from X=1.000 Y=2.000 Z=3.000 toward X=0.000 Y=1.000 Z=0.000
+aim from X=0.000 Y=0.000 Z=0.000 toward X=1.000 Y=0.000 Z=0.000
+[alice hint] Welcome: Press E to interact
+[alice temp permission] Fly on
+[alice temp permission] Fly off

@@ -58,6 +58,8 @@ fn compile_to_module(src: &str, name: &str) -> Module {
         doc_comments: &parsed.doc_comments,
         fold_mode: FoldMode::ForceOff,
         ce_slots: &wirescript::CeSlotMap::default(),
+        test_build: false,
+        testing_stmts: &Default::default(),
     });
     lr.module
 }

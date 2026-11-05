@@ -377,6 +377,7 @@ The following forms are valid at the top level of a script:
 - `chip on trigger { body }`: Anonymous chip with handler
 - `mod name(params) { body }`: Inline chip (macro-like)
 - `fn name(params) -> outputs { body }`: Function, compiled once into a function definition plane
+- `@test fn name() { body }`: Test, a `fn` that emits nothing unless called
 - `on trigger { body }`: Event handler
 - `let name = on trigger { body }`: Captured event with handler
 - `import "path"`: Import all declarations from file

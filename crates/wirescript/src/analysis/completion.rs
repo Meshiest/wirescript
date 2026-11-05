@@ -570,6 +570,32 @@ pub fn prefab_path_fragment(source: &str, line: usize, col: usize) -> Option<(us
     is_prefab_frag.then_some((dollar, frag))
 }
 
+/// The members after `testing.`, or the matchers after `testing.expect(..).`
+/// (and `.not.`), read from the line's text.
+fn testing_completions(source: &str, line: usize, col: usize) -> Option<Vec<Completion>> {
+    use crate::testing::{MATCHERS, MEMBERS, Receiver, receiver_before_dot};
+    let l = source.lines().nth(line)?;
+    let before = &l[..char_col_to_byte(l, col)];
+    let start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |i| super::text::after_char(before, i));
+    let head = before[..start].strip_suffix('.')?;
+    let list = match receiver_before_dot(head)? {
+        Receiver::Testing => MEMBERS,
+        Receiver::Expect { negated: false } => MATCHERS,
+        Receiver::Expect { negated: true } => &MATCHERS[..MATCHERS.len() - 1],
+    };
+    Some(
+        list.iter()
+            .map(|m| {
+                Completion::new(m.name, CompletionKind::Method)
+                    .detail(m.signature)
+                    .documentation(m.doc)
+            })
+            .collect(),
+    )
+}
+
 /// The completions at `line`/`col` (a character column) of `source`, whose
 /// symbols are `symbols`; `prefab_paths` are the `.brz` paths a `$./` reference
 /// may complete to, and `lookup` finds an enum by the text completed.
@@ -643,6 +669,11 @@ pub fn completions(
             .into_iter()
             .map(|(label, detail)| Completion::new(label, CompletionKind::Property).detail(detail))
             .collect();
+    }
+    if !symbols.iter().any(|s| s.name == crate::testing::TESTING)
+        && let Some(items) = testing_completions(source, line, col)
+    {
+        return items;
     }
     if let Some(var_name) = member_receiver_at(source, line, col) {
         return member_completions(&var_name, symbols, source, line, col, lookup);
@@ -881,6 +912,12 @@ pub fn completions(
     for kw in KEYWORDS {
         items.push(Completion::new(*kw, CompletionKind::Keyword));
     }
+    if !seen.contains(crate::testing::TESTING) {
+        items.push(
+            Completion::new(crate::testing::TESTING, CompletionKind::Module)
+                .detail("test-only assertions"),
+        );
+    }
 
     // Annotations: `@side` port pins, the chip annotations, and the
     // module-level run that opens a file.
@@ -894,6 +931,7 @@ pub fn completions(
         ("@material", "brick material (Brick Property Changer)"),
         ("@closed", "compile chip collapsed"),
         ("@sliced", "let a for loop run across ticks"),
+        ("@test", "mark a fn, mod or chip as a test"),
         ("@fold", "module-level: fold constant expressions"),
         ("@nofold", "module-level: never fold"),
         ("@layout", "module-level: placement engine (code/cube)"),

@@ -1,5 +1,17 @@
+use super::table::{Case, CaseInput, CaseValue};
 use super::*;
-use crate::lower::fold::table::{CaseValue, CertifiedTable, InVariant};
+
+/// Panic listing every failed row of a table test, or if no row ran.
+#[track_caller]
+fn report_failures(failures: &[String], rows: usize) {
+    assert!(rows > 0, "no rows ran");
+    assert!(
+        failures.is_empty(),
+        "{} of {rows} rows failed:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
 
 const SELECT: &str = "BrickComponentType_Expr_Select";
 const BRANCH: &str = "BrickComponentType_Exec_Branch";
@@ -93,7 +105,7 @@ fn rounding_laws() {
     assert_eq!(as_float(Some(&Value::Float(2.1))).map(f64::ceil), Some(3.0));
 }
 
-fn case_value(ci: &crate::lower::fold::table::CaseInput) -> Option<Value> {
+fn case_value(ci: &CaseInput) -> Option<Value> {
     let v = ci.value.as_ref()?;
     Some(match (ci.variant, v) {
         (InVariant::Int, CaseValue::Scalar(s)) => Value::Int(s.parse().expect("int case value")),
@@ -137,7 +149,7 @@ fn case_value(ci: &crate::lower::fold::table::CaseInput) -> Option<Value> {
 /// Signatures and values eval refuses on purpose. Every table case must
 /// replay exactly or match one of these; the counts are asserted so a law
 /// cannot quietly turn into a refusal.
-fn is_expected_refusal(gate: &str, case: &crate::lower::fold::table::Case) -> bool {
+fn is_expected_refusal(gate: &str, case: &Case) -> bool {
     let sig: Vec<InVariant> = case.inputs.iter().map(|i| i.variant).collect();
     if gate.contains("_Math") && sig.contains(&InVariant::Str) {
         return true;
@@ -207,7 +219,7 @@ fn replay_every_certified_case() {
             match eval(gate, &inputs) {
                 Some(v) => {
                     assert_eq!(
-                        render(&v),
+                        render_for_format(&v),
                         case.output_value,
                         "{gate} {:?} evaluated {v:?}",
                         case.inputs
@@ -285,7 +297,7 @@ fn format_text_matches_recovered_probe_cases() {
     );
     assert_eq!(
         format_text("{0}", &[i(Value::Bool(true))]),
-        Some("1".into())
+        Some("true".into())
     );
     assert_eq!(
         format_text("{0}", &[i(Value::Str("s".into()))]),
@@ -454,9 +466,8 @@ fn render_for_format_matches_certified_table() {
 }
 
 #[test]
-fn concat_stringifies_bool_natively_not_via_format_law() {
-    // Certified: Concatenate prints bools "true"/"false", where
-    // render_for_format prints "1"/"0".
+fn concat_stringifies_bools_as_true_and_false() {
+    // Certified: Concatenate prints bools "true"/"false".
     assert_eq!(
         eval(
             "BrickComponentType_Expr_String_Concatenate",
@@ -489,10 +500,10 @@ fn eval_refuses_what_the_game_was_not_probed_on() {
             None,
         ),
         (
-            "a mixed-sign division is trunc-vs-floor unprobed",
+            "a mixed-sign division rounds toward zero (P19a)",
             "MathDivide",
             vec![i(-7), i(2)],
-            None,
+            Some(Some(Value::Int(-3))),
         ),
         (
             "a zero remainder is safe",
@@ -501,10 +512,10 @@ fn eval_refuses_what_the_game_was_not_probed_on() {
             Some(None),
         ),
         (
-            "a mixed-sign int modulo refuses",
+            "a mixed-sign int modulo takes the dividend sign (P19a)",
             "MathModulo",
             vec![i(-7), i(2)],
-            None,
+            Some(Some(Value::Int(-1))),
         ),
         (
             "division by zero is certified",
@@ -582,18 +593,34 @@ fn eval_refuses_what_the_game_was_not_probed_on() {
             ));
         }
     }
-    crate::test_support::report_failures(&failures, rows.len());
+    report_failures(&failures, rows.len());
 }
 
 #[test]
 fn oversized_float_refuses_string_fold() {
     let concat = "BrickComponentType_Expr_String_Concatenate";
     // Coverage checks only variant shape, so this magnitude reaches the guard.
-    assert!(!string_operands_foldable(&[
-        Some(&Value::Str("x".into())),
-        Some(&Value::Float(1e16)),
-    ]));
+    assert!(!string_operands_foldable(
+        &[Some(&Value::Str("x".into())), Some(&Value::Float(1e16))],
+        Mode::Fold
+    ));
     let _ = concat; // documents which gate family this guard protects
+}
+
+#[test]
+fn the_simulator_concatenates_what_folding_refuses() {
+    let concat = "BrickComponentType_Expr_String_Concatenate";
+    let big = [Some(Value::Str("x".into())), Some(Value::Float(1e16))];
+    assert_eq!(eval(concat, &big), None);
+    assert_eq!(eval_sim(concat, &big), Some(Value::Str("x1e+16".into())));
+    let long = "y".repeat(MAX_FOLDED_STRING_LEN);
+    let pair = [Some(Value::Str(long.clone())), Some(Value::Str("z".into()))];
+    assert_eq!(eval_sim(concat, &pair), Some(Value::Str(long + "z")));
+    assert_eq!(
+        format_text_sim("{0}π", &[Some(Value::Int(3))]),
+        Some("3π".to_string())
+    );
+    assert_eq!(format_text("{0}π", &[Some(Value::Int(3))]), None);
 }
 
 #[test]
@@ -647,6 +674,34 @@ fn blank_render_gates_always_refuse() {
     }
 }
 
+/// The laws P18 and P11b measured fold as the simulator runs them.
+#[test]
+fn measured_laws_fold() {
+    let i = |n: i64| Some(Value::Int(n));
+    let b = |v: bool| Some(Value::Bool(v));
+    let gate = |s: &str| format!("BrickComponentType_Expr_{s}");
+    let srgb = eval(&gate("MakeColorSRGB"), &[i(10), i(245), i(10), i(245)]);
+    assert_eq!(
+        eval(&gate("ColorToHex"), &[srgb]),
+        Some(Value::Str("0AF50AF5".into()))
+    );
+    let opaque = eval(&gate("MakeColorSRGB"), &[i(0), i(255), i(0), i(255)]);
+    assert_eq!(
+        eval(&gate("ColorToHex"), &[opaque]),
+        Some(Value::Str("00FF00".into()))
+    );
+    assert_eq!(eval(&gate("LogicalNAND"), &[b(true), b(false)]), b(true));
+    assert_eq!(eval(&gate("LogicalNOR"), &[i(2), i(0)]), b(false));
+    assert_eq!(eval(&gate("MathNegate"), &[i(5)]), i(-5));
+    assert_eq!(eval(&gate("MathNegate"), &[i(i64::MIN)]), None);
+    let f = |x: f64| Some(Value::Float(x));
+    let c = eval(&gate("MakeColor"), &[f(1.0), f(0.5), f(0.25), f(0.75)]);
+    assert_eq!(
+        eval(&gate("ColorToHex"), &[c]),
+        Some(Value::Str("FFBC89BF".into()))
+    );
+}
+
 #[test]
 fn rotate_vector_replays_the_45_degree_case_exactly() {
     let gate = "BrickComponentType_Expr_RotateVector";
@@ -662,7 +717,7 @@ fn rotate_vector_replays_the_45_degree_case_exactly() {
         w: 0.923_879_532_511_286_7,
     });
     let got = eval(gate, &[v, q]).expect("covered signature must fold");
-    assert_eq!(render(&got), "X=0.707 Y=0.707 Z=0.000");
+    assert_eq!(render_for_format(&got), "X=0.707 Y=0.707 Z=0.000");
 }
 
 #[test]
@@ -681,16 +736,58 @@ fn composite_modulo_mixed_sign_does_not_refuse() {
         z: 0.75,
     });
     let got = eval(md, &[v1, v2]).expect("composite modulo must not refuse on mixed sign");
-    assert_eq!(render(&got), "X=0.000 Y=0.250 Z=-0.000");
+    assert_eq!(render_for_format(&got), "X=0.000 Y=0.250 Z=-0.000");
 }
 
 #[test]
 fn render_matches_formattext() {
-    assert_eq!(render(&Value::Float(1.0)), "1");
-    assert_eq!(render(&Value::Float(0.75)), "0.75");
-    assert_eq!(render(&Value::Float(f64::INFINITY)), "0");
-    assert_eq!(render(&Value::Float(f64::NAN)), "0");
-    assert_eq!(render(&Value::Float(-0.0)), "0");
-    assert_eq!(render(&Value::Bool(true)), "true");
-    assert_eq!(render(&Value::Int(-5)), "-5");
+    assert_eq!(render_for_format(&Value::Float(1.0)), "1");
+    assert_eq!(render_for_format(&Value::Float(0.75)), "0.75");
+    assert_eq!(render_for_format(&Value::Float(f64::INFINITY)), "0");
+    assert_eq!(render_for_format(&Value::Float(f64::NAN)), "0");
+    assert_eq!(render_for_format(&Value::Float(-0.0)), "0");
+    assert_eq!(render_for_format(&Value::Bool(true)), "true");
+    assert_eq!(render_for_format(&Value::Int(-5)), "-5");
+}
+
+#[test]
+fn format_text_rounds_thousandths_half_to_even_in_double() {
+    // Measured in game: exact binary ties go to even, and so does 0.0005,
+    // whose product with 1000 is exactly 0.5 in double.
+    let f = |x: f64| render_for_format(&Value::Float(x));
+    assert_eq!(f(0.0625), "0.062");
+    assert_eq!(f(0.3125), "0.312");
+    assert_eq!(f(-0.0625), "-0.062");
+    assert_eq!(f(0.0005), "0");
+    assert_eq!(f(1.0005), "1");
+    assert_eq!(f(1234.5), "1234.5");
+    assert_eq!(f(1e20), "100000000000000000000");
+    assert_eq!(render_for_format(&Value::Int(i64::MAX)), "9223372036854775807");
+    assert_eq!(render_for_format(&Value::Int(i64::MIN)), "-9223372036854775808");
+}
+
+#[test]
+fn concat_prints_floats_as_c_g() {
+    // Measured in game through Append String (`..`). The table certifies no
+    // fractional float operand yet, so eval still refuses these; the law is
+    // checked directly for when it does.
+    let cat = |x: f64| concat_display(&Value::Float(x));
+    for (x, want) in [
+        (1.0 / 3.0, "0.333333"),
+        (2.0 / 3.0, "0.666667"),
+        (-1.0 / 3.0, "-0.333333"),
+        (123_456.789, "123457"),
+        (1_234_567.0, "1.23457e+06"),
+        (999_999.5, "1e+06"),
+        (100_000.0, "100000"),
+        (1e16, "1e+16"),
+        (1e20, "1e+20"),
+        (1e-7, "1e-07"),
+        (0.0001234, "0.0001234"),
+        (0.1, "0.1"),
+        (1.0, "1"),
+        (-0.0, "0"),
+    ] {
+        assert_eq!(cat(x), want, "{x}");
+    }
 }

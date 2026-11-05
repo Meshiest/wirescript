@@ -1951,6 +1951,8 @@ fn a_setting_diagnostic_names_the_setting_and_the_value_as_written() {
             file: "main",
             module_name: None,
             fold_mode: crate::FoldMode::Auto,
+            test_entry: None,
+            test_build: false,
         }) {
             Ok(out) => out.diagnostics,
             Err(crate::CompileError::HasErrors(errors)) => errors,

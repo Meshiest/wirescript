@@ -1627,3 +1627,33 @@ fn a_replacing_completion_is_a_text_edit_in_utf16_columns() {
     );
     assert_eq!(edit.new_text, "$./abc.brz");
 }
+
+const TINY_WSIR: &str = "; wsir 1
+module @\"t\" {
+  %x = Var { InitialValue = 0 } : () -> (Value: int, VarRef: *int)
+  %2 = Expr_MathAdd(InputA: %x.Value, InputB: 1) : (InputA: int, InputB: int) -> (Output: int)
+}
+";
+
+#[test]
+fn a_wsir_file_assembles_to_the_save_the_cli_writes() {
+    let WsirOutcome::Saved(brz) = assemble_wsir_text(TINY_WSIR, "t.wsir") else {
+        panic!("expected a save");
+    };
+    let program = wirescript::wsir::parse_program(TINY_WSIR, "t.wsir").unwrap();
+    let opts = wirescript::assemble_options("t.wsir", wirescript::FoldMode::Auto);
+    let cli = wirescript::assemble(&program, &opts).unwrap().world.to_brz_vec().unwrap();
+    assert_eq!(brz, cli);
+}
+
+#[test]
+fn a_wsir_parse_error_is_a_located_diagnostic() {
+    let bad = TINY_WSIR.replace("(InputA: %x", "(InputQ: %x");
+    let WsirOutcome::Diagnostics(items) = assemble_wsir_text(&bad, "t.wsir") else {
+        panic!("expected diagnostics");
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["startLine"], 3);
+    assert_eq!(items[0]["startChar"], 20);
+    assert!(items[0]["message"].as_str().unwrap().contains("InputQ"));
+}

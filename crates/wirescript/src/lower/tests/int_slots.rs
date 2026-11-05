@@ -636,6 +636,8 @@ fn diagnostic_lines(src: &str, deps: &[(&str, &str)]) -> Vec<String> {
         file: "main",
         module_name: None,
         fold_mode: crate::FoldMode::ForceOn,
+        test_entry: None,
+        test_build: false,
     };
     let diags =
         match crate::compile_with_loader(input, crate::emit::EmitOptions::default(), &loader) {

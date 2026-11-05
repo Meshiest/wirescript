@@ -817,6 +817,7 @@ fn chip_children<'a>(c: &'a ChipDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
         no_fold: _,
         is_const: _,
         is_fn: _,
+        is_test: _,
     } = c;
     opt(label_expr.as_ref(), Flow::Seq, f);
     opt(color_expr.as_ref(), Flow::Seq, f);

@@ -1,0 +1,9 @@
+alice spawned, body 1
+alice took 25 from 'bob', now 25
+alice took 10 from '', now 35
+alice fired 'Pistol' from X=0.000 Y=0.000 Z=100.000 toward X=0.000 Y=0.000 Z=-1.000
+bob fired '' from X=0.000 Y=0.000 Z=0.000 toward X=1.000 Y=0.000 Z=0.000
+alice died to 'bob'
+alice spawned, body 2
+damage 0
+bob died to ''

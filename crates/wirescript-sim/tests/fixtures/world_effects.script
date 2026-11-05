@@ -1,0 +1,7 @@
+0 move alice 5 6 7
+0 sweep 250
+0 miss
+2 join alice
+3 chat alice /boom
+4 chat alice /look
+5 chat alice /look

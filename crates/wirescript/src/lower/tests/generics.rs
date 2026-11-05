@@ -2333,6 +2333,8 @@ fn an_alias_of_a_generic_instantiation_is_its_instantiation() {
             file: "main",
             module_name: None,
             fold_mode,
+            test_entry: None,
+            test_build: false,
         };
         let loader = crate::resolve::MemLoader {
             files: HashMap::default(),
@@ -2347,6 +2349,8 @@ fn an_alias_of_a_generic_instantiation_is_its_instantiation() {
             file: "main",
             module_name: None,
             fold_mode: FoldMode::default(),
+            test_entry: None,
+            test_build: false,
         };
         match crate::compile(input) {
             Err(crate::CompileError::HasErrors(errors)) => errors
@@ -2462,6 +2466,8 @@ fn a_library_alias_of_a_generic_instantiation_imports() {
             file: "main",
             module_name: None,
             fold_mode,
+            test_entry: None,
+            test_build: false,
         };
         let loader = crate::resolve::MemLoader {
             files: [("lib.ws".to_string(), lib.to_string())]
@@ -2901,6 +2907,8 @@ fn the_unbounded_parameter_hint_names_the_one_the_receiver_comes_from() {
         file: "main",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
+        test_entry: None,
+        test_build: false,
     });
     let Err(crate::CompileError::HasErrors(errors)) = result else {
         panic!("compiles")
@@ -2925,6 +2933,8 @@ fn the_unbounded_parameter_hint_names_the_one_the_receiver_comes_from() {
         file: "main",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
+        test_entry: None,
+        test_build: false,
     });
     let Err(crate::CompileError::HasErrors(errors)) = result else {
         panic!("compiles")

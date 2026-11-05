@@ -6,6 +6,7 @@ use wirescript::{
 };
 
 mod analysis;
+mod sim;
 
 pub(crate) fn make_loader(files_json: &str) -> MemLoader {
     let files: wirescript::collections::HashMap<String, String> =
@@ -132,6 +133,104 @@ pub fn wirescript_workspace_symbols(files_json: String) -> String {
 )]
 pub fn wirescript_inlay_hints(source: String, files_json: Option<String>) -> String {
     analysis::inlay_hints(&source, files_json.as_deref().unwrap_or("{}"))
+}
+
+// ---------- gate simulator ----------
+
+/// Run `source` in the gate simulator for `ticks` ticks of `dt` seconds and
+/// return JSON `{ lines: [{ tick, text }], error }`. `test_entry` names a
+/// `@test` to call on load; `script` is a world script (players, chat
+/// commands). Handlers run in the order the save fixes; `seed` shuffles that
+/// order, as `wirescript test --race` does.
+#[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    clippy::too_many_arguments,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
+pub fn wirescript_simulate(
+    source: String,
+    module_name: Option<String>,
+    files_json: Option<String>,
+    prefabs_json: Option<String>,
+    ticks: u32,
+    dt: f64,
+    seed: Option<u32>,
+    test_entry: Option<String>,
+    script: Option<String>,
+) -> String {
+    let file = module_name.as_deref().unwrap_or("inline");
+    let files_json = files_json.unwrap_or_else(|| "{}".into());
+    let emit = sim_emit_options(file, &files_json, prefabs_json.as_deref());
+    let report = sim::simulate(
+        &source,
+        file,
+        &files_json,
+        emit,
+        &sim::SimRequest {
+            ticks: u64::from(ticks),
+            dt,
+            seed: seed.map(u64::from),
+            test_entry: test_entry.as_deref(),
+            script: script.as_deref(),
+        },
+    );
+    serde_json::to_string(&report).unwrap_or_else(|e| format!("{{\"lines\":[],\"error\":\"{e}\"}}"))
+}
+
+/// The `@test` declarations of `source` as JSON
+/// `[{ name, kind, startLine, startCol, endLine, endCol }]`: lines 0-based,
+/// columns the editor's, `kind` one of `fn`, `mod`, `chip`.
+#[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
+pub fn wirescript_list_tests(source: String, module_name: Option<String>) -> String {
+    let file = module_name.as_deref().unwrap_or("inline");
+    serde_json::to_string(&sim::list_tests(&source, file)).unwrap_or_else(|_| "[]".into())
+}
+
+/// Run `@test` `name` the way `wirescript test` does (called once on load,
+/// ten seconds of ticks) and return JSON `{ name, passed, problems, lines:
+/// [{ tick, text }] }`. It fails on a `FAIL` chat line, an error, or never
+/// reaching its end; `problems` says which.
+#[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a wasm_bindgen export keeps its JS-facing signature"
+)]
+pub fn wirescript_run_test(
+    source: String,
+    module_name: Option<String>,
+    files_json: Option<String>,
+    prefabs_json: Option<String>,
+    name: String,
+) -> String {
+    let file = module_name.as_deref().unwrap_or("inline");
+    let files_json = files_json.unwrap_or_else(|| "{}".into());
+    let emit = sim_emit_options(file, &files_json, prefabs_json.as_deref());
+    let report = sim::run_test(&source, file, &files_json, &emit, &name);
+    serde_json::to_string(&report).unwrap_or_else(|e| {
+        serde_json::json!({ "name": name, "passed": false, "problems": [e.to_string()], "lines": [] })
+            .to_string()
+    })
+}
+
+/// The emit options a simulated compile of `file` uses: the dragged-in
+/// prefabs, and nested blocks compiled against the same files.
+fn sim_emit_options(file: &str, files_json: &str, prefabs_json: Option<&str>) -> EmitOptions {
+    let registry = parse_prefab_registry(prefabs_json.unwrap_or("{}"));
+    EmitOptions {
+        prefab_resolver: Some(registry_prefab_resolver(registry.clone())),
+        nested_compiler: Some(wasm_nested_compiler(
+            file.to_string(),
+            files_json.to_string(),
+            registry,
+            1,
+        )),
+        ..Default::default()
+    }
 }
 
 // ---------- wirescript compile ----------

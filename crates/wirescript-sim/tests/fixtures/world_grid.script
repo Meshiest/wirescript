@@ -1,0 +1,5 @@
+0 player alice user alice
+2 join alice
+3 interact alice
+4 interact alice held
+5 target alice 12.5 Bow

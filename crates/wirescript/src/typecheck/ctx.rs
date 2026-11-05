@@ -175,7 +175,10 @@ impl Scope {
     }
     /// Declare in the top-most frame. Returns the prior info if any.
     pub(crate) fn declare(&mut self, name: &str, info: SymbolInfo) -> Option<SymbolInfo> {
-        if name.starts_with("__") && !info.decl_range.file.is_empty() {
+        if name.starts_with("__")
+            && !info.decl_range.file.is_empty()
+            && !crate::testing::is_testing_name(name)
+        {
             self.reserved
                 .push((name.to_string(), info.decl_range.clone()));
         }
@@ -1276,7 +1279,7 @@ impl<'a> TypeCheckCtx<'a> {
 
     /// Note a user-written name, reported as WS093 when it starts with `__`.
     pub(super) fn reserve_check(&mut self, name: &str, range: &SourceRange) {
-        if name.starts_with("__") {
+        if name.starts_with("__") && !crate::testing::is_testing_name(name) {
             self.scope.reserved.push((name.to_string(), range.clone()));
         }
     }

@@ -924,8 +924,7 @@ fn a_local_named_like_a_constant_keeps_its_own_value() {
 }
 
 /// An integer constant expression whose operation the certified fold table
-/// has no result for (an overflow, a division of mixed signs with a
-/// remainder) is not baked into a `float` slot: its gate stays, holding the
+/// has no result for (an overflow) is not baked into a `float` slot: its gate stays, holding the
 /// operands. A division by zero is 0, as the gate gives.
 #[test]
 fn an_integer_expression_without_a_certified_result_keeps_its_gate() {
@@ -961,11 +960,6 @@ fn an_integer_expression_without_a_certified_result_keeps_its_gate() {
             "on go { x = half(-(BIG + 1)) }",
             wrapped,
             Literal::Int(i64::MAX),
-        ),
-        (
-            "on go { x = half(M7 / 2) }",
-            |l| matches!(l, Literal::Float(f) if *f == -3.0 || *f == -1.5),
-            Literal::Int(-7),
         ),
     ] {
         let src = format!("{head}{body}");

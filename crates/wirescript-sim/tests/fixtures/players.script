@@ -1,0 +1,14 @@
+# alice is named; bob takes the defaults.
+0 player alice name Alice Smith
+0 player alice user alice
+0 player alice id 00000000-0000-4000-8000-000000000001
+0 move alice 10 20 30
+3 join alice
+4 join bob
+6 chat alice /where
+8 move bob -5 0 0
+9 chat bob /where
+10 input alice Forward 0.5
+10 input alice E 1
+11 chat alice /keys
+11 chat bob /keys

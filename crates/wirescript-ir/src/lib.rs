@@ -16,6 +16,7 @@ pub mod ir;
 pub mod layout;
 #[cfg(feature = "test-internals")]
 pub mod readback;
+pub mod semantics;
 pub mod wsir;
 
 pub use diagnostic::{Diagnostic, Pos, Severity, SourceRange};
@@ -23,7 +24,7 @@ pub use diagnostic::{Diagnostic, Pos, Severity, SourceRange};
 pub use emit::emit_brdb;
 pub use emit::{
     Assembly, EmitError, EmitOptions, NestedCompiler, Placement, PrefabResolver, assemble,
-    assemble_with_phases, build_world, emit_brz,
+    assemble_with_phases, build_world, build_world_traced, emit_brz,
 };
 pub use ir::{
     BuildError, GateIO, LayoutMode, Literal, Module, ModuleRef, Node, NodeId, NodeKind, PortRef,

@@ -1,0 +1,15 @@
+# alice takes 150 damage before she dies; bob takes the default 100.
+0 player alice damagelimit 150
+0 move alice 1 2 3
+0 aim alice 0 1 0
+2 join alice
+3 join bob
+4 chat alice /hurt
+5 chat bob /hurt
+6 chat alice /ammo
+7 chat alice /inv
+8 slot alice 3
+9 chat alice /inv
+10 chat alice /aim
+11 chat bob /aim
+12 chat alice /hint

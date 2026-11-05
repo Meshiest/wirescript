@@ -51,6 +51,7 @@ const HAND = {
     layout: 'statements.md#layoutcode-source-shaped-gate-layout',
     flat: 'statements.md#flat-inline-every-chip',
     sliced: 'statements.md#sliced-loops-sliced',
+    test: 'statements.md#tests-test',
   },
   types: {
     bool: PRIMITIVE,
@@ -81,6 +82,7 @@ const HAND = {
     assets: 'expressions.md#asset-references',
     prefabs: 'expressions.md#prefab-references',
     environment: 'environment.md#reading-and-writing',
+    testing: 'testing.md#assertions',
   },
 };
 

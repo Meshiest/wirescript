@@ -251,6 +251,8 @@ fn an_enum_returned_from_a_branch_of_a_pure_call_is_ws007() {
         file: "t.ws",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
+        test_entry: None,
+        test_build: false,
     };
     match crate::compile(input) {
         Err(crate::CompileError::HasErrors(ds)) => {
@@ -340,6 +342,8 @@ fn remap_takes_lowercase_easing_settings() {
         file: "t.ws",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
+        test_entry: None,
+        test_build: false,
     };
     match crate::compile_to_world(input, crate::emit::EmitOptions::default()) {
         Err(crate::CompileError::HasErrors(ds)) => {

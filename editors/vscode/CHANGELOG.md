@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- A Run test lens above each `@test` runs it in the gate simulator and shows whether it passed; what it printed goes to the Wirescript output channel.
+- `.wsir` files get their own icon, and Compile and Copy (`Ctrl+Shift+B`)
+  assembles them into a `.brz` the same way it compiles a `.ws`.
+
 ## 0.1.7
 
 - Wirescript 2.3.1: compiler fixes (enum discriminants in hex, binary and octal,

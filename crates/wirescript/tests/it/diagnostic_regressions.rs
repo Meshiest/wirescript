@@ -154,6 +154,18 @@ diag_case!(emit_no_value_in_exec_works:
 diag_case!(awaiting_a_value_from_a_valueless_signal_is_ws056:
     "let sig: exec\nstatic var captured: int = 0\non start { emit sig }\non go {\n  let v = await sig\n  captured = v\n}\nin start: exec\nin go: exec\n" => has "WS056");
 
+// --- An `await` above the `emit` that sends its payload reads it; source
+//     order does not matter, from a handler, a mod or a fn, scalar or record.
+diag_case!(awaiting_a_payload_emitted_further_down_is_clean:
+    "let got: exec\nin a: exec\nin b: exec\nvar o: int = 0\non a {\n  let v = await got\n  o = v\n}\non b {\n  emit got = 5\n}\n",
+    "let got: exec\nin a: exec\nin b: exec\nvar o: int = 0\non a {\n  let v = await got\n  o = v\n}\nmod m() {\n  emit got = 5\n}\non b {\n  m()\n}\n",
+    "let got: exec\nin a: exec\nin b: exec\nvar o: int = 0\non a {\n  let v = await got\n  o = v\n}\nfn f() -> int {\n  emit got = 5\n  return 0\n}\non b {\n  let z = f()\n}\n",
+    "let got: exec\nin a: exec\nin b: exec\nvar o: int = 0\non a {\n  let { x, y } = await got\n  o = x + y\n}\non b {\n  emit got = { x: 1, y: 2 }\n}\n" => lacks "WS056");
+
+// --- A payload emitted to another signal of the same name is still WS056.
+diag_case!(awaiting_a_payload_only_a_shadowing_signal_sends_is_ws056:
+    "in a: exec\nin b: exec\nvar o: int = 0\non a {\n  let got: exec\n  let v = await got\n  o = v\n}\non b {\n  let got: exec\n  emit got = 5\n}\n" => has "WS056");
+
 // --- A tuple `return` to a mod with named multi-outputs distributes each
 //     element to the matching output, so `let (a, b) = f()` reads real values.
 diag_case!(tuple_return_named_outputs_no_placeholder:

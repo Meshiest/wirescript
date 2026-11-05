@@ -10,9 +10,10 @@
 //!
 //! Nothing but a call's definition wire crosses the plane's wall. A body that
 //! reads or writes outer storage draws a wire from that storage into the
-//! plane; `capture_through_handles` turns each such wire into a handle var
-//! inside the plane, which emit bakes with a reference to the storage. A call
-//! to a `fn` inside a plane (itself included) keeps its wire from the shell.
+//! plane; `capture_through_inputs` turns each such wire into a hidden
+//! parameter: a `FunctionInput` in the next free slot, which every call feeds
+//! with the storage's ref. A call to a `fn` inside a plane (itself included)
+//! keeps its wire from the shell.
 
 use super::*;
 use crate::ast::{CallArg, ChipDecl, Expr};
@@ -204,7 +205,7 @@ pub(super) fn lower_fn_call(
             ctx.connect(*src, call.port(input_pin(slot_pin(s))));
         }
     }
-    // The body may have written any storage it reaches through a handle.
+    // The body may have written any outer storage it reaches.
     reset_var_get_caches(ctx);
 
     // An explicit trigger's chain does not continue the caller's: the call
@@ -466,6 +467,8 @@ fn build_plane(ctx: &mut LowerCtx<'_>, decl: &ChipDecl) -> FnPlane {
             ctx.connect(src, out.port(WirePort::Value));
         }
     }
+    ctx.fn_plane_slots
+        .insert(shell, (entry, decl.outputs.len()));
     ctx.pop_scope();
     ctx.fn_building.pop();
 
@@ -477,11 +480,9 @@ fn build_plane(ctx: &mut LowerCtx<'_>, decl: &ChipDecl) -> FnPlane {
     plane
 }
 
-/// Where a handle var points, set on the handle by [`capture_through_handles`]
-/// and baked by emit once bricks have their addresses: the id of the storage
-/// gate or `fn` shell it names. `MICROCHIP_BRICK` marks the var
-/// `GetMicrochipBrick()` lowers to.
-pub(crate) use crate::ir::{HANDLE_TARGET, MICROCHIP_BRICK};
+/// Marks the var `GetMicrochipBrick()` lowers to, whose brick reference emit
+/// bakes once bricks have their addresses.
+pub(crate) use crate::ir::MICROCHIP_BRICK;
 
 type ModPath = Vec<NodeId>;
 
@@ -501,15 +502,143 @@ pub(crate) fn is_definition_wire(src: &Node, w: &Wire) -> bool {
     src.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION && w.source.port == WirePort::Definition
 }
 
-/// Every wire with exactly one end inside a `fn` plane becomes a handle: a
-/// wire from outer storage (its `VarRef`/`ArrayVarRef`/`MapVarRef`) is rewired
-/// from a var inside the plane whose value emit bakes with a reference to that
-/// storage. A call's definition wire (see [`is_definition_wire`]) stays. Any
-/// other such wire cannot exist in game, and is WS113.
+/// Outer storage a `fn` body reaches, passed in as hidden parameters.
+struct Captures<'a> {
+    owner: &'a HashMap<NodeId, ModPath>,
+    planes: &'a [ModPath],
+    /// Each `fn` shell's calls: the Function Calls its `Definition` wires to.
+    calls: HashMap<NodeId, Vec<NodeId>>,
+    next_slot: HashMap<ModPath, usize>,
+    inputs: HashMap<(ModPath, PortRef), Option<PortRef>>,
+    added: Vec<(ModPath, Wire)>,
+}
+
+impl Captures<'_> {
+    /// A node's plane: of the planes its module path starts with, the
+    /// outermost.
+    fn plane_of(&self, id: NodeId) -> Option<ModPath> {
+        let p = self.owner.get(&id)?;
+        self.planes
+            .iter()
+            .filter(|plane| p.starts_with(plane))
+            .min_by_key(|plane| plane.len())
+            .cloned()
+    }
+
+    /// The port inside `plane` that carries `storage`'s ref: a hidden
+    /// `FunctionInput` in the plane's next free slot, fed at every call from
+    /// the storage, or from the caller's own hidden input when the call is in
+    /// another plane. `None` once the plane has no slot left (WS115).
+    fn input(
+        &mut self,
+        root: &mut Module,
+        plane: &ModPath,
+        storage: PortRef,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<PortRef> {
+        let key = (plane.clone(), storage);
+        if let Some(p) = self.inputs.get(&key) {
+            return *p;
+        }
+        let shell_id = *plane.last().expect("a plane path ends at its shell");
+        let shell = root.at(&plane[..plane.len() - 1]).nodes[&shell_id].clone();
+        let src = root.at(&self.owner[&storage.node_id]).nodes[&storage.node_id].clone();
+        let name = node_name(&src).unwrap_or_default();
+        let slot = *self.next_slot.entry(plane.clone()).or_insert_with(|| {
+            root.at(plane)
+                .nodes
+                .values()
+                .filter(|n| n.gate_class == gc::FUNCTION_INPUT)
+                .count()
+        });
+        if slot >= MAX_SLOTS {
+            diagnostics.push(Diagnostic::error(
+                "WS115",
+                format!(
+                    "`fn {}` reaches outer `{name}`, which takes one of its input slots, and all \
+                     {MAX_SLOTS} are taken. Pass fewer parameters, or reach less outer storage from \
+                     this `fn`",
+                    node_name(&shell).unwrap_or_default()
+                ),
+                shell.source_range,
+            ));
+            self.inputs.insert(key, None);
+            return None;
+        }
+        self.next_slot.insert(plane.clone(), slot + 1);
+        let label = format!("&{name}");
+        let mut props = HashMap::default();
+        props.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
+        props.insert(*sym::PORT_LABEL, Literal::String(label));
+        props.insert(*sym::PORT_ORDER, Literal::Int(slot_pin(slot) as i64));
+        let id = NodeId::fresh();
+        let node = Node {
+            source_range: shell.source_range,
+            ..Node::new(
+                id,
+                NodeKind::Gate,
+                gc::FUNCTION_INPUT,
+                GateIO {
+                    inputs: vec![],
+                    outputs: vec![PortSpec::new(
+                        *sym::VALUE,
+                        src.output_type(storage.port).unwrap_or(Type::Any),
+                    )],
+                },
+                props,
+                None,
+                Some("fn capture"),
+            )
+        };
+        root.at_mut(plane).nodes.insert(id, node);
+        let port = PortRef {
+            node_id: id,
+            port: WirePort::Value,
+        };
+        self.inputs.insert(key, Some(port));
+        let pin = slot_pin(slot);
+        for call in self.calls.get(&shell_id).cloned().unwrap_or_default() {
+            let feed = match self.plane_of(call) {
+                Some(outer) => match self.input(root, &outer, storage, diagnostics) {
+                    Some(p) => p,
+                    None => continue,
+                },
+                None => storage,
+            };
+            let at = self.owner[&call].clone();
+            if let Some(Literal::Array(given)) =
+                root.at_mut(&at).nodes.get_mut(&call).and_then(|n| {
+                    std::sync::Arc::make_mut(&mut n.properties).get_mut(&*sym::INPUT_SOURCES)
+                })
+                && let Some(g) = given.get_mut(pin)
+            {
+                *g = Literal::Int(1);
+            }
+            self.added.push((
+                at,
+                Wire {
+                    source: feed,
+                    target: PortRef {
+                        node_id: call,
+                        port: input_pin(pin),
+                    },
+                },
+            ));
+        }
+        Some(port)
+    }
+}
+
+/// Every wire with exactly one end inside a `fn` plane is captured: a wire
+/// from outer storage (its `VarRef`/`ArrayVarRef`/`MapVarRef`) is rewired
+/// from a hidden `FunctionInput` that each call feeds with that ref (see
+/// [`Captures::input`]). A call's definition wire (see
+/// [`is_definition_wire`]) stays. Any other such wire cannot exist in game,
+/// and is WS113.
 ///
 /// Runs after partition, before boundary pins, so no pin is ever made on a
 /// function plane's wall.
-pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<Diagnostic>) {
+pub(crate) fn capture_through_inputs(root: &mut Module, diagnostics: &mut Vec<Diagnostic>) {
     let mut owner: HashMap<NodeId, ModPath> = HashMap::default();
     let mut planes: Vec<ModPath> = Vec::new();
     // Every node's module path, and the path of every `fn` plane.
@@ -555,7 +684,6 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<D
                 .map(|(i, w)| (path.to_vec(), i, *w)),
         );
     });
-    let mut handles: HashMap<(ModPath, PortRef), NodeId> = HashMap::default();
     let mut copies: HashMap<(ModPath, NodeId), NodeId> = HashMap::default();
     let fed: HashSet<NodeId> = all
         .iter()
@@ -563,7 +691,23 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<D
         .map(|(_, _, w)| w.target.node_id)
         .collect();
     let mut removed: HashMap<ModPath, Vec<usize>> = HashMap::default();
-    let mut added: Vec<(ModPath, Wire)> = Vec::new();
+    let mut caps = Captures {
+        owner: &owner,
+        planes: &planes,
+        calls: HashMap::default(),
+        next_slot: HashMap::default(),
+        inputs: HashMap::default(),
+        added: Vec::new(),
+    };
+    for (_, _, w) in &all {
+        let src = &root.at(&owner[&w.source.node_id]).nodes[&w.source.node_id];
+        if is_definition_wire(src, w) {
+            caps.calls
+                .entry(w.source.node_id)
+                .or_default()
+                .push(w.target.node_id);
+        }
+    }
     for (holder, at, w) in all {
         if w.source.port == WirePort::Layout || w.target.port == WirePort::Layout {
             continue;
@@ -597,7 +741,7 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<D
                 id
             });
             removed.entry(holder).or_default().push(at);
-            added.push((
+            caps.added.push((
                 plane,
                 Wire {
                     source: PortRef {
@@ -640,47 +784,19 @@ pub(crate) fn capture_through_handles(root: &mut Module, diagnostics: &mut Vec<D
             diagnostics.push(Diagnostic::error("WS113", message, range));
             continue;
         };
-        let key = (plane.clone(), w.source);
-        let handle = match handles.get(&key) {
-            Some(h) => *h,
-            None => {
-                let ty = src.output_type(w.source.port).unwrap_or(Type::Any);
-                let id = NodeId::fresh();
-                let mut props = HashMap::default();
-                props.insert(
-                    *sym::NAME_LABEL,
-                    Literal::String(format!("&{}", node_name(&src).unwrap_or_default())),
-                );
-                props.insert(intern(HANDLE_TARGET), Literal::Int(i64::from(src.id.0)));
-                let node = Node {
-                    source_range: tgt.source_range.clone(),
-                    ..Node::new(
-                        id,
-                        NodeKind::Gate,
-                        gc::VAR,
-                        GateIO::var_storage(ty),
-                        props,
-                        None,
-                        Some("fn handle"),
-                    )
-                };
-                root.at_mut(&plane).nodes.insert(id, node);
-                handles.insert(key, id);
-                id
-            }
+        let Some(input) = caps.input(root, &plane, w.source, diagnostics) else {
+            continue;
         };
         removed.entry(holder).or_default().push(at);
-        added.push((
+        caps.added.push((
             plane,
             Wire {
-                source: PortRef {
-                    node_id: handle,
-                    port: WirePort::Value,
-                },
+                source: input,
                 target: w.target,
             },
         ));
     }
+    let added = std::mem::take(&mut caps.added);
     for (path, at) in removed {
         let at: HashSet<usize> = at.into_iter().collect();
         let m = root.at_mut(&path);

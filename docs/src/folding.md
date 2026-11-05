@@ -122,12 +122,12 @@ let n = "  42  ".Trim().Length()     // folds to the literal 2
 Interpolation folding is held to a **render-exactness guarantee**: the folded literal
 text must be byte-identical to what `FormatText` would print in-game for the same
 values, not just numerically equivalent. The certified render law is as follows. Ints
-comma-group every 3 digits from `1,000` up. Floats round to 3 decimals (ties to even),
-comma-group their integer part, and trim trailing fractional zeros (and a bare trailing
-`.`). Bools print `1`/`0`. Vectors print `X=%.3f Y=%.3f Z=%.3f`. `..` concatenation's
-own operand stringification differs on one point: a bool operand prints `true`/`false`,
-not `1`/`0`, matching the game's generic to-string conversion there instead of
-`FormatText`'s.
+print their digits with no grouping (`1000`). Floats round to 3 decimals, with the value
+times 1000 rounded half to even in double arithmetic (so `0.0625` prints `0.062` and
+`0.0005` prints `0`), and trim trailing fractional zeros (and a bare trailing `.`).
+Bools print `true`/`false`. Vectors print `X=%.3f Y=%.3f Z=%.3f`. `..` concatenation
+prints a float operand differently: as C's `%g`, 6 significant digits, so `1.0 / 3.0`
+is `0.333333` and `1e20` is `1e+20`.
 
 **Vector/rotation/color/quaternion math.** `Vec(...)` construction, component-wise and
 scalar-broadcast `+ - * /` on vectors, `.Scale()`/`.Dot()`/`.Cross()`, and `Quat(...)`
@@ -137,17 +137,20 @@ construction all fold when every component is known.
 let v = Vec(1.0, 2.0, 0.0) + Vec(0.0, 0.0, 3.0) * 2.0   // folds to Vec(1.0, 2.0, 6.0)
 ```
 
-`Quat(...)` and the 3-argument (RGB, no alpha) form of `Color(...)` fold too, but their
+`Quat(...)`, `Color(...)` and `ColorSRGB(...)` fold too, but their
 own certification is **transitive**, not direct: a quaternion or an RGB color never
 renders through `FormatText` (its probe case prints blank), so nothing directly proves
 the constructor packs its fields correctly. Instead, each is certified through a
 *different*, value-bearing gate that consumes it and produces an observable result:
 `RotateVector` and a quaternion dot product for `Quat(...)`, hex-string conversion for
-3-argument `Color(...)`. A wrong field order or a transposed component would visibly
-diverge those gates' certified outputs, so their exact replay certifies the constructor
-by proxy. The 4-argument (alpha-carrying) form of `Color(...)` has no such transitive
-proof (alpha never survives into any value-bearing consumer the probe covers) and
-does not fold.
+`Color(...)` and `ColorSRGB(...)`. A wrong field order or a transposed component would
+visibly diverge those gates' certified outputs, so their exact replay certifies the
+constructor by proxy. Hex-string conversion writes a fourth byte for an alpha below 1
+(`ColorSRGB(10, 245, 10, 245).ToHex()` is `0AF50AF5`), which is how the alpha and
+every sRGB byte from 0 to 255 were measured.
+
+`!(a && b)` and `!(a || b)` (one NAND or NOR gate) fold over bool and int operands,
+and `-x` on an int folds to an int.
 
 **Refusals specific to this family:**
 
@@ -160,9 +163,9 @@ does not fold.
   silently dropped), so folding refuses past that bound rather than bake unreproducible
   text. `1e15` itself is certified to print fine. The bound is exclusive.
 - A handful of composite-constructor gates whose *only* table evidence is a blank
-  render and that have no transitive proof either (unlike `Quat(...)`/3-argument
-  `Color(...)` above): a bare rotator constructor, the sRGB-byte and hex-string color
-  constructors, and rotation inversion. These always refuse, however constant their
+  render and that have no transitive proof either (unlike `Quat(...)` and `Color(...)`
+  above): a bare rotator constructor, the hex-string color constructor, and rotation
+  inversion. These always refuse, however constant their
   inputs are, until a future probe wave chains them through a value-bearing gate.
 - A fixed list of gates the probe recorded but that are excluded from folding: vector
   magnitude/normalize/distance, spherical interpolation, axis-angle construction,
@@ -186,14 +189,14 @@ These are always treated as unknown, and folding never elides or sees through th
   the table means permanently unknown, never folded.
 - Certified signatures whose specific values the evaluator declines to compute, as a
   safety net layered on top of coverage: math involving a `string` operand (the
-  recorded observations rule out every parsing model), integer overflow, mixed-sign
-  division/modulo with a nonzero remainder (truncation direction was never probed),
+  recorded observations rule out every parsing model), integer overflow, a float
+  modulo of mixed signs with a nonzero remainder (only the integer one was probed),
   and any result that would be non-finite. These are refused rather than guessed at,
   even when every input is constant.
 
 ## The certification story
 
-Every fold decision traces back to `data/gate_semantics.json`, a table built by
+Every fold decision traces back to `crates/wirescript-ir/data/gate_semantics.json`, a table built by
 probing each gate combination in-game and recording its real output. Two things hold
 the compiler to that table:
 

@@ -21,8 +21,10 @@ pub mod resolve;
 pub(crate) mod scope;
 pub(crate) mod template;
 pub(crate) mod template_cache;
+pub mod test_entry;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod testing;
 pub(crate) mod typecheck;
 pub(crate) mod types;
 
@@ -34,9 +36,9 @@ pub use analyze::analyze_cycles;
 pub use compile::{
     CompileError, CompileInput, CompileProgress, CompileResult, CompileWorldResult, FoldMode,
     FrontEnd, FrontEndStage, ProgressCallback, assemble_options, compile, compile_to_world,
-    compile_with_loader, compile_with_opts, compile_with_progress, diagnostics_only,
-    disk_prefab_resolver, front_end, front_end_staged, on_big_stack, prepare_program_for_text,
-    program_settings,
+    compile_to_world_with_loader, compile_with_loader, compile_with_opts, compile_with_progress,
+    diagnostics_only, disk_prefab_resolver, front_end, front_end_staged, on_big_stack,
+    prepare_program_for_text, program_settings,
 };
 pub use diagnostic::{Diagnostic, Pos, Severity, SourceRange, Suppressions};
 #[cfg(feature = "brdb-full")]
@@ -58,6 +60,7 @@ pub use lower::{LowerInput, LowerResult, lower};
 pub use parser::{ParseResult, parse};
 pub use resolve::{FsLoader, MemLoader, ResolveResult, resolve};
 pub use template_cache::TemplateCache;
+pub use test_entry::{TEST_DONE, TestFn, TestKind, list_tests};
 pub use typecheck::enums::EnumRegistry;
 pub use typecheck::{CeSlotMap, TypeCheckResult, typecheck, typecheck_with_inference};
 

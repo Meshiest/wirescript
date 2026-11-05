@@ -1,0 +1,19 @@
+; wsir 1
+source_filename = "queue_ticks.ws"
+
+module @queue_ticks {
+  %1 = BufferTicks(Input: %3, TicksToWait: 1) : (Input: int, TicksToWait: int) -> (Output: int) !chain 0 loc(1:1 to 1:28+27)
+  %3 = Expr_MathAdd(InputA: %1, InputB: 1) : (InputA: int, InputB: int) -> (Output: int) !chain 0 loc(1:20+19 to 1:28+27)
+  %5 = Expr_CompareLessOrEqual(InputA: %1, InputB: 3) : (InputA: int, InputB: int) -> (bOutput: bool) !scope !3 !chain 1 loc(3:6+43 to 3:15+52)
+  %6 = Exec_Branch(Exec: %1, bCond: %5) : (Exec: exec, bCond: bool) -> (ExecOutA: exec, ExecOutB: exec) !scope !3 !chain 1 loc(3:3+40 to 5:4+98)
+  %7 = Expr_String_FormatText(InputA: %1) { FormatString = "rec {0}" } : (InputA: any) -> (Output: string) !scope !4 !chain 1 loc(4:26+80 to 4:39+93)
+  %8 = Exec_Gamemode_BroadcastChatMessage(Exec: %6.ExecOutA, Message: %7) : (Exec: exec, Message: any) -> (ExecOut: exec) !scope !4 !chain 1 !note "BroadcastChatMessage" loc(4:5+59 to 4:40+94)
+  %9 = QueueTicks(ExecIn: %8.ExecOut, DataIn1: %1, TicksToWait: 5) : (ExecIn: exec, DataIn1: any, TicksToWait: int) -> (DataOut1: any, ExecOut: exec) !scope !4 !chain 1 loc(4:5+59 to 4:40+94)
+  %10 = Expr_String_FormatText(InputA: %9.DataOut1) { FormatString = "out {0}" } : (InputA: any) -> (Output: string) loc(4:5+59 to 4:40+94)
+  %11 = Exec_Gamemode_BroadcastChatMessage(Exec: %9.ExecOut, Message: %10) : (Exec: exec, Message: any) -> (ExecOut: exec) loc(4:5+59 to 4:40+94)
+  !1 = !scope(HandlerBody "tick", parent: !0, loc(2:1+28 to 6:2+100))
+  !2 = !scope(IfGroup, parent: !1, loc(3:3+40 to 5:4+98))
+  !3 = !scope(IfCond, parent: !2, loc(3:6+43 to 3:15+52))
+  !4 = !scope(IfThen, parent: !2, loc(3:16+53 to 5:4+98))
+  !5 = !scope(IfElse, parent: !2, loc(3:3+40 to 5:4+98))
+}

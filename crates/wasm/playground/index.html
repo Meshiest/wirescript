@@ -767,6 +767,49 @@
     }
 
     /* ── Toast Notifications ── */
+    /* The simulator's chat: what a Run printed, tick by tick. */
+    #sim-panel {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      z-index: 150;
+      width: min(560px, calc(100vw - 32px));
+      max-height: 40vh;
+      display: flex;
+      flex-direction: column;
+      background: #252526;
+      border: 1px solid #3c3c3c;
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      font-size: 12px;
+      color: #d4d4d4;
+    }
+    #sim-panel[hidden] { display: none; }
+    #sim-panel-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border-bottom: 1px solid #3c3c3c;
+      color: #9d9d9d;
+    }
+    #sim-panel-header span { flex: 1; }
+    #sim-panel-body {
+      margin: 0;
+      padding: 6px 8px;
+      overflow: auto;
+      font-family: Consolas, 'Courier New', monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    #sim-panel-body .sim-tick { color: #6a9955; }
+    #sim-panel-body .sim-error { color: #f48771; }
+    #sim-panel-body .sim-pass { color: #89d185; font-weight: bold; }
+    #sim-panel-body .sim-fail { color: #f48771; font-weight: bold; }
+    /* A test that failed its last run, marked on its line in the editor. */
+    .wirescript-test-failed { background: rgba(244, 135, 113, 0.12); }
+    .wirescript-test-failed-gutter { background: #f48771; width: 3px !important; margin-left: 3px; }
+
     #toast-container {
       position: fixed;
       bottom: 16px;
@@ -843,6 +886,7 @@
   <div id="app">
     <div id="toolbar">
       <button id="btn-compile" class="primary" title="Compile to .brz (Ctrl+Shift+B)">Compile</button>
+      <button id="btn-run" title="Run in the gate simulator for 10 seconds of ticks and show the chat">Run</button>
       <button id="btn-format" title="Format code (Shift+Alt+F)">Format</button>
       <button id="btn-share" title="Copy shareable URL">Share</button>
       <div class="separator"></div>
@@ -906,6 +950,10 @@
     <div class="loading-error" id="loading-error" style="display:none"></div>
   </div>
 
+  <div id="sim-panel" hidden>
+    <div id="sim-panel-header"><span id="sim-panel-title">Simulator</span><button id="sim-panel-close" title="Close">×</button></div>
+    <pre id="sim-panel-body"></pre>
+  </div>
   <div id="toast-container"></div>
 
   <!-- marked for Markdown rendering -->
@@ -915,7 +963,7 @@
     // ── Imports ──
     import init from '../pkg/wasm.js';
     import * as wasm from '../pkg/wasm.js';
-    import { createEditor } from './editor.js';
+    import { createEditor, registerTests, testReportRows } from './editor.js';
     import * as files from './files.js';
     import * as prefabs from './prefabs.js';
     import * as share from './share.js';
@@ -923,6 +971,7 @@
 
     // ── State ──
     let editor = null;
+    let testsUi = null;
     let suppressSave = false;
     let monacoLib = null;
     let docsPanel = null;
@@ -1322,6 +1371,166 @@
       }
     }
 
+    // ── Run in the simulator ──
+    function activeModuleName() {
+      const active = files.getActiveFile() || 'output';
+      return active.replace(/\.[^.]+$/, '') || active;
+    }
+
+    // The active file's source and module name, and every other file.
+    function simInputs() {
+      saveCurrentFile();
+      const active = files.getActiveFile() || 'output';
+      const fileMap = {};
+      for (const name of files.listFiles()) {
+        if (name !== active) {
+          const content = files.readFile(name);
+          if (content !== null) fileMap[name] = content;
+        }
+      }
+      return { source: editor.getValue(), moduleName: activeModuleName(), filesJson: JSON.stringify(fileMap) };
+    }
+
+    function appendSimLine(body, tick, text, className) {
+      const t = document.createElement('span');
+      t.className = 'sim-tick';
+      t.textContent = (tick === undefined ? '' : String(tick)).padStart(4) + '  ';
+      const span = document.createElement('span');
+      if (className) span.className = className;
+      span.textContent = text;
+      body.append(t, span, '\n');
+    }
+
+    function run() {
+      const { source, moduleName, filesJson } = simInputs();
+      const panel = document.getElementById('sim-panel');
+      const body = document.getElementById('sim-panel-body');
+      body.textContent = '';
+      let report;
+      try {
+        report = JSON.parse(wasm.wirescript_simulate(source, moduleName, filesJson, prefabs.getPrefabsJson(), 600, 1 / 60));
+      } catch (e) {
+        report = { lines: [], error: String(e) };
+      }
+      for (const line of report.lines) {
+        appendSimLine(body, line.tick, line.text);
+      }
+      if (report.error) {
+        const err = document.createElement('span');
+        err.className = 'sim-error';
+        err.textContent = report.error;
+        body.append(err);
+      } else if (report.lines.length === 0) {
+        body.append('(nothing printed in 600 ticks)');
+      }
+      document.getElementById('sim-panel-title').textContent =
+        'Simulator: ' + moduleName + ', ' + report.lines.length + ' line' + (report.lines.length === 1 ? '' : 's');
+      panel.hidden = false;
+    }
+
+    // ── Run tests in the simulator ──
+    // Each `@test` runs on its own, as `wirescript test` runs it. With no
+    // names, every test of the active file runs.
+    function runTests(names) {
+      const { source, moduleName, filesJson } = simInputs();
+      if (!names) {
+        try {
+          names = JSON.parse(wasm.wirescript_list_tests(source, moduleName)).map(t => t.name);
+        } catch (e) {
+          names = [];
+        }
+      }
+      const panel = document.getElementById('sim-panel');
+      const body = document.getElementById('sim-panel-body');
+      const title = document.getElementById('sim-panel-title');
+      body.textContent = '';
+      if (names.length === 0) {
+        title.textContent = 'Tests: ' + moduleName;
+        body.append('(no @test in this file)');
+        panel.hidden = false;
+        return;
+      }
+      stopTests();
+      panel.hidden = false;
+      const reports = [];
+      const classes = { pass: 'sim-pass', fail: 'sim-fail', failLine: 'sim-error', problem: 'sim-error' };
+      const progress = () => {
+        title.textContent = 'Tests: ' + moduleName + ', ' + reports.length + ' of ' + names.length + ' run...';
+      };
+      // Each report shows as it arrives; the summary and editor marks follow
+      // the last one.
+      const add = (report) => {
+        reports.push(report);
+        for (const row of testReportRows([report])) {
+          if (row.kind === 'pass' || row.kind === 'fail') {
+            const head = document.createElement('span');
+            head.className = classes[row.kind];
+            head.textContent = row.text;
+            body.append(head, '\n');
+          } else {
+            appendSimLine(body, row.tick, row.text, classes[row.kind]);
+          }
+        }
+        progress();
+      };
+      const finish = () => {
+        testRun = null;
+        const failed = reports.filter(r => !r.passed).length;
+        title.textContent = 'Tests: ' + moduleName + ', ' + (reports.length - failed) + ' passed, ' + failed + ' failed';
+        testsUi.show(moduleName, reports);
+      };
+      progress();
+      const job = { source, moduleName, filesJson, prefabsJson: prefabs.getPrefabsJson(), names };
+      let worker = null;
+      try {
+        worker = new Worker(new URL('./test-worker.js', import.meta.url), { type: 'module' });
+      } catch (e) {
+        worker = null;
+      }
+      if (worker) {
+        testRun = { stop: () => worker.terminate() };
+        worker.onmessage = ({ data }) => {
+          if (data.report) add(data.report);
+          if (data.done) {
+            worker.terminate();
+            finish();
+          }
+        };
+        worker.onerror = (e) => {
+          worker.terminate();
+          for (const name of names.slice(reports.length)) {
+            add({ name, passed: false, problems: [String(e.message || e)], lines: [] });
+          }
+          finish();
+        };
+        worker.postMessage(job);
+        return;
+      }
+      // No worker: run here, one test per task, so the page repaints between
+      // tests.
+      let stopped = false;
+      testRun = { stop: () => { stopped = true; } };
+      const next = (i) => {
+        if (stopped) return;
+        if (i === names.length) return finish();
+        const name = names[i];
+        try {
+          add(JSON.parse(wasm.wirescript_run_test(source, moduleName, filesJson, job.prefabsJson, name)));
+        } catch (e) {
+          add({ name, passed: false, problems: [String(e)], lines: [] });
+        }
+        setTimeout(() => next(i + 1), 0);
+      };
+      requestAnimationFrame(() => setTimeout(() => next(0), 0));
+    }
+
+    // The test run in progress, if any: `stop()` abandons it.
+    let testRun = null;
+    function stopTests() {
+      if (testRun) testRun.stop();
+      testRun = null;
+    }
+
     // ── Format ──
     function format() {
       if (!editor) return;
@@ -1533,6 +1742,7 @@
           }
           return JSON.stringify(map);
         }, () => prefabs.getPrefabPathsJson());
+        testsUi = registerTests(monacoLib, editor, wasm, activeModuleName, runTests);
 
         // Load the active file into the editor
         loadActiveFile();
@@ -1556,6 +1766,12 @@
             monacoLib.KeyMod.CtrlCmd | monacoLib.KeyMod.Shift | monacoLib.KeyCode.KeyB,
           ],
           run: compile,
+        });
+
+        editor.addAction({
+          id: 'wirescript-run-tests',
+          label: 'Run All Tests',
+          run: () => runTests(null),
         });
 
         editor.addAction({
@@ -1590,6 +1806,11 @@
 
         // Toolbar buttons
         document.getElementById('btn-compile').addEventListener('click', compile);
+        document.getElementById('btn-run').addEventListener('click', run);
+        document.getElementById('sim-panel-close').addEventListener('click', () => {
+          stopTests();
+          document.getElementById('sim-panel').hidden = true;
+        });
         document.getElementById('btn-format').addEventListener('click', format);
         document.getElementById('btn-share').addEventListener('click', shareCode);
         document.getElementById('btn-docs-toggle').addEventListener('click', toggleDocs);

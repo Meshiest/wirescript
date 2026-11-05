@@ -1,0 +1,18 @@
+# alice starts on Red, bob on Blue, carol on no team.
+0 team Red alice
+0 team Blue bob
+0 player alice user alice
+0 player bob user bob
+0 player carol user carol
+2 join alice
+3 join bob
+4 join carol
+5 chat carol /teams
+7 jointeam alice Blue
+8 leaveteam bob
+9 chat alice /score
+10 round
+11 roundend
+12 round
+13 chat alice /win
+15 leave alice

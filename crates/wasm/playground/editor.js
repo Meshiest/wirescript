@@ -380,3 +380,131 @@ export function createEditor(container, wasm, monaco, getFilesJson, getPrefabsJs
 
   return editor;
 }
+
+// -- Tests --
+
+/**
+ * The code lenses for a file's tests: "Run all tests" above the first line,
+ * then "Run test" above each `@test`, its title carrying the last verdict.
+ *
+ * @param {{name: string, startLine: number}[]} tests - From `wirescript_list_tests`.
+ * @param {Map<string, boolean>} [passed] - Each test's last verdict, by name.
+ * @returns {{line: number, title: string, names: string[]}[]} Lines 0-based.
+ */
+export function testLenses(tests, passed = new Map()) {
+  if (tests.length === 0) return [];
+  const lenses = [{ line: 0, title: `Run all tests (${tests.length})`, names: tests.map(t => t.name) }];
+  for (const t of tests) {
+    const verdict = passed.get(t.name);
+    const title = verdict === undefined ? 'Run test' : verdict ? 'Run test (passed)' : 'Run test (failed)';
+    lenses.push({ line: t.startLine, title, names: [t.name] });
+  }
+  return lenses;
+}
+
+/**
+ * The simulator panel's rows for test verdicts: per test a PASS or FAIL row,
+ * its chat lines (a FAIL line marked as one), then any problem the chat did
+ * not show, such as an error or a test that never reached its end.
+ *
+ * @param {{name: string, passed: boolean, problems: string[], lines: {tick: number, text: string}[]}[]} reports
+ * @returns {{kind: 'pass'|'fail'|'line'|'failLine'|'problem', text: string, tick?: number}[]}
+ */
+export function testReportRows(reports) {
+  const rows = [];
+  for (const r of reports) {
+    rows.push({ kind: r.passed ? 'pass' : 'fail', text: (r.passed ? 'PASS ' : 'FAIL ') + r.name });
+    const printed = new Set(r.lines.map(l => l.text));
+    for (const l of r.lines) {
+      rows.push({ kind: /^\s*FAIL\b/m.test(l.text) ? 'failLine' : 'line', tick: l.tick, text: l.text });
+    }
+    for (const p of r.problems) {
+      if (!printed.has(p)) rows.push({ kind: 'problem', text: p });
+    }
+  }
+  return rows;
+}
+
+/**
+ * "Run test" lenses above each `@test` and a "Run all tests" lens at the top
+ * of a file that has tests; a test that failed its last run gets its line
+ * marked, with its problems on hover.
+ *
+ * @param {object} monaco - The Monaco editor module.
+ * @param {monaco.editor.IStandaloneCodeEditor} editor
+ * @param {object} wasm - The WASM module exports.
+ * @param {function} getModuleName - The active file's module name.
+ * @param {function} runTests - Called with the names of the tests to run.
+ * @returns {{show: function}} `show(moduleName, reports)` records verdicts.
+ */
+export function registerTests(monaco, editor, wasm, getModuleName, runTests) {
+  // Verdicts by module, then by test name.
+  const verdicts = new Map();
+  const changed = new monaco.Emitter();
+  const marks = editor.createDecorationsCollection();
+
+  // A test's range starts at its keyword; its lens goes above any
+  // annotation lines (`@test` on its own line) written over it.
+  const listTests = () => {
+    const model = editor.getModel();
+    try {
+      return JSON.parse(wasm.wirescript_list_tests(model.getValue(), getModuleName())).map(t => {
+        let line = t.startLine;
+        while (line > 0 && model.getLineContent(line).trimStart().startsWith('@')) line--;
+        return { ...t, startLine: line };
+      });
+    } catch (e) {
+      return [];
+    }
+  };
+  const handler = (_accessor, names) => runTests(names);
+  const commandId = monaco.editor.registerCommand
+    ? (monaco.editor.registerCommand('wirescript.runTests', handler), 'wirescript.runTests')
+    : editor.addCommand(0, handler, '');
+
+  function mark() {
+    const results = verdicts.get(getModuleName()) || new Map();
+    marks.set(listTests().flatMap(t => {
+      const r = results.get(t.name);
+      if (!r || r.passed) return [];
+      return [{
+        range: new monaco.Range(t.startLine + 1, 1, t.startLine + 1, 1),
+        options: {
+          isWholeLine: true,
+          className: 'wirescript-test-failed',
+          linesDecorationsClassName: 'wirescript-test-failed-gutter',
+          hoverMessage: { value: '**Test failed**\n\n```text\n' + r.problems.join('\n') + '\n```' },
+        },
+      }];
+    }));
+  }
+
+  monaco.languages.registerCodeLensProvider(LANGUAGE_ID, {
+    onDidChange: changed.event,
+    provideCodeLenses(model) {
+      if (model !== editor.getModel()) return { lenses: [], dispose() {} };
+      const results = verdicts.get(getModuleName()) || new Map();
+      const passed = new Map([...results].map(([name, r]) => [name, r.passed]));
+      const lenses = testLenses(listTests(), passed).map(l => ({
+        range: new monaco.Range(l.line + 1, 1, l.line + 1, 1),
+        command: { id: commandId, title: l.title, arguments: [l.names] },
+      }));
+      return { lenses, dispose() {} };
+    },
+  });
+
+  // Switching files replaces the whole text: mark the new file's tests.
+  editor.onDidChangeModelContent(e => {
+    if (e.isFlush) mark();
+  });
+
+  return {
+    show(moduleName, reports) {
+      const results = verdicts.get(moduleName) || new Map();
+      for (const r of reports) results.set(r.name, r);
+      verdicts.set(moduleName, results);
+      mark();
+      changed.fire();
+    },
+  };
+}

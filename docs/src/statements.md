@@ -665,6 +665,8 @@ chip Counter(bump: exec) -> (value: int, done: exec) {
 
 Value output bindings are evaluated in pure context. Exec outputs are wired via `emit` in exec context.
 
+A `mod`'s exec result works the same way: after `let p = maybe(x)`, `on p.hit` runs when the body reaches `emit hit`, and not on a call that never does.
+
 ### Handler-declared outputs
 
 A top-level `on` handler can declare its own port, hoisted to the module
@@ -1629,6 +1631,10 @@ on go {
   tick-delayed value inside a body swept many times within one tick has no
   established meaning. Treat it as undefined and declare the `buffer` outside
   the loop until the behavior is confirmed.
+- **Fire an exec out of the body at once.** An `emit` of a signal or output
+  declared outside the loop goes through a counter var and fires one tick
+  later, once per tick. See
+  [Emitting from a `for` or `fn` body](#emitting-from-a-for-or-fn-body).
 
 ### Cost
 
@@ -1671,10 +1677,11 @@ when a call leaves the argument out (a `mod` takes defaults too).
 **What crosses into the plane.** Nothing is wired across a function plane's
 wall: the game runs a plane only through its call. Parameters arrive through
 the call's inputs and results leave through its outputs. A body may still use
-storage declared outside it, a `var`, array or map: the compiler places a
-handle inside the plane, a var holding a reference to that storage, and the
-body reads and writes through it. A `*T` or container parameter is passed the
-same way, as a reference the body uses in place.
+storage declared outside it, a `var`, array or map: the compiler passes it in
+as a hidden parameter, a reference to that storage in a spare input slot, and
+the body reads and writes through it. A `*T` or container parameter is passed
+the same way, as a reference the body uses in place. Each piece of outer
+storage takes one of the call's 8 input slots.
 
 ```wirescript
 var log: int[]
@@ -1699,6 +1706,8 @@ on go {
 
 A computed value from outside (an `in` port, a `let`) has no way in and is
 `WS113`; pass it as a parameter. Constants fold into the body as usual.
+An `emit` in a `fn` body fires its target off the call's `Completed`, on the
+caller's chain (see [Emitting from a `for` or `fn` body](#emitting-from-a-for-or-fn-body)).
 
 **Calling from pure context.** A call needs an exec chain to fire on. Outside
 a handler, give it one with `exec = trigger`. The call then does not join any
@@ -1742,8 +1751,63 @@ tuple, enum or `exec` (`WS114`). A call with neither an exec chain nor an
 |---|---|---|---|
 | Compiled | once per call site | once | once per loop |
 | Runs | inline, as part of the caller | when its call fires, to the end | once per iteration, in one tick (several with `@sliced`) |
-| Outer storage | wired directly | through handles in its plane | wired through the plane's pins |
+| Outer storage | wired directly | as hidden parameters | wired through the plane's pins |
 | Recursion | no (`WS020`) | no (`WS020`) | no |
+
+### Tests (`@test`)
+
+`@test` before a top-level `fn`, `mod` or named `chip` marks it as a test. A
+test takes no parameters or type parameters and returns nothing (`WS124`). A
+test nothing calls emits nothing, and it is never reported as unused, so tests
+can sit beside the code they check. Called from ordinary code, a test is the
+plain declaration. A whole-module `import` leaves the module's tests behind
+unless its own code calls them.
+
+```wirescript
+fn add(x: int, y: int) -> int {
+  return x + y
+}
+
+@test fn adds_small_numbers() {
+  let r = add(2, 3)
+  if r != 5 {
+    BroadcastChatMessage("FAIL: add(2, 3) gave ${r}")
+  }
+}
+```
+
+Pick the kind by what the test needs:
+
+- **`@test fn`** runs in its own function plane: it is isolated from module
+  state and synchronous (no `await`). Use it to check a `fn` or pure logic by
+  its inputs and outputs.
+- **`@test mod`** and **`@test chip`** are inlined into the run like any `mod`
+  or `chip` call, so they can read and write module `var`s and a `mod` can
+  `await` across ticks. Use them to check state and handlers' logic.
+
+```wirescript
+var count: int = 0
+
+mod bump(by: int) {
+  count += by
+}
+
+@test mod bumps_then_settles() {
+  bump(2)
+  await SleepTicks(_, delay = 3)
+  bump(3)
+  if count != 5 {
+    BroadcastChatMessage("FAIL: count is ${count}")
+  }
+}
+```
+
+A test runner compiles the program once per test, as if it also held
+`on Loaded() { adds_small_numbers()  BroadcastChatMessage("[wirescript test done]") }`:
+the test runs once when the grid loads, and the closing line prints only after
+its body has finished, `await`s included. `wirescript test` does this in the
+gate simulator and fails a test that prints a line starting with `FAIL`; see
+[Testing](testing.md#running-tests-in-the-simulator).
 
 ## `on`: Event Handler
 
@@ -2131,6 +2195,47 @@ buffer emit loop = { sum: 0, index: 0 }     // record payload: one store per fie
 let { sum, index } = await loop      // destructure the fields
 ```
 
+### Emitting from a `for` or `fn` body
+
+An exec cannot leave a `for` body: the game runs nothing it reaches outside,
+and the signal's other emits stop working too. So an `emit` there of a signal
+or output declared outside the body adds one to a hidden counter var outside
+it, and the counter's value fires the target:
+
+```wirescript
+let found: exec
+var grid: int[]
+
+in scan: exec
+on scan {
+  for cell in grid {
+    if cell < 0 { emit found }
+  }
+}
+
+on found {
+  BroadcastChatMessage("a negative cell")
+}
+```
+
+- The target fires **one tick later**, after the body's chain has finished.
+- It fires **once per tick**, however many times the body emits. Count in a
+  `var` when the number matters.
+- Every other `emit` of that signal counts into the same var too, since an
+  Exec Union mixing plain emits with a counter loses the plain ones on a tick
+  the counter moves. Such an `emit` fires the target once its chain has
+  finished, as a var write does, and the body's emits that tick go with it.
+- `emit name = value` stores the value in a var outside the body the same
+  way, beside the output or as the signal's payload.
+- A signal the body declares itself is emitted directly, with no delay.
+
+No wire leaves a `fn` either. An `emit` in a `fn` body sets a flag that the
+call returns in a spare result slot, and each call fires the target off its
+`Completed` when the flag is set: on the caller's chain, once the call has
+finished, with no delay. It takes one of the call's 8 result slots per signal.
+
+Hovering such an `emit` says which of these it does.
+
 ### Loops
 
 `emit`/`await` on a local signal plus a buffered back-edge forms a loop that advances one iteration per buffer period. Loop state can live in `var`s (they persist across iterations, and non-static vars reset on the entry chain, once per call):
@@ -2218,6 +2323,8 @@ Semantics:
 |-----------|-------------|
 | `emit sig` (bare) | 0 (joins the signal's union) |
 | `buffer(...) emit sig` | 1 Buffer (Ticks/Seconds) |
+| `emit sig` out of a `for` body | 1 Var_Increment per emit of the signal, loop or not (+1 counter var per signal) |
+| `emit sig` out of a `fn` body | 1 Var_Set per emit, +1 flag var, reset and result slot per signal, +1 Branch per call |
 | `emit sig = scalar` | 1 Var_Set per emit (+1 hidden store var per signal) |
 | `emit sig = { F fields }` | F Var_Set per emit (+F store vars per signal) |
 | `await sig` (per await) | ~5: armed-flag var, arm + reset Var_Set, Var_Get, Branch |

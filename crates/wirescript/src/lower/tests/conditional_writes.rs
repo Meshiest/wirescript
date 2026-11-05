@@ -549,6 +549,8 @@ fn a_custom_event_mismatch_names_where_the_receiver_type_came_from() {
         file: "main",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
+        test_entry: None,
+        test_build: false,
     };
     let r = crate::compile_with_loader(input, crate::emit::EmitOptions::default(), &loader)
         .expect("compiles");

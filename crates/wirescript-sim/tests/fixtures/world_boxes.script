@@ -1,0 +1,8 @@
+0 player alice user alice
+2 join alice
+3 chat alice /ask
+5 answer alice yes
+6 answer alice text Ann Smith
+7 answer alice cancel
+8 chat alice /ask
+9 answer alice no

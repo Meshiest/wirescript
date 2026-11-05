@@ -64,6 +64,20 @@ impl Parser<'_> {
             let anns = self.parse_annotations();
             let t2 = self.peek().clone();
             let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
+            if let Some(r) = &anns.test {
+                self.error(
+                    "@test must be followed by a top-level `fn`, `mod` or named `chip` declaration"
+                        .to_string(),
+                    r.start,
+                    r.end,
+                );
+                if anns.only_test() {
+                    if matches!(t2.kind, TokenKind::Eof | TokenKind::RBrace) {
+                        return None;
+                    }
+                    return self.parse_stmt();
+                }
+            }
             // A loop's microchip takes `@sliced` and a `@label`, nothing else.
             if kw("for") || self.at_let_for() {
                 let fits = anns.side.is_none()

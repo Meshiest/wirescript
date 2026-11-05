@@ -120,9 +120,9 @@ fn the_global_list_and_reference_fragments_complete() {
             &[],
         ),
         row(
-            "annotations include @label and @closed",
+            "annotations include @label, @closed and @test",
             "‸",
-            &["@left", "@label", "@closed"],
+            &["@left", "@label", "@closed", "@test"],
             &[],
         ),
         // The module-level run that opens a file is offered too: these are the
@@ -509,4 +509,26 @@ fn prefab_path_fragment_only_inside_a_file_reference() {
     ] {
         assert_eq!(at_end(outside), None, "{outside:?}");
     }
+}
+
+/// `testing.` completes its members, `testing.expect(a).` its matchers and
+/// `.not`, and `.not.` the matchers alone; a program's own `testing` wins.
+#[test]
+fn testing_members_and_matchers_complete() {
+    let members = labels_at("on Loaded() {\n  testing.‸\n}\n", &[]);
+    assert_eq!(members, ["fail", "log", "assert", "assertEq", "expect"]);
+    let matchers = labels_at("on Loaded() {\n  testing.expect(f(1)).to‸\n}\n", &[]);
+    assert!(
+        matchers.contains(&"toBe".to_string()) && matchers.contains(&"not".to_string()),
+        "{matchers:?}"
+    );
+    let negated = labels_at("on Loaded() {\n  testing.expect(1).not.‸\n}\n", &[]);
+    assert!(
+        negated.contains(&"toContain".to_string()) && !negated.contains(&"not".to_string()),
+        "{negated:?}"
+    );
+    let general = labels_at("on Loaded() {\n  tes‸\n}\n", &[]);
+    assert!(general.contains(&"testing".to_string()));
+    let own = labels_at("var testing: int = 0\non Loaded() {\n  testing.‸\n}\n", &[]);
+    assert!(!own.contains(&"assertEq".to_string()), "{own:?}");
 }

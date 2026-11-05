@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Regenerate data/gate_semantics.json from a pasted probe console dump.
+// Regenerate crates/wirescript-ir/data/gate_semantics.json from a pasted probe
+// console dump.
 // The ONLY writer of that file — hand-authored entries are not allowed.
-//   node scripts/gen_semantics.mjs dump.txt [--out data/gate_semantics.json]
+//   node scripts/gen_semantics.mjs dump.txt [--out ../wirescript-ir/data/gate_semantics.json]
 import { readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { isMain } from './lib.mjs';
@@ -11,9 +12,9 @@ import { dirname, join } from 'path';
 // not process.cwd() — the pipeline is documented to be invoked from either
 // the repo root (`node crates/wirescript/scripts/gen_semantics.mjs
 // ...`) or from within crates/wirescript itself, and both must resolve to
-// the same data/gate_semantics.json.
+// the same crates/wirescript-ir/data/gate_semantics.json.
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_OUT = join(SCRIPT_DIR, '..', 'data', 'gate_semantics.json');
+const DEFAULT_OUT = join(SCRIPT_DIR, '..', '..', 'wirescript-ir', 'data', 'gate_semantics.json');
 
 export const EXPECTED_PROBE_VERSION = 5;
 

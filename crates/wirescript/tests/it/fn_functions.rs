@@ -1,6 +1,6 @@
 //! `fn`: one definition plane per function, a Function Call per call site,
-//! and outer storage reached through handles baked into vars inside the
-//! plane, with no wire across the plane's wall.
+//! and outer storage passed in as hidden parameters, with no wire across the
+//! plane's wall.
 
 use brdb::schema::BrdbValue;
 use wirescript::compile::{FoldMode, compile, compile_to_world};
@@ -154,10 +154,17 @@ var res: int = 0
 on go { res = add(2) }
 ";
 
-/// Inside the plane, the body's write and push take their refs from handle
-/// vars in the plane, not from the outer storage.
+fn all_wires(m: &Module) -> Vec<wirescript::ir::Wire> {
+    let mut out = Vec::new();
+    m.walk(&mut |_, sub| out.extend(sub.wires.iter().copied()));
+    out
+}
+
+/// Inside the plane, the body's write and push take their refs from hidden
+/// inputs after the declared one, and the call feeds each from the outer
+/// storage.
 #[test]
-fn reads_and_writes_go_through_handles() {
+fn reads_and_writes_go_through_hidden_inputs() {
     let m = lowered(CAPTURES);
     let shell = m
         .nodes
@@ -168,9 +175,50 @@ fn reads_and_writes_go_through_handles() {
     let handles: Vec<&Node> = plane
         .nodes
         .values()
-        .filter(|n| n.note == Some("fn handle"))
+        .filter(|n| n.note == Some("fn capture"))
         .collect();
-    assert_eq!(handles.len(), 2, "one handle per outer storage");
+    assert_eq!(handles.len(), 2, "one hidden input per outer storage");
+    assert!(
+        all_nodes(&m).iter().all(|n| n.note != Some("fn handle")),
+        "no handle var"
+    );
+    let mut orders: Vec<i64> = handles
+        .iter()
+        .map(|h| match h.properties.get(&wirescript::intern::intern("PortOrder")) {
+            Some(wirescript::ir::Literal::Int(k)) => *k,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    orders.sort();
+    assert_eq!(orders, vec![1, 2], "after the declared input");
+    let call = node(&m, gc::FUNCTION_CALL);
+    let wires = all_wires(&m);
+    for (name, port) in [("total", "VarRef"), ("seen", "ArrayVarRef")] {
+        let storage = all_nodes(&m)
+            .into_iter()
+            .find(|n| {
+                n.properties.get(&wirescript::intern::intern("_label"))
+                    == Some(&wirescript::ir::Literal::String(name.into()))
+                    && matches!(n.gate_class, gc::VAR | gc::ARRAY_VAR)
+            })
+            .unwrap_or_else(|| panic!("no storage {name}"));
+        assert!(
+            wires.iter().any(|w| w.source.node_id == storage.id
+                && w.source.port.as_str() == port
+                && w.target.node_id == call.id
+                && w.target.port.as_str().starts_with("Input")),
+            "the call is fed {name}'s {port}"
+        );
+    }
+    assert_eq!(
+        call.properties.get(&wirescript::intern::intern("InputSources")),
+        Some(&wirescript::ir::Literal::Array(
+            [1, 1, 1, 0, 0, 0, 0, 0]
+                .into_iter()
+                .map(wirescript::ir::Literal::Int)
+                .collect()
+        ))
+    );
     for gate in plane
         .nodes
         .values()
@@ -186,7 +234,7 @@ fn reads_and_writes_go_through_handles() {
             .unwrap_or_else(|| panic!("{} has no ref wired in the plane", gate.gate_class));
         assert!(
             handles.iter().any(|h| h.id == src.source.node_id),
-            "{} reads a handle",
+            "{} reads a hidden input",
             gate.gate_class
         );
     }
@@ -233,46 +281,51 @@ fn labelled(
     out
 }
 
-/// The handle baked inside the plane points at the outer var's brick and its
-/// Var component, as the save addresses them.
+/// A `fn` that calls another `fn` reaching outer storage takes that storage
+/// as a hidden input of its own and passes it on, so no wire crosses either
+/// wall.
 #[test]
-fn a_baked_handle_points_at_the_outer_var() {
-    let bricks = labelled(&brz(CAPTURES));
-    let storage = |label: &str| {
-        bricks
-            .iter()
-            .find(|(l, _, tys, _)| {
-                l == label && tys.iter().any(|(_, n)| n == gc::VAR || n == gc::ARRAY_VAR)
-            })
-            .unwrap_or_else(|| panic!("no storage brick labelled {label}"))
-    };
-    for name in ["total", "seen"] {
-        let (_, at, tys, _) = storage(name);
-        let class = if name == "seen" {
-            gc::ARRAY_VAR
-        } else {
-            gc::VAR
-        };
-        let type_index = tys.iter().find(|(_, n)| n == class).unwrap().0;
-        let (_, handle_at, _, values) = storage(&format!("&{name}"));
-        assert_ne!(
-            handle_at.0, at.0,
-            "the handle is in the plane, its target outside"
+fn a_capture_passes_through_a_calling_fn() {
+    let src = "var total: int = 0\nfn inner() { total += 1 }\nfn outer() { inner() }\nin go: exec\non go { outer() }\n";
+    let m = lowered(src);
+    let captures: Vec<&Node> = all_nodes(&m)
+        .into_iter()
+        .filter(|n| n.note == Some("fn capture"))
+        .collect();
+    assert_eq!(captures.len(), 2, "one hidden input in each plane");
+    let wires = all_wires(&m);
+    let calls: Vec<&Node> = all_nodes(&m)
+        .into_iter()
+        .filter(|n| n.gate_class == gc::FUNCTION_CALL)
+        .collect();
+    assert_eq!(calls.len(), 2);
+    for call in calls {
+        assert!(
+            wires
+                .iter()
+                .any(|w| w.target.node_id == call.id && w.target.port.as_str() == "Input0"),
+            "each call is fed its hidden input"
         );
-        let value = values
-            .first()
-            .unwrap_or_else(|| panic!("&{name} holds no value"));
-        let BrdbValue::Struct(s) = value else {
-            panic!("&{name} holds {value:?}")
-        };
-        let text = format!("{s}");
-        let want = format!(
-            "BrickIndexInChunk: {}u32, ChunkIndex: BRSavedChunk3DIndex {{ X: {}i16, Y: {}i16, Z: {}i16, }}, GridPersistentIndex: {}u32, }}, ComponentTypeIndex: {}u16",
-            at.2, at.1.x, at.1.y, at.1.z, at.0, type_index
-        );
-        let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(flat.contains(&want), "&{name} = {flat}\nwant {want}");
     }
+    assert!(
+        wires.iter().any(|w| captures.iter().any(|c| c.id == w.source.node_id)
+            && calls_target(&m, w)),
+        "the inner call is fed from the outer plane's hidden input"
+    );
+}
+
+fn calls_target(m: &Module, w: &wirescript::ir::Wire) -> bool {
+    all_nodes(m)
+        .iter()
+        .any(|n| n.id == w.target.node_id && n.gate_class == gc::FUNCTION_CALL)
+}
+
+/// Outer storage takes an input slot, so a `fn` with all eight declared has
+/// none for it.
+#[test]
+fn a_capture_past_the_last_slot_is_reported() {
+    let src = "var total: int = 0\nfn f(a: int, b: int, c: int, d: int, e: int, g: int, h: int, i: int) { total += a }\nin go: exec\non go { f(1, 2, 3, 4, 5, 6, 7, 8) }\n";
+    assert!(codes(src).iter().any(|c| c == "WS115"), "{:?}", codes(src));
 }
 
 /// Every fixture with a `fn`: no wire in the emitted world joins a brick in a
@@ -694,4 +747,51 @@ on go { r = add(k, y = k + 2) }
                 .collect()
         ))
     );
+}
+
+/// An `emit` of an outer signal in a `fn` uses no handle: the body sets a flag
+/// reset at its start, a result slot carries it out, and each call branches
+/// on that slot off its `Completed`.
+#[test]
+fn an_emit_returns_a_flag_each_call_fires_on() {
+    let src = "let ping: exec\nvar n: int = 0\non ping { n += 1 }\nfn f(k: int) -> int {\n  emit ping\n  return k\n}\nin go: exec\non go {\n  let a = f(1)\n  let b = f(2)\n}\n";
+    let m = lowered(src);
+    let nodes = all_nodes(&m);
+    let note = |n: &&Node, s: &str| n.note.as_deref() == Some(s);
+    assert!(
+        !nodes.iter().any(|n| note(n, "fn handle")),
+        "an emit needs no handle"
+    );
+    let outputs: Vec<&&Node> = nodes
+        .iter()
+        .filter(|n| n.gate_class == gc::FUNCTION_OUTPUT)
+        .collect();
+    assert_eq!(outputs.len(), 2, "the result and the emit flag");
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|n| note(n, "fn emit flag reset") || note(n, "fn emit"))
+            .count(),
+        2,
+        "one reset at the start, one set at the emit"
+    );
+    let calls: Vec<_> = nodes
+        .iter()
+        .filter(|n| n.gate_class == gc::FUNCTION_CALL)
+        .map(|n| n.id)
+        .collect();
+    let mut branched = 0;
+    m.walk(&mut |_, sub| {
+        branched += sub
+            .wires
+            .iter()
+            .filter(|w| {
+                calls.contains(&w.source.node_id)
+                    && w.source.port
+                        == wirescript::ir::port_registry::WirePort::from_name("Output1")
+            })
+            .count();
+    });
+    assert_eq!(branched, 2, "each call branches on the flag slot");
+    assert!(!brz(src).is_empty());
 }

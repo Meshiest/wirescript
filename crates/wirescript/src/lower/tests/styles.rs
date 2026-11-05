@@ -359,6 +359,8 @@ fn input(src: &str) -> crate::CompileInput<'_> {
         file: "styles.ws",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
+        test_entry: None,
+        test_build: false,
     }
 }
 

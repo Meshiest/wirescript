@@ -200,9 +200,16 @@ pub(in crate::lower) fn lower_chip_call_inline(
     let body_has_exec = ctx.current_exec.is_some();
     let unsequenced = unsequenced_outputs(&plan, body_has_exec);
     ctx.mod_unsequenced = unsequenced.iter().cloned().collect();
+    let exec_outputs: Vec<(String, usize)> = chip_decl
+        .outputs
+        .iter()
+        .filter(|o| is_exec_type(ctx, &o.typ))
+        .map(|o| (o.name.clone(), ctx.pending_emits.get(&o.name).map_or(0, Vec::len)))
+        .collect();
     let saved_subst = std::mem::replace(&mut ctx.resolution_subst, body_subst);
     lower_block(ctx, &chip_decl.body);
     ctx.resolution_subst = saved_subst;
+    wire_exec_outputs(ctx, &exec_outputs);
     // Several outputs (or one enum or record output, stored per field),
     // several returns and no exec chain: a branch holding a `return` is never
     // lowered and its storage never written. The one scalar output case is
@@ -1344,6 +1351,32 @@ impl ArgSlots {
 }
 
 /// The value wired into `output_id`'s internal output node during this call.
+/// Wire the `emit`s of each exec output this body queued (those past the
+/// queue length taken before it) into that output, so the call's result
+/// fires where the body emits it, as a chip's out pin does. An output the
+/// body never emits gets an Exec Union nothing drives, so it never fires.
+fn wire_exec_outputs(ctx: &mut LowerCtx<'_>, queued_before: &[(String, usize)]) {
+    for (name, before) in queued_before {
+        let Some(out) = ctx.lookup_output(name).cloned() else {
+            continue;
+        };
+        let entries: Vec<_> = ctx
+            .pending_emits
+            .get_mut(name)
+            .map(|q| q.drain((*before).min(q.len())..).collect())
+            .unwrap_or_default();
+        ctx.emit_log.retain(|(k, i)| k != name || i < before);
+        let exec = if entries.is_empty() {
+            exec_join(ctx, None, None, &SourceRange::default())
+        } else {
+            let target_chip = ctx.find_node(out.node_id).and_then(|n| n.chip_id);
+            let entries = super::stmt::lift_plane_emits(ctx, name, entries, target_chip);
+            super::stmt::build_exec_union(ctx, entries.into_iter().map(|(p, _)| p).collect())
+        };
+        ctx.connect(exec, out.node_id.port(WirePort::RerInput));
+    }
+}
+
 fn output_wire_source(ctx: &LowerCtx<'_>, wire_start: usize, output_id: NodeId) -> Option<PortRef> {
     ctx.builder.module.wires[wire_start..]
         .iter()

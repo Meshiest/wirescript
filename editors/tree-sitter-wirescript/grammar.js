@@ -286,8 +286,11 @@ module.exports = grammar({
         field('value', $._expression),
       ),
 
+    // `@test` before a `mod` marks a test; the parser rejects any other
+    // annotation there.
     mod_declaration: ($) =>
       seq(
+        optional($._annotations),
         'mod',
         field('name', $.identifier),
         field('parameters', $.parameter_list),
@@ -296,9 +299,11 @@ module.exports = grammar({
       ),
 
     // `fn name(params) -> outputs { body }`: a `mod` signature, compiled once
-    // into a function definition plane.
+    // into a function definition plane. `@test` marks a test, as it does on a
+    // `mod` or a named `chip`.
     function_declaration: ($) =>
       seq(
+        optional($._annotations),
         'fn',
         field('name', $.identifier),
         field('parameters', $.parameter_list),

@@ -22,6 +22,23 @@ pub(super) struct ParsedAnnotations {
     pub(super) color: Option<(Expr, SourceRange)>,
     /// `@material(expr)`, legal where `@color` is.
     pub(super) material: Option<(Expr, SourceRange)>,
+    /// `@test`, legal only before a top-level `fn`, `mod` or named `chip`.
+    pub(super) test: Option<SourceRange>,
+}
+
+impl ParsedAnnotations {
+    /// Whether no annotation besides `@test` was given.
+    pub(super) fn only_test(&self) -> bool {
+        self.side.is_none()
+            && self.label.is_none()
+            && self.label_expr.is_none()
+            && self.closed.is_none()
+            && self.nofold.is_none()
+            && self.invisible.is_none()
+            && self.sliced.is_none()
+            && self.color.is_none()
+            && self.material.is_none()
+    }
 }
 
 /// Result of [`Parser::collect_module_label`]: the expression annotations
@@ -547,6 +564,13 @@ impl Parser<'_> {
                         anns.invisible = Some(self.make_range(tok.start, tok.end));
                     }
                 }
+                "test" => {
+                    if anns.test.is_some() {
+                        self.error("duplicate @test".to_string(), tok.start, tok.end);
+                    } else {
+                        anns.test = Some(self.make_range(tok.start, tok.end));
+                    }
+                }
                 "sliced" => {
                     if anns.sliced.is_some() {
                         self.error("duplicate @sliced".to_string(), tok.start, tok.end);
@@ -600,7 +624,7 @@ impl Parser<'_> {
                             )
                         } else {
                             format!(
-                                "unknown annotation '@{w}'; expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, or @sliced"
+                                "unknown annotation '@{w}'; expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, @sliced, or @test"
                             )
                         };
                         self.error(msg, tok.start, tok.end);

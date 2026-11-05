@@ -196,6 +196,29 @@ compile-brdb file:
 ir file:
     cargo run --release -p wirescript-cli -- compile {{file}} --dump-ir
 
+# Run a .ws, .wsir or .brz in the gate simulator and print its chat lines (e.g. `just sim f.ws --ticks 300 --seed 3`)
+sim file *ARGS:
+    cargo run --release -q -p wirescript-cli -- sim {{file}} {{ARGS}}
+
+# Run every @test fn in files or directories, and compare programs that have a .expected file
+test-ws +PATHS:
+    cargo run --release -q -p wirescript-cli -- test {{PATHS}}
+
+# The simulator gate: every fixture with a .expected file and every @test fn, 0 failures
+sim-test:
+    cargo run --release -q -p wirescript-cli -- test crates/wirescript-sim/tests/fixtures crates/wirescript/tests/fixtures/const crates/wirescript/tests/fixtures/fn
+
+# The wasm gate: every sim-test run prints the same lines in the wasm build as natively
+sim-wasm-diff:
+    cargo build --release -p wirescript-cli
+    wasm-pack build crates/wasm --target nodejs --release --out-dir ../../target/sim-wasm-pkg
+    node crates/wirescript-sim/scripts/wasm_diff.cjs target/sim-wasm-pkg target/release/wirescript.exe crates/wirescript-sim/tests/fixtures crates/wirescript/tests/fixtures/const crates/wirescript/tests/fixtures/fn
+
+# The race-mode gate: --race flags a two-handler race and passes its single-writer fix
+sim-race:
+    cargo build --release -p wirescript-cli
+    node crates/wirescript-sim/scripts/race_gate.cjs target/release/wirescript.exe
+
 # Build a .brz (or .brdb, by -o's extension) from a .wsir program
 assemble file *ARGS:
     cargo run --release -p wirescript-cli -- assemble {{file}} {{ARGS}}

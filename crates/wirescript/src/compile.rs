@@ -21,6 +21,16 @@ pub struct CompileInput<'a> {
     pub module_name: Option<&'a str>,
     /// Whether the certified constant-fold pass runs; see [`FoldMode`].
     pub fold_mode: FoldMode,
+    /// The name of a `@test` in `file` to run: the program compiles as if it
+    /// also held `on Loaded() { name()  BroadcastChatMessage(TEST_DONE) }`
+    /// (see [`crate::test_entry::TEST_DONE`]). A name that is not a `@test`
+    /// of `file` is a WS125 error. [`crate::test_entry::list_tests`] lists
+    /// the names.
+    pub test_entry: Option<&'a str>,
+    /// A test build: each `testing.*` statement lowers to the code it means.
+    /// Otherwise each is type-checked and lowers to nothing, its arguments
+    /// unevaluated (see [`crate::testing`]).
+    pub test_build: bool,
 }
 
 impl<'a> CompileInput<'a> {
@@ -32,7 +42,21 @@ impl<'a> CompileInput<'a> {
             file,
             module_name: None,
             fold_mode: FoldMode::Auto,
+            test_entry: None,
+            test_build: false,
         }
+    }
+
+    #[must_use]
+    pub fn test_build(mut self, on: bool) -> Self {
+        self.test_build = on;
+        self
+    }
+
+    #[must_use]
+    pub fn test_entry(mut self, name: &'a str) -> Self {
+        self.test_entry = Some(name);
+        self
     }
 
     #[must_use]
@@ -160,12 +184,13 @@ pub fn resolve_prefab_path(entry_file: &str, path: &str) -> std::path::PathBuf {
 /// `$/abs` is filesystem-absolute. Relative refs in imported files also
 /// resolve against the entry file's directory.
 pub fn disk_prefab_resolver(entry_file: &str, fold_mode: FoldMode) -> PrefabResolver {
-    disk_prefab_resolver_depth(entry_file, fold_mode, 1)
+    disk_prefab_resolver_depth(entry_file, fold_mode, false, 1)
 }
 
 fn disk_prefab_resolver_depth(
     entry_file: &str,
     fold_mode: FoldMode,
+    test_build: bool,
     depth: usize,
 ) -> PrefabResolver {
     let base = std::path::Path::new(entry_file)
@@ -200,12 +225,24 @@ fn disk_prefab_resolver_depth(
                 .map_err(|e| format!("cannot read prefab source {}: {e}", full.display()))?;
             let full_str = full.to_string_lossy().into_owned();
             let inner_opts = EmitOptions {
-                prefab_resolver: Some(disk_prefab_resolver_depth(&full_str, fold_mode, depth + 1)),
-                nested_compiler: Some(default_nested_compiler(1, full_str.clone(), fold_mode)),
+                prefab_resolver: Some(disk_prefab_resolver_depth(
+                    &full_str,
+                    fold_mode,
+                    test_build,
+                    depth + 1,
+                )),
+                nested_compiler: Some(default_nested_compiler(
+                    1,
+                    full_str.clone(),
+                    fold_mode,
+                    test_build,
+                )),
                 ..Default::default()
             };
             let result = compile_to_world(
-                CompileInput::new(&src, &full_str).fold_mode(fold_mode),
+                CompileInput::new(&src, &full_str)
+                    .fold_mode(fold_mode)
+                    .test_build(test_build),
                 inner_opts,
             )
             .map_err(|e| format!("prefab {} failed to compile: {e}", full.display()))?;
@@ -231,7 +268,12 @@ const MAX_NESTED_DEPTH: usize = 8;
 /// Recursively compiles the inner source into prefab `.brz` bytes. The closure
 /// ignores the `depth` argument the emit layer passes (always 1) and uses its
 /// own captured `depth` for the guard and for the next level's compiler.
-fn default_nested_compiler(depth: usize, file: String, fold_mode: FoldMode) -> NestedCompiler {
+fn default_nested_compiler(
+    depth: usize,
+    file: String,
+    fold_mode: FoldMode,
+    test_build: bool,
+) -> NestedCompiler {
     NestedCompiler::new(move |inner_src: &str, _embed_depth: usize| {
         if depth > MAX_NESTED_DEPTH {
             return Err(format!(
@@ -243,11 +285,18 @@ fn default_nested_compiler(depth: usize, file: String, fold_mode: FoldMode) -> N
         // the depth, not the emit arg). Imports resolve relative to the outer
         // file (reuse `file`).
         let inner_opts = EmitOptions {
-            nested_compiler: Some(default_nested_compiler(depth + 1, file.clone(), fold_mode)),
+            nested_compiler: Some(default_nested_compiler(
+                depth + 1,
+                file.clone(),
+                fold_mode,
+                test_build,
+            )),
             ..Default::default()
         };
         let result = compile_to_world(
-            CompileInput::new(inner_src, &file).fold_mode(fold_mode),
+            CompileInput::new(inner_src, &file)
+                .fold_mode(fold_mode)
+                .test_build(test_build),
             inner_opts,
         )
         .map_err(|e| format!("nested prefab failed to compile: {e}"))?;
@@ -339,10 +388,51 @@ pub fn front_end_staged(
     loader: &dyn FileLoader,
     stage: &mut dyn FnMut(FrontEndStage<'_>),
 ) -> FrontEnd {
+    front_end_input(
+        CompileInput {
+            module_name,
+            fold_mode,
+            ..CompileInput::new(source, file)
+        },
+        loader,
+        stage,
+    )
+}
+
+/// [`front_end_staged`] for a whole [`CompileInput`], its test entry included.
+fn front_end_input(
+    input: CompileInput<'_>,
+    loader: &dyn FileLoader,
+    stage: &mut dyn FnMut(FrontEndStage<'_>),
+) -> FrontEnd {
+    let CompileInput {
+        source,
+        file,
+        module_name,
+        fold_mode,
+        test_entry,
+        test_build,
+    } = input;
     stage(FrontEndStage::Resolve);
-    let resolved = resolve(source, file, loader);
+    let mut resolved = resolve(source, file, loader);
+    if let Some(name) = test_entry
+        && let Err(d) = crate::test_entry::add_test_call(&mut resolved.ast, file, name)
+    {
+        resolved.diagnostics.push(d);
+    }
     stage(FrontEndStage::Typecheck);
-    let (typecheck, ce_slots) = typecheck_with_inference(&resolved.ast);
+    let (mut typecheck, mut ce_slots) = typecheck_with_inference(&resolved.ast);
+    if !resolved.testing_pending.is_empty() {
+        let pending = std::mem::take(&mut resolved.testing_pending);
+        crate::testing::complete(
+            &mut resolved.ast,
+            pending,
+            &typecheck.type_of_expr,
+            &mut resolved.diagnostics,
+        );
+        (typecheck, ce_slots) = typecheck_with_inference(&resolved.ast);
+    }
+    crate::testing::exec_context_errors(&resolved.testing_stmts, &mut typecheck.diagnostics);
     stage(FrontEndStage::Lower(&resolved));
     let lowered = lower(LowerInput {
         ast: &resolved.ast,
@@ -355,6 +445,8 @@ pub fn front_end_staged(
         doc_comments: &resolved.doc_comments,
         fold_mode,
         ce_slots: &ce_slots,
+        test_build,
+        testing_stmts: &resolved.testing_stmts,
     });
     FrontEnd {
         resolved,
@@ -380,13 +472,7 @@ pub fn diagnostics_only(
             typecheck: tc,
             lowered,
             ..
-        } = front_end(
-            input.source,
-            input.file,
-            input.module_name,
-            input.fold_mode,
-            loader,
-        );
+        } = front_end_input(input, loader, &mut |_| {});
         let cycles = crate::analyze::analyze_cycles(&lowered.module);
         let mut all: Vec<_> = resolved
             .diagnostics
@@ -491,55 +577,51 @@ fn compile_to_world_keeping(
         }
     };
 
-    let source = input.source;
     let file = input.file;
-    let module_name = input.module_name;
 
     // Default to disk-backed prefab resolution unless a caller (e.g. the wasm
     // sandbox) supplied its own resolver.
     if opts.prefab_resolver.is_none() {
-        opts.prefab_resolver = Some(disk_prefab_resolver(file, input.fold_mode));
+        opts.prefab_resolver = Some(disk_prefab_resolver_depth(
+            file,
+            input.fold_mode,
+            input.test_build,
+            1,
+        ));
     }
     if opts.nested_compiler.is_none() {
         opts.nested_compiler = Some(default_nested_compiler(
             1,
             file.to_string(),
             input.fold_mode,
+            input.test_build,
         ));
     }
 
-    let fe = front_end_staged(
-        source,
-        file,
-        module_name,
-        input.fold_mode,
-        loader,
-        &mut |stage| match stage {
-            FrontEndStage::Resolve => report("resolve"),
-            FrontEndStage::Typecheck => {}
-            FrontEndStage::Lower(resolved) => {
-                // Grow the progress total by the number of embedded prefabs (each `$./file`
-                // reference and each inline `$```...``` ` block is a sub-compile the emit step
-                // does), so the bar advances through them instead of stalling on emit. Only
-                // `total`, which nothing reads unless a callback is running, so the walk is
-                // skipped entirely when it is.
-                if progress.is_some() {
-                    let mut n_prefabs = 0u32;
-                    crate::analysis::visit_program(&resolved.ast, &mut |_| {}, &mut |e| {
-                        if matches!(
-                            e,
-                            crate::ast::Expr::PrefabRef { .. }
-                                | crate::ast::Expr::NestedPrefab { .. }
-                        ) {
-                            n_prefabs += 1;
-                        }
-                    });
-                    total.store(BASE_STEPS + n_prefabs, Ordering::Relaxed);
-                }
-                report("lower");
+    let fe = front_end_input(input, loader, &mut |stage| match stage {
+        FrontEndStage::Resolve => report("resolve"),
+        FrontEndStage::Typecheck => {}
+        FrontEndStage::Lower(resolved) => {
+            // Grow the progress total by the number of embedded prefabs (each `$./file`
+            // reference and each inline `$```...``` ` block is a sub-compile the emit step
+            // does), so the bar advances through them instead of stalling on emit. Only
+            // `total`, which nothing reads unless a callback is running, so the walk is
+            // skipped entirely when it is.
+            if progress.is_some() {
+                let mut n_prefabs = 0u32;
+                crate::analysis::visit_program(&resolved.ast, &mut |_| {}, &mut |e| {
+                    if matches!(
+                        e,
+                        crate::ast::Expr::PrefabRef { .. } | crate::ast::Expr::NestedPrefab { .. }
+                    ) {
+                        n_prefabs += 1;
+                    }
+                });
+                total.store(BASE_STEPS + n_prefabs, Ordering::Relaxed);
             }
-        },
-    );
+            report("lower");
+        }
+    });
     let FrontEnd {
         resolved,
         typecheck: tc,
@@ -631,15 +713,19 @@ fn compile_to_world_keeping(
         }
     }
 
-    let Assembly { world, layout } =
-        assemble_with_phases(&program, &opts, &mut |phase| report(phase))
-            .map_err(CompileError::Emit)?;
+    let Assembly {
+        world,
+        layout,
+        node_bricks,
+    } = assemble_with_phases(&program, &opts, &mut |phase| report(phase))
+        .map_err(CompileError::Emit)?;
 
     Ok(CompileWorldResult {
         world,
         diagnostics: all_diags,
         layout,
         program,
+        node_bricks,
         progress: progress.map(|cb| (cb, total)),
     })
 }
@@ -709,6 +795,8 @@ pub struct CompileWorldResult {
     pub layout: crate::layout::LayoutResult,
     /// The program the world was assembled from.
     pub program: Program,
+    /// The brick each IR node became (`brdb::Brick::id`).
+    pub node_bricks: crate::collections::HashMap<NodeId, usize>,
     /// Set only when the caller asked for progress, carrying the callback and
     /// the final step total so `compile` can send the terminal `done` event
     /// after the `.brz` encode rather than before it.
@@ -722,6 +810,15 @@ pub fn compile_to_world(
     on_compile_stack(move || compile_to_world_inner(input, opts, None, &FsLoader))
 }
 
+/// [`compile_to_world`], reading imports through `loader`.
+pub fn compile_to_world_with_loader(
+    input: CompileInput<'_>,
+    opts: EmitOptions,
+    loader: &(dyn FileLoader + Sync),
+) -> Result<CompileWorldResult, CompileError> {
+    on_compile_stack(move || compile_to_world_inner(input, opts, None, loader))
+}
+
 /// Make `program`, compiled from `entry_file`, stand on its own as text
 /// written to `ir_path`: every nested prefab block is compiled to its `.brz`
 /// bytes, so assembling it needs no front end, and every prefab file path is
@@ -733,7 +830,7 @@ pub fn prepare_program_for_text(
     ir_path: &std::path::Path,
     fold_mode: FoldMode,
 ) -> Result<(), String> {
-    let nested = default_nested_compiler(1, entry_file.to_string(), fold_mode);
+    let nested = default_nested_compiler(1, entry_file.to_string(), fold_mode, false);
     // A bare file name's parent is the empty path, which has no absolute
     // form; it means the current directory.
     let dir_of = |p: &std::path::Path| match p.parent() {
@@ -869,7 +966,12 @@ fn relative_path(from: &std::path::Path, target: &std::path::Path) -> Result<Str
 pub fn assemble_options(ir_file: &str, fold_mode: FoldMode) -> EmitOptions {
     EmitOptions {
         prefab_resolver: Some(disk_prefab_resolver(ir_file, fold_mode)),
-        nested_compiler: Some(default_nested_compiler(1, ir_file.to_string(), fold_mode)),
+        nested_compiler: Some(default_nested_compiler(
+            1,
+            ir_file.to_string(),
+            fold_mode,
+            false,
+        )),
         ..Default::default()
     }
 }

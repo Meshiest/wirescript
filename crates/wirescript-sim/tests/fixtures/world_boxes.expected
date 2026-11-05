@@ -1,0 +1,12 @@
+[alice yes/no box] Start: Ready?
+[alice text box] Name: Your name?
+[alice ok/cancel box] Next: Continue?
+asked
+alice is ready
+named Ann Smith
+cancelled
+[alice yes/no box] Start: Ready?
+[alice text box] Name: Your name?
+[alice ok/cancel box] Next: Continue?
+asked
+not ready

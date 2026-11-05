@@ -121,6 +121,9 @@
     "WS121": "diagnostics.html#types--operators",
     "WS122": "diagnostics.html#types--operators",
     "WS123": "diagnostics.html#types--operators",
+    "WS124": "diagnostics.html#functions-fn",
+    "WS125": "diagnostics.html#functions-fn",
+    "WS126": "diagnostics.html#functions-fn",
     "WSP001": "diagnostics.html#silencing-a-warning"
   },
   "builtins": {
@@ -438,7 +441,8 @@
     "fold": "statements.html#fold-constant-folding-on-by-default",
     "layout": "statements.html#layoutcode-source-shaped-gate-layout",
     "flat": "statements.html#flat-inline-every-chip",
-    "sliced": "statements.html#sliced-loops-sliced"
+    "sliced": "statements.html#sliced-loops-sliced",
+    "test": "statements.html#tests-test"
   },
   "types": {
     "bool": "types.html#primitive-types",
@@ -468,6 +472,7 @@
     "atoms": "expressions.html#atom-literals",
     "assets": "expressions.html#asset-references",
     "prefabs": "expressions.html#prefab-references",
-    "environment": "environment.html#reading-and-writing"
+    "environment": "environment.html#reading-and-writing",
+    "testing": "testing.html#assertions"
   }
 }

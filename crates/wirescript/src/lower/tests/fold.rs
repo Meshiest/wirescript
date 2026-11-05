@@ -476,15 +476,15 @@ fn a_constant_string_folds_into_one_baked_carrier() {
     let score_text = format!("score={score}");
     let rows: &[(&str, &str, &str, &[&str])] = &[
         (
-            "`let n = 42` interpolates with no comma grouping below 1,000",
+            "`let n = 42` interpolates as its digits",
             "let n = 42\nout y = \"n=${n}\"",
             "n=42",
             &[gc::STRING_FORMAT_TEXT],
         ),
         (
-            "the certified render law comma-groups from 1,000 up, through FormatText substitution",
+            "the certified render law prints 1000 with no grouping, through FormatText substitution",
             "let n = 1000\nout y = \"n=${n}\"",
-            "n=1,000",
+            "n=1000",
             &[gc::STRING_FORMAT_TEXT],
         ),
         (

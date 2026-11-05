@@ -121,7 +121,7 @@ fn is_prim_number(t: &Type) -> bool {
 }
 
 /// Phase-1 primitives that format into text for the string coercion path.
-fn formats_to_string(t: &Type) -> bool {
+pub(crate) fn formats_to_string(t: &Type) -> bool {
     matches!(
         t,
         Type::Bool
@@ -240,8 +240,8 @@ pub(crate) fn coerce(from: &Type, to: &Type) -> CoerceRule {
     // a bool-typed destination (see `LowerCtx::wrap_string_to_bool`). Empty is
     // false, everything else is true. This is deliberately not the game's
     // native content-aware port truthiness (where "0" and "false" are also
-    // falsy; certified in `data/gate_semantics.json`'s Branch/Select/AND
-    // chapters), which stays reachable by wiring through `any` or the logical
+    // falsy; certified in the Branch/Select/AND chapters of `wirescript-ir`'s
+    // `data/gate_semantics.json`), which stays reachable by wiring through `any` or the logical
     // operators' native string overloads. Unidirectional: bool -> string is
     // the `ViaString` format-text path below (renders "true"/"false" text).
     if matches!((from, to), (String, Bool)) {

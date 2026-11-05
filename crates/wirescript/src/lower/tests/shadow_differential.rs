@@ -153,6 +153,8 @@ fn compile_outcome(src: &str, deps: &[(&str, &str)], fold: bool) -> Outcome {
         file: "main",
         module_name: None,
         fold_mode,
+        test_entry: None,
+        test_build: false,
     };
     let (lowered, result) = crate::compile::compile_keeping_lowered(
         input,

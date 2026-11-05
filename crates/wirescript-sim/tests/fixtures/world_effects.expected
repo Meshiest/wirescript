@@ -1,0 +1,7 @@
+[audio] asset 1
+[alice audio] asset 1 volume 0.5
+[audio at X=5.000 Y=6.000 Z=7.000] asset 2 pitch 2
+[explosion at X=0.000 Y=0.000 Z=50.000] asset 3
+[explosion at X=5.000 Y=6.000 Z=7.000] asset 3
+hit at 250
+missed

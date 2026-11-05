@@ -402,7 +402,8 @@ fn compare_binary(op: &'static str, gate_class: &'static str) -> OpSpec {
     const VARIANT_TYPES: &[Type] = &[Int, Float, Bool, String, Entity, Controller, Character];
     // Equality (`==`/`!=`) additionally compares the composite value variants by
     // content: the game's CompareEqual/CompareNotEqual gates are certified for
-    // same-type vector/rotator/quat/color operands (`data/gate_semantics.json`).
+    // same-type vector/rotator/quat/color operands (`wirescript-ir`'s
+    // `data/gate_semantics.json`).
     // Ordering (`<`/`>`/`<=`/`>=`) stays scalar-only: those composites have no
     // certified ordering cases.
     const EQ_ONLY_TYPES: &[Type] = &[Vector, Rotator, Quat, Color];

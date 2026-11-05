@@ -1,0 +1,3 @@
+alice: builder true, unaffiliated false
+bob: builder false, unaffiliated false
+carol: builder false, unaffiliated true

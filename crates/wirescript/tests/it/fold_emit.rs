@@ -359,8 +359,8 @@ fn folded_const_string_arg_reaches_named_chip_input() {
     let carrier = operand_source_brick(&w, consumer, "InputA");
     let text = string_concat_input_a(carrier);
     assert_eq!(
-        text, "n=1,000",
-        "comma-grouped render law must survive to emit"
+        text, "n=1000",
+        "the folded render text must survive to emit"
     );
     println!(
         "P(\"n=${{n}}\") folded: delivered \"{text}\" directly to the live consumer (pin {pin} \

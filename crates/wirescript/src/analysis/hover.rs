@@ -510,6 +510,9 @@ pub fn hover_at(
     if let Some(h) = hover_environment_path(source, symbols, line, col) {
         return Some(h);
     }
+    if let Some(h) = hover_testing_path(source, symbols, line, col) {
+        return Some(h);
+    }
 
     None.or_else(|| {
         hover_if_keyword(
@@ -530,6 +533,10 @@ pub fn hover_at(
     .or_else(|| {
         hover_loop_exit_keyword(source, ast, &word, line, col)
             .map(|h| with_doc_link(h, Doc::Keyword(&word)))
+    })
+    .or_else(|| {
+        hover_plane_emit_keyword(source, ast, &word, line, col)
+            .map(|h| with_doc_link(h, Doc::Keyword("emit")))
     })
     .or_else(|| hover_named_param(source, &word, line, col))
     .or_else(|| hover_event_config_param(source, &word, line, col))
@@ -632,6 +639,68 @@ pub fn hover_at(
     })
     .or_else(|| hover_enum_type_name(source, ast, &word))
     .or_else(|| hover_type_or_class(&word))
+}
+
+/// Hover for `testing`, one of its members, or a matcher after
+/// `testing.expect(a)`. Read from the line's text like the completions; a
+/// binding of the program's own named `testing` shadows the builtin.
+fn hover_testing_path(
+    source: &str,
+    symbols: &[SymbolDef],
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    use crate::testing::{MATCHERS, MEMBERS, Receiver, TESTING, receiver_before_dot};
+    if symbols.iter().any(|s| s.name == TESTING) {
+        return None;
+    }
+    let l = source.lines().nth(line)?;
+    let at = char_col_to_byte(l, col);
+    let start = word_start_at_byte(l, at);
+    let end = word_end_at_byte(l, at);
+    let word = &l[start..end];
+    let member = |m: &crate::testing::Member, what: &str| {
+        let hover = format!(
+            "```wirescript
+{}
+```
+**{what}.** {}",
+            m.signature, m.doc
+        );
+        with_doc_link(hover, Doc::Topic("testing"))
+    };
+    let Some(head) = l[..start].strip_suffix('.') else {
+        let is_namespace = word == TESTING
+            && l[end..].starts_with('.')
+            && receiver_before_dot(&l[..end]) == Some(Receiver::Testing);
+        if !is_namespace {
+            return None;
+        }
+        let hover = format!(
+            "```wirescript
+{TESTING}
+```
+Test-only assertions: each statement is a check in a              test build (`wirescript test`, `wirescript sim`, `compile --tests`) and compiles to              nothing otherwise.
+
+Members: {}.",
+            MEMBERS
+                .iter()
+                .map(|m| format!("`{}`", m.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return Some(with_doc_link(hover, Doc::Topic("testing")));
+    };
+    match receiver_before_dot(head)? {
+        Receiver::Testing => MEMBERS
+            .iter()
+            .find(|m| m.name == word)
+            .map(|m| member(m, "Test assertion")),
+        Receiver::Expect { .. } => MATCHERS
+            .iter()
+            .find(|m| m.name == word)
+            .map(|m| member(m, "Matcher")),
+    }
 }
 
 /// Hover for a segment of `Environment.<group>.<property>`: the builtin
@@ -854,6 +923,12 @@ fn hover_annotation(name: &str) -> Option<String> {
         "sliced" => (
             "@sliced".to_string(),
             "Spreads a `for` loop's iterations across ticks.",
+        ),
+        "test" => (
+            "@test".to_string(),
+            "Marks a top-level `fn`, `mod` or named `chip` as a test. It takes no parameters, \
+             returns nothing and emits nothing unless called; a test runner calls it once when \
+             the grid loads.",
         ),
         _ => return None,
     };
@@ -3293,6 +3368,109 @@ fn hover_loop_exit_keyword(
          on with its next element or number. It adds no gate: it ends this iteration's exec chain."
     };
     Some(format!("```wirescript\n{word}\n```\n{what}"))
+}
+
+/// `emit` inside a `for` or `fn` body whose target is declared outside that
+/// body: lowering routes it through a counter var (see `lift_plane_emits`).
+fn hover_plane_emit_keyword(
+    source: &str,
+    ast: &Script,
+    word: &str,
+    line: usize,
+    col: usize,
+) -> Option<String> {
+    use crate::ast::walk::{self, Node};
+    if word != "emit" {
+        return None;
+    }
+    /// A `for` body or a `fn`: where its own declarations live.
+    #[derive(Clone, Copy)]
+    enum Plane<'a> {
+        Loop(&'a Block),
+        Fn(&'a ChipDecl),
+    }
+    fn declares(node: Node<'_>, name: &str) -> bool {
+        let mut hit = matches!(
+            node,
+            Node::Stmt(Stmt::Let(LetDecl { binding: LetBinding::Ident { name: n, .. }, .. })) if n == name
+        );
+        walk::children(node, &mut |c, _| hit = hit || declares(c, name));
+        hit
+    }
+    fn find<'a>(
+        node: Node<'a>,
+        planes: &mut Vec<Plane<'a>>,
+        at: (u32, u32),
+        out: &mut Option<(String, Vec<Plane<'a>>)>,
+    ) {
+        if out.is_some() {
+            return;
+        }
+        if let Node::Stmt(Stmt::Emit(e)) = node
+            && range_contains_1based(&e.range, at.0, at.1)
+        {
+            *out = Some((e.name.clone(), planes.clone()));
+            return;
+        }
+        let pushed = match node {
+            Node::Stmt(Stmt::For(f)) => Some(Plane::Loop(&f.body)),
+            Node::Stmt(Stmt::ChipDecl(c)) | Node::Decl(TopDecl::Chip(c)) if c.is_fn => {
+                Some(Plane::Fn(c))
+            }
+            _ => None,
+        };
+        if let Some(p) = pushed {
+            planes.push(p);
+        }
+        walk::children(node, &mut |c, _| find(c, planes, at, out));
+        if pushed.is_some() {
+            planes.pop();
+        }
+    }
+    let at = (
+        (line + 1) as u32,
+        (char_col_to_byte(line_text(source, line), col) + 1) as u32,
+    );
+    let mut out = None;
+    walk::script_children(ast, &mut |n, _| find(n, &mut Vec::new(), at, &mut out));
+    let (name, planes) = out?;
+    // The bodies the emit leaves, innermost first, up to one that declares
+    // the signal (a `fn` declares its own outputs too).
+    let mut left_fn = false;
+    let mut left_loop = false;
+    for plane in planes.iter().rev() {
+        let (body, is_fn) = match plane {
+            Plane::Loop(b) => (*b, false),
+            Plane::Fn(c) => {
+                if c.outputs.iter().any(|o| o.name == name) {
+                    break;
+                }
+                (&c.body, true)
+            }
+        };
+        if declares(Node::Block(body), &name) {
+            break;
+        }
+        left_fn |= is_fn;
+        left_loop |= !is_fn;
+    }
+    let what = if left_fn {
+        format!(
+            "**Emit out of a `fn` body**: no wire can leave a function's plane, so this sets a flag the call \
+             returns, and each call fires `{name}` off its `Completed`, on the caller's chain once the call has \
+             finished."
+        )
+    } else if left_loop {
+        format!(
+            "**Emit out of a `for` body**: an exec cannot leave the body, so this adds one to a hidden counter var \
+             outside it, and the counter's value fires `{name}`. It fires **one tick later**, after the body's chain \
+             finishes, and once however many times it is emitted that tick. Every other `emit {name}` counts into \
+             the same var and fires `{name}` once its chain has finished, taking this one with it that tick."
+        )
+    } else {
+        return None;
+    };
+    Some(format!("```wirescript\nemit {name}\n```\n{what}"))
 }
 
 /// The "fill missing match arms" edit for a cursor on or inside a `match` that

@@ -626,6 +626,49 @@ fn fn_decl_takes_the_mod_grammar() {
 }
 
 #[test]
+fn test_marks_a_fn_mod_or_chip() {
+    use crate::test_entry::TestKind;
+    let src = "@test fn smoke() { }\n\n@test\nfn other() { }\nfn plain() { }\n\
+               @test mod m() { }\nmod pm() { }\n@test chip C() { }\nchip P() { }";
+    let r = crate::parser::parse(src, "test");
+    assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
+    let flags: Vec<(&str, &str, bool)> = r
+        .ast
+        .decls
+        .iter()
+        .map(|d| match d {
+            TopDecl::Chip(c) => (c.name.as_str(), c.kind_label(), c.is_test),
+            d => panic!("expected a fn, mod or chip, got {d:?}"),
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            ("smoke", "fn", true),
+            ("other", "fn", true),
+            ("plain", "fn", false),
+            ("m", "mod", true),
+            ("pm", "mod", false),
+            ("C", "chip", true),
+            ("P", "chip", false),
+        ]
+    );
+    let tests: Vec<(String, TestKind)> = crate::test_entry::list_tests(src, "test")
+        .into_iter()
+        .map(|t| (t.name, t.kind))
+        .collect();
+    assert_eq!(
+        tests,
+        [
+            ("smoke".to_string(), TestKind::Fn),
+            ("other".to_string(), TestKind::Fn),
+            ("m".to_string(), TestKind::Mod),
+            ("C".to_string(), TestKind::Chip),
+        ]
+    );
+}
+
+#[test]
 fn parse_anonymous_output_defaults_to_underscore() {
     let r = crate::parser::parse("chip Double(x: int) -> int { out _ = x * 2 }", "test");
     assert!(r.diagnostics.is_empty(), "diags: {:?}", r.diagnostics);
@@ -803,7 +846,7 @@ fn decl_annotation_errors() {
             "@middle in a: bool",
             &[
                 "unknown annotation '@middle'",
-                "expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, or @sliced",
+                "expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, @sliced, or @test",
             ],
             "in",
         ),
@@ -862,6 +905,60 @@ fn decl_annotation_errors() {
             "@label(\"x\") mod inc(v: int) -> int { return v + 1 }",
             &["annotations are not allowed on 'mod'"],
             "mod",
+        ),
+        (
+            "@test on a var",
+            "@test var x: int = 0",
+            &["@test must be followed by a top-level `fn`"],
+            "var",
+        ),
+        (
+            "@test on an anonymous chip",
+            "@test chip { }",
+            &["@test must be followed by a top-level `fn`, `mod` or named `chip`"],
+            "anon chip",
+        ),
+        (
+            "@test on a const mod",
+            "@test const mod t() { }",
+            &["@test must be followed by a top-level `fn`, `mod` or named `chip`"],
+            "mod",
+        ),
+        (
+            "@test with another annotation on a chip",
+            "@test @closed chip C() { }",
+            &["a `@test chip` takes no annotation besides @test"],
+            "chip",
+        ),
+        (
+            "@test with another annotation on a mod",
+            "@test @label(\"x\") mod t() { }",
+            &["a `@test mod` takes no annotation besides @test"],
+            "mod",
+        ),
+        (
+            "@test with another annotation on a fn",
+            "@test @closed fn t() { }",
+            &["a `@test fn` takes no annotation besides @test"],
+            "mod",
+        ),
+        (
+            "two @test",
+            "@test @test fn t() { }",
+            &["duplicate @test"],
+            "mod",
+        ),
+        (
+            "@test inside a handler",
+            "in go: exec\non go { @test var n: int = 0 }",
+            &["@test must be followed by a top-level `fn`"],
+            "in",
+        ),
+        (
+            "@test on a fn inside a chip",
+            "chip C() { @test fn t() { } }",
+            &["@test must be followed by a top-level `fn`"],
+            "chip",
         ),
     ];
     let mut failures = Vec::new();

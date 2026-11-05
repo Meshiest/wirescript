@@ -1,0 +1,8 @@
+0 team Builder alice
+0 team Red bob
+0 player alice user alice
+0 player bob user bob
+0 player carol user carol
+1 join alice
+2 join bob
+3 join carol

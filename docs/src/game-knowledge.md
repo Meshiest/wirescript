@@ -11,6 +11,7 @@ game does with the result, plus the practical tips that follow from it.
 - [Input Action Names](#input-action-names)
 - [DisplayText Screen Placement](#displaytext-screen-placement)
 - [References in wire values](#references-in-wire-values)
+- [How a Tick Runs](#how-a-tick-runs)
 - [Loop Ticks](#loop-ticks)
 - [Players and Components](#players-and-components)
 <!-- /toc -->
@@ -303,6 +304,92 @@ feature (see [Reference values](types.md#reference-values)):
 - `FormatText` prints a var ref as `Var`, an array ref as `Array Var`, and a
   brick as `Brick`.
 
+## How a Tick Runs
+
+Measured in game with self-reporting circuits. These are the rules a program
+can rely on, and the two it cannot.
+
+**A tick is one frame.** The game runs its logic once per frame, as fast as it
+renders, so `DeltaTime()` varies from tick to tick. Time-based gates
+(`Sleep`, `Clock`, `Timer`) add up `DeltaTime()` until they reach their
+interval, so they fire on whole ticks, never between them.
+
+**An exec input fires when its value changes to something truthy.** A plain
+value wired into an exec input (what `on <expression>` compiles to) fires once
+per change to true, not on every tick it stays true:
+
+- a bool held true for several ticks fires once, when it turns true
+- an int fires on every change to a nonzero value (0 to 1, 1 to 2, 0 to -1),
+  but not on a change to 0; a counter that goes up every tick fires every tick,
+  which is how `on tick` works
+- a string fires on a change to anything but `""`, `"0"` and `"false"`
+- a constant never fires, not even when the grid loads
+
+**Arithmetic settles within the tick.** A change works through any number of
+pure gates (math, compares, string building) in the same tick, in whatever
+order they were placed.
+
+**Inside a handler, writes are visible to the handler's own reads, not to
+everything else.** After `x = 7` in a handler, a later read of `x` in that
+handler sees 7. A value computed from `x` outside the handler (a top-level
+`let`, or a select tree in a chip) still has its old value until the handler
+finishes, so a display rebuilt in the same handler that changed the value shows
+the old value. Rebuild it on the next tick, or compute the text inside the
+handler from the values the handler just wrote.
+
+**After a handler finishes:**
+
+- A handler that runs later in the same tick sees the updated values.
+- Reactions to the writes (`on Change(x)`, `on x > 5`) run after the handler,
+  and before the next tick's handlers.
+- `on Change(x)` reacts to a change of value, not to a write: writing a var
+  its own value, or writing 9 and then 0 back in one handler, fires nothing.
+- A call forked into a chip (`F().exec`, `F(exec = emit)`) runs once the
+  handler that forked it has finished.
+
+**Next tick:** a custom event arrives on the tick after it is sent, and an
+event handler that sends another adds a tick per hop. `buffer emit` lands on
+the next tick. `SleepTicks(_, delay = N)` resumes N ticks later, or 1 for
+`delay = 0`.
+
+**One branch at a time.** Where one exec point drives several things (a fork,
+an `emit` with a listener, several handlers on one event), each runs to
+completion before the next starts. Nothing runs halfway and interleaves.
+
+**A signal runs once per tick.** An exec fired from several places (two
+`emit`s of one signal, two handlers that emit it) meets in an Exec Union,
+which passes one pulse per tick, so the signal's handlers run once.
+
+**Not visible in the source, so do not depend on it:**
+
+- The order of several handlers triggered by the same change, such as two
+  `on tick` handlers. It is fixed for a given save, but set by how the
+  compiled gates are laid out and wired: a handler that emits a signal runs
+  with that signal's listeners, for one. A handler that reads state another
+  handler writes can see it either before or after that write, so give each
+  piece of state one writer.
+- The order custom events from different senders arrive in.
+
+**At load,** the Load Event runs before the first tick handler, and gates
+already hold the values computed from their stored inputs: a var initialized to
+5 reads 5, and a value computed from it is ready too. A `buffer` starts from
+its own stored output, so it reads 0 at load and its input's value one tick
+later.
+
+**Text.** Interpolation (`"${x}"`) and `..` print numbers differently:
+
+| Value | `"${x}"` | `"" .. x` |
+|---|---|---|
+| `1000` | `1000` | `1000` |
+| `1.0 / 3.0` | `0.333` | `0.333333` |
+| `123456.789` | `123456.789` | `123457` |
+| `1e20` | `100000000000000000000` | `1e+20` |
+| `true` | `true` | `true` |
+
+Interpolation rounds to 3 decimals, ties to even (`0.0625` prints `0.062`).
+`..` prints 6 significant digits, switching to an exponent outside roughly
+0.0001 to 1,000,000.
+
 ## Loop Ticks
 
 A `for` loop runs its entire body, every iteration, to completion within the
@@ -318,6 +405,13 @@ edge, costs a tick per iteration. That is no longer the only option: a bounded
 sweep that must finish before the tick ends belongs in a `for` now. Keep the
 back-edge form for work that should stay spread across ticks on purpose, such
 as a slow reveal or a rate-limited rebuild.
+
+**No exec leaves a loop body.** An exec wired from inside a `for` body to a
+gate outside it runs nothing, and an Exec Union it reaches passes nothing else
+that tick. A plain pulse that meets, in an Exec Union, a value a loop body
+changed that tick is lost too. Wirescript routes such an `emit`, and every
+other emit of its signal, through a counter var instead: the target fires
+once per tick, one tick later when only the loop emitted.
 
 ## Players and Components
 

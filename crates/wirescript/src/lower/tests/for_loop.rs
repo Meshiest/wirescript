@@ -377,6 +377,48 @@ fn a_var_declared_in_the_body_lives_inside_the_plane() {
 }
 
 #[test]
+fn an_emit_out_of_the_body_counts_into_a_var_outside() {
+    // The game runs nothing an exec reaches through a loop body's boundary
+    // pin, and an Exec Union it reaches passes nothing else that tick. The
+    // emit adds one to a counter outside the plane instead, whose value
+    // drives the signal; a signal the body declares stays a plain exec.
+    let r = compile_ok(
+        "let ping: exec\nvar n: int = 0\non ping { n += 1 }\nin go: exec\non go { emit ping\n for i in 0..3 { emit ping\n let own: exec\n on own { n += 2 }\n emit own } }",
+    );
+    let child = only_chip(&r, "loop plane");
+    let exec_out = child.outputs.iter().any(|id| {
+        child.nodes[id]
+            .ports
+            .outputs
+            .iter()
+            .any(|p| matches!(p.ty, crate::ir::Type::Exec))
+    });
+    assert!(!exec_out, "no exec may leave the plane");
+    let counter = r
+        .module
+        .nodes
+        .values()
+        .find(|n| n.gate_class == gc::VAR && n.note.as_deref() == Some("plane emit counter"))
+        .expect("the counter is a var on the outer grid");
+    assert!(
+        r.module
+            .wires
+            .iter()
+            .any(|w| w.source.node_id == counter.id && w.source.port == WirePort::Value),
+        "the counter's value drives the signal"
+    );
+    assert_eq!(
+        child
+            .nodes
+            .values()
+            .filter(|n| n.gate_class == gc::VAR_INCREMENT)
+            .count(),
+        2,
+        "the body counts the outer emit and runs its own handler's `n += 2`"
+    );
+}
+
+#[test]
 fn a_loop_inside_a_chip_stays_on_that_chips_grid() {
     let r = compile("var t: int = 0\nin go: exec\nchip { on go { for i in 0..3 { t += 1 } } }");
     assert!(
@@ -551,6 +593,32 @@ fn an_inlined_await_is_reported_at_every_call_site() {
          in go: exec\non go { for i in 0..3 { waiter() }\n for j in 0..2 { waiter() } }",
     );
     assert_code_count(&r.diagnostics, "WS079", 2);
+}
+
+/// An `await` in a `fn` body is told about functions, not loop bodies; one in
+/// a loop inside the `fn` keeps the loop wording.
+#[test]
+fn an_await_in_a_fn_body_names_the_function() {
+    let r = compile(
+        "let done: exec\nin go: exec\nfn f() -> int { await done\n return 1 }\n\
+         fn g() -> int { for i in 0..2 { await done }\n return 1 }\n\
+         on go { let a = f()\n let b = g() }",
+    );
+    let messages: Vec<&str> = r
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "WS079")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages.iter().any(|m| m.starts_with("a function runs")),
+        "{messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.starts_with("a loop body runs")),
+        "{messages:?}"
+    );
 }
 
 /// A counted loop has no element to destructure, so `{ }` names the loop's

@@ -1,0 +1,19 @@
+alice joined on 'Red'
+bob joined on 'Blue'
+carol joined on ''
+lookup 'Red' ''
+now on Blue
+[carol team pinned] false
+carol joined team Blue
+alice joined team Blue
+alice left team Red
+bob left team Blue
+kills 5 deaths 0 flags 5
+round 1 current 1
+round 1 over
+round 2 current 2
+[alice wins]
+[team Blue wins]
+[team Red wins]
+[status] Round over
+alice left team Blue

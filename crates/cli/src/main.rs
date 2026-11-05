@@ -60,6 +60,12 @@ enum Command {
         /// default, so this is redundant; a module-level `@nofold` still wins.
         #[arg(long, conflicts_with = "no_fold")]
         fold: bool,
+
+        /// Compile a test build: each `testing.*` statement becomes the check
+        /// it describes, for an in-game self-checking program. Without it they
+        /// compile to nothing.
+        #[arg(long)]
+        tests: bool,
     },
     /// Format wirescript files in place. Each file follows the `.editorconfig`
     /// files that govern it (indentation, `max_line_length`, `end_of_line`,
@@ -95,6 +101,96 @@ enum Command {
         #[arg(long)]
         no_validate: bool,
     },
+    /// Run a program in the gate simulator and print what it says in chat.
+    /// Takes a `.ws` source, a `.wsir` program or a `.brz` save.
+    Sim {
+        /// The program to run.
+        source: PathBuf,
+
+        #[command(flatten)]
+        sim: SimArgs,
+    },
+    /// Run every `@test` (a `fn`, `mod` or named `chip`) in the gate
+    /// simulator, and compare each program
+    /// that has a `.expected` file beside it with that file. A test fails when
+    /// it prints a chat line starting with `FAIL` or the simulation stops with
+    /// an error. A `.script` file beside a program drives its world.
+    Test {
+        /// Files, or directories to search for `.ws` files.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+
+        /// Run each test through this tick (tick 0 is the Load Event).
+        #[arg(long, default_value_t = 600)]
+        ticks: u64,
+
+        /// Seconds each tick advances timers by.
+        #[arg(long, default_value_t = 1.0 / 60.0)]
+        dt: f64,
+
+        /// Run handlers fired by the same change in a seeded order.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Race mode: also run every program under N seeded handler orders
+        /// and fail it when its chat changes with the order.
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        race: u64,
+    },
+}
+
+mod test_runner;
+
+/// How a simulation runs.
+#[derive(clap::Args, Debug)]
+struct SimArgs {
+    /// Run through this tick (tick 0 is the Load Event).
+    #[arg(long, default_value_t = 600)]
+    ticks: u64,
+
+    /// Seconds each tick advances timers by.
+    #[arg(long, default_value_t = 1.0 / 60.0)]
+    dt: f64,
+
+    /// Run handlers fired by the same change, and custom events, in a seeded
+    /// order instead of save order (the game fixes neither).
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// Prefix each chat line with the tick it was printed on.
+    #[arg(long)]
+    show_ticks: bool,
+
+    /// Run save order and then seeds 0 to N-1, printing one line per run:
+    /// the seed (`-` for save order), a tab, and the chat lines joined by
+    /// ` || `.
+    #[arg(long, value_name = "N", conflicts_with = "seed")]
+    seeds: Option<u64>,
+
+    /// A world script: players joining, chat commands, sweep results
+    /// (`<tick> join alice`, `<tick> chat alice /roll 3`).
+    #[arg(long, value_name = "FILE")]
+    script: Option<PathBuf>,
+
+    /// Frame times to replay, in microseconds, one per tick from tick 1 (probe
+    /// 17's `P17 dt <tick>:` lines can be pasted as they are); the last one
+    /// repeats. Tick 0, the Load Event's frame, takes `--dt`.
+    #[arg(long, value_name = "FILE")]
+    dt_file: Option<PathBuf>,
+
+    /// Print to stderr how long loading and running took and how much ran.
+    #[arg(long)]
+    stats: bool,
+
+    /// Run the Load Event, then read commands from stdin: script lines
+    /// without a tick (`join alice`, `input alice Forward 1`), queued for
+    /// the next tick, and `step [N]`, `screen <player>`, `quit`.
+    #[arg(long, conflicts_with = "seeds")]
+    interactive: bool,
+
+    /// Run this `@test` once on load, as `wirescript test` does.
+    #[arg(long, value_name = "NAME")]
+    test: Option<String>,
 }
 
 /// Where the outer microchip goes, and whether chips open.
@@ -162,6 +258,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             emit_ir,
             no_fold,
             fold,
+            tests,
         } => {
             let fold_mode = match (fold, no_fold) {
                 (true, true) => unreachable!("clap conflicts_with rules out --fold --no-fold"),
@@ -178,6 +275,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 dump_ir,
                 emit_ir,
                 fold_mode,
+                tests,
             )
         }
         Command::Assemble {
@@ -188,7 +286,223 @@ fn run() -> Result<(), Box<dyn Error>> {
             no_validate,
         } => run_assemble(&source, output, &place, check_roundtrip, !no_validate),
         Command::Fmt { paths, check } => run_fmt(&paths, check),
+        Command::Sim { source, sim } => run_sim(&source, &sim),
+        Command::Test {
+            paths,
+            ticks,
+            dt,
+            seed,
+            race,
+        } => {
+            check_dt(dt)?;
+            test_runner::run_tests(
+                &paths,
+                &test_runner::TestArgs {
+                    ticks,
+                    dt,
+                    seed,
+                    race,
+                },
+            )
+        }
     }
+}
+
+// ---------- sim ----------
+
+/// The frame times in a `--dt-file`: every number after an optional
+/// `P17 dt <tick>:` prefix, in microseconds, as seconds.
+fn read_dt_file(path: &Path) -> Result<Vec<f64>, Box<dyn Error>> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let values = line.split_once(':').map_or(line, |(_, rest)| rest);
+        for word in values.split_whitespace() {
+            let us: f64 = word
+                .parse()
+                .map_err(|_| format!("{}: {word:?} is not a number", path.display()))?;
+            let dt = us / 1_000_000.0;
+            check_dt(dt)?;
+            out.push(dt);
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("{} holds no frame times", path.display()).into());
+    }
+    Ok(out)
+}
+
+/// A frame time the timers can count: one microsecond to one hour.
+fn check_dt(dt: f64) -> Result<(), Box<dyn Error>> {
+    if (1e-6..=3600.0).contains(&dt) {
+        Ok(())
+    } else {
+        Err(format!("--dt must be between 0.000001 and 3600 seconds, not {dt}").into())
+    }
+}
+
+/// Step `sim` by commands read from stdin, printing chat as it is said.
+fn run_interactive(sim: &mut wirescript_sim::Sim) -> Result<(), Box<dyn Error>> {
+    use std::io::BufRead;
+    const HELP: &str = "commands: step [N], screen <player>, quit; anything else is a script line without its tick (join alice, chat alice /go, input alice Forward 1)";
+    sim.run_until(0)?;
+    eprintln!("tick 0 done. {HELP}");
+    for line in std::io::stdin().lock().lines() {
+        let line = line?;
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words.as_slice() {
+            [] => {}
+            ["quit" | "exit"] => break,
+            ["help"] => eprintln!("{HELP}"),
+            ["step"] | ["step", _] => {
+                let n: u64 = match words.get(1) {
+                    Some(n) => match n.parse() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            eprintln!("step takes a number of ticks");
+                            continue;
+                        }
+                    },
+                    None => 1,
+                };
+                let target = sim.machine.tick() + n;
+                sim.run_until(target)?;
+                eprintln!("tick {target} done");
+            }
+            ["screen", name] => match sim.machine.world.screen(name) {
+                Some(texts) if texts.is_empty() => eprintln!("{name}'s screen is empty"),
+                Some(texts) => {
+                    for (id, text) in texts {
+                        println!("[{name} text {id}] {}", wirescript_sim::script_world::escape_controls(&text));
+                    }
+                }
+                None => eprintln!("no player named {name}"),
+            },
+            _ => match sim.push(&line) {
+                Ok(()) => eprintln!("queued for tick {}", sim.machine.tick() + 1),
+                Err(e) => eprintln!("{e}"),
+            },
+        }
+    }
+    Ok(())
+}
+
+fn run_sim(source: &Path, args: &SimArgs) -> Result<(), Box<dyn Error>> {
+    use wirescript_sim::script_world::escape_controls;
+    use wirescript_sim::{Dt, Loaded, ScriptWorld, SimOptions};
+    check_dt(args.dt)?;
+    let file = source.to_string_lossy().to_string();
+    let ext = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let started = std::time::Instant::now();
+    let loaded = match ext.as_str() {
+        "brz" => {
+            let bytes =
+                fs::read(source).map_err(|e| format!("cannot read {}: {e}", source.display()))?;
+            Loaded::from_brz(&bytes)?
+        }
+        "wsir" => {
+            let text = fs::read_to_string(source)
+                .map_err(|e| format!("cannot read {}: {e}", source.display()))?;
+            let program = wirescript::wsir::parse_program(&text, &file)?;
+            let fold = if program.settings.no_fold {
+                FoldMode::ForceOff
+            } else {
+                FoldMode::Auto
+            };
+            let emit = wirescript::assemble_options(&file, fold);
+            Loaded::from_program(&program, &emit)?
+        }
+        _ => {
+            let src = fs::read_to_string(source)
+                .map_err(|e| format!("cannot read {}: {e}", source.display()))?;
+            let mut input = wirescript::CompileInput::new(&src, &file).test_build(true);
+            if let Some(name) = &args.test {
+                input = input.test_entry(name);
+            }
+            let emit = wirescript::emit::EmitOptions::default();
+            let result = wirescript::compile_to_world(input, emit)?;
+            report_diagnostics(&result.diagnostics, false);
+            Loaded::from_world(&result.world, &result.node_bricks, &result.program)?
+        }
+    };
+    let dt = match &args.dt_file {
+        Some(path) => {
+            let mut schedule = vec![args.dt];
+            schedule.extend(read_dt_file(path)?);
+            Dt::Schedule(schedule)
+        }
+        None => Dt::Constant(args.dt),
+    };
+    let opts = |seed| SimOptions {
+        seed,
+        dt: dt.clone(),
+    };
+    let script = match &args.script {
+        Some(path) => Some(
+            fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
+    let world = || -> Result<ScriptWorld, Box<dyn Error>> {
+        Ok(match &script {
+            Some(text) => ScriptWorld::from_script(text)?,
+            None => ScriptWorld::default(),
+        })
+    };
+    if let Some(n) = args.seeds {
+        let mut failed = 0;
+        for seed in std::iter::once(None).chain((0..n).map(Some)) {
+            let mut sim = loaded.start(Box::new(world()?), opts(seed));
+            let outcome = sim.run_until(args.ticks);
+            let mut lines: Vec<String> = sim.chat().iter().map(|l| escape_controls(&l.text)).collect();
+            if let Err(e) = outcome {
+                failed += 1;
+                lines.push(format!("Error: {e}"));
+            }
+            let label = seed.map_or("-".to_string(), |s| s.to_string());
+            println!("{label}\t{}", lines.join(" || "));
+        }
+        if failed > 0 {
+            return Err(format!("{failed} run(s) ended in an error").into());
+        }
+        return Ok(());
+    }
+    // Lines print as they are said, so a run that errors still shows them.
+    let mut world = world()?;
+    world.echo = true;
+    world.echo_ticks = args.show_ticks;
+    let loaded_at = started.elapsed();
+    let gates = loaded.graph.gates.len();
+    let mut sim = loaded.into_sim(Box::new(world), opts(args.seed));
+    if args.interactive {
+        return run_interactive(&mut sim);
+    }
+    let outcome = sim.run_until(args.ticks);
+    if args.stats {
+        let run = started.elapsed().saturating_sub(loaded_at);
+        let ticks = sim.machine.tick();
+        let (steps, evals) = sim.machine.stats();
+        let secs = run.as_secs_f64().max(1e-9);
+        eprintln!(
+            "stats: {} gates; compile and load {:.3} s; {} ticks in {:.3} s ({:.0} ticks/s); {} exec gates run ({:.0}/s), {} pure gates evaluated ({:.0}/s)",
+            gates,
+            loaded_at.as_secs_f64(),
+            ticks + 1,
+            secs,
+            (ticks + 1) as f64 / secs,
+            steps,
+            steps as f64 / secs,
+            evals,
+            evals as f64 / secs,
+        );
+    }
+    outcome?;
+    Ok(())
 }
 
 // ---------- fmt ----------
@@ -206,7 +520,9 @@ fn ws_files(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         let p = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if p.is_dir() {
+        // A linked directory is not followed: a link back up the tree would
+        // loop.
+        if entry.file_type()?.is_dir() {
             if !name.starts_with('.') && name != "target" && name != "node_modules" {
                 ws_files(&p, out)?;
             }
@@ -301,6 +617,7 @@ fn write_world(world: &brdb::World, out_path: &Path) -> Result<(), Box<dyn Error
 
 // ---------- wirescript compile ----------
 
+#[expect(clippy::too_many_arguments, reason = "one argument per `compile` flag")]
 fn run_wirescript(
     source: &Path,
     output: Option<PathBuf>,
@@ -310,6 +627,7 @@ fn run_wirescript(
     dump_ir: bool,
     emit_ir: Option<PathBuf>,
     fold_mode: FoldMode,
+    test_build: bool,
 ) -> Result<(), Box<dyn Error>> {
     let src =
         fs::read_to_string(source).map_err(|e| format!("cannot read {}: {e}", source.display()))?;
@@ -320,6 +638,8 @@ fn run_wirescript(
         file: &file,
         module_name,
         fold_mode,
+        test_entry: None,
+        test_build,
     };
     let result =
         wirescript::compile_to_world(input, place.apply(wirescript::emit::EmitOptions::default()))?;

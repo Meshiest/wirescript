@@ -14,6 +14,33 @@ pub(super) fn check_signature(ctx: &mut TypeCheckCtx<'_>, c: &ChipDecl) {
     if c.is_fn {
         check_fn(ctx, c);
     }
+    if c.is_test {
+        check_test(ctx, c);
+    }
+}
+
+/// A test runs from a call that passes no arguments, names no type and reads
+/// no result.
+fn check_test(ctx: &mut TypeCheckCtx<'_>, c: &ChipDecl) {
+    let offending = c
+        .type_params
+        .first()
+        .map(|p| p.range.clone())
+        .or_else(|| c.inputs.first().map(|p| p.range.clone()))
+        .or_else(|| c.rest.as_ref().map(|_| c.range.clone()))
+        .or_else(|| c.outputs.first().map(|o| o.range.clone()));
+    if let Some(range) = offending {
+        ctx.emit(
+            "WS124",
+            format!(
+                "`@test {} {}` must take no parameters or type parameters and return nothing: \
+                 a test runs from a call that passes no arguments and reads no result",
+                c.kind_label(),
+                c.name
+            ),
+            range,
+        );
+    }
 }
 
 /// A default value is a constant of its parameter's type, on a trailing

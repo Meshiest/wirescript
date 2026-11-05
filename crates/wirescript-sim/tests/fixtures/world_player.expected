@@ -1,0 +1,15 @@
+alice build true admin true trusted true
+bob build false admin false trusted false
+[alice can respawn] false
+[alice respawn]
+new body true
+alice spawned
+[bob status] Thinking
+[bob message box] Hi: Hello there
+[bob ok/cancel box] Next: Continue?
+[bob yes/no box] Start: Ready?
+[bob text box] Name: Your name?
+find 'alice': true 'alice'
+find 'SMITH': true 'alice'
+find 'bo': false 'bob'
+find 'nobody': false ''

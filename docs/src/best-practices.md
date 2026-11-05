@@ -109,8 +109,8 @@ on tick {
 | Runs | As part of the caller | As part of the caller | When its call fires, to the end | Every iteration in one tick (`@sliced`: several) |
 | Pure (no exec) | Yes | Yes | No: an exec chain or `exec = trigger` | No: exec only |
 | Reads outer `in` ports and `let`s | Yes | Yes | No (`WS113`) | Yes |
-| `emit` | Yes | Yes | No (`WS113`) | Yes |
-| Outer `var`, array, map | Wired directly | Wired directly | Through a handle var in the plane | Through the plane's pins |
+| `emit` | Yes | Yes | Off the call's `Completed` (a result slot per signal) | One tick late, once per tick |
+| Outer `var`, array, map | Wired directly | Wired directly | As a hidden parameter (one input slot each) | Through the plane's pins |
 | Named multi-outputs | Via a returned record | Yes (`-> (a: int, b: int)`) | Yes (`-> (a: int, b: int)`) | Write a `var` before the loop |
 | `ref`/`*` params | Yes | Yes | Yes | n/a |
 
@@ -154,8 +154,8 @@ fixes further down, which are listed in order of impact.
 
 ## When to use `fn`, and its limits
 
-A `fn` costs its body once, plus a Function Input per parameter slot, a Function Output
-per result, a handle var per outer `var`, array or map its body touches, and one Function
+A `fn` costs its body once, plus a Function Input per parameter slot and per outer
+`var`, array or map its body touches, a Function Output per result, and one Function
 Call gate at each call site. A tiny body (a compare, a lookup) called from two or three
 places is cheaper as a `mod`, because inlining it costs about as much as the call. Use
 a `fn` when the body is large or the call sites are many.
@@ -164,7 +164,7 @@ A `fn`'s local `var` is one gate however many sites call it, and it resets when 
 starts. A `mod`'s local `var` is one gate per call site.
 
 A `fn` body receives only its parameters and sends back only its results. The one
-exception is outer storage, which it reaches through handles. Each of the limits below
+exception is outer storage, which each call passes in as a hidden parameter. Each of the limits below
 has a workaround.
 
 **Ports and computed `let`s do not reach a `fn` body (`WS113`).** Pass the value as a
@@ -189,7 +189,11 @@ on Clock(interval = 0.1) {
 }
 ```
 
-**A `fn` cannot `emit` (`WS113`).** Return a flag and let the caller fire the output:
+**An `emit` in a `fn` fires when the call finishes.** The call returns a flag in a spare
+result slot and fires the signal off its `Completed` (see
+[Emitting from a `for` or `fn` body](statements.md#emitting-from-a-for-or-fn-body)), so
+several in one call fire once. To choose where on the caller's chain it fires, return a
+flag yourself and let the caller emit:
 
 ```wirescript
 @top out placed: exec
@@ -208,8 +212,8 @@ on press {
 ```
 
 If one call can cause several events that each need their own pulse, count them in a
-`var` inside the `fn`. The caller then fires the output that many times from a loop:
-`for n in 0..hits { emit hit }`.
+`var` inside the `fn` and hand on the count: a signal runs its handlers at most once per
+tick, so N pulses take N ticks.
 
 **Signature limits.** A call carries at most 8 values in and 8 out, and
 a record parameter takes one slot per field (`WS115`). A `fn` cannot return a record,
@@ -700,8 +704,8 @@ nothing is waiting on it.
   across the copies, so hoisting a repeated read out of an unrolled mod by hand
   usually saves very little.
 - **A `fn` costs its body once**, plus one Function Call gate per call site, a
-  Function Input per parameter slot, a Function Output per result and a handle
-  var per outer `var`, array or map its body touches.
+  Function Input per parameter slot and per outer `var`, array or map its body
+  touches, and a Function Output per result.
 - **A `for` costs its body once**, plus the loop chip and its entry, and about
   five always-live gates when its bound is a runtime value.
 - **A `mod`'s local `var` becomes a storage gate at every call site.** Three

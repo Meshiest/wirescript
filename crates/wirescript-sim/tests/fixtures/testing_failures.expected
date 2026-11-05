@@ -1,0 +1,21 @@
+LOG testing_failures.ws:9: started with 1 element
+FAIL testing_failures.ws:10: always 1
+FAIL testing_failures.ws:11
+FAIL testing_failures.ws:12: assert failed: xs.length() == 2
+FAIL testing_failures.ws:13: the message 3
+FAIL testing_failures.ws:14: xs[0] expected 4, got 3
+FAIL testing_failures.ws:15: xs[0] expected 4, got 3 (first)
+FAIL testing_failures.ws:16: xs[0] expected 5, got 3
+FAIL testing_failures.ws:17: xs[0] expected not 3, got 3
+FAIL testing_failures.ws:18: p.x expected 2, got 1
+FAIL testing_failures.ws:18: p.tag.name expected b, got a
+FAIL testing_failures.ws:19: p expected not to equal p
+FAIL testing_failures.ws:20: xs[0] expected 9, got 3
+FAIL testing_failures.ws:21: xs[0] expected greater than 3, got 3
+FAIL testing_failures.ws:22: xs[0] expected not less than 4, got 3
+FAIL testing_failures.ws:23: 1.5 expected close to 1, got 1.5
+FAIL testing_failures.ws:24: 1.001 expected not close to 1, got 1.001
+FAIL testing_failures.ws:25: "abc" expected to contain d, got abc
+FAIL testing_failures.ws:26: "abc" expected not to contain b, got abc
+FAIL testing_failures.ws:27: xs expected to contain 4
+FAIL testing_failures.ws:28: xs expected not to contain 3

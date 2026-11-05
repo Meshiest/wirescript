@@ -1,0 +1,8 @@
+0 player alice user alice
+1 join alice
+2 spawn alice
+4 input alice E 1
+6 input alice E 0
+8 input alice E 1
+10 input alice Forward 0.8
+12 input alice Forward 0.9

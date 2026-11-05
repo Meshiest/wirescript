@@ -158,6 +158,8 @@ pub(super) fn wsir_and_diags(src: &str) -> (String, Vec<String>) {
         file: "t.ws",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
+        test_entry: None,
+        test_build: false,
     };
     let result = match crate::compile_to_world(input, crate::emit::EmitOptions::default()) {
         Ok(r) => r,

@@ -115,6 +115,11 @@ pub struct LowerInput<'a> {
     /// `ce_slot_key`. An unannotated `on CustomEvent(...)` param's `DataOut`
     /// port takes the inferred type rather than `Type::Float`.
     pub ce_slots: &'a CeSlotMap,
+    /// A test build: `testing.*` statements lower to their code.
+    pub test_build: bool,
+    /// The `if` each `testing.*` statement became (see
+    /// `ResolveResult::testing_stmts`), dropped unless `test_build`.
+    pub testing_stmts: &'a HashSet<RangeKey>,
 }
 
 /// Whether the certified constant-fold pass runs. `Auto` (the default) and
@@ -215,6 +220,64 @@ pub(in crate::lower) fn collect_value_emit_names(block: &Block, names: &mut Hash
             _ => true,
         },
     );
+}
+
+/// Every `emit name = value` below `decls`, by signal name, with the type
+/// typecheck gave each payload field (see `LowerCtx::emitted_payloads`). The
+/// first emit of a name wins, as the first one lowered makes the store.
+fn collect_emitted_payloads(
+    ctx: &LowerCtx<'_>,
+    decls: &[TopDecl],
+) -> HashMap<String, Vec<(String, Type)>> {
+    let mut out: HashMap<String, Vec<(String, Type)>> = HashMap::default();
+    for d in decls {
+        walk::walk(walk::Node::Decl(d), walk::Ctx::default(), &mut |n, _| {
+            if let walk::Node::Stmt(Stmt::Emit(e)) = n
+                && let Some(value) = &e.value
+                && !out.contains_key(&e.name)
+            {
+                let ty = |x: &Expr| unwrap_ref(&ctx.one_value_type_at(x.range()).unwrap_or(Type::Any));
+                let fields = match value {
+                    Expr::RecordLit { fields, .. } => fields
+                        .iter()
+                        .filter_map(|f| match f {
+                            RecordLitField::Named { name, value, .. } => Some((name.clone(), ty(value))),
+                            RecordLitField::Shorthand { name, range } => Some((
+                                name.clone(),
+                                ty(&Expr::Ident {
+                                    name: name.clone(),
+                                    range: range.clone(),
+                                }),
+                            )),
+                            RecordLitField::Spread { .. } => None,
+                        })
+                        .collect(),
+                    other => vec![(String::new(), ty(other))],
+                };
+                out.insert(e.name.clone(), fields);
+            }
+            true
+        });
+    }
+    out
+}
+
+/// WS056 for each payload an `await` read ahead of its emit that no emit
+/// wrote: the name matched an emit of another signal (a shadowed one).
+fn report_unwritten_payloads(ctx: &mut LowerCtx<'_>) {
+    for (key, field, range) in std::mem::take(&mut ctx.payload_reads_ahead) {
+        if !ctx.payloads_written.contains(&(key.clone(), field.clone())) {
+            let shown = key.split('#').next().unwrap_or(&key).to_string();
+            ctx.error(
+                "WS056",
+                format!(
+                    "`await {shown}` reads a payload no `emit {shown} = ...` of this signal sends; \
+                     the `emit` with that value is of another signal with the same name"
+                ),
+                &range,
+            );
+        }
+    }
 }
 
 /// A declaration scope of the program: its own top level (`None`), or an
@@ -555,6 +618,8 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         known_fn_names: Arc::new(collect_fn_names(input.ast)),
         imports: Arc::clone(&input.ast.imports),
         known_let_names: Arc::new(collect_let_names(input.ast)),
+        test_build: input.test_build,
+        testing_stmts: Arc::new(input.testing_stmts.clone()),
         consts: crate::const_scope::ConstScope::for_program(
             &input.ast.decls,
             &enum_defs,
@@ -672,6 +737,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             None => create_output_backing_var(&mut ctx, &name),
         }
     }
+    ctx.emitted_payloads = Arc::new(collect_emitted_payloads(&ctx, &input.ast.decls));
     // Pass 2: lower bodies.
     for d in &input.ast.decls {
         // Flush handler end execs before a non-handler declaration so code after
@@ -690,6 +756,8 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         }
         ctx.keep_top_dup_bindings(d);
     }
+
+    report_unwritten_payloads(&mut ctx);
 
     // Pass 2b: resolve runtime `@label(expr)` on top-level vars into dynamic
     // label wires. Runs after every top-level var/gate exists, and before the
@@ -769,6 +837,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         &whole_file,
         "inline_bare_scalar_literals",
         |m, _| {
+            let _ = floats_in_float_places(m);
             inline_bare_scalar_literals(m);
         },
     );
@@ -781,6 +850,11 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             |m, _| {
                 fold::fold_certified_constants(m);
                 localize_foreign_literals(m);
+                // A constant now a float may complete a fold (`Vec(-x, 0.0, 0.0)`).
+                if floats_in_float_places(m) {
+                    fold::fold_certified_constants(m);
+                    localize_foreign_literals(m);
+                }
             },
         );
     }
@@ -855,7 +929,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
             },
         );
     }
-    function::capture_through_handles(&mut module, diags);
+    function::capture_through_inputs(&mut module, diags);
     boundary_pins::synthesize_boundary_pins(&mut module);
     check_wires_resolve(
         &module,
@@ -1339,6 +1413,97 @@ fn type_aliases_of(decls: &[TopDecl]) -> impl Iterator<Item = (String, &TypeAlia
 fn inline_bare_scalar_literals(root: &mut Module) {
     let external = ExternalWires::of(root);
     root.walk_mut(&mut |_, m| inline_bare_scalar_literals_in(m, &external));
+}
+
+/// Make each integer `_Literal` whose every consumer is a `float` place a
+/// float: an integer constant there (a `mod` result evaluated at the call, a
+/// folded expression) is the float the program means, and a pin, an array
+/// element or a vector component keeps the kind it is given. Recurses into
+/// chip sub-modules; whether it changed any.
+fn floats_in_float_places(root: &mut Module) -> bool {
+    let external = ExternalWires::of(root);
+    let mut changed = false;
+    root.walk_mut(&mut |_, m| changed |= floats_in_float_places_in(m, &external));
+    changed
+}
+
+fn floats_in_float_places_in(module: &mut Module, external: &ExternalWires) -> bool {
+    let value_sym = *sym::VALUE;
+    // Per integer literal: (consumers, float consumers).
+    let mut consumers: HashMap<NodeId, (usize, usize)> = HashMap::default();
+    for w in &module.wires {
+        let Some(src) = module.nodes.get(&w.source.node_id) else {
+            continue;
+        };
+        if src.gate_class != gc::LITERAL
+            || !matches!(src.properties.get(&value_sym), Some(Literal::Int(_)))
+            || external.sources.contains(&w.source.node_id)
+        {
+            continue;
+        }
+        let e = consumers.entry(w.source.node_id).or_default();
+        e.0 += 1;
+        e.1 += usize::from(is_float_place(module, w.target));
+    }
+    let mut changed = false;
+    for (id, (all, float)) in consumers {
+        if all != float {
+            continue;
+        }
+        let Some(n) = module.nodes.get_mut(&id) else {
+            continue;
+        };
+        if let Some(Literal::Int(v)) = n.properties.get(&value_sym).cloned() {
+            std::sync::Arc::make_mut(&mut n.properties).insert(value_sym, Literal::Float(v as f64));
+            n.ports = std::sync::Arc::new(GateIO::source(Type::Float));
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Whether `target` takes a `float`: the value a store or a pin typed
+/// `float` keeps, a component of a vector, rotation, quaternion or color, or
+/// the element written into a `float[]`. A math gate's `float` port is not
+/// one: it takes either kind, and the kind decides the result.
+fn is_float_place(module: &Module, target: PortRef) -> bool {
+    let Some(t) = module.nodes.get(&target.node_id) else {
+        return false;
+    };
+    let stores = matches!(t.kind, NodeKind::Output)
+        || matches!(t.gate_class, gc::VAR_SET | gc::MAP_SET);
+    if stores
+        && t.ports
+            .inputs
+            .iter()
+            .any(|p| p.name == target.port.sym() && p.ty == Type::Float)
+    {
+        return true;
+    }
+    if matches!(
+        t.gate_class,
+        gc::MAKE_VECTOR | gc::MAKE_ROTATION | gc::MAKE_QUATERNION | gc::MAKE_COLOR
+    ) {
+        return true;
+    }
+    let float_array = |ty: &Type| match ty {
+        Type::Ref(inner) => matches!(&**inner, Type::Array(e) if **e == Type::Float),
+        Type::Array(e) => **e == Type::Float,
+        _ => false,
+    };
+    matches!(
+        t.gate_class,
+        gc::ARRAY_PUSH | gc::ARRAY_INSERT | gc::ARRAY_FILL | gc::ARRAY_SET_AT_INDEX
+    )
+        && target.port == WirePort::Value
+        && module.wires.iter().any(|w| {
+            w.target.node_id == target.node_id
+                && w.target.port == WirePort::ArrayVarRef
+                && module
+                    .nodes
+                    .get(&w.source.node_id)
+                    .is_some_and(|a| a.ports.outputs.iter().any(|p| float_array(&p.ty)))
+        })
 }
 
 /// Nodes with a wire stored outside their own module (a cross-module wire lives

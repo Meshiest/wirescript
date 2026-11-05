@@ -1,0 +1,13 @@
+0 team Red alice carol
+0 player alice user alice
+0 player bob user bob
+0 player carol user carol
+0 zone alice bob
+2 join bob
+3 join alice
+4 chat alice /count
+5 chat bob /run
+6 chat alice /count
+7 zone carol
+8 join carol
+9 chat alice /count

@@ -1,0 +1,7 @@
+# Two players join; one doubles a number twice.
+0 player alice user alice
+0 player bob user bob
+5 join alice
+9 join bob
+12 chat bob /double 21
+20 chat alice /double -4

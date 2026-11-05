@@ -1,0 +1,15 @@
+0 player alice user alice
+0 player bob user bob
+0 move alice 0 0 100
+0 aim alice 0 0 -1
+2 join alice
+3 join bob
+4 spawn alice
+5 damage alice 25 bob
+6 damage alice 10
+7 fire alice Pistol
+8 fire bob
+9 die alice bob
+10 spawn alice
+11 chat alice /body
+12 die bob

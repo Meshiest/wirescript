@@ -14,6 +14,7 @@ mimalloc.workspace = true
 clap.workspace = true
 brdb = { workspace = true, features = ["brz", "brdb"] }
 wirescript = { workspace = true, features = ["brdb-full"] }
+wirescript-sim = { workspace = true, features = ["compile"] }
 
 [lints]
 workspace = true

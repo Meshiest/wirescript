@@ -669,6 +669,8 @@ impl LowerCtx<'_> {
             foreign_literals,
             // A chip instantiated inside a template build is part of that build.
             template_build: self.template_build,
+            test_build: self.test_build,
+            testing_stmts: std::sync::Arc::clone(&self.testing_stmts),
             // One template per `(name, subst)` (keyed in
             // `lower_chip_call_instance`), so each instantiation builds its
             // own body under its frame, and every `T` in it resolves to the

@@ -1,0 +1,14 @@
+0 player alice user alice
+0 player alice name Alice Smith
+0 player alice permission Build
+0 player alice role Admin
+0 player alice trusted yes
+0 player bob user bob
+2 join alice
+3 join bob
+4 chat alice /respawn
+6 chat bob /ask
+7 chat alice /find alice
+8 chat alice /find SMITH
+9 chat alice /find bo
+10 chat alice /find nobody

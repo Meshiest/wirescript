@@ -24,8 +24,9 @@ use std::path::Path;
 
 use brdb::{Collision, World};
 
+use crate::collections::HashMap;
 use crate::intern::resolve;
-use crate::ir::{Module, Program, ProgramSettings, StyleValue, brick_color};
+use crate::ir::{Module, NodeId, Program, ProgramSettings, StyleValue, brick_color};
 use crate::layout::wall::assign_wall_slots;
 use crate::layout::{LayoutOptions, LayoutResult, layout_with_opts};
 
@@ -89,6 +90,9 @@ mod handles;
 pub struct Assembly {
     pub world: World,
     pub layout: LayoutResult,
+    /// The brick (`brdb::Brick::id`) each IR node became; a chip node maps to
+    /// its shell brick.
+    pub node_bricks: HashMap<NodeId, usize>,
 }
 
 /// The backend: lay `program` out and build its world. Reads nothing but the
@@ -110,8 +114,13 @@ pub fn assemble_with_phases(
         &LayoutOptions::for_program(&program.settings),
     );
     phase("emit");
-    let world = build_world(&program.module, &program.settings, &layout, opts)?;
-    Ok(Assembly { world, layout })
+    let (world, node_bricks) =
+        build_world_traced(&program.module, &program.settings, &layout, opts)?;
+    Ok(Assembly {
+        world,
+        layout,
+        node_bricks,
+    })
 }
 
 /// IR + placements -> in-memory `brdb::World`. The core build step under [`assemble`], for
@@ -122,6 +131,16 @@ pub fn build_world(
     layout: &LayoutResult,
     opts: &EmitOptions,
 ) -> Result<World, EmitError> {
+    build_world_traced(module, settings, layout, opts).map(|(world, _)| world)
+}
+
+/// [`build_world`], also returning the brick each node became.
+pub fn build_world_traced(
+    module: &Module,
+    settings: &ProgramSettings,
+    layout: &LayoutResult,
+    opts: &EmitOptions,
+) -> Result<(World, HashMap<NodeId, usize>), EmitError> {
     let mut world = World::new();
     world.meta.bundle.description.clone_from(&opts.description);
 
@@ -259,7 +278,7 @@ pub fn build_world(
     // Last: a handle names its target by the address the writer will give it,
     // which only the finished world fixes.
     handles::bake_handles(&mut world, &ctx, module)?;
-    Ok(world)
+    Ok((world, ctx.node_brick_ids))
 }
 
 /// Shared upright rotation for every chip grid entity: a pure -90 degrees about Y, pinned in

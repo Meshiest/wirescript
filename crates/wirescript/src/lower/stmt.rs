@@ -6,6 +6,7 @@ use crate::typecheck::ContainerKind;
 pub(super) fn lower_stmt(ctx: &mut LowerCtx<'_>, s: &Stmt) {
     match s {
         Stmt::Assign(a) => lower_assign(ctx, a),
+        Stmt::If(i) if ctx.drops(i) => {}
         Stmt::If(i) => lower_if(ctx, i),
         Stmt::Emit(e) => lower_emit(ctx, e),
         Stmt::Await(a) => ctx.with_nofold(a.no_fold, |ctx| lower_await(ctx, a)),
@@ -3244,6 +3245,18 @@ pub(super) fn lower_emit(ctx: &mut LowerCtx<'_>, s: &Emit) {
             return;
         }
         if let Some(out) = ctx.lookup_output(&s.name).cloned() {
+            // From inside a loop or `fn` plane the value cannot leave on a
+            // wire either: it is stored in a backing var beside the output.
+            let out_chip = ctx.find_node(out.node_id).and_then(|n| n.chip_id);
+            if ctx.current_exec.is_some()
+                && !ctx.output_backing_vars.contains_key(&s.name)
+                && plane_between(ctx, ctx.current_anon_chip, out_chip)
+            {
+                let saved_chip = ctx.current_anon_chip;
+                ctx.current_anon_chip = out_chip;
+                super::create_output_backing_var(ctx, &s.name);
+                ctx.current_anon_chip = saved_chip;
+            }
             // An output driven from more than one `emit` site is backed by a
             // PseudoVar: each site sets it on its own chain and the var feeds the
             // output once. A direct wire into a backed output would fan in with
@@ -3488,6 +3501,13 @@ fn signal_name_of(e: &Expr) -> Option<&str> {
 /// Get (or create) the hidden payload store var for `sig`'s `field`
 /// (`""` = scalar payload).
 fn payload_store(ctx: &mut LowerCtx<'_>, sig: &str, field: &str, ty: Type) -> NodeId {
+    ctx.payloads_written
+        .insert((sig.to_string(), field.to_string()));
+    payload_store_for(ctx, sig, field, ty)
+}
+
+/// The payload store for `sig`'s `field`, made when missing.
+fn payload_store_for(ctx: &mut LowerCtx<'_>, sig: &str, field: &str, ty: Type) -> NodeId {
     if let Some(list) = ctx.exec_signal_payloads.get(sig)
         && let Some((_, id, _)) = list.iter().find(|(f, _, _)| f == field)
     {
@@ -3497,6 +3517,9 @@ fn payload_store(ctx: &mut LowerCtx<'_>, sig: &str, field: &str, ty: Type) -> No
     if let Some(lit) = default_literal_for_var_type(&ty) {
         props.insert(*sym::INITIAL_VALUE, lit);
     }
+    // Outside any loop or `fn` plane, so the value reaches an `await` there.
+    let saved_chip = ctx.current_anon_chip;
+    ctx.current_anon_chip = outside_planes(ctx);
     let store = make_scalar_var_gate(
         ctx,
         &ty,
@@ -3504,11 +3527,44 @@ fn payload_store(ctx: &mut LowerCtx<'_>, sig: &str, field: &str, ty: Type) -> No
         &SourceRange::default(),
         Some("signal payload store"),
     );
+    ctx.current_anon_chip = saved_chip;
     ctx.exec_signal_payloads
         .entry(sig.to_string())
         .or_default()
         .push((field.to_string(), store, ty));
     store
+}
+
+/// The payload store an `await` of `exec_expr` reads for `field` (`""` for
+/// a scalar): the one an emit lowered so far made, or, for an emit later in
+/// the source, one made now from that emit's type, which the emit then
+/// writes.
+fn payload_for_await(
+    ctx: &mut LowerCtx<'_>,
+    exec_expr: &Expr,
+    field: &str,
+    range: &SourceRange,
+) -> Option<(NodeId, Type)> {
+    let sig = signal_name_of(exec_expr)?;
+    let key = ctx.signal_key(sig)?;
+    if let Some(found) = ctx.exec_signal_payloads.get(&key).and_then(|list| {
+        list.iter()
+            .find(|(f, _, _)| f == field)
+            .map(|(_, id, ty)| (*id, ty.clone()))
+    }) {
+        return Some(found);
+    }
+    let ty = ctx
+        .emitted_payloads
+        .get(sig)?
+        .iter()
+        .find(|(f, _)| f == field)?
+        .1
+        .clone();
+    let store = payload_store_for(ctx, &key, field, ty.clone());
+    ctx.payload_reads_ahead
+        .push((key, field.to_string(), range.clone()));
+    Some((store, ty))
 }
 
 /// `Var_Set(<var> = <value_port>)` chained on the current exec (advances it).
@@ -3612,7 +3668,18 @@ pub(super) fn lower_await(ctx: &mut LowerCtx<'_>, a: &AwaitStmt) {
     // loop plane through the caller. One written in the body typecheck
     // walked was already reported there, so this speaks only for the rest.
     if ctx.in_loop_plane() {
-        if !ctx.inside_written_loop_body(&a.range) {
+        let in_fn = ctx
+            .current_anon_chip
+            .and_then(|c| ctx.builder.module.nodes.get(&c))
+            .is_some_and(|n| n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION);
+        if in_fn {
+            ctx.error(
+                "WS079",
+                "a function runs synchronously within one tick, so it cannot \
+                 suspend. Move the `await` to the caller, around the call.",
+                &a.range,
+            );
+        } else if !ctx.inside_written_loop_body(&a.range) {
             ctx.error(
                 "WS079",
                 "a loop body runs synchronously within one tick, so it cannot \
@@ -3730,14 +3797,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx<'_>, a: &AwaitStmt) {
     // ferried payload, read the payload store on the resumed chain (the emit
     // wrote it before the exec crossed any buffer).
     if let Some(ref binding_name) = a.binding {
-        let payload = signal_name_of(&a.exec_expr)
-            .and_then(|sig| ctx.signal_key(sig))
-            .and_then(|key| ctx.exec_signal_payloads.get(&key))
-            .and_then(|list| {
-                list.iter()
-                    .find(|(f, _, _)| f.is_empty())
-                    .map(|(_, id, ty)| (*id, ty.clone()))
-            });
+        let payload = payload_for_await(ctx, &a.exec_expr, "", &a.range);
         let val_port = if let Some((store, ty)) = payload {
             signal_payload_get(ctx, store, ty)
         } else if let Some(ref val_expr) = a.value_expr {
@@ -3807,14 +3867,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx<'_>, a: &AwaitStmt) {
     // the resumed chain and bind the locals (a local signal's ferried payload).
     if let Some(ref fields) = a.destructure {
         for (field, local) in fields {
-            let store = signal_name_of(&a.exec_expr)
-                .and_then(|sig| ctx.signal_key(sig))
-                .and_then(|key| ctx.exec_signal_payloads.get(&key))
-                .and_then(|list| {
-                    list.iter()
-                        .find(|(f, _, _)| f == field)
-                        .map(|(_, id, ty)| (*id, ty.clone()))
-                });
+            let store = payload_for_await(ctx, &a.exec_expr, field, &a.range);
             let Some((store, ty)) = store else {
                 ctx.warn(
                     format!(
@@ -3832,7 +3885,7 @@ pub(super) fn lower_await(ctx: &mut LowerCtx<'_>, a: &AwaitStmt) {
     }
 }
 
-fn build_exec_union(ctx: &mut LowerCtx<'_>, ports: Vec<PortRef>) -> PortRef {
+pub(super) fn build_exec_union(ctx: &mut LowerCtx<'_>, ports: Vec<PortRef>) -> PortRef {
     if ports.len() == 1 {
         return ports.into_iter().next().unwrap();
     }
@@ -3860,6 +3913,12 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx<'_>) {
         // Compute targets before building the union (which borrows ctx mut).
         let out = ctx.lookup_output(&name).cloned();
         let hub = ctx.exec_signal_hubs.get(&name).copied();
+        let target_chip = match (&out, hub) {
+            (Some(o), _) => ctx.find_node(o.node_id).and_then(|n| n.chip_id),
+            (None, Some(h)) => ctx.find_node(h).and_then(|n| n.chip_id),
+            (None, None) => ctx.current_anon_chip,
+        };
+        let entries = lift_plane_emits(ctx, &name, entries, target_chip);
         if let Some(out) = out {
             let ports = entries.into_iter().map(|(p, _)| p).collect();
             let exec_out = build_exec_union(ctx, ports);
@@ -3921,6 +3980,254 @@ pub(super) fn flush_pending_emits(ctx: &mut LowerCtx<'_>) {
     // (its one source drives everything that hung off the hub's ExecOut).
     let hubs: Vec<NodeId> = ctx.exec_signal_hubs.values().copied().collect();
     splice_single_input_unions(ctx, &hubs);
+}
+
+/// The emit sites of `name` that sit inside a loop or `fn` plane its target
+/// (in `target_chip`) is not in. An exec cannot leave such a plane: the game
+/// runs nothing outside it, and an Exec Union the exec reaches passes nothing
+/// else that tick. Each such site instead adds one to a counter var beside
+/// the target, and the counter's value drives the target, which fires once
+/// the plane's chain has finished, on a change: emits in one tick fire it once.
+pub(super) fn lift_plane_emits(
+    ctx: &mut LowerCtx<'_>,
+    name: &str,
+    entries: Vec<(PortRef, Option<u32>)>,
+    target_chip: Option<NodeId>,
+) -> Vec<(PortRef, Option<u32>)> {
+    let range = ctx.emit_sites.get(name).cloned().unwrap_or_default();
+    let entries = lift_fn_emits(ctx, name, entries, target_chip, &range);
+    let chip_of = |ctx: &LowerCtx<'_>, p: PortRef| ctx.find_node(p.node_id).and_then(|n| n.chip_id);
+    // A loop site's counter meets the plain sites in an Exec Union, and the
+    // game loses a plain pulse that reaches it on a tick the counter moves
+    // (P29). So once one site counts, every site does.
+    if !entries
+        .iter()
+        .any(|(src, _)| plane_between(ctx, chip_of(ctx, *src), target_chip))
+    {
+        return entries;
+    }
+    let saved_chip = ctx.current_anon_chip;
+    ctx.current_anon_chip = target_chip;
+    let mut props = HashMap::default();
+    props.insert(*sym::INITIAL_VALUE, Literal::Int(0));
+    let counter = make_scalar_var_gate(ctx, &Type::Int, props, &range, Some("plane emit counter"));
+    for (src, _) in entries {
+        ctx.current_anon_chip = chip_of(ctx, src);
+        let one = raw_literal(ctx, &range, Type::Int, Literal::Int(1), None);
+        chain_var_write(
+            ctx,
+            src,
+            counter.port(WirePort::VarRef),
+            Type::Int,
+            one,
+            WriteKind::Increment,
+            range.clone(),
+            Some("plane emit"),
+        );
+    }
+    ctx.current_anon_chip = saved_chip;
+    vec![(counter.port(WirePort::Value), None)]
+}
+
+/// The innermost `fn` plane `chip` sits in that `target` does not.
+fn fn_plane_between(
+    ctx: &LowerCtx<'_>,
+    chip: Option<NodeId>,
+    target: Option<NodeId>,
+) -> Option<NodeId> {
+    let mut around_target: HashSet<NodeId> = HashSet::default();
+    let mut at = target;
+    while let Some(id) = at {
+        around_target.insert(id);
+        at = ctx.find_node(id).and_then(|n| n.chip_id);
+    }
+    let mut at = chip;
+    while let Some(id) = at {
+        if around_target.contains(&id) {
+            return None;
+        }
+        let n = ctx.find_node(id)?;
+        if n.gate_class == gc::MICROCHIP_FUNCTION_DEFINITION {
+            return Some(id);
+        }
+        at = n.chip_id;
+    }
+    None
+}
+
+/// The emit sites of `name` inside a `fn` plane its target is not in, moved
+/// to the plane's call sites. A wire cannot leave the plane, and a handle to a
+/// counter outside it names an absolute brick that a paste can move (P29). So
+/// the body sets a flag reset at its start, a hidden result slot hands it to
+/// every Function Call, and each call fires the target off its `Completed`
+/// when the flag is set, on the caller's own chain.
+fn lift_fn_emits(
+    ctx: &mut LowerCtx<'_>,
+    name: &str,
+    mut entries: Vec<(PortRef, Option<u32>)>,
+    target_chip: Option<NodeId>,
+    range: &SourceRange,
+) -> Vec<(PortRef, Option<u32>)> {
+    // Per plane: the flag, and where the body now starts (after its reset).
+    let mut flags: HashMap<NodeId, (NodeId, PortRef, PortRef)> = HashMap::default();
+    let shown = name.split('#').next().unwrap_or(name);
+    loop {
+        let chip_of =
+            |ctx: &LowerCtx<'_>, p: PortRef| ctx.find_node(p.node_id).and_then(|n| n.chip_id);
+        let Some(at) = entries
+            .iter()
+            .position(|(src, _)| fn_plane_between(ctx, chip_of(ctx, *src), target_chip).is_some())
+        else {
+            return entries;
+        };
+        let (src, _) = entries.remove(at);
+        let src_chip = chip_of(ctx, src);
+        let plane = fn_plane_between(ctx, src_chip, target_chip).expect("found above");
+        let saved_chip = ctx.current_anon_chip;
+        let (flag, body, after) = match flags.get(&plane) {
+            Some(f) => *f,
+            None => {
+                let Some(&(entry, slot)) = ctx.fn_plane_slots.get(&plane) else {
+                    report_internal_drop(ctx, &format!("an `emit {shown}` in a `fn`"), range);
+                    continue;
+                };
+                if slot >= super::function::MAX_SLOTS {
+                    ctx.error(
+                        "WS115",
+                        format!(
+                            "`emit {shown}` needs a result slot of its `fn` to reach its target, and all {} are taken. Return fewer values, or emit fewer signals from this `fn`",
+                            super::function::MAX_SLOTS
+                        ),
+                        range,
+                    );
+                    continue;
+                }
+                ctx.fn_plane_slots.insert(plane, (entry, slot + 1));
+                ctx.current_anon_chip = Some(plane);
+                let mut props = HashMap::default();
+                props.insert(*sym::INITIAL_VALUE, Literal::Bool(false));
+                let flag =
+                    make_scalar_var_gate(ctx, &Type::Bool, props, range, Some("fn emit flag"));
+                // Reset first on every call: the reset takes over the entry's
+                // `Body` and runs the body after it.
+                let body = entry.port(WirePort::Body);
+                let no = raw_literal(ctx, range, Type::Bool, Literal::Bool(false), None);
+                let reset = ctx.add_gate(AddNodeOpts {
+                    gate_class: gc::VAR_SET,
+                    source_range: range.clone(),
+                    ports: GateIO::var_write(Type::Bool),
+                    note: Some("fn emit flag reset"),
+                    ..Default::default()
+                });
+                let after = reset.port(WirePort::ExecOut);
+                ctx.builder.module.walk_mut(&mut |_, m| {
+                    for w in &mut m.wires {
+                        if w.source == body {
+                            w.source = after;
+                        }
+                    }
+                });
+                ctx.connect(body, reset.port(WirePort::Exec));
+                ctx.connect(flag.port(WirePort::VarRef), reset.port(WirePort::VarRef));
+                ctx.connect(no, reset.port(WirePort::Value));
+                let out = ctx.add_gate(AddNodeOpts {
+                    gate_class: gc::FUNCTION_OUTPUT,
+                    source_range: range.clone(),
+                    ports: GateIO {
+                        inputs: vec![PortSpec::new(*sym::VALUE, Type::Bool)],
+                        outputs: vec![],
+                    },
+                    properties: {
+                        let mut p = HashMap::default();
+                        let label = format!("emit {shown}");
+                        p.insert(*sym::NAME_LABEL, Literal::String(label.clone()));
+                        p.insert(*sym::PORT_LABEL, Literal::String(label));
+                        p.insert(
+                            *sym::PORT_ORDER,
+                            Literal::Int(super::function::slot_pin(slot) as i64),
+                        );
+                        p.insert(*sym::DEFAULT_VALUE, Literal::Bool(false));
+                        p
+                    },
+                    note: Some("fn emit flag"),
+                    ..Default::default()
+                });
+                ctx.connect(flag.port(WirePort::Value), out.port(WirePort::Value));
+                let calls: Vec<NodeId> = ctx
+                    .builder
+                    .module
+                    .wires_deep()
+                    .filter(|w| w.source == plane.port(WirePort::Definition))
+                    .map(|w| w.target.node_id)
+                    .collect();
+                for call in calls {
+                    ctx.current_anon_chip = ctx.find_node(call).and_then(|n| n.chip_id);
+                    let cond = call.port(WirePort::from_name(&format!(
+                        "Output{}",
+                        super::function::slot_pin(slot)
+                    )));
+                    let branch = add_branch(ctx, call.port(WirePort::Completed), cond, range);
+                    entries.push((branch.port(WirePort::ExecOutA), None));
+                }
+                flags.insert(plane, (flag, body, after));
+                (flag, body, after)
+            }
+        };
+        let src = if src == body { after } else { src };
+        ctx.current_anon_chip = src_chip;
+        let yes = raw_literal(ctx, range, Type::Bool, Literal::Bool(true), None);
+        chain_var_write(
+            ctx,
+            src,
+            flag.port(WirePort::VarRef),
+            Type::Bool,
+            yes,
+            WriteKind::Set,
+            range.clone(),
+            Some("fn emit"),
+        );
+        ctx.current_anon_chip = saved_chip;
+    }
+}
+
+/// Whether code in `inner` reaches `target` (both chips, `None` for the
+/// module itself) only by leaving a loop or `fn` plane.
+fn plane_between(ctx: &LowerCtx<'_>, inner: Option<NodeId>, target: Option<NodeId>) -> bool {
+    let mut around_target: HashSet<NodeId> = HashSet::default();
+    let mut at = target;
+    while let Some(id) = at {
+        around_target.insert(id);
+        at = ctx.find_node(id).and_then(|n| n.chip_id);
+    }
+    let mut at = inner;
+    while let Some(id) = at {
+        if around_target.contains(&id) {
+            return false;
+        }
+        let Some(n) = ctx.find_node(id) else {
+            return false;
+        };
+        if gc::is_plane_shell(n.gate_class) {
+            return true;
+        }
+        at = n.chip_id;
+    }
+    false
+}
+
+/// The chip just outside the outermost loop or `fn` plane lowering is in, or
+/// the current chip when it is in none.
+fn outside_planes(ctx: &LowerCtx<'_>) -> Option<NodeId> {
+    let mut outside = ctx.current_anon_chip;
+    let mut at = ctx.current_anon_chip;
+    while let Some(id) = at {
+        let Some(n) = ctx.find_node(id) else { break };
+        if gc::is_plane_shell(n.gate_class) {
+            outside = n.chip_id;
+        }
+        at = n.chip_id;
+    }
+    outside
 }
 
 /// [`splice_single_input_union`] for every hub in `hubs`, in two passes over

@@ -9,7 +9,8 @@
 /// line up and each receiver call binds a compatible `self` (the
 /// `builtins_and_types_program_compiles` unit test compiles + emits it). The
 /// builtins' certified numeric semantics are covered separately in
-/// `data/gate_semantics.json` / `probes/verify_semantics.ws`.
+/// `crates/wirescript-ir/data/gate_semantics.json` /
+/// `crates/wirescript/probes/verify_semantics.ws`.
 
 /// Float equality within a small epsilon. Also exercises the `self`-receiver
 /// path: `x.approxEq(y)` desugars to `approxEq(x, y)`.

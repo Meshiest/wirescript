@@ -1080,6 +1080,8 @@ fn a_library_enum_hidden_by_a_duplicate_is_named_as_imported() {
         file: "main",
         module_name: None,
         fold_mode: crate::FoldMode::ForceOn,
+        test_entry: None,
+        test_build: false,
     };
     let Err(crate::CompileError::HasErrors(errors)) =
         crate::compile_with_loader(input, crate::emit::EmitOptions::default(), &loader)

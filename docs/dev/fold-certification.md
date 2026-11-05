@@ -20,18 +20,18 @@ gate to fold:
 
 Folding is **not** a table lookup keyed by input value. Instead:
 
-- `src/lower/fold/eval.rs` holds a **hand-written Rust law per gate**
+- `crates/wirescript-ir/src/semantics.rs` holds a **hand-written Rust law per gate**
   (`MathAdd => a + b`, `MathSin => a.sin()`, `BitwiseAND => a & b`, …). This is
   what actually computes a folded value.
-- `data/gate_semantics.json` is a **certified truth table** of
+- `crates/wirescript-ir/data/gate_semantics.json` is a **certified truth table** of
   `inputs -> output` cases *probed from the running game*. Its job is to
   **verify** the Rust law matches the game and to **gate** which
   `(gate, input-signature)` shapes are allowed to fold at all.
 
 So the table doesn't drive folding — it audits it. Two independent checks keep
-`eval.rs` honest:
+`semantics.rs` honest:
 
-- **Rust replay** (`eval.rs::replay_every_certified_case`): every certified case
+- **Rust replay** (`semantics/tests.rs::replay_every_certified_case`): every certified case
   is fed through `eval()` and its rendered result compared to the table.
 - **In-game verifier** (`probes/verify_semantics.ws`): generated from the table,
   pasted into the game, asserts the table still matches the live gates
@@ -48,11 +48,14 @@ cases land in the table via a re-probe.
 
 ## The pieces
 
+Paths are relative to `crates/wirescript/` unless they start with `crates/`.
+
 | File | Role |
 |------|------|
-| `src/lower/fold/eval.rs` | Rust fold law per gate + `covers()` gate + render laws + the replay test |
-| `src/lower/fold/table.rs` | Loads `gate_semantics.json`; `loads_real_table_v<N>` pins gate/render counts |
-| `data/gate_semantics.json` | Certified truth table — **generated only**, never hand-edited |
+| `crates/wirescript-ir/src/semantics.rs` | Rust fold law per gate + `covers()` gate + render laws; the replay test is in `semantics/tests.rs` |
+| `crates/wirescript-ir/src/semantics/table.rs` | Loads `gate_semantics.json`; `loads_real_table_v<N>` pins gate/render counts |
+| `crates/wirescript-ir/data/gate_semantics.json` | Certified truth table — **generated only**, never hand-edited |
+| `src/lower/fold/eval.rs` | Re-exports the evaluator for the fold pass, plus `interp_groups` |
 | `probes/gate_semantics.ws` | The probe: paste in-game, prints one `CASE …` line per interaction |
 | `probes/verify_semantics.ws` | Generated verifier: paste in-game, asserts table == game |
 | `scripts/gen_semantics.mjs` | probe console dump → `gate_semantics.json` (the only writer) |
@@ -76,13 +79,13 @@ When a build ships and gate behavior may have changed:
 1. Paste `probes/gate_semantics.ws` into a **local** world. Copy the
    `[Wire Graph] PROBE … CASE …` console dump into e.g. `dumps/<something>.txt`.
 2. `node crates/wirescript/scripts/gen_semantics.mjs <dump.txt>` — regenerates
-   `data/gate_semantics.json` (the *only* writer; hand edits are rejected by
+   `crates/wirescript-ir/data/gate_semantics.json` (the *only* writer; hand edits are rejected by
    convention). It validates chapter counts and the probe version.
 3. `node crates/wirescript/scripts/gen_verifier.mjs` — regenerates
    `probes/verify_semantics.ws` from the table.
 4. Paste `verify_semantics.ws` into the game → confirm `VERIFY N/N`. A `FAIL`
-   line means the Rust law disagrees with the live gate — fix `eval.rs`.
-5. `cargo test -p wirescript` — the Rust replay gate rechecks eval == table. If
+   line means the Rust law disagrees with the live gate — fix `semantics.rs`.
+5. `cargo test -p wirescript-ir` — the Rust replay gate rechecks eval == table. If
    the case matrix changed, update the hard-coded tallies in
    `replay_every_certified_case` and the counts in `loads_real_table_v<N>`.
 
@@ -91,7 +94,7 @@ When a build ships and gate behavior may have changed:
 A new foldable gate is a **four-layer** change that must land together, plus a
 version bump. Using `MathSin` as the example:
 
-1. **`eval.rs`** — a Rust law (`"MathSin" => as_float(a)?.sin()`), a dispatch
+1. **`crates/wirescript-ir/src/semantics.rs`** — a Rust law (`"MathSin" => as_float(a)?.sin()`), a dispatch
    arm in `eval()`, and a direct unit test (the law is dead behind `covers()`
    until re-probed, so unit-test it directly).
 2. **`probes/gate_semantics.ws`** — a `CASE MathSin float:1.0 -> ${sin(Opaque(1.0))}`

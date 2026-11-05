@@ -33,8 +33,7 @@ pub(crate) struct Budget {
     pub steps: u32,
     pub depth: u32,
     /// Set once an evaluation under this budget applies an integer operation
-    /// the certified fold table has no result for (an overflow, a division of
-    /// mixed signs with a remainder): the value is the evaluator's, not the
+    /// the certified fold table has no result for (an overflow): the value is the evaluator's, not the
     /// gate's (see [`super::integer_ops_certified`]).
     pub uncertified: bool,
 }

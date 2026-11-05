@@ -776,6 +776,82 @@ impl FileLoader for OpenDocLoader {
 }
 
 impl Backend {
+    /// `wirescript.compile` for a `.wsir` file: parse, validate and assemble it
+    /// as `wirescript assemble` does, answering in the same shape as a `.ws`
+    /// compile. Parse and validation errors come back as diagnostics.
+    async fn assemble_wsir(
+        &self,
+        file: String,
+        src: String,
+        out_path: &str,
+        destination: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("[compile] assemble {file} -> {destination}"),
+            )
+            .await;
+        let started = std::time::Instant::now();
+        let path = file.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            wirescript::on_big_stack(|| assemble_wsir_text(&src, &path))
+        })
+        .await
+        .map_err(|e| tower_lsp::jsonrpc::Error {
+            code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+            message: format!("assemble task failed: {e}").into(),
+            data: None,
+        })?;
+        let brz = match outcome {
+            WsirOutcome::Saved(brz) => brz,
+            WsirOutcome::Diagnostics(items) => {
+                self.client
+                    .log_message(
+                        MessageType::ERROR,
+                        format!("[compile] assemble failed: {} problem(s)", items.len()),
+                    )
+                    .await;
+                return Ok(Some(
+                    serde_json::json!({ "ok": false, "diagnostics": items }),
+                ));
+            }
+            WsirOutcome::Failed(message) => {
+                self.client
+                    .log_message(MessageType::ERROR, format!("[compile] error: {message}"))
+                    .await;
+                return Err(tower_lsp::jsonrpc::Error {
+                    code: tower_lsp::jsonrpc::ErrorCode::InvalidRequest,
+                    message: message.into(),
+                    data: None,
+                });
+            }
+        };
+        if !out_path.is_empty()
+            && let Err(e) = fs::write(out_path, &brz)
+        {
+            return Err(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+                message: format!("write failed: {e}").into(),
+                data: None,
+            });
+        }
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "[compile] ok -> {destination} ({} bytes, {}ms)",
+                    brz.len(),
+                    started.elapsed().as_millis()
+                ),
+            )
+            .await;
+        if out_path.is_empty() {
+            return Ok(Some(serde_json::json!({ "ok": true, "brz": base64(&brz) })));
+        }
+        Ok(Some(serde_json::json!({ "ok": true, "path": out_path })))
+    }
+
     /// A server for `client` with no documents open.
     fn new(client: Client) -> Self {
         Self {
@@ -820,7 +896,7 @@ impl Backend {
                 .unwrap_or_default(),
         };
         let (resolved, tc, symbols, resource_estimates) = wirescript::on_big_stack(|| {
-            let resolved = resolve_parsed(pre_resolve, &file, &loader);
+            let resolved = resolve_parsed(pre_resolve, source, &file, &loader);
             let tc = typecheck_with_inference(&resolved.ast).0;
             let symbols = collect_symbols_for_file(&resolved.ast, &tc.type_of_expr, Some(&file));
             let resource_estimates = collect_estimates(&resolved.ast, &tc, &file);
@@ -1032,6 +1108,90 @@ impl Backend {
     }
 }
 
+impl Backend {
+    /// The text of the file `uri` names: the open document, else the file
+    /// on disk.
+    fn source_of(&self, uri: &Url, file: &str) -> Result<String> {
+        if let Some(s) = self.docs.lock().ok().and_then(|d| d.get(uri).map(|d| d.source.clone())) {
+            return Ok(s);
+        }
+        fs::read_to_string(file).map_err(|e| {
+            tower_lsp::jsonrpc::Error::invalid_params(format!("cannot read {file}: {e}"))
+        })
+    }
+
+    /// `wirescript.listTests [uri]`: the file's tests and whether it has a
+    /// `.expected` file.
+    fn list_tests(&self, args: &[serde_json::Value]) -> Result<Option<serde_json::Value>> {
+        let Some(uri) = args.first().and_then(|v| v.as_str()) else {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params("expected [uri]"));
+        };
+        let uri =
+            Url::parse(uri).map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("invalid URI"))?;
+        let file = uri_to_file_string(&uri);
+        let source = self.source_of(&uri, &file)?;
+        Ok(Some(wirescript::on_big_stack(|| sim::list_tests(&source, &file))))
+    }
+
+    /// `wirescript.runTest [uri, name or null, { race, quiet }]`: run one test,
+    /// or with no name the program against its `.expected` file, in the gate
+    /// simulator. Returns `{ passed, problems, lines }`; unless `quiet`, also
+    /// logs what it printed and shows the verdict.
+    async fn run_test(&self, args: &[serde_json::Value]) -> Result<Option<serde_json::Value>> {
+        let Some(uri) = args.first().and_then(|v| v.as_str()) else {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params(
+                "expected [uri, testName, options]",
+            ));
+        };
+        let name = args.get(1).and_then(|v| v.as_str()).map(str::to_string);
+        let options = args.get(2);
+        let race = options
+            .and_then(|o| o.get("race"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            .min(1000);
+        let quiet = options
+            .and_then(|o| o.get("quiet"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let uri =
+            Url::parse(uri).map_err(|_| tower_lsp::jsonrpc::Error::invalid_params("invalid URI"))?;
+        let file = uri_to_file_string(&uri);
+        let source = self.source_of(&uri, &file)?;
+        let test = name.clone();
+        let verdict = tokio::task::spawn_blocking(move || {
+            wirescript::on_big_stack(|| sim::run(&source, &file, test.as_deref(), race))
+        })
+        .await
+        .map_err(|e| tower_lsp::jsonrpc::Error {
+            code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+            message: format!("test task failed: {e}").into(),
+            data: None,
+        })?;
+        if !quiet {
+            let label = name.as_deref().unwrap_or("(expected output)");
+            for (_, line) in &verdict.lines {
+                self.client
+                    .log_message(MessageType::INFO, format!("[test {label}] {line}"))
+                    .await;
+            }
+            let (kind, text) = if verdict.passed {
+                (MessageType::INFO, format!("test {label} passed"))
+            } else {
+                (
+                    MessageType::ERROR,
+                    format!(
+                        "test {label} failed: {}",
+                        verdict.problems.first().map_or("", String::as_str)
+                    ),
+                )
+            };
+            self.client.show_message(kind, text).await;
+        }
+        Ok(Some(verdict.to_json()))
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -1087,10 +1247,17 @@ impl LanguageServer for Backend {
                 references_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(provide_formatting)),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["wirescript.compile".into()],
+                    commands: vec![
+                        "wirescript.compile".into(),
+                        sim::RUN_TEST.into(),
+                        sim::LIST_TESTS.into(),
+                    ],
                     ..Default::default()
                 }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 document_link_provider: Some(DocumentLinkOptions {
                     resolve_provider: Some(false),
                     work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -1115,6 +1282,18 @@ impl LanguageServer for Backend {
             },
             ..Default::default()
         })
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let uri = &params.text_document.uri;
+        let Ok(docs) = self.docs.lock() else {
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(uri) else {
+            return Ok(None);
+        };
+        let lenses = sim::test_lenses(&doc.source, &uri_to_file_string(uri), uri);
+        Ok((!lenses.is_empty()).then_some(lenses))
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
@@ -1787,6 +1966,12 @@ impl LanguageServer for Backend {
         &self,
         params: ExecuteCommandParams,
     ) -> Result<Option<serde_json::Value>> {
+        if params.command == sim::RUN_TEST {
+            return self.run_test(&params.arguments).await;
+        }
+        if params.command == sim::LIST_TESTS {
+            return self.list_tests(&params.arguments);
+        }
         if params.command != "wirescript.compile" {
             return Ok(None);
         }
@@ -1820,6 +2005,10 @@ impl LanguageServer for Backend {
         let src = fs::read_to_string(&file).map_err(|e| {
             tower_lsp::jsonrpc::Error::invalid_params(format!("cannot read {file}: {e}"))
         })?;
+
+        if file.ends_with(".wsir") {
+            return self.assemble_wsir(file, src, out_path, destination).await;
+        }
 
         // The compile reports its progress to the LSP output channel ("Wirescript
         // Language Server" in VS Code) through window/logMessage, since it is the
@@ -2156,6 +2345,64 @@ async fn serve() {
 /// `Pos::col` is a byte column, while the extension passes `startChar`/`endChar`
 /// to a `vscode.Range` in UTF-16 units, so each column is converted here against
 /// the text of the file its range names (a build error can name an import).
+/// What assembling a `.wsir` file produced.
+enum WsirOutcome {
+    Saved(Vec<u8>),
+    /// Parse or validation errors, as `compile_diagnostic_items` shapes them.
+    Diagnostics(Vec<serde_json::Value>),
+    /// An emit failure, which has no source location.
+    Failed(String),
+}
+
+/// Parse, validate and assemble `.wsir` text into a `.brz`, as `wirescript
+/// assemble` does. A parse error is located; validation errors are not, so
+/// they sit on the first line.
+fn assemble_wsir_text(src: &str, file: &str) -> WsirOutcome {
+    let diag = |line: u32, col: u32, message: String| {
+        let ruler = Ruler::new(src);
+        let line = line.saturating_sub(1) as usize;
+        let start = byte_off_to_lsp(&ruler, line, col.saturating_sub(1) as usize);
+        serde_json::json!({
+            "file": file,
+            "startLine": line,
+            "startChar": start,
+            "endLine": line,
+            "endChar": start + 1,
+            "severity": "error",
+            "message": message,
+        })
+    };
+    let program = match wirescript::wsir::parse_program(src, file) {
+        Ok(p) => p,
+        Err(e) => {
+            return WsirOutcome::Diagnostics(vec![diag(
+                e.line,
+                e.col,
+                format!("{} (found {})", e.message, e.found),
+            )]);
+        }
+    };
+    let errors = program.validate();
+    if !errors.is_empty() {
+        return WsirOutcome::Diagnostics(
+            errors.iter().map(|e| diag(1, 1, e.to_string())).collect(),
+        );
+    }
+    let fold = if program.settings.no_fold {
+        wirescript::FoldMode::ForceOff
+    } else {
+        wirescript::FoldMode::Auto
+    };
+    let opts = wirescript::assemble_options(file, fold);
+    match wirescript::assemble(&program, &opts) {
+        Ok(assembly) => match assembly.world.to_brz_vec() {
+            Ok(brz) => WsirOutcome::Saved(brz),
+            Err(e) => WsirOutcome::Failed(e.to_string()),
+        },
+        Err(e) => WsirOutcome::Failed(e.to_string()),
+    }
+}
+
 fn compile_diagnostic_items(
     diags: &[wirescript::diagnostic::Diagnostic],
     sources: &HashMap<String, String>,
@@ -2346,6 +2593,8 @@ fn completion_item(
 
 #[cfg(target_family = "wasm")]
 mod wasi_stdio;
+
+mod sim;
 
 #[cfg(test)]
 mod tests;

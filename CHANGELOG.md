@@ -1,5 +1,32 @@
 # Wirescript Changelog
 
+## 2.4.0
+
+### Simulator
+
+- `wirescript sim` runs a `.ws`, `.wsir` or `.brz` in a headless gate simulator and prints its chat (`just sim`); `--interactive` steps it by hand (`step`, `screen`, `quit`).
+- It covers the logic, math, string, vector, color, timing, storage and container gates, the team, leaderboard, character, entity, player-state, zone, audio and explosion gates, `SpawnPrefab`, `InputReader` and `GetInputs`.
+- Scripts drive the world: players joining, chat commands, inputs, movement, damage and more (`player`, `input`, `move`, `team`, `die`, `answer`).
+- It follows the game's measured timing: handler order (a handler that emits a signal ranks with its listeners), one pulse per tick through an Exec Union, loop-body writes reacting a tick late, custom events landing after the tick's reactions, Clock restarts, Set Variable converting to the var's kind, and strings cut at 32,768 bytes.
+
+### Testing
+
+- `@test` marks a `fn`, `mod` or named `chip` as a test (no parameters or results, WS124); it emits nothing unless called and a `mod` test can use module state and `await`.
+- `wirescript test` runs each `@test` in the simulator and checks a program against a `.expected` file beside it; a test fails on a `FAIL` line or if it never finishes, and `--race N` fails one whose output depends on handler order (`just test-ws`).
+- `testing.fail`, `log`, `assert`, `assertEq` and `testing.expect(a)` (`toBe`, `toEqual`, `toBeGreaterThan`, `toBeLessThan`, `toBeCloseTo`, `toContain`, `.not`) report `FAIL <file>:<line>` in a test build (`wirescript test`, `sim`, `compile --tests`) and compile to nothing otherwise (WS126).
+- VS Code extension 0.1.8: a Run test lens above each `@test`, and the Testing view lists every test; running one from the lens marks the gutter as the gutter button does.
+- The playground has a Run test lens above each `@test` and Run all tests, with PASS/FAIL in the simulator panel and failed tests marked in the editor.
+
+### Fixes
+
+- An `emit` from a `for` body to a signal or output outside it fired nothing in game; it now fires the target once per tick. An `emit` in a `fn` (was WS113) fires off each call.
+- A `fn` touching an outer `var`, array or map could do nothing in game depending on where it was pasted; that storage is now passed in as a hidden parameter (one input slot each).
+- A `mod` exec result (`-> (hit: exec)`) fired at the end of every call; it now fires where the body emits it, also beside a value result.
+- An integer constant written into a `float` var, array, map value, output or vector component was stored as an integer, so a later `/ 2` divided as integers.
+- Constant folding matches the game: `"${1000}"` is `1000` and `"${true}"` is `true`, floats round as the game prints them, mixed-sign `/` and `%` fold, `-x` on an int stays an int, and NAND/NOR, `ColorSRGB(...)`, `Color(...)` with an alpha and `ToHex()` with an alpha fold.
+- `let v = await sig` above the `emit sig = value` it reads was WS056.
+- WS079 for an `await` in a `fn` body names the function, not a loop body.
+
 ## 2.3.1
 
 ### Fixes

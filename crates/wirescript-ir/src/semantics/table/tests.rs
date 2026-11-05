@@ -131,15 +131,15 @@ fn render_laws_hold_the_certified_calibration_entries() {
     let t = CertifiedTable::certified();
     assert_eq!(
         t.render_laws().get("int:1000").map(String::as_str),
-        Some("1,000")
+        Some("1000")
     );
     assert_eq!(
         t.render_laws().get("bool:true").map(String::as_str),
-        Some("1")
+        Some("true")
     );
     assert_eq!(
         t.render_laws().get("bool:false").map(String::as_str),
-        Some("0")
+        Some("false")
     );
     assert_eq!(
         t.render_laws()
@@ -147,11 +147,11 @@ fn render_laws_hold_the_certified_calibration_entries() {
             .map(String::as_str),
         Some("X=1.000 Y=2.000 Z=3.000")
     );
-    // Certified: rotator, color and quat render blank through FormatText.
+    // Certified: rotators print their three angles at 6 decimals.
     assert_eq!(
         t.render_laws()
             .get("rotator:Rotation(0.0,90.0,45.5)")
             .map(String::as_str),
-        Some("")
+        Some("P=0.000000 Y=90.000000 R=45.500000")
     );
 }

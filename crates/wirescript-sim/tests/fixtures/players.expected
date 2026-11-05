@@ -1,0 +1,14 @@
+alice joined as Alice Smith
+[alice text 1] Hello alice
+[alice text 1] Hello again
+[alice chat] your id is 00000000-0000-4000-8000-000000000001
+Wirescript joined as Wirescript
+[bob text 1] Hello Wirescript
+[bob text 1] Hello again
+[bob chat] your id is 004d4419-134a-4a54-b70a-a7e3c7f5125b
+alice is at X=10.000 Y=20.000 Z=30.000
+now at X=1.000 Y=2.000 Z=3.000
+Wirescript is at X=-5.000 Y=0.000 Z=0.000
+now at X=1.000 Y=2.000 Z=3.000
+forward 0.5 E true Q false
+forward 0 E false Q false

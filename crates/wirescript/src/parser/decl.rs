@@ -38,6 +38,39 @@ impl Parser<'_> {
             }
             let t2 = self.peek().clone();
             let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
+            if let Some(r) = &anns.test {
+                let named_chip = kw("chip") && self.peek_at(1).kind == TokenKind::Ident;
+                if kw("fn") || kw("mod") || named_chip {
+                    if !anns.only_test() {
+                        self.error(
+                            format!("a `@test {}` takes no annotation besides @test", t2.text),
+                            t.start,
+                            t2.start,
+                        );
+                    }
+                    let mut decl = match t2.text.as_str() {
+                        "fn" => self.parse_fn_decl(),
+                        "mod" => self.parse_mod_decl(false),
+                        _ => self.parse_chip_decl(None, None, false, false),
+                    };
+                    if let TopDecl::Chip(c) = &mut decl {
+                        c.is_test = true;
+                    }
+                    return Some(decl);
+                }
+                self.error(
+                    "@test must be followed by a top-level `fn`, `mod` or named `chip` declaration"
+                        .to_string(),
+                    r.start,
+                    r.end,
+                );
+                if anns.only_test() {
+                    if t2.kind == TokenKind::Eof {
+                        return None;
+                    }
+                    return self.parse_top_decl(); // annotations consumed -> guaranteed progress
+                }
+            }
             if kw("in") || kw("out") {
                 if let Some(r) = &anns.closed {
                     self.error(
@@ -1156,6 +1189,7 @@ impl Parser<'_> {
             no_fold,
             is_const: false,
             is_fn: false,
+            is_test: false,
         })
     }
 
@@ -1284,6 +1318,7 @@ impl Parser<'_> {
             no_fold: false,
             is_const,
             is_fn,
+            is_test: false,
         })
     }
 

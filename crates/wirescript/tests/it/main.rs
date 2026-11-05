@@ -39,6 +39,7 @@ mod ref_emit;
 mod ref_initializers;
 mod silent_fixtures;
 mod template_snapshots;
+mod test_fns;
 mod text_labels;
 mod wall_layout;
 mod wiring_invariant;

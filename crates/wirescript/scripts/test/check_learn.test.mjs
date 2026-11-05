@@ -12,6 +12,7 @@ test('reads the rules from a fence info string', () => {
     name: 'door',
     expect: null,
     benchFor: 'lock',
+    file: null,
   });
   const [e] = wsBlocks('```wirescript name=bad expect=WSP001\nin on: bool\n```\n');
   assert.equal(blockRules(e.words).expect, 'WSP001');

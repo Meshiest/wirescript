@@ -149,7 +149,7 @@
       "patterns": [
         {
           "name": "storage.modifier.annotation.wirescript",
-          "match": "@(left|right|top|bottom|label|color|material|closed|nofold|fold|layout|flat|invisible|sliced)\\b"
+          "match": "@(left|right|top|bottom|label|color|material|closed|nofold|fold|layout|flat|invisible|sliced|test)\\b"
         }
       ]
     },

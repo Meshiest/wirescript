@@ -496,6 +496,10 @@ pub(super) struct LowerCtx<'a> {
     pub(super) template_build: bool,
     /// Inferred custom-event data-slot types (see `LowerInput::ce_slots`).
     pub(super) ce_slots: &'a CeSlotMap,
+    /// See `LowerInput::test_build`.
+    pub(super) test_build: bool,
+    /// See `LowerInput::testing_stmts`.
+    pub(super) testing_stmts: Arc<HashSet<RangeKey>>,
     pub(super) file: String,
     pub(super) scope: crate::scope::Scope<Binding>,
     pub(super) handler_end_execs: Vec<PortRef>,
@@ -667,6 +671,15 @@ pub(super) struct LowerCtx<'a> {
     /// on the resumed chain, so the value crosses the tick in the var. A scalar
     /// payload is one entry with field `""`; a record has one per field.
     pub(super) exec_signal_payloads: HashMap<String, Vec<(String, NodeId, Type)>>,
+    /// Every `emit name = value` in the program, by signal name: each payload
+    /// field (`""` for a scalar) and its type. An `await` lowered before the
+    /// emit makes the store from it, so source order does not matter.
+    pub(super) emitted_payloads: Arc<HashMap<String, Vec<(String, Type)>>>,
+    /// Payload stores an `await` made ahead of any emit, with where: one no
+    /// emit wrote by the end of lowering is WS056.
+    pub(super) payload_reads_ahead: Vec<(String, String, SourceRange)>,
+    /// The `(signal key, field)` payload stores an emit wrote.
+    pub(super) payloads_written: HashSet<(String, String)>,
     /// Whether lowering is inside an imperative body (a handler, or a block
     /// nested in one) rather than the top-level decl list. `current_exec` is
     /// `Some` both there and in a top-level chip that inherits a preceding
@@ -817,6 +830,9 @@ pub(super) struct LowerCtx<'a> {
     /// Each `fn` lowered so far, keyed by its declaration's (file, offset):
     /// the one definition plane every call to it binds.
     pub(super) fn_planes: HashMap<StartKey, crate::lower::function::FnPlane>,
+    /// Each built `fn` plane, by its shell: the plane's entry gate and the
+    /// next result slot free for an `emit` out of the body.
+    pub(super) fn_plane_slots: HashMap<NodeId, (NodeId, usize)>,
     /// The `fn`s whose bodies are being lowered, innermost last: a call to
     /// one of these is recursion, which the game does not run.
     pub(super) fn_building: Vec<StartKey>,
@@ -1183,6 +1199,11 @@ pub(super) fn var_get_seed_props(inner: &Type) -> HashMap<Sym, Literal> {
 }
 
 impl<'a> LowerCtx<'a> {
+    /// Whether `i` is a `testing.*` statement this build leaves out.
+    pub(super) fn drops(&self, i: &If) -> bool {
+        !self.test_build && self.testing_stmts.contains(&i.range.key())
+    }
+
     /// A context with every accumulator empty and every cursor at its start.
     /// Every place that builds a `LowerCtx` starts from this with
     /// struct-update syntax, so a new field gets its zero here. The arguments
@@ -1210,6 +1231,8 @@ impl<'a> LowerCtx<'a> {
             literal_copies: HashMap::default(),
             unhoisted: HashSet::default(),
             template_build: false,
+            test_build: false,
+            testing_stmts: Arc::default(),
             ce_slots,
             doc_comments,
             diagnostics: Vec::new(),
@@ -1262,6 +1285,9 @@ impl<'a> LowerCtx<'a> {
             signal_awaits: HashMap::default(),
             exec_branch_depth: 0,
             exec_signal_payloads: HashMap::default(),
+            emitted_payloads: Arc::default(),
+            payload_reads_ahead: Vec::new(),
+            payloads_written: HashSet::default(),
             in_handler_body: false,
             template_cache: Arc::new(crate::template_cache::TemplateCache::new()),
             pending_inline_record: None,
@@ -1297,6 +1323,7 @@ impl<'a> LowerCtx<'a> {
             dead_after_break: false,
             exec_closed_by_buffer_emit: false,
             fn_planes: HashMap::default(),
+            fn_plane_slots: HashMap::default(),
             fn_building: Vec::new(),
         }
     }
@@ -2734,8 +2761,8 @@ impl<'a> LowerCtx<'a> {
     pub(super) fn connect(&mut self, src: PortRef, dst: PortRef) {
         // A string wired into a bool input goes through `CompareNotEqual(src, "")`,
         // so only "" is false. Native bool ports treat "0"/"false" as false but
-        // "0.0" as true (`data/gate_semantics.json`); `any` wiring and the
-        // logical operators keep that native truthiness.
+        // "0.0" as true (`wirescript-ir`'s `data/gate_semantics.json`); `any`
+        // wiring and the logical operators keep that native truthiness.
         if let Some(coerced) = self.wrap_string_to_bool(src, dst) {
             self.builder.connect(coerced, dst);
             return;
@@ -2804,7 +2831,8 @@ impl<'a> LowerCtx<'a> {
     /// When `src` is a string output and `dst` a bool input, the `bOutput` of a
     /// new `CompareNotEqual` with `InputB` baked to `""`, for the caller to wire
     /// into `dst`; `None` for any other pair. The gate never folds:
-    /// `data/gate_semantics.json` certifies no (str, str) `CompareNotEqual`.
+    /// `wirescript-ir`'s `data/gate_semantics.json` certifies no (str, str)
+    /// `CompareNotEqual`.
     fn wrap_string_to_bool(&mut self, src: PortRef, dst: PortRef) -> Option<PortRef> {
         // Either end may be a boundary pin inside an instantiated chip, so the
         // lookup searches nested modules.

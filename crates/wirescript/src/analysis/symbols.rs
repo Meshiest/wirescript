@@ -206,6 +206,7 @@ pub fn collect_symbols_for_file(
         collect_decl(&mut syms, d, tmap, file, script);
     }
     collect_pattern_symbols(&mut syms, script, tmap);
+    syms.retain(|s| !crate::testing::is_testing_name(&s.name));
     syms
 }
 

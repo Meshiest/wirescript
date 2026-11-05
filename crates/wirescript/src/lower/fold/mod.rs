@@ -9,11 +9,10 @@
 //! plan. The cleanup sweeps that follow each run to a fixpoint, in the order
 //! exec-reachability, pure-demand, union, whole-chip elision.
 // `pub` because the `--fold-diff` fuzz harness reaches `eval::eval` and
-// `eval::Value` through the `fold_eval` re-export in `lib.rs`. `table` has no
-// external consumer.
+// `eval::Value` through the `fold_eval` re-export in `lib.rs`. The laws and
+// the certified table themselves live in `wirescript_ir::semantics`.
 #[doc(hidden)]
 pub mod eval;
-pub(crate) mod table;
 
 use std::sync::Arc;
 
@@ -23,7 +22,7 @@ use crate::ir::gate_class as gc;
 use crate::ir::port_registry::WirePort;
 use crate::ir::{GateIO, Literal, Module, Node, NodeId, NodeKind, PortRef, Type, Wire};
 use eval::Value;
-use table::{AnnihilatorKind, CertifiedTable, InVariant};
+use wirescript_ir::semantics::{AnnihilatorKind, CertifiedTable, InVariant};
 
 /// Read-only facts about one node, gathered by the snapshot walk: the node
 /// borrowed from the `Module` tree (every borrow ends before `apply` mutates)

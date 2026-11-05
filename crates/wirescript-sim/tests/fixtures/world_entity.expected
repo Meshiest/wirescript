@@ -1,0 +1,19 @@
+speed 5 linear X=3.000 Y=4.000 Z=0.000
+angular X=0.000 Y=0.000 Z=90.000
+at point X=3.000 Y=161.080 Z=0.000
+velocity X=4.000 Y=4.000 Z=0.000 P=0.000000 Y=90.000000 R=10.000000
+set X=0.000 Y=0.000 Z=-1.000 X=0.000 Y=0.000 Z=0.000
+added X=11.000 Y=1.000 Z=1.000 P=10.000000 Y=20.000000 R=30.000000
+teleported X=0.000 Y=0.000 Z=500.000
+relative X=0.000 Y=0.000 Z=500.000
+frozen false true
+tag 'runner' ''
+[alice visible] false
+[alice visible to] alice
+[alice gravity] P=0.000000 Y=0.000000 R=180.000000
+team '' 'Red'
+coins 7 true gems false
+copied Ann true
+removed true false false
+[alice destroyed]
+[alice prefab destroyed]

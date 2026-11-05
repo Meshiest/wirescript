@@ -13,6 +13,7 @@ js-sys = "0.3.77"
 
 brdb = { workspace = true, features = ["brz"] }
 wirescript = { workspace = true, features = ["editor"] }
+wirescript-sim = { workspace = true, features = ["compile"] }
 serde.workspace = true
 serde_json.workspace = true
 

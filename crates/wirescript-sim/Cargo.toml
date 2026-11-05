@@ -1,0 +1,22 @@
+[package]
+name = "wirescript-sim"
+version = "0.1.0"
+edition.workspace = true
+description = "Headless simulator for Brickadia logic gates: loads a save's wire graph and runs it tick by tick"
+
+[dependencies]
+wirescript-ir.workspace = true
+brdb = { workspace = true, features = ["brz"] }
+rustc-hash.workspace = true
+thiserror.workspace = true
+wirescript = { workspace = true, optional = true }
+
+[features]
+# `runner`: compile a Wirescript source and run it or its tests.
+compile = ["dep:wirescript"]
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

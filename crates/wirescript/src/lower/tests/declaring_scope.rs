@@ -103,6 +103,8 @@ pub(super) fn compiled(
         file: "main",
         module_name: None,
         fold_mode,
+        test_entry: None,
+        test_build: false,
     };
     let result = match crate::compile::compile_keeping_lowered(
         input,
@@ -958,6 +960,8 @@ fn a_buffer_initializer_mismatch_names_the_buffer() {
         file: "main",
         module_name: None,
         fold_mode: crate::FoldMode::Auto,
+        test_entry: None,
+        test_build: false,
     });
     let Err(crate::CompileError::HasErrors(errors)) = result else {
         panic!("compiles")

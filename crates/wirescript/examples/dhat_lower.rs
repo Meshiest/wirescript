@@ -32,6 +32,8 @@ fn main() {
             doc_comments: &resolved.doc_comments,
             fold_mode: wirescript::FoldMode::Auto,
             ce_slots: &ce_slots,
+            test_build: false,
+            testing_stmts: &resolved.testing_stmts,
         });
         drop(profiler);
         eprintln!("lowered: {} nodes", lowered.module.nodes.len());

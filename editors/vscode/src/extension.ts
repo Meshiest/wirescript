@@ -8,6 +8,7 @@ import { translateUri, wasiMounts } from "./wasiPaths";
 import { registerDocs } from "./docs";
 import { bundleDocLinks, handlerUri, OPEN_DOCS_PAGE } from "./docLinks";
 import { loadGrammar, wirescriptMarkdown } from "./markdownPreview";
+import { RUN_TEST_ITEM, registerTests } from "./testing";
 import {
   workspace,
   ExtensionContext,
@@ -114,6 +115,9 @@ function chooseServer(extDir: string): ServerChoice | string {
   return "no language server found: build one with `just lsp` or `just lsp-wasi`, or set wirescript.lspPath";
 }
 
+// Languages Compile and Copy builds: `.ws` compiles, `.wsir` assembles.
+const BUILDABLE = new Set(["wirescript", "wirescript-ir"]);
+
 export function activate(context: ExtensionContext) {
   let extDir = context.extensionPath;
   try {
@@ -168,6 +172,19 @@ export function activate(context: ExtensionContext) {
   // going to it, and paths coming back, are translated. Identity for native.
   let toServer = (uri: Uri) => uri.toString();
   let fromServerPath = (p: string) => Uri.file(p);
+
+  // The Testing view: every @test and .expected program, run by the server.
+  const testing = registerTests(
+    context,
+    () => {
+      const running = client;
+      if (!running) return undefined;
+      return (command, args) =>
+        running.sendRequest("workspace/executeCommand", { command, arguments: args });
+    },
+    () => toServer,
+  );
+
   // The WASI host mounts the workspace folders once, when the server starts.
   let mountsFolders = false;
 
@@ -208,6 +225,21 @@ export function activate(context: ExtensionContext) {
             return md;
           });
           return hover;
+        },
+        // A "Run test" lens runs through the Testing view, so the gutter and
+        // the view show its result as they do for the gutter button.
+        provideCodeLenses: async (document, token, next) => {
+          const lenses = await next(document, token);
+          for (const lens of lenses ?? []) {
+            if (lens.command?.command !== "wirescript.runTest") continue;
+            const name = lens.command.arguments?.[1];
+            lens.command = {
+              ...lens.command,
+              command: RUN_TEST_ITEM,
+              arguments: [document.uri, typeof name === "string" ? name : null],
+            };
+          }
+          return lenses;
         },
         handleDiagnostics: (uri, diagnostics, next) => {
           for (const d of diagnostics) d.code = bundledCode(d.code);
@@ -270,6 +302,7 @@ export function activate(context: ExtensionContext) {
     watchForRebuild(source);
     try {
       await started.start();
+      void testing.discover();
     } catch (e: any) {
       output.appendLine(`[server] failed to start: ${e?.message ?? e}`);
       window.showErrorMessage(`Wirescript language server failed to start: ${e?.message ?? e}`);
@@ -329,6 +362,7 @@ export function activate(context: ExtensionContext) {
 
   context.subscriptions.push(
     commands.registerCommand("wirescript.restartServer", () => restart()),
+    commands.registerCommand(RUN_TEST_ITEM, (uri: Uri, name: string | null) => testing.runTest(uri, name)),
     workspace.onDidChangeConfiguration((e) => {
       if (["wirescript.server", "wirescript.lspPath", "wirescript.wasmPath"].some((k) => e.affectsConfiguration(k))) {
         void restart();
@@ -580,7 +614,7 @@ export function activate(context: ExtensionContext) {
   // compile repopulates it. Without this, fixed errors lingered as squiggles
   // next to the fresh live diagnostics until the next compile.
   const clearBuildDiagnostics = (doc: TextDocument) => {
-    if (doc.languageId === "wirescript") buildDiagnostics.clear();
+    if (BUILDABLE.has(doc.languageId)) buildDiagnostics.clear();
   };
   context.subscriptions.push(
     workspace.onDidChangeTextDocument((e) => {
@@ -598,8 +632,8 @@ export function activate(context: ExtensionContext) {
   context.subscriptions.push(
     commands.registerCommand("wirescript.compileAndCopy", async () => {
       const doc = window.activeTextEditor?.document;
-      if (!doc || doc.languageId !== "wirescript") {
-        window.showWarningMessage("No active Wirescript file.");
+      if (!doc || !BUILDABLE.has(doc.languageId)) {
+        window.showWarningMessage("No active Wirescript or .wsir file.");
         return;
       }
       const running = client;
@@ -608,7 +642,7 @@ export function activate(context: ExtensionContext) {
         return;
       }
       await doc.save();
-      const baseName = path.basename(doc.uri.fsPath, ".ws");
+      const baseName = path.basename(doc.uri.fsPath, path.extname(doc.uri.fsPath));
       const outPath = path.join(os.tmpdir(), `${baseName}.brz`);
 
       compiling = true;

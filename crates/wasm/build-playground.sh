@@ -31,6 +31,7 @@ cp playground/share.js _site/
 cp playground/docs.js _site/
 cp playground/learn.js _site/
 cp playground/snippet.js _site/
+cp playground/test-worker.js _site/
 
 echo "Copying docs + examples..."
 mkdir -p _site/docs _site/sdk/examples

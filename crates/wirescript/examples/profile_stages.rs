@@ -42,6 +42,8 @@ fn run() {
         doc_comments: &resolved.doc_comments,
         fold_mode: FoldMode::Auto,
         ce_slots: &ce_slots,
+        test_build: false,
+        testing_stmts: &resolved.testing_stmts,
     });
     eprintln!("lower:                       {:>8.2?}", t.elapsed());
     eprintln!(

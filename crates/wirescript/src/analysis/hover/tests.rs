@@ -195,6 +195,29 @@ fn loop_exit_keywords_hover() {
     }
 }
 
+/// `emit` out of a `for` or `fn` body says it goes through a counter and
+/// fires a tick late; one whose signal the body declares says nothing of it.
+#[test]
+fn plane_emit_keyword_hover() {
+    let src = "let ping: exec\non ping {}\nfn f() -> int {\n  emit ping\n  return 1\n}\nin go: exec\non go {\n  for i in 0..3 {\n    emit ping\n    let own: exec\n    emit own\n  }\n}\n";
+    for (line, what, says) in [
+        (3usize, "a `fn` body", "on the caller's chain"),
+        (9, "a `for` body", "one tick later"),
+    ] {
+        let col = src.lines().nth(line).unwrap().find("emit").unwrap() + 1;
+        let h = hover_for(src, line, col).unwrap_or_else(|| panic!("line {line} should hover"));
+        assert!(
+            h.contains(&format!("**Emit out of {what}**")) && h.contains(says),
+            "line {line}: {h}"
+        );
+    }
+    let col = src.lines().nth(11).unwrap().find("emit").unwrap() + 1;
+    assert!(
+        hover_for(src, 11, col).is_none_or(|h| !h.contains("one tick later")),
+        "an emit of the body's own signal is not routed"
+    );
+}
+
 /// A builtin's hover says what the gate does, in the game's own words from
 /// the gate inventory, even for a gate the older `gate_docs.json` lacks.
 #[test]
@@ -1691,6 +1714,11 @@ fn annotations_hover_as_annotations() {
     // Without the `@` the same word is still the pin.
     let pin = hover_for(src, 0, 12).expect("a hover on the pin");
     assert!(!pin.contains("Annotation"), "{pin}");
+    let test = hover_for("@test fn smoke() { }\n", 0, 2).expect("a hover on @test");
+    assert!(
+        test.contains("```wirescript\n@test\n```") && test.contains("statements.html#tests-test"),
+        "{test}"
+    );
 }
 
 /// Hovers on language features end with a link to their docs section; a
@@ -2043,4 +2071,30 @@ fn chained_receiver_calls_hover_with_their_result_type() {
             &["r", "g", "b"],
         ),
     ]);
+}
+
+/// `testing`, its members and the matchers after `testing.expect(a)` hover;
+/// a program's own `testing` shadows them.
+#[test]
+fn testing_paths_hover() {
+    let src =
+        "on Loaded() {\n  testing.assertEq(1, 1)\n  testing.expect(2).not.toBeCloseTo(2.0)\n}\n";
+    let at = |line: usize, needle: &str| {
+        let col = src.lines().nth(line).unwrap().find(needle).unwrap() + 1;
+        hover_for(src, line, col).unwrap_or_default()
+    };
+    let root = at(1, "testing");
+    assert!(root.contains("Members:"), "{root}");
+    let eq = at(1, "assertEq");
+    assert!(eq.contains("testing.assertEq(a, b, msg...)"), "{eq}");
+    let close = at(2, "toBeCloseTo");
+    assert!(
+        close.contains("**Matcher.**") && close.contains("digits"),
+        "{close}"
+    );
+    let not = at(2, "not");
+    assert!(not.contains("Negates"), "{not}");
+    let own = "var testing: int = 0\non Loaded() {\n  testing = 2\n}\n";
+    let shadowed = hover_for(own, 2, 3).unwrap_or_default();
+    assert!(!shadowed.contains("Members:"), "{shadowed}");
 }
