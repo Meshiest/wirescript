@@ -112,8 +112,6 @@ const DATA_ONLY_PARAMS: &[&str] = &[
     "Slerp.clampAlpha -> bClampAlpha",
     "Slerp.shortestPath -> bShortestPath",
     "SpawnPrefab.prefab -> Prefab",
-    "Sweep.bodyPartsOnly -> bOnlyHitPlayerBodyParts",
-    "SweepSimple.bodyPartsOnly -> bOnlyHitPlayerBodyParts",
     "SweepSimple.detectBricks -> bDetectBricks",
     "SweepSimple.detectMap -> bDetectMap",
     "SweepSimple.detectPhysics -> bDetectPhysics",

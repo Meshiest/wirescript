@@ -469,7 +469,7 @@ fn lower_wired_args(ctx: &mut LowerCtx<'_>, wired: &[(WirePort, &Expr)]) -> Vec<
 }
 
 /// Named args that name a settings-menu config field
-/// (`bOnlyHitPlayerBodyParts = true`) rather than a declared param bake
+/// (`bSpreadBiasedTowardsCenter = true`) rather than a declared param bake
 /// into the gate's data-struct field by raw name; enum members bake as int.
 fn bake_config_attrs(
     ctx: &mut LowerCtx<'_>,

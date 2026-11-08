@@ -1,0 +1,6 @@
+# alice grows twice; bob's scale is his own.
+2 join alice
+3 join bob
+4 chat alice /grow
+5 chat alice /grow
+6 chat bob /grow

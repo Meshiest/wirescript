@@ -1792,7 +1792,7 @@ fn hover_event_config_param(source: &str, word: &str, line: usize, col: usize) -
 }
 
 /// Hover for a data-driven config attribute name: a raw settings-menu field
-/// (`bOnlyHitPlayerBodyParts`, `FontSize`, `Function`) set by its inventory
+/// (`bSpreadBiasedTowardsCenter`, `FontSize`, `Function`) set by its inventory
 /// name. Fires only in named-argument position, for a scalar config field of the
 /// enclosing gate.
 fn hover_data_driven_config(source: &str, word: &str, line: usize, col: usize) -> Option<String> {

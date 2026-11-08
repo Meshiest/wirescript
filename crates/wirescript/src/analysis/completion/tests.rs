@@ -235,8 +235,8 @@ fn call_arguments_complete() {
         row(
             "data-driven config offers raw field names",
             "on go { SweepSimple(500.0, ‸) }",
-            &["bOnlyHitPlayerBodyParts = ", "Direction = "],
-            &[],
+            &["bSpreadBiasedTowardsCenter = ", "Direction = "],
+            &["bOnlyHitPlayerBodyParts = "],
         ),
         // `Direction = <here>` (raw field) still offers the enum members.
         row(

@@ -150,7 +150,7 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                     WirePort::AdditionalIgnoredEntities,
                     Type::Array(Box::new(Type::Entity)),
                 ),
-                // what the sweep detects (each defaults off in-engine).
+                // what the sweep detects (each defaults on in-engine).
                 CallParam::opt("detectBricks", WirePort::BDetectBricks, Type::Bool),
                 CallParam::opt("detectPlayers1", WirePort::BDetectPlayers1, Type::Bool),
                 CallParam::opt("detectPlayers2", WirePort::BDetectPlayers2, Type::Bool),
@@ -163,12 +163,6 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 // (EBRSweepCollisionChannel: 0 Physics, 1 Weapon, 2 Interaction,
                 // 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction; an int on the wire).
                 CallParam::opt("collisionChannel", WirePort::CollisionChannel, Type::Int),
-                // Config-only (settings menu, not a wire input on Sweep).
-                CallParam::opt(
-                    "bodyPartsOnly",
-                    WirePort::BOnlyHitPlayerBodyParts,
-                    Type::Bool,
-                ),
             ],
             exec: true,
             outputs: vec![CallOutput::plain(

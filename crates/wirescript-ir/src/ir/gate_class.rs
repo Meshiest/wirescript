@@ -303,6 +303,8 @@ pub const CHARACTER_SHOW_HINT: &str = "BrickComponentType_Exec_Character_ShowHin
 pub const CHARACTER_GET_DAMAGE: &str = "BrickComponentType_Exec_Character_GetDamage";
 pub const CHARACTER_SET_DAMAGE: &str = "BrickComponentType_Exec_Character_SetDamage";
 pub const CHARACTER_INC_DAMAGE: &str = "BrickComponentType_Exec_Character_IncDamage";
+pub const CHARACTER_GET_SCALE: &str = "BrickComponentType_Exec_Character_GetScale";
+pub const CHARACTER_SET_SCALE: &str = "BrickComponentType_Exec_Character_SetScale";
 pub const CHARACTER_SET_TEMP_PERMISSION: &str =
     "BrickComponentType_Exec_Character_SetTempPermission";
 pub const ENTITY_GET_LOCATION: &str = "BrickComponentType_Exec_Entity_GetLocation";

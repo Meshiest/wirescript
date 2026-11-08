@@ -120,7 +120,7 @@ fn row(
 
 // A real gate carrying settable settings-menu config fields, used to exercise
 // the config-arm dispatch against the actual inventory schema:
-//   - `bOnlyHitPlayerBodyParts` (bool) and `Direction` (enum) are scalar config.
+//   - `bSpreadBiasedTowardsCenter` (bool) and `Direction` (enum) are scalar config.
 const SWEEP_GATE: &str = crate::ir::gate_class::SWEEP_SIMPLE;
 
 #[test]
@@ -174,22 +174,22 @@ fn check_args_reports_arity_types_config_and_named_args() {
             vec![Clean],
         ),
         // A `ConfigScalar` param given a non-constant value emits the constant-only
-        // WS028, reached via a NAMED arg matched by SURFACE name (`bodyPartsOnly`,
-        // port `bOnlyHitPlayerBodyParts`); the message names the surface param.
+        // WS028, reached via a NAMED arg matched by SURFACE name (`spreadTowardCenter`,
+        // port `bSpreadBiasedTowardsCenter`); the message names the surface param.
         row(
             "non-constant scalar config by surface name",
             vec![("live", Type::Bool)],
             config_sig(
                 "SweepSimple",
                 Some((
-                    "bodyPartsOnly",
+                    "spreadTowardCenter",
                     Type::Bool,
-                    ParamKind::ConfigScalar("bOnlyHitPlayerBodyParts"),
+                    ParamKind::ConfigScalar("bSpreadBiasedTowardsCenter"),
                 )),
                 Some(SWEEP_GATE),
             ),
-            vec![named("bodyPartsOnly", "live")],
-            vec![Has("WS028", &["'bodyPartsOnly'"])],
+            vec![named("spreadTowardCenter", "live")],
+            vec![Has("WS028", &["'spreadTowardCenter'"])],
         ),
         // A `ConfigEnum(et)` param validates a bare member name against the schema.
         row(
@@ -216,16 +216,36 @@ fn check_args_reports_arity_types_config_and_named_args() {
             vec![Has("WS028", &[]), Lacks("WS002")],
         ),
         // A named arg that matches NO declared param falls back to the gate's
-        // data-driven settings config via `config_gate` (`bOnlyHitPlayerBodyParts`
+        // data-driven settings config via `config_gate` (`bSpreadBiasedTowardsCenter`
         // is a raw schema field): validated (WS028 for a non-constant value) but
         // a known name, so never WS041.
         row(
             "non-constant data-driven config fallback",
             vec![("live", Type::Bool)],
             config_sig("SweepSimple", None, Some(SWEEP_GATE)),
-            vec![named("bOnlyHitPlayerBodyParts", "live")],
+            vec![named("bSpreadBiasedTowardsCenter", "live")],
             vec![Has("WS028", &[]), Lacks("WS041")],
         ),
+        // A setting the game removed is WS041 naming the removal, by its old
+        // friendly alias and by its raw field name alike, and also on a call that
+        // does not check its named args.
+        row(
+            "the removed body-parts setting by its old alias",
+            vec![],
+            config_sig("SweepSimple", None, Some(SWEEP_GATE)),
+            vec![named("bodyPartsOnly", "true")],
+            vec![Has("WS041", &["removed", "Only Hit Player Body Parts"])],
+        ),
+        Row {
+            check_named: false,
+            ..row(
+                "the removed body-parts setting by its raw name on Sweep, unchecked",
+                vec![],
+                config_sig("Sweep", None, Some(crate::ir::gate_class::SWEEP)),
+                vec![named("bOnlyHitPlayerBodyParts", "true")],
+                vec![Has("WS041", &["removed", "Only Hit Player Body Parts"])],
+            )
+        },
         // A `ConfigComposite(port)` param rejects a non-constant value (can't fold
         // to a Color[]); the message uses the surface name, not the port.
         row(

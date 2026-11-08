@@ -124,7 +124,7 @@ pub struct ComponentSpec {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
     /// Settings-menu (non-wire) config properties the game exposes on this
-    /// gate, e.g. Sweep's `bOnlyHitPlayerBodyParts`. Not wireable. Empty for
+    /// gate, e.g. SweepSimple's `bSpreadBiasedTowardsCenter`. Not wireable. Empty for
     /// gates without any.
     #[serde(default)]
     pub config: Vec<ConfigProperty>,

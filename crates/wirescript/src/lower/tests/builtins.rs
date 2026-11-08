@@ -654,3 +654,55 @@ fn a_number_into_a_string_port_goes_through_format_text() {
     let r = compile_ok("in n: int\nin s: string\nout t = s .. n");
     assert_eq!(count_class(&r.module, gc::STRING_FORMAT_TEXT), 0);
 }
+
+#[test]
+fn player_scale_reads_and_writes_through_the_character_scale_gates() {
+    use crate::ir::port_registry::WirePort;
+    // `GetScale` reads the float `Scale` output, `SetScale` writes its `Scale`
+    // input, and the receiver character wires both gates' `Character` port.
+    let r = compile_ok(
+        "in go: exec\nin c: character\non go {\n  let s = c.GetScale()\n  c.SetScale(s)\n}\n",
+    );
+    assert_no_errors(&r);
+    let get = find_gate(&r, gc::CHARACTER_GET_SCALE);
+    let set = find_gate(&r, gc::CHARACTER_SET_SCALE);
+    let who = source_of(&r, get, WirePort::Character).expect("GetScale needs a character");
+    assert_eq!(source_of(&r, set, WirePort::Character), Some(who));
+    let scale = r
+        .module
+        .wires
+        .iter()
+        .find(|w| w.target.node_id == set && w.target.port == WirePort::Scale)
+        .expect("SetScale's Scale should be wired");
+    assert_eq!(
+        (scale.source.node_id, scale.source.port),
+        (get, WirePort::Scale),
+        "the read's Scale output should feed the write's Scale input"
+    );
+    assert!(exec_reaches(&r.module, get, set), "the write runs after the read");
+    assert_emits(&r.module, &crate::layout::layout(&r.module));
+
+    // A constant scale is accepted the same way, with no read gate.
+    let r = compile_ok("in go: exec\nin c: character\non go {\n  c.SetScale(2.0)\n}\n");
+    assert_no_errors(&r);
+    find_gate(&r, gc::CHARACTER_SET_SCALE);
+    assert!(!has_gate_deep(&r, gc::CHARACTER_GET_SCALE));
+
+    // `Scale` is a float on both gates.
+    let r = compile("in go: exec\nin c: character\non go {\n  let n: entity = c.GetScale()\n}\n");
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "WS016" && d.message.contains("has type float")),
+        "GetScale should read a float: {:?}",
+        r.diagnostics
+    );
+    for (call, code) in [
+        ("c.SetScale(\"big\")", "WS003"),
+        ("c.SetScale(Vec(1.0, 1.0, 1.0))", "WS003"),
+        ("c.SetScale()", "WS011"),
+    ] {
+        let src = format!("in go: exec\nin c: character\non go {{\n  {call}\n}}\n");
+        assert_eq!(errs(&src), [code], "{call}");
+    }
+}

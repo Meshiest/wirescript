@@ -162,7 +162,8 @@ pub(crate) fn check_args(
     // member, a composite shape, a constant scalar); one bound to a wire-input
     // parameter is coerced as a positional one is. A name matching no declared
     // parameter falls back to the gate's settings-menu config (a raw struct field,
-    // `bOnlyHitPlayerBodyParts = true`). A name matching neither lowers to nothing
+    // `bSpreadBiasedTowardsCenter = true`). A setting the game has removed is
+    // always WS041, naming the removal. A name matching neither lowers to nothing
     // (`p.DisplayText(t, positionX = 0.0)`), so it is WS041, except for:
     //   - `exec`, the exec override of a pure-context call, handled before binding;
     //   - any name on a variadic call with `check_arity == false`
@@ -183,6 +184,17 @@ pub(crate) fn check_args(
             && let Some(cfg) = crate::catalog::scalar_config_field(gate_class, name)
         {
             validate_data_driven_config(ctx, gate_class, cfg, value);
+        } else if let Some(gate_class) = sig.config_gate
+            && let Some(setting) = crate::catalog::removed_config_setting(gate_class, name)
+        {
+            ctx.emit(
+                "WS041",
+                format!(
+                    "'{}' has no parameter '{}': the game removed the '{setting}' setting",
+                    sig.name, name
+                ),
+                name_range.clone(),
+            );
         } else if check_named && name != "exec" {
             // Point at a parameter that differs only by case: matching is case-sensitive,
             // so a casing slip otherwise reads as "no such parameter".

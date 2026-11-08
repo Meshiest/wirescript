@@ -687,7 +687,6 @@ wire_ports! {
     // Constant-only gate-config data fields (settings menu, not wire inputs).
     BClampAlpha = "bClampAlpha",
     BLocalAim = "bLocalAim",
-    BOnlyHitPlayerBodyParts = "bOnlyHitPlayerBodyParts",
     BOverrideColors = "bOverrideColors",
     BShortestPath = "bShortestPath",
     BlendSpace = "BlendSpace",

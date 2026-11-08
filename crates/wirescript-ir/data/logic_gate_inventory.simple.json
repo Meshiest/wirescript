@@ -3654,6 +3654,58 @@
       }
     },
     {
+      "brickAsset": "B_1x1_Gate_Exec_Character_GetScale",
+      "brickDisplayName": "Get Player Scale",
+      "brickSummary": "Returns a player's scale, where 1 is normal size.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Exec_Character_GetScale",
+        "displayName": "Get Player Scale",
+        "description": "Returns a player's scale, where 1 is normal size.",
+        "searchTags": "",
+        "category": "Players",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Scale",
+            "displayName": "Scale",
+            "tooltip": "",
+            "type": "float",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
       "brickAsset": "B_1x1_Gate_Exec_Character_GetWeaponChamberAmmo",
       "brickDisplayName": "Get Weapon Chamber Ammo",
       "brickSummary": "Returns the chamber amount for a weapon resource in a specific inventory slot.",
@@ -4246,6 +4298,58 @@
             "displayName": "Slot",
             "tooltip": "",
             "type": "int",
+            "composite": null
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ExecOut",
+            "displayName": "Exec Out",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          }
+        ],
+        "config": []
+      }
+    },
+    {
+      "brickAsset": "B_1x1_Gate_Exec_Character_SetScale",
+      "brickDisplayName": "Set Player Scale",
+      "brickSummary": "Scales a player along with their movement, camera, held items and the projectiles and damage they deal; a dead player's ragdoll scales too.",
+      "halfSize": {
+        "X": 5,
+        "Y": 5,
+        "Z": 2
+      },
+      "component": {
+        "class": "BrickComponentType_Exec_Character_SetScale",
+        "displayName": "Set Player Scale",
+        "description": "Scales a player along with their movement, camera, held items and the projectiles and damage they deal; a dead player's ragdoll scales too.",
+        "searchTags": "",
+        "category": "Players",
+        "kind": "exec",
+        "family": "Character",
+        "inputs": [
+          {
+            "name": "Character",
+            "displayName": "Character",
+            "tooltip": "",
+            "type": "character",
+            "composite": null
+          },
+          {
+            "name": "Exec",
+            "displayName": "Exec",
+            "tooltip": "",
+            "type": "exec",
+            "composite": null
+          },
+          {
+            "name": "Scale",
+            "displayName": "Scale",
+            "tooltip": "",
+            "type": "float",
             "composite": null
           }
         ],
@@ -10549,13 +10653,7 @@
             "composite": null
           }
         ],
-        "config": [
-          {
-            "name": "bOnlyHitPlayerBodyParts",
-            "displayName": "Only Hit Player Body Parts",
-            "type": "bool"
-          }
-        ]
+        "config": []
       }
     },
     {
@@ -10711,11 +10809,6 @@
           {
             "name": "bDetectPlayers4",
             "displayName": "Detect Players4",
-            "type": "bool"
-          },
-          {
-            "name": "bOnlyHitPlayerBodyParts",
-            "displayName": "Only Hit Player Body Parts",
             "type": "bool"
           },
           {
@@ -10884,11 +10977,6 @@
           {
             "name": "bDetectPlayers4",
             "displayName": "Detect Players4",
-            "type": "bool"
-          },
-          {
-            "name": "bOnlyHitPlayerBodyParts",
-            "displayName": "Only Hit Player Body Parts",
             "type": "bool"
           },
           {
@@ -11121,13 +11209,7 @@
             "composite": null
           }
         ],
-        "config": [
-          {
-            "name": "bOnlyHitPlayerBodyParts",
-            "displayName": "Only Hit Player Body Parts",
-            "type": "bool"
-          }
-        ]
+        "config": []
       }
     },
     {
@@ -20994,7 +21076,7 @@
     {
       "brickAsset": "B_Gyroscope",
       "brickDisplayName": "Gyroscope",
-      "brickSummary": "A brick that can be set to a customized weight",
+      "brickSummary": "Holds a grid upright or turns it toward a target axis. Can be controlled by a vehicle engine.",
       "halfSize": {
         "X": 5,
         "Y": 5,

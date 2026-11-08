@@ -13,6 +13,28 @@ pub mod value_fields;
 
 pub use wirescript_ir::catalog::*;
 
+/// Gate settings the game has removed: `(gate classes, argument names, setting)`.
+/// The names are the old friendly alias and the raw field name. Setting one is
+/// WS041 naming the removal, so a program written for an older build fails
+/// loudly instead of losing the setting.
+const REMOVED_CONFIG: &[(&[&str], &[&str], &str)] = &[(
+    &[
+        crate::ir::gate_class::SWEEP,
+        crate::ir::gate_class::SWEEP_SIMPLE,
+    ],
+    &["bodyPartsOnly", "bOnlyHitPlayerBodyParts"],
+    "Only Hit Player Body Parts",
+)];
+
+/// The display name of the removed setting that named arg `arg` set on
+/// `gate_class`, if it is one (see [`REMOVED_CONFIG`]).
+pub fn removed_config_setting(gate_class: &str, arg: &str) -> Option<&'static str> {
+    REMOVED_CONFIG
+        .iter()
+        .find(|(gates, names, _)| gates.contains(&gate_class) && names.contains(&arg))
+        .map(|(_, _, setting)| *setting)
+}
+
 /// The schema enum backing named arg `arg` of builtin call or event `callee`,
 /// when `arg`'s gate data field is a schema enum (wireable params such as
 /// `DisplayText`'s `justify` included). Hover and completion use it for calls

@@ -569,11 +569,6 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
                 CallParam::opt("detectPlayers2", WirePort::BDetectPlayers2, Type::Bool),
                 CallParam::opt("detectPlayers3", WirePort::BDetectPlayers3, Type::Bool),
                 CallParam::opt("detectPlayers4", WirePort::BDetectPlayers4, Type::Bool),
-                CallParam::opt(
-                    "bodyPartsOnly",
-                    WirePort::BOnlyHitPlayerBodyParts,
-                    Type::Bool,
-                ),
                 CallParam::opt("detectPhysics", WirePort::BDetectPhysics, Type::Bool),
                 CallParam::opt("detectMap", WirePort::BDetectMap, Type::Bool),
                 // Wire input: collision channel (EBRSweepCollisionChannel, int).

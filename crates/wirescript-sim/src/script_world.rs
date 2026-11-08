@@ -245,10 +245,13 @@ pub struct Player {
     spawned: bool,
 }
 
-/// What a player's character carries. A new character starts empty.
-#[derive(Clone, Debug, Default)]
+/// What a player's character carries. A new character starts empty, at
+/// normal size.
+#[derive(Clone, Debug)]
 pub struct Body {
     pub damage: f64,
+    /// Player scale; 1.0 is normal size.
+    pub scale: f64,
     /// Ammo by resource.
     pub ammo: BTreeMap<String, i64>,
     /// Chambered ammo by resource and slot.
@@ -256,6 +259,19 @@ pub struct Body {
     /// What each inventory slot holds.
     pub inventory: BTreeMap<i64, Held>,
     pub slot: i64,
+}
+
+impl Default for Body {
+    fn default() -> Self {
+        Self {
+            damage: 0.0,
+            scale: 1.0,
+            ammo: BTreeMap::new(),
+            chamber: BTreeMap::new(),
+            inventory: BTreeMap::new(),
+            slot: 0,
+        }
+    }
 }
 
 /// What an inventory slot holds, by its asset.
@@ -1683,6 +1699,9 @@ impl ScriptWorld {
                 out.outputs
                     .push(("DamageLimit".into(), Value::Float(limit)));
             }
+            "Exec_Character_GetScale" => {
+                out.outputs.push(("Scale".into(), Value::Float(body.scale)));
+            }
             "Exec_Character_GetAmmo" => {
                 let key = asset_text(inputs, "Resource")?;
                 let body = who.as_ref().map_or(&empty, |n| &self.players[n].body);
@@ -1748,6 +1767,7 @@ impl ScriptWorld {
             short,
             "Exec_Character_SetDamage"
                 | "Exec_Character_IncDamage"
+                | "Exec_Character_SetScale"
                 | "Exec_Character_SetAmmo"
                 | "Exec_Character_GrantAmmo"
                 | "Exec_Character_SetWeaponChamberAmmo"
@@ -1821,6 +1841,9 @@ impl ScriptWorld {
                     p.body.damage + v
                 };
                 p.body.damage = to.clamp(0.0, p.damage_limit);
+            }
+            "Exec_Character_SetScale" => {
+                self.player(name).body.scale = read_f64(inputs, "Scale", 1.0)?;
             }
             "Exec_Character_SetAmmo" | "Exec_Character_GrantAmmo" => {
                 let key = asset_text(inputs, "Resource")?;

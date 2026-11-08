@@ -245,6 +245,32 @@ pub(super) fn register(m: &mut HashMap<&'static str, CallSpec>) {
             vec![],
         ),
     );
+    // Player scale: 1.0 is normal size.
+    m.insert(
+        "GetScale",
+        character_exec(
+            "GetScale",
+            gc::CHARACTER_GET_SCALE,
+            vec![CallParam::req(
+                "character",
+                WirePort::Character,
+                Type::Character,
+            )],
+            vec![CallOutput::plain(WirePort::Scale, Type::Float)],
+        ),
+    );
+    m.insert(
+        "SetScale",
+        character_exec(
+            "SetScale",
+            gc::CHARACTER_SET_SCALE,
+            vec![
+                CallParam::req("character", WirePort::Character, Type::Character),
+                CallParam::req("scale", WirePort::Scale, Type::Float),
+            ],
+            vec![],
+        ),
+    );
 
     // PlayerState (additional)
     m.insert(

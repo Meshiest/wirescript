@@ -264,12 +264,12 @@ fn a_constant_config_argument_lands_as_gate_data() {
         ),
         (
             "SweepSimple's bool and enum config (EBrickDirection::Y_Positive == 2)",
-            "in go: exec\non go {\n  SweepSimple(100.0, direction = Y_Positive, detectBricks = false, bodyPartsOnly = true)\n}\n",
+            "in go: exec\non go {\n  SweepSimple(100.0, direction = Y_Positive, detectBricks = false, spreadTowardCenter = true)\n}\n",
             crate::ir::gate_class::SWEEP_SIMPLE,
             vec![
                 ("Direction", Literal::Int(2)),
                 ("bDetectBricks", Literal::Bool(false)),
-                ("bOnlyHitPlayerBodyParts", Literal::Bool(true)),
+                ("bSpreadBiasedTowardsCenter", Literal::Bool(true)),
             ],
         ),
         (
@@ -292,10 +292,10 @@ fn a_constant_config_argument_lands_as_gate_data() {
         ),
         (
             "raw bool field names",
-            "in go: exec\non go {\n  SweepSimple(500.0, bOnlyHitPlayerBodyParts = true, bDetectBricks = true)\n}\n",
+            "in go: exec\non go {\n  SweepSimple(500.0, bSpreadBiasedTowardsCenter = true, bDetectBricks = true)\n}\n",
             crate::ir::gate_class::SWEEP_SIMPLE,
             vec![
-                ("bOnlyHitPlayerBodyParts", Literal::Bool(true)),
+                ("bSpreadBiasedTowardsCenter", Literal::Bool(true)),
                 ("bDetectBricks", Literal::Bool(true)),
             ],
         ),
@@ -312,10 +312,10 @@ fn a_constant_config_argument_lands_as_gate_data() {
             vec![("Value", Literal::Int(2))],
         ),
         (
-            "the hand-coded `bodyPartsOnly` alias keeps setting the same field",
-            "in go: exec\non go {\n  SweepSimple(500.0, bodyPartsOnly = true)\n}\n",
+            "the hand-coded `spreadTowardCenter` alias keeps setting the same field",
+            "in go: exec\non go {\n  SweepSimple(500.0, spreadTowardCenter = true)\n}\n",
             crate::ir::gate_class::SWEEP_SIMPLE,
-            vec![("bOnlyHitPlayerBodyParts", Literal::Bool(true))],
+            vec![("bSpreadBiasedTowardsCenter", Literal::Bool(true))],
         ),
         (
             "constant event data inlines as typed data and the name bakes into EventName",
@@ -1985,4 +1985,36 @@ fn a_setting_diagnostic_names_the_setting_and_the_value_as_written() {
     assert!(m.contains("argument") && !m.contains("setting"), "{m}");
     let m = message("on go { c.DisplayText(\"hi\", fontSize = 40.5) }", "WS106");
     assert!(m.contains("`DisplayText` setting `fontSize`"), "{m}");
+}
+
+/// The game removed Sweep's "Only Hit Player Body Parts" setting. A program
+/// that still sets it, by the old alias or the raw field, on either Sweep gate
+/// fails to compile with WS041 naming the removal, instead of losing the setting.
+#[test]
+fn the_removed_body_parts_setting_is_rejected_on_both_sweeps() {
+    let calls = [
+        "SweepSimple(500.0, bodyPartsOnly = true)",
+        "SweepSimple(500.0, bOnlyHitPlayerBodyParts = true)",
+        "Sweep(Vec(0.0, 0.0, 0.0), Vec(1.0, 0.0, 0.0), 500.0, bodyPartsOnly = true)",
+        "Sweep(Vec(0.0, 0.0, 0.0), Vec(1.0, 0.0, 0.0), 500.0, bOnlyHitPlayerBodyParts = false)",
+    ];
+    let mut failures = Vec::new();
+    for call in calls {
+        let src = format!("in go: exec\non go {{\n  {call}\n}}\n");
+        let r = compile(&src);
+        let removed = r.diagnostics.iter().any(|d| {
+            d.code == "WS041"
+                && d.severity == crate::diagnostic::Severity::Error
+                && d.message.contains("removed the 'Only Hit Player Body Parts' setting")
+        });
+        if !removed {
+            let got: Vec<String> = r
+                .diagnostics
+                .iter()
+                .map(|d| format!("[{}] {}", d.code, d.message))
+                .collect();
+            failures.push(format!("{call}: want WS041 naming the removal, got {got:?}"));
+        }
+    }
+    crate::test_support::report_failures(&failures, calls.len());
 }

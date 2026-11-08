@@ -969,6 +969,25 @@ Read, set, or add to a character's accumulated damage. Receiver on `character`.
 `GetDamage()` auto-unwraps to `Damage` where a `float` is expected (e.g.
 `if char.GetDamage() > 50.0`), and `.DamageLimit` gives the death threshold.
 
+### Scale
+```
+character.GetScale() -> float
+character.SetScale(scale: float)
+```
+
+Read or set a player's size, where `1.0` is normal. Receiver on `character`.
+Scaling a player also scales their movement, camera, held items, and the
+projectiles and damage they deal; a dead player's ragdoll scales too.
+
+```wirescript
+in grow: exec
+in player: character
+
+on grow {
+  player.SetScale(player.GetScale() * 2.0)
+}
+```
+
 ### SetTempPermission
 ```
 character.SetTempPermission(permission: string, enable: bool)
@@ -1350,7 +1369,7 @@ settings-menu field under its **raw game name**, so any of the ~60 config gates
 works even without a curated alias:
 
 ```wirescript
-SweepSimple(500.0, Direction = X_Negative, bOnlyHitPlayerBodyParts = true)
+SweepSimple(500.0, Direction = X_Negative, bSpreadBiasedTowardsCenter = true)
 p.DisplayText("hi", FontSize = 40, Typeface = Bold, Justification = Center)
 ```
 
@@ -1362,8 +1381,7 @@ Config attributes by gate:
 
 | Gate | Config attributes |
 |------|-------------------|
-| `Sweep` | `bodyPartsOnly` |
-| `SweepSimple` | `direction` (EBrickDirection), `spreadTowardCenter`, `detectBricks`, `detectPlayers1` to `4`, `bodyPartsOnly`, `detectPhysics`, `detectMap` |
+| `SweepSimple` | `direction` (EBrickDirection), `spreadTowardCenter`, `detectBricks`, `detectPlayers1` to `4`, `detectPhysics`, `detectMap` |
 | `Blend` | `clampAlpha` |
 | `ColorBlend` | `blendSpace` (EBRColorSpace), `clampAlpha` |
 | `Slerp` | `shortestPath`, `clampAlpha` |
@@ -1647,18 +1665,18 @@ on hit {
 | `relative` | `bool` | No | Interpret `origin`/`direction` in the owning grid's local frame |
 | `ignore` | `entity` | No | A single entity to exclude from hits |
 | `ignoreList` | `entity[]` | No | An array var of additional entities to exclude (on top of `ignore`) |
-| `detectBricks` | `bool` | No | Detect brick grids, including spawned prefabs (**default false**) |
-| `detectPlayers1` to `detectPlayers4` | `bool` | No | Detect players on collision channels 1-4 (**default false**) |
-| `detectPhysics` | `bool` | No | Detect physics-simulating objects (**default false**) |
-| `detectMap` | `bool` | No | Detect the static world / environment (**default false**) |
-| `ignoreOwningGrid` | `bool` | No | Exclude the grid this gate sits on (prevents self-hits) |
-| `collisionChannel` | `SweepCollisionChannel` | No | Collision channel to sweep on (`EBRSweepCollisionChannel`: 0 Physics, 1 Weapon, 2 Interaction, 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction) |
-| `bodyPartsOnly` | `bool` | No | Only hit player body parts (constant only) |
+| `detectBricks` | `bool` | No | Detect brick grids, including spawned prefabs (**default true**) |
+| `detectPlayers1` to `detectPlayers4` | `bool` | No | Detect players on collision channels 1-4 (**default true**) |
+| `detectPhysics` | `bool` | No | Detect physics-simulating objects (**default true**) |
+| `detectMap` | `bool` | No | Detect the static world / environment (**default true**) |
+| `ignoreOwningGrid` | `bool` | No | Exclude the grid this gate sits on, so it cannot hit itself (**default true**) |
+| `collisionChannel` | `SweepCollisionChannel` | No | Collision channel to sweep on (`EBRSweepCollisionChannel`: 0 Physics, 1 Weapon, 2 Interaction, 3 Tool, 4-7 Player1-4, 8 NoAdditionalRestriction, the default) |
 
-> **Detection is opt-in.** Every `detect*` flag defaults to `false`, so a Sweep
-> with none set **detects nothing and always fires `Miss`.** Enable the channel you
-> want: `detectBricks` for brick grids / spawned prefabs, `detectPlayers1` for
-> players, `detectPhysics` for loose physics objects.
+> **Detection is on by default.** Every `detect*` flag defaults to `true`, so a
+> Sweep with none set hits bricks, players, physics objects and the map. Turn off
+> what it should pass through: `detectPlayers1 = false` (to `4`) to ignore
+> players, `detectMap = false` to ignore the static world. `SweepSimple`'s
+> `detect*` flags default to `true` the same way.
 
 Returns a record with fields:
 - `HitDistance: float`: Distance to hit point

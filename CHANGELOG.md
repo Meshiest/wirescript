@@ -1,5 +1,16 @@
 # Wirescript Changelog
 
+## 2.4.1
+
+### Game update
+
+- `character.GetScale()` and `character.SetScale(scale)` read and set a player's size, where `1.0` is normal.
+- The game removed Sweep's Only Hit Player Body Parts setting, so `bodyPartsOnly` and `bOnlyHitPlayerBodyParts` on `Sweep` and `SweepSimple` are now WS041.
+
+### Fixes
+
+- The `Sweep` reference said its `detect*` flags default off; they default on, as does `ignoreOwningGrid`.
+
 ## 2.4.0
 
 ### Simulator

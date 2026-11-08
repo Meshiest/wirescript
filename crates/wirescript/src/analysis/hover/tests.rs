@@ -1006,9 +1006,9 @@ fn event_config_param_hovers() {
 #[test]
 fn data_driven_config_field_name_hovers() {
     // Hovering a raw config field name marks it as gate config with its type.
-    let src = "in go: exec\non go {\n  SweepSimple(500.0, bOnlyHitPlayerBodyParts = true)\n}";
+    let src = "in go: exec\non go {\n  SweepSimple(500.0, bSpreadBiasedTowardsCenter = true)\n}";
     let line = src.lines().nth(2).unwrap();
-    let h = hover_for(src, 2, line.find("bOnlyHitPlayerBodyParts").unwrap())
+    let h = hover_for(src, 2, line.find("bSpreadBiasedTowardsCenter").unwrap())
         .expect("hover on raw config field");
     assert!(h.contains("gate config"), "should mark as config: {h}");
     assert!(h.contains("bool"), "should show the type: {h}");
