@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.9
+
+- Wirescript 2.4.1: `character.GetScale()` and `character.SetScale(scale)` read
+  and set a player's size, and Sweep's removed `bodyPartsOnly` setting is now
+  an error.
+
+## 0.1.8
 
 - A Run test lens above each `@test` runs it in the gate simulator and shows whether it passed; what it printed goes to the Wirescript output channel.
 - `.wsir` files get their own icon, and Compile and Copy (`Ctrl+Shift+B`)
