@@ -52,6 +52,8 @@ const HAND = {
     flat: 'statements.md#flat-inline-every-chip',
     sliced: 'statements.md#sliced-loops-sliced',
     test: 'statements.md#tests-test',
+    display: 'statements.md#display-a-pixel-screen',
+    seat: 'statements.md#seat-a-seat-for-a-player',
   },
   types: {
     bool: PRIMITIVE,
@@ -71,6 +73,7 @@ const HAND = {
     prefab: 'expressions.md#prefab-references',
     brick: 'types.md#bricks',
     any: 'types.md#any-type',
+    Seat: 'statements.md#seat-a-seat-for-a-player',
   },
   topics: {
     constraintClass: 'types.md#constraint-classes-bounds',

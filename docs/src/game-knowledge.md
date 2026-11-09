@@ -118,6 +118,33 @@ RobotoMono
 `IosevkaTerm`, `IosevkaTermSlab`, and the five Monaspace faces are monospaced,
 which is what makes grid and table rendering line up.
 
+### Text Decal sizing
+
+A Text Decal draws one em of its font a fixed number of grid units tall per
+unit of `LineHeight` (10 grid units are one stud), and that number depends on
+the font: 1.28 for Iosevka Term and 1.24 for Monaspace Argon, measured in
+game. `WidthScale` stretches each glyph and its advance alike, so a character
+is `advance × scale × LineHeight × WidthScale` wide.
+
+A `█` (U+2588) is a solid pixel when it is drawn square: `WidthScale` equal
+to its height over its advance. `@display` sizes its rows this way, except
+that Monaspace rows drawn exactly one pixel tall leave hairlines between
+them, so it draws them 1% taller. A negative `Offset.Y` moves text down, in
+grid units; at 0 the top of a `█` sits above the top of its brick face, by
+about 0.217 em in Iosevka Term and 0.178 em in Monaspace, and `@display`
+moves it down by that much. The `█` in ems, read from the published font
+files:
+
+| Font | Advance | Bottom | Top | Height | Square at `WidthScale` |
+|---|---:|---:|---:|---:|---:|
+| Iosevka Term | 0.500 | -0.285 | 0.965 | 1.250 | 2.50 |
+| Monaspace (all five) | 0.620 | -0.305 | 0.950 | 1.255 | 2.02 |
+| Bungee | 1.000 | -0.180 | 0.900 | 1.080 | 1.08 |
+
+Black Ops One, Cherry Bomb One, Cinzel, Eagle Lake, Noto Sans, Noto Serif,
+Orbitron, Pirata One, Roboto and Roboto Mono have no `█`. The other faces
+were not measured.
+
 ## Input Action Names
 
 Every name accepted by `<inputAction>` and `<inputAxis>`. A `*` marks an axis,

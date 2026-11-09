@@ -92,6 +92,9 @@ pub enum Op {
     DestroyPrefab,
     /// A gate of a destroyed copy: it does nothing.
     Dead,
+    /// A Text Decal: it keeps the `Text` wired into it, which a display's
+    /// rows are recorded from (see `crate::display`).
+    TextDisplay,
     /// Anything the simulator does not model.
     Unsupported,
 }
@@ -201,8 +204,10 @@ impl Op {
             "Tween" => Self::Tween,
             "Dampen" => Self::Dampen,
             "Exec_PrefabSpawner" => Self::PrefabSpawner,
+            "TextDisplay" => Self::TextDisplay,
             "Exec_Entity_DestroySpawnedPrefab" => Self::DestroyPrefab,
             "Internal_InputSplitter"
+            | "Internal_Seat"
             | "Expr_Gamemode_IsBuilderTeam"
             | "Expr_Gamemode_IsUnaffiliatedTeam" => Self::WorldValue,
             s if s.ends_with("Reference") && !s.starts_with("Expr_") => Self::AssetRef,
@@ -374,6 +379,9 @@ pub struct Gate {
     /// Wirescript program.
     pub node: Option<NodeId>,
     pub span: Option<SourceRange>,
+    /// The `@seat` input this seat gate is, when the graph came from a
+    /// Wirescript program.
+    pub seat: Option<String>,
 }
 
 impl Gate {
@@ -410,6 +418,7 @@ impl Gate {
             data: None,
             node: None,
             span: None,
+            seat: None,
         }
     }
 
@@ -493,6 +502,8 @@ pub struct Graph {
     pub chip_grids: HashMap<BrickAddr, u32>,
     /// The prefabs spawners name, by path.
     pub prefabs: HashMap<String, Vec<u8>>,
+    /// The program's `@display`s, in declaration order.
+    pub displays: Vec<crate::display::DisplayMeta>,
 }
 
 impl Graph {
@@ -534,6 +545,7 @@ impl Graph {
             by_addr,
             chip_grids: HashMap::default(),
             prefabs: HashMap::default(),
+            displays: Vec::new(),
         }
     }
 
@@ -597,6 +609,7 @@ impl Graph {
             by_addr,
             chip_grids: save.chip_grids,
             prefabs: save.prefabs,
+            displays: Vec::new(),
         };
 
         // Attach every wire to its ports, creating ports the inventory does

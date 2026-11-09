@@ -9,6 +9,7 @@ import { registerDocs } from "./docs";
 import { bundleDocLinks, handlerUri, OPEN_DOCS_PAGE } from "./docLinks";
 import { loadGrammar, wirescriptMarkdown } from "./markdownPreview";
 import { RUN_TEST_ITEM, registerTests } from "./testing";
+import { openRunner } from "./runner";
 import {
   workspace,
   ExtensionContext,
@@ -362,6 +363,7 @@ export function activate(context: ExtensionContext) {
 
   context.subscriptions.push(
     commands.registerCommand("wirescript.restartServer", () => restart()),
+    commands.registerCommand("wirescript.play", () => openRunner(context)),
     commands.registerCommand(RUN_TEST_ITEM, (uri: Uri, name: string | null) => testing.runTest(uri, name)),
     workspace.onDidChangeConfiguration((e) => {
       if (["wirescript.server", "wirescript.lspPath", "wirescript.wasmPath"].some((k) => e.affectsConfiguration(k))) {

@@ -817,6 +817,9 @@ fn builtin_type_desc(word: &str) -> Option<&'static str> {
         }
         "brick" => "Reference to a brick. Set it in the editor or receive it from a port or event.",
         "any" => "Accepts any type. Prefer a generic `<T>`.",
+        "Seat" => {
+            "A `@seat` input: `{ occupied: bool, character: character }`, whether someone sits in the seat and who."
+        }
         "never" => "No value. The type of an expression that never produces one.",
         _ => return None,
     })
@@ -923,6 +926,21 @@ fn hover_annotation(name: &str) -> Option<String> {
         "sliced" => (
             "@sliced".to_string(),
             "Spreads a `for` loop's iterations across ticks.",
+        ),
+        "display" => (
+            "@display(width = W, height = H, size?, font?, border?, offset?)".to_string(),
+            "Makes a top-level `var` a screen: a `color[]` of `width * height` pixels, row-major, all \
+             transparent to start, drawn on a panel one tick after a write. The panel stands 3 studs \
+             out on the chip's top side (`@bottom`/`@left`/`@right` pick another), facing the chip; \
+             `offset = Vec(right, out, up)` moves it, in studs. `size` is a pixel's edge in studs \
+             (default 1.0); `font` is `\"IosevkaTerm\"` or `\"MonaspaceArgon\"`; `border` (default \
+             true) frames the panel. `@color` colors the panel.",
+        ),
+        "seat" => (
+            "@seat(label?, mode?, camera?, exit?)".to_string(),
+            "Places a seat beside the chip for a top-level `in`, which becomes a `Seat`: \
+             `{ occupied: bool, character: character }`. `@left`/`@right`/`@top` pick its side \
+             (bottom by default); `@color` colors it. For keys, call `character.InputReader()`.",
         ),
         "test" => (
             "@test".to_string(),

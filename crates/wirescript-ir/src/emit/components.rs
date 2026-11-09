@@ -132,6 +132,19 @@ fn build_gate_data_map(
                 })?),
                 // A native struct field takes one representation, so a rotation constant bound for a
                 // quaternion field converts here (see `reshape_literal_for_struct`).
+                FieldKind::NativeStruct("IntVector") => match &**lit {
+                    Literal::Vector { x, y, z } => Box::new(brdb::IntVector {
+                        x: x.round() as i32,
+                        y: y.round() as i32,
+                        z: z.round() as i32,
+                    }),
+                    other => {
+                        return Err(EmitError::UnrepresentableLiteral {
+                            field: field.to_string(),
+                            literal: other.clone(),
+                        });
+                    }
+                },
                 FieldKind::NativeStruct(struct_ty) => {
                     let reshaped = reshape_literal_for_struct(struct_ty, lit);
                     let lit = reshaped.as_ref().unwrap_or(lit);

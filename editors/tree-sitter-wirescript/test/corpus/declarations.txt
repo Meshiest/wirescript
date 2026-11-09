@@ -426,3 +426,36 @@ var heat: int = 0
       (annotation_name)
       (identifier))
     (block)))
+
+================================================================================
+display and seat annotations take named options
+================================================================================
+
+@display(width = 4, height = 2)
+var screen
+
+@top @seat(label = "P2") in p2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    (annotation
+      (annotation_name)
+      (named_argument
+        (identifier)
+        (integer))
+      (named_argument
+        (identifier)
+        (integer)))
+    (identifier))
+  (in_declaration
+    (annotation
+      (annotation_name))
+    (annotation
+      (annotation_name)
+      (named_argument
+        (identifier)
+        (string
+          (string_fragment))))
+    (identifier)))

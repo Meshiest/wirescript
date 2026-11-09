@@ -370,6 +370,26 @@ const GRID_LAYOUT_THRESHOLD: usize = 5000;
 
 /// Like [`layout`] but with explicit options.
 pub fn layout_with_opts(module: &Module, opts: &LayoutOptions) -> LayoutResult {
+    // The bricks placed around the chip are not in its plane; the back chips
+    // among them still get planes of their own.
+    if !opts.nested
+        && let Some(inner) = crate::exterior::without_exterior(module)
+    {
+        let mut result = layout_with_opts(&inner, opts);
+        for (chip_id, child) in &module.chips {
+            if !inner.chips.contains_key(chip_id) {
+                let child_opts = LayoutOptions {
+                    nested: true,
+                    self_chip: Some(*chip_id),
+                    ..opts.clone()
+                };
+                result
+                    .chip_layouts
+                    .insert(*chip_id, layout_with_opts(child, &child_opts));
+            }
+        }
+        return result;
+    }
     let mut result = layout_impl(module, opts, true);
     order_function_ports(module, &mut result);
     result

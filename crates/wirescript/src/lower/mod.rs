@@ -69,6 +69,7 @@ pub(crate) mod boundary_pins;
 pub(crate) mod flatten;
 pub(crate) use crate::ir::gate_variants;
 mod convert;
+mod display;
 mod props;
 mod style;
 pub(crate) use style::{MATERIAL_ENUM, material_arg, style_constant};
@@ -808,6 +809,7 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
     }
 
     flush_pending_emits(&mut ctx);
+    display::build_displays(&mut ctx, input.ast);
 
     let mut module = ctx.builder.module;
     let whole_file = SourceRange::new(
@@ -938,6 +940,9 @@ pub fn lower(input: LowerInput<'_>) -> LowerResult {
         &whole_file,
         diags,
     );
+    // The wires between the program and a display's back chip, now on its
+    // pins, run through invisible rerouters by the panel.
+    crate::exterior::route_display_wires(&mut module);
     // Last: the wire set is final, and the brick size follows the ports in use.
     gate_variants::select_gate_variants(&mut module);
     check_no_exec_into_value(&module, &whole_file, diags);

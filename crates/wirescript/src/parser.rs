@@ -516,6 +516,7 @@ impl<'a> Parser<'a> {
             module_color: module_exprs.color,
             module_material: module_exprs.material,
             imports: std::sync::Arc::default(),
+            display_blocks: Vec::new(),
         }
     }
 }

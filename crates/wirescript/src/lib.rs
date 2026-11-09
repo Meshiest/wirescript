@@ -9,6 +9,7 @@ pub mod compile;
 pub(crate) mod const_eval;
 pub(crate) mod const_scope;
 pub mod diagnostic;
+pub mod display;
 #[cfg(test)]
 mod emit_tests;
 pub(crate) mod hash;
@@ -30,7 +31,7 @@ pub(crate) mod types;
 
 // The backend: IR, layout and emit, re-exported at their old paths.
 // `layout` brings the module and the `layout` function together.
-pub use wirescript_ir::{collections, emit, intern, ir, layout, wsir};
+pub use wirescript_ir::{collections, emit, exterior, intern, ir, layout, wsir};
 
 pub use analyze::analyze_cycles;
 pub use compile::{

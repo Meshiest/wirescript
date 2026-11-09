@@ -4,6 +4,7 @@
 //! [`NullWorld`] records chat and refuses every world gate. A scripted world
 //! (players, chat commands, button presses) implements the same trait.
 
+use crate::display::Displays;
 use crate::graph::{Gate, GateId};
 use crate::value::Value;
 
@@ -86,6 +87,12 @@ pub trait World {
     /// Every line printed so far.
     fn chat_lines(&self) -> &[ChatLine];
 
+    /// The lines printed since the last call, forgotten here: a live run
+    /// keeps no history. A world without chat history gives none.
+    fn take_chat(&mut self) -> Vec<ChatLine> {
+        Vec::new()
+    }
+
     /// The events the world raises on `tick`, delivered ahead of the tick's
     /// handlers.
     fn events(&mut self, tick: u64) -> Vec<WorldEvent> {
@@ -97,6 +104,41 @@ pub trait World {
     fn unfinished(&self) -> Option<String> {
         None
     }
+
+    /// The displays of the run, when this world keeps them.
+    fn displays(&self) -> Option<&Displays> {
+        None
+    }
+
+    /// The displays of the run, to record into.
+    fn displays_mut(&mut self) -> Option<&mut Displays> {
+        None
+    }
+
+    /// Who sits in each `@seat`, by seat name, when this world seats players.
+    fn seated(&self) -> Option<&std::collections::BTreeMap<String, String>> {
+        None
+    }
+
+    /// Tick `tick` has run: frame each display that changed during it.
+    fn settle_displays(&mut self, tick: u64) {
+        if let Some(d) = self.displays_mut() {
+            d.settle(tick);
+        }
+    }
+}
+
+/// A seat no `sit` line has filled: empty, with no character in it.
+pub fn empty_seat() -> Vec<(String, Value)> {
+    vec![
+        ("bIsOccupied".into(), Value::Bool(false)),
+        ("SittingCharacter".into(), Value::Object(0)),
+    ]
+}
+
+/// Whether a world-value component is a seat.
+pub fn is_seat(class: &str) -> bool {
+    class.ends_with("Internal_Seat")
 }
 
 /// An event the world raises: every event gate of `class` (and, with
@@ -118,6 +160,7 @@ pub struct WorldEvent {
 #[derive(Default)]
 pub struct NullWorld {
     pub lines: Vec<ChatLine>,
+    pub displays: Displays,
 }
 
 impl World for NullWorld {
@@ -130,5 +173,13 @@ impl World for NullWorld {
 
     fn chat_lines(&self) -> &[ChatLine] {
         &self.lines
+    }
+
+    fn displays(&self) -> Option<&Displays> {
+        Some(&self.displays)
+    }
+
+    fn displays_mut(&mut self) -> Option<&mut Displays> {
+        Some(&mut self.displays)
     }
 }

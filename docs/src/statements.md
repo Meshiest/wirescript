@@ -885,8 +885,98 @@ in go: exec
 on go { kind = BrickMaterial.Glow }
 ```
 
-They are not allowed on ports, `mod`s, `fn`s or `for` loops, and either one
-given twice on a declaration is an error.
+They are not allowed on ports (a [`@seat`](#seat-a-seat-for-a-player) input
+aside), `mod`s, `fn`s or `for` loops, and either one given twice on a
+declaration is an error.
+
+### `@display`: A Pixel Screen
+
+`@display` before a top-level `var` makes it a screen: a `color[]` of
+`width * height` pixels, row-major (`y * width + x`), every pixel
+transparent to start. The compiler stands the screen 3 studs out on one side
+of the program's chip, facing the chip, and draws what the program writes
+one tick after the write.
+
+```wirescript
+@display(width = 16, height = 8, size = 0.4)
+@color(Color(0.02, 0.02, 0.03))
+var screen
+
+in go: exec
+on go {
+  screen[3 * 16 + 5] = Color(1.0, 0.2, 0.2)
+  screen.fill(Color(0.0, 0.0, 1.0))
+}
+```
+
+- **Type.** `var screen` is a `color[]`; writing `var screen: color[]` is the
+  same, any other type or an initializer is `WS127`. Every array operation
+  works on it.
+- **Drawing.** Each row is a Text Decal on its own strip of the panel. A
+  second microchip, closed and fixed to the back of the panel, rebuilds a
+  row's text whenever a pixel changes: a `█` per pixel, a color tag where the
+  color changes, and a gap for a pixel whose alpha is under one half. The
+  program's own chip holds no drawing gates.
+- **Side.** A display stands on the `@top` side unless `@bottom`, `@left`
+  or `@right` picks another, as for a [`@seat`](#seat-a-seat-for-a-player).
+  The displays on one side stand side by side, left to right in declaration
+  order, centered on the chip.
+- **Panel.** The rows sit on a backing plate with a one-pixel border, both
+  colored by `@color` (near black without one). The program's plane moves up
+  to sit above the displays.
+
+| Option | Default | |
+|---|---|---|
+| `width`, `height` | required | pixels; `width` up to 1927 (a row's text fits one Text Decal), `height` up to 512, and 65,536 pixels in all (a redraw fits one tick) |
+| `size` | `1.0` | a pixel's edge in studs, a multiple of 0.2; a side of the panel may be up to 1000 studs |
+| `font` | `"IosevkaTerm"` | or `"MonaspaceArgon"` |
+| `border` | `true` | the one-pixel border around the panel |
+| `offset` | `Vec(0, 0, 0)` | moves the display, in studs: to its right, out toward its viewer, and up |
+
+Options are literals. A display is the entry file's own; an imported file's
+`@display` is `WS127`, and so is one in a file marked `@flat`.
+
+### `@seat`: A Seat for a Player
+
+`@seat` before a top-level `in` places a seat beside the program's chip and
+makes the input a `Seat`: a record of `occupied` (whether someone sits in it)
+and `character` (who). The type may be left out.
+
+```wirescript
+@seat(label = "Driver") @color(Color(0.2, 0.4, 1.0))
+in p1
+
+@top @seat(label = "Player 2")
+in p2: Seat
+
+let keys = p1.character.InputReader()
+on keys.Forward > 0.5 {
+  BroadcastChatMessage("forward")
+}
+on !p1.occupied {
+  BroadcastChatMessage("p1 stood up")
+}
+```
+
+- **Sides.** Seats go on the chip's bottom side unless `@left`, `@right` or
+  `@top` picks another. The seats of one side form one row, centered on the
+  side, left to right in declaration order as seen from the seats, all
+  facing the chip; the `@top` and `@bottom` rows face each other.
+- **Keys.** A seat places nothing else: a program that wants the sitter's
+  keys calls `InputReader()` on `character` itself.
+- **Color.** `@color` and `@material` style the seat.
+
+| Option | Seat field | |
+|---|---|---|
+| `label` | `PromptCustomLabel` | the prompt shown to a player about to sit |
+| `mode` | `SeatMode` | `"Auto"`, `"Ground"`, `"GroundUnlocked"` or `"Air"` |
+| `camera` | `ThirdPersonCameraRotation` | `Rotation(pitch, yaw, roll)` |
+| `exit` | `ExitOffset` | `Vec(x, y, z)`, where a player stands up |
+
+`Seat` is a type like any record, so a `mod` or `fn` can take one:
+`mod report(s: Seat) { ... }`. It belongs to the file being compiled, and a
+`Seat` that file declares or imports itself takes its place. A misused
+`@seat` is `WS128`.
 
 ### `@nofold`: Suppress Constant Folding
 

@@ -57,6 +57,19 @@ pub struct Script {
     /// Which imported declarations each file named by its own imports. Filled
     /// by `resolve`; empty for a script that was only parsed.
     pub imports: Arc<ImportScope>,
+    /// The code [`crate::display::rewrite`] added for each `@display`, in
+    /// declaration order.
+    pub display_blocks: Vec<DisplayBlock>,
+}
+
+/// The declarations added for one `@display` var: they lie in `range`, past
+/// the end of the entry file, and lowering moves them onto the display's
+/// back chip.
+#[derive(Clone, Debug)]
+pub struct DisplayBlock {
+    /// The display var's name.
+    pub name: String,
+    pub range: SourceRange,
 }
 
 /// The declarations each file brings into scope by name through its own
@@ -311,6 +324,19 @@ pub struct VarDecl {
     pub color_expr: Option<Expr>,
     /// `@material(expr)`: as `color_expr`, for the bricks' material.
     pub material_expr: Option<Expr>,
+    /// `@display(...)`: the var is a screen's pixels (see [`crate::display`]).
+    pub display: Option<BrickAnn>,
+    pub range: SourceRange,
+}
+
+/// The `name = value` options of a `@display(...)` or `@seat(...)`, kept as
+/// written; [`crate::display`] reads and checks them.
+#[derive(Clone, Debug)]
+pub struct BrickAnn {
+    pub args: Vec<CallArg>,
+    /// `@left`/`@right`/`@top`/`@bottom` beside a `@display`: the side of the
+    /// chip it stands on (a `@seat`'s side is its `InDecl::side`).
+    pub side: Option<PortSide>,
     pub range: SourceRange,
 }
 
@@ -654,6 +680,11 @@ pub struct InDecl {
     pub label_expr: Option<Expr>,
     /// `@invisible`: the port's rerouter is emitted hidden.
     pub invisible: bool,
+    /// `@seat(...)`: the input reads a placed seat instead of a pin.
+    pub seat: Option<BrickAnn>,
+    /// `@color(expr)` / `@material(expr)` on a `@seat` input: the seat's.
+    pub color_expr: Option<Expr>,
+    pub material_expr: Option<Expr>,
     pub range: SourceRange,
 }
 

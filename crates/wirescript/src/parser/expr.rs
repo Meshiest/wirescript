@@ -101,7 +101,7 @@ impl Parser<'_> {
 
     /// [`parse_call_arg`] wrapped like [`parse_expr_delimited`], since a call's
     /// argument list is a bracketed context.
-    fn parse_call_arg_delimited(&mut self) -> CallArg {
+    pub(super) fn parse_call_arg_delimited(&mut self) -> CallArg {
         let saved_brace = std::mem::replace(&mut self.no_brace_construct, false);
         let saved_dotdot = std::mem::replace(&mut self.stop_at_dotdot, false);
         let saved_as = std::mem::replace(&mut self.stop_at_as, false);

@@ -2,7 +2,7 @@
   "name": "brickadia-wirescript",
   "displayName": "Brickadia Wirescript",
   "description": "Language support for Wirescript, a language that compiles to Brickadia's logic gates: errors as you type, completion, hover, formatting and one-key compile to a .brz",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "brickadia-community",
   "icon": "icon.png",
   "license": "CC0-1.0",
@@ -112,6 +112,11 @@
       {
         "command": "wirescript.openDocsPage",
         "title": "Wirescript: Open Documentation Page"
+      },
+      {
+        "command": "wirescript.play",
+        "title": "Wirescript: Play",
+        "icon": "$(play)"
       }
     ],
     "keybindings": [
@@ -158,6 +163,13 @@
           "command": "wirescript.openDocsPage",
           "when": "false"
         }
+      ],
+      "editor/title": [
+        {
+          "command": "wirescript.play",
+          "when": "editorLangId == wirescript",
+          "group": "navigation"
+        }
       ]
     },
     "views": {
@@ -181,7 +193,7 @@
   "scripts": {
     "build": "node scripts/copy-docs.mjs && tsc -p . && node scripts/bundle.mjs",
     "vscode:prepublish": "npm run build",
-    "test": "tsc -p . && node --test out/clipboard.test.js out/wasmMemory.test.js out/docsIndex.test.js out/markdownPreview.test.js out/bufferStream.test.js out/wasiPaths.test.js out/docLinks.test.js out/testIds.test.js"
+    "test": "tsc -p . && node --test out/clipboard.test.js out/wasmMemory.test.js out/docsIndex.test.js out/markdownPreview.test.js out/bufferStream.test.js out/wasiPaths.test.js out/docLinks.test.js out/testIds.test.js out/runnerPage.test.js"
   },
   "dependencies": {
     "@vscode/wasm-wasi": "1.0.2",

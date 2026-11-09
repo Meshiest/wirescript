@@ -252,6 +252,7 @@ pub fn script_children<'a>(script: &'a Script, f: &mut dyn FnMut(Node<'a>, Flow)
         module_color,
         module_material,
         imports: _,
+        display_blocks: _,
     } = script;
     for d in decls {
         f(Node::Decl(d), Flow::Seq);
@@ -694,6 +695,7 @@ fn var_children<'a>(v: &'a VarDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
         label_expr,
         color_expr,
         material_expr,
+        display: _,
         range: _,
     } = v;
     opt(init.as_ref(), Flow::Seq, f);
@@ -741,9 +743,14 @@ fn in_children<'a>(i: &'a InDecl, f: &mut dyn FnMut(Node<'a>, Flow)) {
         label: _,
         label_expr,
         invisible: _,
+        seat: _,
+        color_expr,
+        material_expr,
         range: _,
     } = i;
     opt(label_expr.as_ref(), Flow::Seq, f);
+    opt(color_expr.as_ref(), Flow::Seq, f);
+    opt(material_expr.as_ref(), Flow::Seq, f);
 }
 
 fn out_children<'a>(o: &'a OutBinding, f: &mut dyn FnMut(Node<'a>, Flow)) {

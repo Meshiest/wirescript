@@ -25,9 +25,10 @@ use std::path::Path;
 use brdb::{Collision, World};
 
 use crate::collections::HashMap;
+use crate::exterior::{self, ExteriorPlan, has_exterior};
 use crate::intern::resolve;
 use crate::ir::{Module, NodeId, Program, ProgramSettings, StyleValue, brick_color};
-use crate::layout::wall::assign_wall_slots;
+use crate::layout::wall::assign_wall_slots_lifted;
 use crate::layout::{LayoutOptions, LayoutResult, layout_with_opts};
 
 /// The collision mask of an `@invisible` brick: it stops nothing. Spelled out field by
@@ -144,11 +145,10 @@ pub fn build_world_traced(
     let mut world = World::new();
     world.meta.bundle.description.clone_from(&opts.description);
 
-    let wall = assign_wall_slots(
-        module,
-        layout,
-        (opts.chip_pos.x, opts.chip_pos.y, opts.chip_pos.z),
-    );
+    let chip = (opts.chip_pos.x, opts.chip_pos.y, opts.chip_pos.z);
+    let exterior = has_exterior(module).then(|| ExteriorPlan::new(module, chip));
+    let lift = exterior.as_ref().map_or(0.0, |p| p.clearance);
+    let wall = assign_wall_slots_lifted(module, layout, chip, lift);
 
     let (chip_brick_id, _root_entity_id, mut inner_pair) = world.add_microchip(
         opts.chip_pos.into(),
@@ -220,6 +220,9 @@ pub fn build_world_traced(
         settings,
         chip_brick_id,
     );
+    if let Some(plan) = exterior {
+        ctx.exterior = plan;
+    }
     emit_module(
         &mut world,
         &mut ctx,
@@ -228,6 +231,19 @@ pub fn build_world_traced(
         &mut inner_pair.1,
         &wall,
     )?;
+    // The bricks around the chip: exterior nodes, then their panels.
+    world.bricks.append(&mut ctx.outer_bricks);
+    for panel in &ctx.exterior.panels {
+        let mut brick = brdb::Brick {
+            asset: brdb::BrickType::from((exterior::PANEL_BRICK, panel.size)),
+            position: panel.position,
+            rotation: panel.rotation,
+            ..Default::default()
+        };
+        let (color, material) = module::display_style(module, panel.display);
+        apply_style(&mut brick, Some(&color), material.as_ref(), false);
+        world.bricks.push(brick);
+    }
 
     if !settings.invisible {
         // The plane header title stays static text: a constant module `@label`

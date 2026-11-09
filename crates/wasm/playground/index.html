@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Wirescript Playground</title>
   <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="stylesheet" href="runner.css" />
   <style>
     *, *::before, *::after {
       margin: 0;
@@ -785,6 +786,34 @@
       color: #d4d4d4;
     }
     #sim-panel[hidden] { display: none; }
+    /* The runner: the program live, beside the simulator's chat. */
+    #runner-panel {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 150;
+      width: min(640px, calc(100vw - 32px));
+      height: min(560px, 70vh);
+      display: flex;
+      flex-direction: column;
+      background: #252526;
+      border: 1px solid #3c3c3c;
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    #runner-panel[hidden] { display: none; }
+    .runner-panel-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border-bottom: 1px solid #3c3c3c;
+      color: #9d9d9d;
+      font-size: 12px;
+    }
+    .runner-panel-header span { flex: 1; }
+    #runner-panel-body { flex: 1; min-height: 0; padding: 8px; }
+    #runner-panel .ws-runner { --runner-bg: #252526; }
     #sim-panel-header {
       display: flex;
       align-items: center;
@@ -887,6 +916,7 @@
     <div id="toolbar">
       <button id="btn-compile" class="primary" title="Compile to .brz (Ctrl+Shift+B)">Compile</button>
       <button id="btn-run" title="Run in the gate simulator for 10 seconds of ticks and show the chat">Run</button>
+      <button id="btn-play" title="Play the program live: its @display screens and @seat seats">Play</button>
       <button id="btn-format" title="Format code (Shift+Alt+F)">Format</button>
       <button id="btn-share" title="Copy shareable URL">Share</button>
       <div class="separator"></div>
@@ -954,6 +984,10 @@
     <div id="sim-panel-header"><span id="sim-panel-title">Simulator</span><button id="sim-panel-close" title="Close">×</button></div>
     <pre id="sim-panel-body"></pre>
   </div>
+  <div id="runner-panel" hidden>
+    <div class="runner-panel-header"><span id="runner-panel-title">Play</span><button id="runner-panel-close" title="Stop and close">×</button></div>
+    <div id="runner-panel-body"></div>
+  </div>
   <div id="toast-container"></div>
 
   <!-- marked for Markdown rendering -->
@@ -964,6 +998,7 @@
     import init from '../pkg/wasm.js';
     import * as wasm from '../pkg/wasm.js';
     import { createEditor, registerTests, testReportRows } from './editor.js';
+    import { createRunnerView } from './runner-view.js';
     import * as files from './files.js';
     import * as prefabs from './prefabs.js';
     import * as share from './share.js';
@@ -1428,6 +1463,32 @@
       panel.hidden = false;
     }
 
+    // ── Play: the program live in the runner ──
+    // The simulation runs in its own worker; the view draws what it posts and
+    // sends the seat clicks and keys back as world script lines.
+    let runnerWorker = null;
+    let runnerView = null;
+    function stopPlay() {
+      runnerWorker?.terminate();
+      runnerWorker = null;
+      runnerView?.dispose();
+      runnerView = null;
+    }
+    function play() {
+      stopPlay();
+      const { source, moduleName, filesJson } = simInputs();
+      const panel = document.getElementById('runner-panel');
+      document.getElementById('runner-panel-title').textContent = 'Play: ' + moduleName;
+      panel.hidden = false;
+      runnerWorker = new Worker(new URL('./runner-worker.js', import.meta.url), { type: 'module' });
+      const worker = runnerWorker;
+      runnerView = createRunnerView(document.getElementById('runner-panel-body'), (msg) => worker.postMessage(msg));
+      const view = runnerView;
+      worker.onmessage = ({ data }) => view.handle(data);
+      worker.onerror = (e) => view.handle({ type: 'error', error: e.message || 'the runner stopped' });
+      worker.postMessage({ type: 'start', source, moduleName, filesJson, prefabsJson: prefabs.getPrefabsJson() });
+    }
+
     // ── Run tests in the simulator ──
     // Each `@test` runs on its own, as `wirescript test` runs it. With no
     // names, every test of the active file runs.
@@ -1807,6 +1868,11 @@
         // Toolbar buttons
         document.getElementById('btn-compile').addEventListener('click', compile);
         document.getElementById('btn-run').addEventListener('click', run);
+        document.getElementById('btn-play').addEventListener('click', play);
+        document.getElementById('runner-panel-close').addEventListener('click', () => {
+          stopPlay();
+          document.getElementById('runner-panel').hidden = true;
+        });
         document.getElementById('sim-panel-close').addEventListener('click', () => {
           stopTests();
           document.getElementById('sim-panel').hidden = true;

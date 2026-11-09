@@ -5,7 +5,7 @@
 
 **Before this:** [Reacting to the Game](../reacting-to-the-game.md)
 
-**Next steps:** [Remote Control](remote-control.md), [One Chip per Player](../prefabs/one-chip-per-player.md), [Over Time](../motion/over-time.md)
+**Next steps:** [Remote Control](remote-control.md), [One Chip per Player](../prefabs/one-chip-per-player.md), [Over Time](../motion/over-time.md), [A Game on a Screen](../screen/a-game-on-a-screen.md)
 
 </div>
 <!-- /learn-links -->

@@ -170,6 +170,9 @@ pub struct Rewritten {
     pub keys: HashSet<RangeKey>,
     /// The statements [`complete`] finishes.
     pub(crate) pending: Vec<Pending>,
+    /// One past the last offset a rewrite of the entry file made up: code
+    /// added after it ([`crate::display::rewrite`]) starts here or later.
+    pub(crate) end: usize,
 }
 
 /// A `toEqual` or `toContain` whose operands are bound and whose check waits
@@ -236,6 +239,8 @@ pub(crate) fn rewrite(
     {
         walk_expr(&mut r, e);
     }
+    let end = r.next;
+    out.end = out.end.max(end);
 }
 
 /// Whether the file binds `testing`: an import names it, or a top-level

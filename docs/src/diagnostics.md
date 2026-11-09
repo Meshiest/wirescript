@@ -27,6 +27,7 @@ construct.
 - [Functions (`fn`)](#functions-fn)
 - [Compile-time constants (`const`)](#compile-time-constants-const)
 - [Gate & event config](#gate--event-config)
+- [Displays and seats](#displays-and-seats)
 - [`any`](#any)
 - [Internal errors](#internal-errors)
 - [Silencing a warning](#silencing-a-warning)
@@ -226,6 +227,17 @@ wiring in as ports (see [Built-in Events](statements.md#built-in-events) and
 | `WS030` | *(warning)* Custom-event sender/receiver type mismatch: a send's data value type disagrees with the receiver's type on the same channel. A receiver type written through an alias is the type the alias names. A constant is sent as the type it has, so a number constant of the other number type is a mismatch too (`SendCustomEvent("c", 2.5)` or `if c then 2.5 else 1.5` to `amount: int`). The send is checked against every receiver of the channel, a typed `let v: T = await CustomEvent("c")` capture included (it takes the first data value as `T`). A receiver param with no annotation takes its type from the first send on the channel in source order, so two sends of different types disagree with each other; the message names that first send. | sender sends `float`, receiver declares `amount: int`; or `SendCustomEvent("c", 1)` then `SendCustomEvent("c", 2.5)` to an unannotated receiver |
 | `WS042` | *(warning)* A `CustomEvent`/`GlobalCustomEvent` handler param has no type annotation and no in-unit sender to infer its type from, so its data defaults to `float`. Annotate the param, or add a matching `SendCustomEvent`/`SendGlobalCustomEvent` in the same unit, to silence. | `on CustomEvent("dmg") -> (amount) { }` with no in-unit `SendCustomEvent("dmg", …)` |
 | `WS045` | *(warning)* A custom-event send's data argument has no concrete type (`any`, or an `Opaque(...)` that erased its input's type). The send emits the float variant regardless, so it won't match a receiver that declares a real type. Give the value a typed binding (e.g. a `var` of that type) instead of `any`/`Opaque(...)`. Unlike WS030 this needs no in-unit receiver to visit. | `SendGlobalCustomEvent("a", who, Opaque(true))` |
+
+## Displays and seats
+
+A [`@display`](statements.md#display-a-pixel-screen) var and a
+[`@seat`](statements.md#seat-a-seat-for-a-player) input place bricks around
+the program's chip.
+
+| Code | Meaning | Trigger |
+|------|---------|---------|
+| `WS127` | A misused `@display`: on anything but a top-level `var` of the file being compiled, a type other than `color[]`, an initializer, a missing `width` or `height`, an option it does not take or a value out of range (`width` up to 1927 so a row fits one Text Decal, `height` up to 512, `size` a multiple of 0.2 up to 20, no side of the panel over 1000 studs, and at most 65,536 pixels so a redraw fits one tick), `@display` together with `@flat`, a `font` other than `"IosevkaTerm"` or `"MonaspaceArgon"`, an option that is not a literal, or an `@color` or `@material` that is not a constant. | `@display(width = 8) var s`, `@display(width = 8, height = 4) var s: int[]` |
+| `WS128` | A misused `@seat`: on anything but a top-level `in` of the file being compiled, a type other than `Seat`, an option it does not take (`label`, `mode`, `camera`, `exit`), a `mode` that is not one of `"Auto"`, `"Ground"`, `"GroundUnlocked"`, `"Air"`, a `camera` that is not `Rotation(pitch, yaw, roll)` or an `exit` that is not `Vec(x, y, z)` of number literals. | `@seat in s: int`, `@seat(mode = "Fly") in s` |
 
 ## `any`
 

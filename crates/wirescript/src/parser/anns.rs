@@ -24,12 +24,18 @@ pub(super) struct ParsedAnnotations {
     pub(super) material: Option<(Expr, SourceRange)>,
     /// `@test`, legal only before a top-level `fn`, `mod` or named `chip`.
     pub(super) test: Option<SourceRange>,
+    /// `@display(...)`, legal only before a top-level `var`.
+    pub(super) display: Option<BrickAnn>,
+    /// `@seat(...)`, legal only before a top-level `in`.
+    pub(super) seat: Option<BrickAnn>,
 }
 
 impl ParsedAnnotations {
     /// Whether no annotation besides `@test` was given.
     pub(super) fn only_test(&self) -> bool {
-        self.side.is_none()
+        self.display.is_none()
+            && self.seat.is_none()
+            && self.side.is_none()
             && self.label.is_none()
             && self.label_expr.is_none()
             && self.closed.is_none()
@@ -550,6 +556,42 @@ impl Parser<'_> {
                         }
                     }
                 }
+                "display" | "seat" => {
+                    // `@display(width = 32, ...)` / `@seat(label = "P1")`:
+                    // `name = value` options, checked by `crate::display`.
+                    let mut args = Vec::new();
+                    let mut end = tok.end;
+                    if self.match_tok(TokenKind::LParen, None).is_some() {
+                        self.eat_newlines();
+                        while !self.check(TokenKind::RParen, None)
+                            && self.peek().kind != TokenKind::Eof
+                        {
+                            args.push(self.parse_call_arg_delimited());
+                            self.eat_newlines();
+                            if self.match_tok(TokenKind::Comma, None).is_none() {
+                                break;
+                            }
+                            self.eat_newlines();
+                        }
+                        end = self.peek().end;
+                        self.expect(TokenKind::RParen, None);
+                    }
+                    let ann = BrickAnn {
+                        args,
+                        side: None,
+                        range: self.make_range(tok.start, end),
+                    };
+                    let slot = if tok.text == "display" {
+                        &mut anns.display
+                    } else {
+                        &mut anns.seat
+                    };
+                    if slot.is_some() {
+                        self.error(format!("duplicate @{}", tok.text), tok.start, end);
+                    } else {
+                        *slot = Some(ann);
+                    }
+                }
                 "closed" => {
                     if anns.closed.is_some() {
                         self.error("duplicate @closed".to_string(), tok.start, tok.end);
@@ -624,7 +666,7 @@ impl Parser<'_> {
                             )
                         } else {
                             format!(
-                                "unknown annotation '@{w}'; expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, @sliced, or @test"
+                                "unknown annotation '@{w}'; expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, @sliced, @test, @display, or @seat"
                             )
                         };
                         self.error(msg, tok.start, tok.end);

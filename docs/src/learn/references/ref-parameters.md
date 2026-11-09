@@ -5,7 +5,7 @@
 
 **Before this:** [Object References](object-references.md), [Mods](../abstraction/mods.md), [Lists](../values/lists.md)
 
-**Next steps:** [Ref Values](ref-values.md)
+**Next steps:** [Ref Values](ref-values.md), [Pong](../screen/pong.md)
 
 </div>
 <!-- /learn-links -->

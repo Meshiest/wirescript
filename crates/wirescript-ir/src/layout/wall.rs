@@ -96,6 +96,18 @@ pub fn assign_wall_slots(
     lr: &LayoutResult,
     chip_pos: (i32, i32, i32),
 ) -> WallLayout {
+    assign_wall_slots_lifted(module, lr, chip_pos, 0.0)
+}
+
+/// [`assign_wall_slots`], with every plane and the floor under them raised by
+/// `lift`: room above the chip for the bricks placed around it (see
+/// `crate::exterior`).
+pub fn assign_wall_slots_lifted(
+    module: &Module,
+    lr: &LayoutResult,
+    chip_pos: (i32, i32, i32),
+    lift: f32,
+) -> WallLayout {
     let (cx, cy, cz) = chip_pos;
     let root_extent = plane_extent(lr);
 
@@ -104,7 +116,11 @@ pub fn assign_wall_slots(
         location: Vector3f {
             x: cx as f32,
             y: cy as f32,
-            z: cz as f32 + CHIP_BRICK_HALF_HEIGHT + WALL_ROOT_CLEARANCE + root_extent.x as f32,
+            z: cz as f32
+                + CHIP_BRICK_HALF_HEIGHT
+                + WALL_ROOT_CLEARANCE
+                + lift
+                + root_extent.x as f32,
         },
         extent: root_extent,
     };
@@ -187,7 +203,7 @@ pub fn assign_wall_slots(
     // ground): a brick low in its parent can push a tall child plane
     // underground. A uniform lift keeps relative anchoring; the deployment
     // brick stays at `chip_pos`.
-    let floor = cz as f32 + CHIP_BRICK_HALF_HEIGHT;
+    let floor = cz as f32 + CHIP_BRICK_HALF_HEIGHT + lift;
     let min_bottom = std::iter::once(&root)
         .chain(chips.values())
         .map(|s| s.location.z - s.extent.x as f32)

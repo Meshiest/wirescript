@@ -178,6 +178,7 @@ impl Scope {
         if name.starts_with("__")
             && !info.decl_range.file.is_empty()
             && !crate::testing::is_testing_name(name)
+            && !crate::display::is_display_name(name)
         {
             self.reserved
                 .push((name.to_string(), info.decl_range.clone()));
@@ -1279,7 +1280,10 @@ impl<'a> TypeCheckCtx<'a> {
 
     /// Note a user-written name, reported as WS093 when it starts with `__`.
     pub(super) fn reserve_check(&mut self, name: &str, range: &SourceRange) {
-        if name.starts_with("__") && !crate::testing::is_testing_name(name) {
+        if name.starts_with("__")
+            && !crate::testing::is_testing_name(name)
+            && !crate::display::is_display_name(name)
+        {
             self.scope.reserved.push((name.to_string(), range.clone()));
         }
     }

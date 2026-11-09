@@ -118,6 +118,8 @@ export const LEARN = [
   { id: 'Sc2', key: 'Learn/Text on Screen', title: 'Text on Screen', file: 'docs/learn/screen/text-on-screen.md', branch: 'Screen', requires: ['Sc1', 'S3'], icon: 'display', level: 1 },
   { id: 'Sc3', key: 'Learn/Keeping It Current', title: 'Keeping It Current', file: 'docs/learn/screen/keeping-it-current.md', branch: 'Screen', requires: ['Sc2', 'R1'], icon: 'arrows-rotate', level: 2 },
   { id: 'Sc4', key: 'Learn/A HUD for Everyone', title: 'A HUD for Everyone', file: 'docs/learn/screen/a-hud-for-everyone.md', branch: 'Screen', requires: ['Sc3', 'R4', 'Lp3', 'Lp4'], icon: 'users-rectangle', level: 3 },
+  { id: 'Sc5', key: 'Learn/A Game on a Screen', title: 'A Game on a Screen', file: 'docs/learn/screen/a-game-on-a-screen.md', branch: 'Screen', requires: ['I1', 'V5'], icon: 'gamepad', level: 1 },
+  { id: 'Sc6', key: 'Learn/Pong', title: 'Pong', file: 'docs/learn/screen/pong.md', branch: 'Screen', requires: ['Sc5', 'R2'], icon: 'table-tennis-paddle-ball', level: 2 },
   { id: 'Parts', key: 'Learn/Parts', title: 'Parts', file: 'docs/learn/parts/README.md', requires: [], part: true, icon: 'toolbox' },
   { id: 'BP1', key: 'Learn/Toggle Light', title: 'Toggle Light', file: 'docs/learn/parts/toggle-light.md', branch: 'Building Parts', requires: ['T4'], part: true, summary: 'Button, Point Light' },
   { id: 'BP2', key: 'Learn/Combination Lock', title: 'Combination Lock', file: 'docs/learn/parts/combination-lock.md', branch: 'Building Parts', requires: ['G1', 'V5'], part: true, summary: 'Buttons, Brick Property Changer, Point Light' },

@@ -596,6 +596,97 @@ fn testing_completions(source: &str, line: usize, col: usize) -> Option<Vec<Comp
     )
 }
 
+/// One item per choice, quoted unless the user already opened the quote.
+fn string_choices(choices: &[&str], typed: &str, detail: &str) -> Vec<Completion> {
+    let open = typed.starts_with('"');
+    choices
+        .iter()
+        .map(|c| {
+            let item = Completion::new(format!("\"{c}\""), CompletionKind::Constant).detail(detail);
+            if open {
+                item.insert_text(*c).filter_text(*c)
+            } else {
+                item.insert_text(format!("\"{c}\""))
+            }
+        })
+        .collect()
+}
+
+/// The values an option of `@display` or `@seat` may take, where they are a
+/// fixed set or a fixed form.
+fn option_values(option: &crate::display::AnnOption, typed: &str) -> Vec<Completion> {
+    use crate::display::OptionValue;
+    match option.value {
+        OptionValue::OneOf(choices) => string_choices(choices, typed, option.name),
+        OptionValue::Bool => ["true", "false"]
+            .into_iter()
+            .map(|b| Completion::new(b, CompletionKind::Keyword).detail(option.name))
+            .collect(),
+        OptionValue::Call(form) => {
+            vec![Completion::new(form, CompletionKind::Function).detail(option.doc)]
+        }
+        OptionValue::Int | OptionValue::Number | OptionValue::Text => Vec::new(),
+    }
+}
+
+/// Completions inside an annotation's parentheses: the options `@display` and
+/// `@seat` take (those not given yet) and their fixed values, `@layout`'s
+/// engines and `@material`'s materials. `None` where the argument is an
+/// ordinary expression (`@label`, `@color`) or the cursor is in none.
+fn annotation_arg_completions(source: &str, line: usize, col: usize) -> Option<Vec<Completion>> {
+    use crate::display::{DISPLAY_OPTIONS, SEAT_OPTIONS};
+    let (name, args) = super::text::enclosing_annotation(source, line, col)?;
+    match name.as_str() {
+        "display" | "seat" => {
+            let table = if name == "display" {
+                DISPLAY_OPTIONS
+            } else {
+                SEAT_OPTIONS
+            };
+            let current = args.rsplit(',').next().unwrap_or("");
+            if let Some((key, typed)) = current.split_once('=') {
+                let option = table.iter().find(|o| o.name == key.trim())?;
+                return Some(option_values(option, typed.trim_start()));
+            }
+            let given: Vec<&str> = args
+                .split(',')
+                .filter_map(|a| a.split_once('='))
+                .map(|(k, _)| k.trim())
+                .collect();
+            Some(
+                table
+                    .iter()
+                    .filter(|o| !given.contains(&o.name))
+                    .map(|o| {
+                        Completion::new(o.name, CompletionKind::Property)
+                            .detail(o.doc)
+                            .insert_text(format!("{} = ", o.name))
+                    })
+                    .collect(),
+            )
+        }
+        "layout" => Some(string_choices(
+            &["code", "cube"],
+            args.trim_start(),
+            "layout engine",
+        )),
+        "material" => {
+            let def = crate::typecheck::enums::game_enum_defs()
+                .into_iter()
+                .find(|d| d.name == "BrickMaterial")?;
+            Some(
+                def.variants
+                    .into_iter()
+                    .map(|v| {
+                        Completion::new(v.name, CompletionKind::EnumMember).detail("BrickMaterial")
+                    })
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
+}
+
 /// The completions at `line`/`col` (a character column) of `source`, whose
 /// symbols are `symbols`; `prefab_paths` are the `.brz` paths a `$./` reference
 /// may complete to, and `lookup` finds an enum by the text completed.
@@ -653,6 +744,11 @@ pub fn completions(
                 }
             }
         }
+    }
+
+    // Inside an annotation's parentheses: its options and their values.
+    if let Some(items) = annotation_arg_completions(source, line, col) {
+        return items;
     }
 
     // Member access `receiver.partial`: only the receiver's members. Checked
@@ -932,6 +1028,8 @@ pub fn completions(
         ("@closed", "compile chip collapsed"),
         ("@sliced", "let a for loop run across ticks"),
         ("@test", "mark a fn, mod or chip as a test"),
+        ("@display", "a var as a pixel screen above the chip"),
+        ("@seat", "an in as a seat beside the chip"),
         ("@fold", "module-level: fold constant expressions"),
         ("@nofold", "module-level: never fold"),
         ("@layout", "module-level: placement engine (code/cube)"),
@@ -990,6 +1088,7 @@ pub fn completions(
         "color",
         "brick",
         "exec",
+        "Seat",
     ] {
         items.push(Completion::new(*ty, CompletionKind::Class));
     }

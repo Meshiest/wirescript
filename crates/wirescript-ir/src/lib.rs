@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod collections;
 pub mod diagnostic;
 pub mod emit;
+pub mod exterior;
 pub mod intern;
 pub mod ir;
 pub mod layout;

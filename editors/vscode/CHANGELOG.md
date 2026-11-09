@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+
+- Wirescript 2.5.0: `@display` pixel screens and `@seat` seats, with
+  completion for every annotation's options.
+- Wirescript: Play runs the open file beside the editor, drawing its displays
+  and seating you at its seats.
+
 ## 0.1.9
 
 - Wirescript 2.4.1: `character.GetScale()` and `character.SetScale(scale)` read

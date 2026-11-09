@@ -5,7 +5,7 @@
 
 **Before this:** [Converting Values](converting-values.md), [Reacting to the Game](../reacting-to-the-game.md)
 
-**Next steps:** [Maps](maps.md), [Records](../data/records.md), [Counting Loops](../loops/counting-loops.md), [Ref Parameters](../references/ref-parameters.md)
+**Next steps:** [Maps](maps.md), [Records](../data/records.md), [Counting Loops](../loops/counting-loops.md), [Ref Parameters](../references/ref-parameters.md), [A Game on a Screen](../screen/a-game-on-a-screen.md)
 
 **Parts that use this:** [Combination Lock](../parts/combination-lock.md), [Color-Cycling Light](../parts/color-cycling-light.md)
 

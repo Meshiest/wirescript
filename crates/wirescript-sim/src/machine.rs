@@ -551,11 +551,42 @@ impl Machine {
     fn start(&mut self) -> Result<(), SimError> {
         self.started = true;
         self.steps = 0;
+        if let Some(displays) = self.world.displays_mut() {
+            for d in &self.graph.displays {
+                displays.add(&d.name, d.width, d.height);
+            }
+        }
         self.settle_new(0)?;
         self.settle()?;
         self.fire_loaded(0);
         self.advance_clocks()?;
-        self.pass()
+        self.pass()?;
+        self.record_displays()
+    }
+
+    /// Hand each display row's text to the world once a tick has run; the
+    /// world frames each display that changed.
+    fn record_displays(&mut self) -> Result<(), SimError> {
+        if self.graph.displays.is_empty() {
+            return Ok(());
+        }
+        for d in 0..self.graph.displays.len() {
+            for row in 0..self.graph.displays[d].rows.len() {
+                let Some(g) = self.graph.displays[d].rows[row] else {
+                    continue;
+                };
+                let text = match self.read_named(g, "Text")? {
+                    Some(Value::Str(s)) => s,
+                    _ => String::new(),
+                };
+                let name = &self.graph.displays[d].name;
+                if let Some(displays) = self.world.displays_mut() {
+                    displays.set_row(name, row as u32, &text);
+                }
+            }
+        }
+        self.world.settle_displays(self.tick);
+        Ok(())
     }
 
     /// Settle gates `from..` from their stored state without firing
@@ -644,7 +675,8 @@ impl Machine {
         }
         self.settle()?;
         self.late_pass()?;
-        self.pass()
+        self.pass()?;
+        self.record_displays()
     }
 
     /// Run the work that lands ahead of the tick's handlers, in rank order,

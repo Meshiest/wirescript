@@ -532,3 +532,102 @@ fn testing_members_and_matchers_complete() {
     let own = labels_at("var testing: int = 0\non Loaded() {\n  testing.‸\n}\n", &[]);
     assert!(!own.contains(&"assertEq".to_string()), "{own:?}");
 }
+
+#[test]
+fn annotation_arguments_complete() {
+    let rows = [
+        row(
+            "display options",
+            "@display(‸)\nvar s\n",
+            &["width", "height", "size", "font", "border"],
+            &["label", "RoundStart"],
+        ),
+        row(
+            "display options not yet given",
+            "@display(width = 4, ‸)\nvar s\n",
+            &["height", "font"],
+            &["width"],
+        ),
+        row(
+            "display fonts",
+            "@display(width = 4, height = 2, font = ‸)\nvar s\n",
+            &["\"IosevkaTerm\"", "\"MonaspaceArgon\""],
+            &["width"],
+        ),
+        row(
+            "display border",
+            "@display(width = 4, height = 2, border = ‸)\nvar s\n",
+            &["true", "false"],
+            &[],
+        ),
+        row(
+            "seat options",
+            "@seat(‸) in p\n",
+            &["label", "mode", "camera", "exit"],
+            &["width"],
+        ),
+        row(
+            "seat modes",
+            "@seat(mode = ‸) in p\n",
+            &["\"Auto\"", "\"Ground\"", "\"GroundUnlocked\"", "\"Air\""],
+            &[],
+        ),
+        row(
+            "seat camera",
+            "@seat(camera = ‸) in p\n",
+            &["Rotation(0.0, 0.0, 0.0)"],
+            &[],
+        ),
+        row(
+            "layout engines",
+            "@layout(‸)\n\nvar x: int = 0\n",
+            &["\"code\"", "\"cube\""],
+            &[],
+        ),
+        row(
+            "materials",
+            "@material(‸)\nvar x: int = 0\n",
+            &["Glow", "Metal", "Plastic"],
+            &["width"],
+        ),
+    ];
+    for r in rows {
+        let labels = labels_at(r.src, &[]);
+        for pat in r.has {
+            assert!(
+                labels.iter().any(|l| matches(l, pat)),
+                "{}: no {pat} in {labels:?}",
+                r.label
+            );
+        }
+        for pat in r.lacks {
+            assert!(
+                !labels.iter().any(|l| matches(l, pat)),
+                "{}: unexpected {pat} in {labels:?}",
+                r.label
+            );
+        }
+    }
+}
+
+#[test]
+fn an_opened_quote_inserts_the_bare_name() {
+    let (source, line, col) = at_cursor("@display(width = 4, height = 2, font = \"Mon‸)\nvar s\n");
+    let items = completions(&source, &symbols_for(&source), line, col, &[], &no_enum);
+    let mona = items
+        .iter()
+        .find(|c| c.label == "\"MonaspaceArgon\"")
+        .expect("Monaspace offered");
+    assert_eq!(mona.insert_text.as_deref(), Some("MonaspaceArgon"));
+}
+
+#[test]
+fn a_call_inside_an_annotation_is_not_the_annotation() {
+    // `@color(Color(‸` completes `Color`'s own parameters, not annotation
+    // options.
+    let labels = labels_at("@color(Color(‸))\nvar x: int = 0\n", &[]);
+    assert!(
+        !labels.iter().any(|l| l == "width" || l == "\"code\""),
+        "{labels:?}"
+    );
+}

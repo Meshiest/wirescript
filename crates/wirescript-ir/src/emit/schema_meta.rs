@@ -101,7 +101,9 @@ pub(super) fn gate_field_meta(gate_class: &str) -> Option<&'static [FieldMeta]> 
                             Some("class" | "object") => FieldKind::AssetRef,
                             Some("str") => FieldKind::Str,
                             Some(n) if schema.get_enum(n).is_some() => FieldKind::Enum(n),
-                            Some(n @ ("Vector" | "Rotator" | "Quat")) => FieldKind::NativeStruct(n),
+                            Some(n @ ("Vector" | "Rotator" | "Quat" | "IntVector")) => {
+                                FieldKind::NativeStruct(n)
+                            }
                             Some(
                                 n @ ("i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"),
                             ) => FieldKind::Integer(n),

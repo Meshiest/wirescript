@@ -403,6 +403,38 @@ pub fn cursor_byte_offset(source: &str, line: usize, col: usize) -> usize {
 pub fn find_enclosing_call(source: &str, line: usize, col: usize) -> Option<String> {
     let offset = cursor_byte_offset(source, line, col).min(source.len());
     let prefix = &source[..offset];
+    let open = innermost_open_paren(prefix)?;
+    let before = prefix[..open].trim_end();
+    let name = &before[name_start(before)..];
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// The annotation whose parenthesized arguments hold the cursor
+/// (`@display(width = 3, ‸`): its name without the `@`, and the argument
+/// text from the `(` to the cursor.
+pub fn enclosing_annotation(source: &str, line: usize, col: usize) -> Option<(String, String)> {
+    let offset = cursor_byte_offset(source, line, col).min(source.len());
+    let prefix = &source[..offset];
+    let open = innermost_open_paren(prefix)?;
+    let before = prefix[..open].trim_end();
+    let start = name_start(before);
+    let name = &before[start..];
+    if name.is_empty() || !before[..start].ends_with('@') {
+        return None;
+    }
+    Some((name.to_string(), prefix[open + 1..].to_string()))
+}
+
+/// Where the identifier ending `text` starts.
+fn name_start(text: &str) -> usize {
+    text.rfind(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|k| after_char(text, k))
+        .unwrap_or(0)
+}
+
+/// The byte offset of the innermost `(` still open at the end of `prefix`,
+/// skipping parentheses in strings and comments.
+fn innermost_open_paren(prefix: &str) -> Option<usize> {
     let bytes = prefix.as_bytes();
     let mut stack: Vec<usize> = Vec::new(); // byte offsets of open '(' in real code
     let mut i = 0;
@@ -452,19 +484,7 @@ pub fn find_enclosing_call(source: &str, line: usize, col: usize) -> Option<Stri
             i += 1;
         }
     }
-    // Innermost still-open '(': the identifier right before it is the call.
-    let open = *stack.last()?;
-    let before = prefix[..open].trim_end();
-    let start = before
-        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|k| after_char(before, k))
-        .unwrap_or(0);
-    let name = &before[start..];
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
-    }
+    stack.last().copied()
 }
 
 /// If the cursor sits in the *value* of a `name = value` named argument on its

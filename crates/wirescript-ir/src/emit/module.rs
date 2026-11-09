@@ -9,6 +9,7 @@ use brdb::{
 
 use crate::catalog::default_catalog;
 use crate::collections::HashMap;
+use crate::exterior::{self, ExteriorPlan};
 use crate::intern::{Sym, intern_static, resolve, sym};
 use crate::ir::port_registry::WirePort;
 use crate::ir::{Literal, Module, Node, NodeId, PortRef, ProgramSettings, Type, gate_class as gc};
@@ -64,6 +65,10 @@ pub(super) struct EmitContext {
     /// The source already drawn into each brick input port, across the WHOLE
     /// world. See [`EmitContext::add_wire`].
     pub(super) drivers: HashMap<(usize, BString, BString), (usize, BString, BString)>,
+    /// Where the nodes placed around the chip go (`crate::exterior`).
+    pub(super) exterior: ExteriorPlan,
+    /// Bricks for the outer grid, placed by `exterior`.
+    pub(super) outer_bricks: Vec<brdb::Brick>,
 }
 
 impl EmitContext {
@@ -85,6 +90,8 @@ impl EmitContext {
             no_gate_labels: settings.no_gate_labels,
             root_shell_brick_id,
             drivers: HashMap::default(),
+            exterior: ExteriorPlan::default(),
+            outer_bricks: Vec::new(),
         }
     }
 
@@ -408,6 +415,18 @@ fn emit_gate(
     id: NodeId,
     node: &Node,
 ) -> Result<(), EmitError> {
+    if let Some(&(position, rotation)) = ctx.exterior.nodes.get(&id) {
+        return emit_exterior_gate(
+            world,
+            ctx,
+            module,
+            inlined_by_node,
+            id,
+            node,
+            position,
+            rotation,
+        );
+    }
     let pos = layout
         .placements
         .get(&id)
@@ -480,6 +499,86 @@ fn emit_gate(
     ctx.node_brick_ids.insert(id, brick_id);
     ctx.class_index.insert(id, node.gate_class);
     Ok(())
+}
+
+/// A node placed around the chip ([`crate::exterior`]) at `position`: a
+/// display row's strip and Text Decal, or a seat.
+#[allow(clippy::too_many_arguments)]
+fn emit_exterior_gate(
+    world: &mut World,
+    ctx: &mut EmitContext,
+    module: &Module,
+    inlined_by_node: &InlinedByNode,
+    id: NodeId,
+    node: &Node,
+    position: brdb::Position,
+    rotation: brdb::Rotation,
+) -> Result<(), EmitError> {
+    let row_display =
+        exterior::row_of(node).and_then(|(name, _)| ctx.exterior.displays.get(&name).cloned());
+    let (brick, brick_id) = if exterior::exterior_kind(node) == Some(exterior::DISPLAY_WIRE) {
+        let (mut brick, brick_id) =
+            super::wires::rerouter_brick(position, rotation, brdb::Color::new(255, 255, 255));
+        brick.direction = ctx
+            .exterior
+            .directions
+            .get(&id)
+            .copied()
+            .unwrap_or_default();
+        brick.visible = false;
+        brick.collision = super::no_collision();
+        (brick, brick_id)
+    } else if let Some((chip_id, display)) = row_display {
+        let size = ctx.exterior.strips.get(&id).copied().unwrap_or((2, 5, 5));
+        let (mut brick, brick_id) = brdb::Brick {
+            asset: BrickType::from((exterior::PANEL_BRICK, size)),
+            position,
+            rotation,
+            ..Default::default()
+        }
+        .with_id_split();
+        brick.add_component_box(Box::new(exterior::row_component(world, &display)));
+        let (color, material) = display_style(module, chip_id);
+        apply_style(&mut brick, Some(&color), material.as_ref(), false);
+        (brick, brick_id)
+    } else {
+        let asset = default_catalog()
+            .find_by_class(node.gate_class)
+            .map_or(REROUTE_NODE_ASSET, |g| g.brick_asset.as_str());
+        let (mut brick, brick_id) = brdb::Brick {
+            asset: BrickType::from(asset),
+            position,
+            rotation,
+            ..Default::default()
+        }
+        .with_id_split();
+        let gate_inlined = node_inlined(inlined_by_node, id, node);
+        brick.add_component_box(node_component(world, ctx, node, &gate_inlined)?);
+        if let Some((color, material, wired)) = node_style(module, id, node) {
+            apply_style(&mut brick, color.as_ref(), material.as_ref(), wired);
+        }
+        (brick, brick_id)
+    };
+    ctx.outer_bricks.push(brick);
+    ctx.node_brick_ids.insert(id, brick_id);
+    ctx.class_index.insert(id, node.gate_class);
+    Ok(())
+}
+
+/// The brick color and material of the display whose back chip is
+/// `chip_id`: its `@color` (else near black) and `@material`.
+pub(super) fn display_style(module: &Module, chip_id: NodeId) -> (Literal, Option<Literal>) {
+    let prop = |key| {
+        module
+            .nodes
+            .get(&chip_id)
+            .and_then(|n| n.properties.get(key))
+            .cloned()
+    };
+    let color = prop(&*sym::BRICK_COLOR)
+        .or_else(|| crate::ir::brick_color(&exterior::DEFAULT_DISPLAY_COLOR))
+        .expect("a linear color converts");
+    (color, prop(&*sym::BRICK_MATERIAL))
 }
 
 /// The literals inlined into `id`'s data: the `_Literal` values wired into
@@ -757,11 +856,17 @@ fn emit_chip(
     child_module: &Module,
 ) -> Result<(), EmitError> {
     let missing = || EmitError::MissingPlacement(id.to_string());
-    let pos = layout.placements.get(&id).ok_or_else(missing)?;
-    let inner_pos = brdb::Position {
-        x: pos.x + 5,
-        y: pos.y + 5,
-        z: pos.z,
+    let outer = ctx.exterior.nodes.get(&id).map(|(p, _)| *p);
+    let inner_pos = match outer {
+        Some(p) => p,
+        None => {
+            let pos = layout.placements.get(&id).ok_or_else(missing)?;
+            brdb::Position {
+                x: pos.x + 5,
+                y: pos.y + 5,
+                z: pos.z,
+            }
+        }
     };
     let child_layout = layout.chip_layouts.get(&id).ok_or_else(missing)?;
     let slot = wall.chips.get(&id).ok_or_else(missing)?;
@@ -835,6 +940,18 @@ fn emit_chip(
     let (mut chip_brick, chip_brick_id) = brdb::Brick {
         asset: shell_asset,
         position: inner_pos,
+        rotation: ctx
+            .exterior
+            .nodes
+            .get(&id)
+            .map(|(_, r)| *r)
+            .unwrap_or_default(),
+        direction: ctx
+            .exterior
+            .directions
+            .get(&id)
+            .copied()
+            .unwrap_or_default(),
         ..Default::default()
     }
     .with_component_box(shell_comp)
@@ -848,7 +965,11 @@ fn emit_chip(
     if let Some((color, material, wired)) = node_style(module, id, node) {
         apply_style(&mut chip_brick, color.as_ref(), material.as_ref(), wired);
     }
-    bricks.push(chip_brick);
+    if outer.is_some() {
+        ctx.outer_bricks.push(chip_brick);
+    } else {
+        bricks.push(chip_brick);
+    }
     ctx.node_brick_ids.insert(id, chip_brick_id);
     ctx.class_index.insert(id, node.gate_class);
     world.register_microchip_link(chip_brick_id, chip_entity_id);

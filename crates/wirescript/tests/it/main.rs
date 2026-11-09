@@ -16,6 +16,7 @@ mod const_differential;
 mod determinism;
 mod diagnostic_regressions;
 mod diagnostics_documented;
+mod display_seat;
 mod entity_custom_properties;
 mod flat_emit;
 mod fn_functions;

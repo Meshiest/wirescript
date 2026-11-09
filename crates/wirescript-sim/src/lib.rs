@@ -12,6 +12,7 @@
 //! `.brz` runs through the same loader ([`Sim::from_brz`]).
 
 pub mod assumed;
+pub mod display;
 pub mod graph;
 pub mod load;
 pub mod machine;

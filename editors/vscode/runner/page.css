@@ -1,0 +1,11 @@
+/* The runner webview's page: the view fills it. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+#runner {
+  height: 100vh;
+  box-sizing: border-box;
+  padding: 8px;
+}

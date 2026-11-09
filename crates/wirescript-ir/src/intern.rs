@@ -112,6 +112,22 @@ pub mod sym {
     // Pseudo-property (not a game field): a Convert gate an `as` made, which
     // `lower::convert::prune_unread_conversions` drops when nothing reads it.
     def!(AS_CONVERT, "_as");
+    // Pseudo-properties (not game fields) of a node placed outside the
+    // program's planes, around its chip (`@display`, `@seat`; see
+    // `crate::exterior`). Layout skips these nodes and emit places them.
+    def!(EXTERIOR, "_exterior");
+    def!(DISPLAY_NAME, "_display");
+    def!(DISPLAY_ROW, "_display_row");
+    def!(DISPLAY_WIDTH, "_display_width");
+    def!(DISPLAY_HEIGHT, "_display_height");
+    def!(DISPLAY_PITCH, "_display_pitch");
+    def!(DISPLAY_FONT, "_display_font");
+    def!(DISPLAY_BORDER, "_display_border");
+    def!(DISPLAY_SIDE, "_display_side");
+    def!(DISPLAY_OFFSET, "_display_offset");
+    def!(DISPLAY_SLOT, "_display_slot");
+    def!(SEAT_NAME, "_seat");
+    def!(SEAT_SIDE, "_seat_side");
 }
 
 #[cfg(test)]

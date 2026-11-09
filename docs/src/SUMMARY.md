@@ -123,6 +123,8 @@
     - [Text on Screen](learn/screen/text-on-screen.md)
     - [Keeping It Current](learn/screen/keeping-it-current.md)
     - [A HUD for Everyone](learn/screen/a-hud-for-everyone.md)
+    - [A Game on a Screen](learn/screen/a-game-on-a-screen.md)
+    - [Pong](learn/screen/pong.md)
   - [Parts](learn/parts/README.md)
   - [Building Parts]()
     - [Toggle Light](learn/parts/toggle-light.md)

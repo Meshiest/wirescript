@@ -148,9 +148,22 @@ fn storage_nodes(binding: &Binding) -> Vec<NodeId> {
     out
 }
 
+/// Whether each of `color` and `material` that is given folds to a constant.
+pub(super) fn is_constant_style(
+    ctx: &LowerCtx<'_>,
+    color: Option<&Expr>,
+    material: Option<&Expr>,
+) -> bool {
+    let cx = ctx.const_ctx(None);
+    color.is_none_or(|e| style_constant(e, &cx).is_some())
+        && material.is_none_or(|e| style_constant(&material_arg(e), &cx).is_some())
+}
+
 /// The constant `@color` / `@material` of the `var` just declared by `d`.
+/// A `@display` var's style is its panel's, set on its back chip instead
+/// (see `display::build_displays`).
 pub(super) fn bake_var_style(ctx: &mut LowerCtx<'_>, d: &VarDecl) {
-    if d.color_expr.is_none() && d.material_expr.is_none() {
+    if (d.color_expr.is_none() && d.material_expr.is_none()) || d.display.is_some() {
         return;
     }
     let nodes = ctx
@@ -193,7 +206,7 @@ pub(super) fn resolve_dynamic_var_styles(ctx: &mut LowerCtx<'_>, decls: &[TopDec
     ctx.pure(|ctx| {
         for d in decls {
             let TopDecl::Var(v) = d else { continue };
-            if v.color_expr.is_none() && v.material_expr.is_none() {
+            if (v.color_expr.is_none() && v.material_expr.is_none()) || v.display.is_some() {
                 continue;
             }
             let view = ctx.top_view(crate::scope::top::ReadAt::code(&v.range));

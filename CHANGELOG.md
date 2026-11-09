@@ -1,5 +1,19 @@
 # Wirescript Changelog
 
+## 2.5.0
+
+### Displays and seats
+
+- `@display(width, height)` makes a top-level `var` a `color[]` screen drawn on a panel beside the chip, one tick after a write; `@top`, `@bottom`, `@left` or `@right` picks its side, `size`, `font`, `border` and `offset` shape and place it, and `@color` colors it (WS127).
+- `@seat` places a seat beside the chip on the side `@left`, `@right` or `@top` picks and makes the `in` a `Seat` of `occupied` and `character`; `label`, `mode`, `camera` and `exit` set the seat (WS128).
+- The simulator draws displays (`wirescript sim --show-displays`, `display` in `--interactive`, pictures in `.expected` files) and seats players with `sit` and `stand` script lines.
+- Play runs a program live in the playground and in VS Code (Wirescript: Play), drawing its displays and seating you at its seats, with W A S D, Space, E, Q, C and the mouse as your keys.
+- Completion inside an annotation's parentheses: `@display` and `@seat` options and their values, `@layout`'s engines and `@material`'s materials.
+
+### Fixes
+
+- `on !r.field` on a record (a record `in` port, a chip's result) ignored its `!` and fired when the field turned true.
+
 ## 2.4.1
 
 ### Game update

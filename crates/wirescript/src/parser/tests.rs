@@ -846,7 +846,7 @@ fn decl_annotation_errors() {
             "@middle in a: bool",
             &[
                 "unknown annotation '@middle'",
-                "expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, @sliced, or @test",
+                "expected @left, @right, @top, @bottom, @label, @color, @material, @closed, @invisible, @nofold, @sliced, @test, @display, or @seat",
             ],
             "in",
         ),

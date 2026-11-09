@@ -32,6 +32,10 @@ cp playground/docs.js _site/
 cp playground/learn.js _site/
 cp playground/snippet.js _site/
 cp playground/test-worker.js _site/
+cp playground/runner-core.js _site/
+cp playground/runner-view.js _site/
+cp playground/runner-worker.js _site/
+cp playground/runner.css _site/
 
 echo "Copying docs + examples..."
 mkdir -p _site/docs _site/sdk/examples
@@ -82,6 +86,11 @@ cp playground/share.js _sdk/wirescript-sdk/playground/
 cp playground/docs.js _sdk/wirescript-sdk/playground/
 cp playground/learn.js _sdk/wirescript-sdk/playground/
 cp playground/snippet.js _sdk/wirescript-sdk/playground/
+cp playground/test-worker.js _sdk/wirescript-sdk/playground/
+cp playground/runner-core.js _sdk/wirescript-sdk/playground/
+cp playground/runner-view.js _sdk/wirescript-sdk/playground/
+cp playground/runner-worker.js _sdk/wirescript-sdk/playground/
+cp playground/runner.css _sdk/wirescript-sdk/playground/
 cp pkg/wasm_bg.wasm _sdk/wirescript-sdk/playground/pkg/
 cp pkg/wasm.js _sdk/wirescript-sdk/playground/pkg/
 

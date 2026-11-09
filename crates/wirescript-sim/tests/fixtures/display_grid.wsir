@@ -1,0 +1,88 @@
+; wsir 1
+source_filename = "display_grid.ws"
+
+module @display_grid {
+  %screen = ArrayVar { InitialValue = [lrgba(0.0, 0.0, 0.0, 0.0), lrgba(0.0, 0.0, 0.0, 0.0), lrgba(0.0, 0.0, 0.0, 0.0), lrgba(0.0, 0.0, 0.0, 0.0), lrgba(0.0, 0.0, 0.0, 0.0), lrgba(0.0, 0.0, 0.0, 0.0)], label = "screen" } : () -> (ArrayVarRef: *color[]) loc(2:1+32 to 2:11+42)
+  %5 = Event_Loaded !chain 0 loc(4:4+47 to 4:10+53)
+  %8 = Exec_ArrayVar_SetAtIndex(Exec: %5, ArrayVarRef: %screen, Index: 1, Value: lrgba(1.0, 0.0, 0.0, 1.0)) : (Exec: exec, ArrayVarRef: any[], Index: int, Value: color) -> (ExecOut: exec) !scope !1 !chain 0 !note "array set" loc(5:3+60 to 5:35+92)
+  %11 = Exec_ArrayVar_SetAtIndex(Exec: %8, ArrayVarRef: %screen, Index: 5, Value: lrgba(0.0, 0.0, 1.0, 1.0)) : (Exec: exec, ArrayVarRef: any[], Index: int, Value: color) -> (ExecOut: exec) !scope !1 !chain 0 !note "array set" loc(6:3+95 to 6:35+127)
+  %screen_73 = chip { _display = "screen", _display_border = true, _display_font = "IosevkaTerm", _display_height = 2, _display_pitch = 10, _display_width = 3, _exterior = "display", label = "screen" } !id 73 !layout_after(%screen) {
+    %rows = ArrayVar { label = "rows" } : () -> (ArrayVarRef: *string[]) !id 2 loc(10:16+147 to 10:51+182)
+    %row_0 = Var { InitialValue = "", label = "row 0" } : () -> (Value: string, VarRef: *string) loc(11:17+199 to 11:55+237)
+    %row_1 = Var { InitialValue = "", label = "row 1" } : () -> (Value: string, VarRef: *string) loc(12:17+254 to 12:55+292)
+    %_on_expr_0 = Expr_ContainerChangeDetector(ContainerRef: %screen_76) { _bindname = "_on_expr_0" } : (ContainerRef: any) -> (OnChanged: exec) !id 12 !note "ContainerChange" loc(34:4+754 to 34:27+777)
+    %__display_screen_draw = chip Component_Internal_Microchip_FunctionDefinition { label = "__display_screen_draw" } !scope !2 !chain 1 {
+      %14 = CallableEntry_Function !scope !2 !chain 1 loc(13:1+293 to 33:2+750)
+      %px = FunctionInput { DefaultValue = 0.0, PortLabel = "px", PortOrder = 0, label = "px" } : () -> (Value: color[]) !scope !2 !chain 1 loc(13:26+318 to 13:37+329)
+      %rows_16 = FunctionInput { DefaultValue = 0.0, PortLabel = "rows", PortOrder = 1, label = "rows" } : () -> (Value: string[]) !scope !2 !chain 1 loc(13:39+331 to 13:53+345)
+      %17 = Exec_ArrayVar_Clear(Exec: %14, ArrayVarRef: %rows_16) : (Exec: exec, ArrayVarRef: any[]) -> (ExecOut: exec) !scope !2 !chain 1 loc(14:3+351 to 14:15+363)
+      %21 = chip Component_Internal_Microchip_CountFor(Exec: %17, Count: 2, FirstIndex: 0, Step: 1) : (Exec: exec, Count: int, FirstIndex: int, Step: int) -> (Completed: exec, IterationsExecuted: int, bAborted: bool, bRunning: bool) !scope !2 !chain 1 !layout_after(%__display_screen_draw, %rows_16) {
+        %22 = CallableEntry_CountFor !scope !2 !chain 1 loc(15:3+366 to 32:4+748)
+        %line = Var { InitialValue = "", label = "line" } : () -> (Value: string, VarRef: *string) !scope !2 !chain 1 loc(16:5+386 to 16:26+407)
+        %25 = Exec_Var_Set(Exec: %22.Body, VarRef: %line.VarRef, Value: "") : (Exec: exec, VarRef: *string, Value: string) -> (ExecOut: exec) !scope !2 !chain 1 loc(16:5+386 to 16:26+407)
+        %last = Var { InitialValue = "", label = "last" } : () -> (Value: string, VarRef: *string) !scope !2 !chain 1 loc(17:5+412 to 17:26+433)
+        %28 = Exec_Var_Set(Exec: %25, VarRef: %last.VarRef, Value: "") : (Exec: exec, VarRef: *string, Value: string) -> (ExecOut: exec) !scope !2 !chain 1 loc(17:5+412 to 17:26+433)
+        %32 = chip Component_Internal_Microchip_CountFor(Exec: %28, Count: 3, FirstIndex: 0, Step: 1) : (Exec: exec, Count: int, FirstIndex: int, Step: int) -> (Completed: exec, IterationsExecuted: int, bAborted: bool, bRunning: bool) !scope !2 !chain 1 !layout_after(%__display_screen_draw, %px, %21, %22, %line, %last) {
+          %33 = CallableEntry_CountFor !scope !2 !chain 1 loc(18:5+438 to 30:6+724)
+          %35 = Expr_MathMultiply(InputA: %ext1, InputB: 3) : (InputA: int, InputB: int) -> (Output: int) !scope !2 !chain 1 !layout_after(%21) loc(19:18+471 to 19:23+476)
+          %36 = Expr_MathAdd(InputA: %35, InputB: %33.Index) : (InputA: int, InputB: int) -> (Output: int) !scope !2 !chain 1 loc(19:18+471 to 19:27+480)
+          %c = Exec_ArrayVar_Get(Exec: %33.Body, ArrayVarRef: %px_79, Index: %36) { _bindname = "c" } : (Exec: exec, ArrayVarRef: *color, Index: int) -> (Value: color, bOutOfBounds: bool, ExecOut: exec) !scope !2 !chain 1 !layout_after(%__display_screen_draw) !note "array get" loc(19:15+468 to 19:28+481)
+          %38 = Expr_SplitColor(Input: %c.Value) : (Input: color) -> (R: float, G: float, B: float, A: float) !scope !4 !chain 1 loc(20:10+491 to 20:13+494)
+          %40 = Expr_CompareLess(InputA: %38.A, InputB: 0.5) : (InputA: float, InputB: float) -> (bOutput: bool) !scope !4 !chain 1 loc(20:10+491 to 20:19+500)
+          %41 = Exec_Branch(Exec: %c.ExecOut, bCond: %40) : (Exec: exec, bCond: bool) -> (ExecOutA: exec, ExecOutB: exec) !scope !4 !chain 1 loc(20:7+488 to 29:8+718)
+          %42 = Exec_Var_Get(Exec: %41.ExecOutA, VarRef: %line_80) { Value = "" } : (Exec: exec, VarRef: *string) -> (Value: string, ExecOut: exec) !scope !5 !chain 1 !layout_after(%21) loc(21:16+518 to 21:20+522)
+          %44 = Expr_String_Concatenate(InputA: %42.Value, InputB: " ") : (InputA: string, InputB: string) -> (Output: string) !scope !5 !chain 1 loc(21:16+518 to 21:27+529)
+          %45 = Exec_Var_Set(Exec: %42.ExecOut, VarRef: %line_80, Value: %44) : (Exec: exec, VarRef: *string, Value: string) -> (ExecOut: exec) !scope !5 !chain 1 !layout_after(%21) loc(21:9+511 to 21:27+529)
+          %hex = Expr_ColorToHex(Input: %c.Value) { _bindname = "hex" } !scope !6 !chain 1 !note "ToHex" loc(23:19+563 to 23:28+572)
+          %47 = Exec_Var_Get(Exec: %41.ExecOutB, VarRef: %last_81) { Value = "" } : (Exec: exec, VarRef: *string) -> (Value: string, ExecOut: exec) !scope !8 !chain 1 !layout_after(%21) loc(24:19+591 to 24:23+595)
+          %48 = Expr_CompareNotEqual(InputA: %hex, InputB: %47.Value) !scope !8 !chain 1 loc(24:12+584 to 24:23+595)
+          %49 = Exec_Branch(Exec: %47.ExecOut, bCond: %48) : (Exec: exec, bCond: bool) -> (ExecOutA: exec, ExecOutB: exec) !scope !8 !chain 1 loc(24:9+581 to 27:10+681)
+          %50 = Exec_Var_Get(Exec: %49.ExecOutA, VarRef: %line_80) { Value = "" } : (Exec: exec, VarRef: *string) -> (Value: string, ExecOut: exec) !scope !9 !chain 1 !layout_after(%21) loc(25:18+615 to 25:22+619)
+          %52 = Expr_String_Concatenate(InputA: %50.Value, InputB: "<color=\"") : (InputA: string, InputB: string) -> (Output: string) !scope !9 !chain 1 loc(25:18+615 to 25:37+634)
+          %53 = Expr_String_Concatenate(InputA: %52, InputB: %hex) : (InputA: string, InputB: string) -> (Output: string) !scope !9 !chain 1 loc(25:18+615 to 25:44+641)
+          %55 = Expr_String_Concatenate(InputA: %53, InputB: "\">") : (InputA: string, InputB: string) -> (Output: string) !scope !9 !chain 1 loc(25:18+615 to 25:53+650)
+          %56 = Exec_Var_Set(Exec: %50.ExecOut, VarRef: %line_80, Value: %55) : (Exec: exec, VarRef: *string, Value: string) -> (ExecOut: exec) !scope !9 !chain 1 !layout_after(%21) loc(25:11+608 to 25:53+650)
+          %57 = Exec_Var_Set(Exec: %56, VarRef: %last_81, Value: %hex) : (Exec: exec, VarRef: *string, Value: string) -> (ExecOut: exec) !scope !9 !chain 1 !layout_after(%21) loc(26:11+661 to 26:21+671)
+          %58 = Exec_Union(ExecA: %57, ExecB: %49.ExecOutB) !scope !6 !chain 1 loc(24:9+581 to 27:10+681)
+          %59 = Exec_Var_Get(Exec: %58, VarRef: %line_80) { Value = "" } : (Exec: exec, VarRef: *string) -> (Value: string, ExecOut: exec) !scope !6 !chain 1 !layout_after(%21) loc(28:16+697 to 28:20+701)
+          %61 = Expr_String_Concatenate(InputA: %59.Value, InputB: "█") : (InputA: string, InputB: string) -> (Output: string) !scope !6 !chain 1 loc(28:16+697 to 28:29+710)
+          %62 = Exec_Var_Set(Exec: %59.ExecOut, VarRef: %line_80, Value: %61) : (Exec: exec, VarRef: *string, Value: string) -> (ExecOut: exec) !scope !6 !chain 1 !layout_after(%21) loc(28:9+690 to 28:29+710)
+          %ext1 = in int(%22.Index) !id 77 !note "boundary_pin"
+          %px_79 = in color[](%px_78) { PortLabel = "px" } !id 79 !note "boundary_pin"
+          %line_80 = in *string(%line.VarRef) { PortLabel = "line" } !note "boundary_pin"
+          %last_81 = in *string(%last.VarRef) { PortLabel = "last" } !note "boundary_pin"
+          !wire_order(24, 25, 26, 28, 30, 31, 32, 33, 34, 37, 38, 40, 42, 43, 46, 47, 48, 49, 50, 53, 54, 55, 56, 57, 59, 61, 63, 65, 66, 67, 70, 71,
+            73, 22, 27, 35, 39, 44, 51, 58, 62, 68, 72)
+        } loc(18:5+438 to 30:6+724)
+        %64 = Exec_Var_Get(Exec: %32.Completed, VarRef: %line.VarRef) { Value = "" } : (Exec: exec, VarRef: *string) -> (Value: string, ExecOut: exec) !scope !2 !chain 1 loc(31:15+739 to 31:19+743)
+        %65 = Exec_ArrayVar_Push(Exec: %64.ExecOut, ArrayVarRef: %rows_82, Value: %64.Value) : (Exec: exec, ArrayVarRef: any[], Value: any) -> (ExecOut: exec) !scope !2 !chain 1 !layout_after(%__display_screen_draw) loc(31:5+729 to 31:20+744)
+        %px_78 = in color[](%px) { PortLabel = "px" } !id 78 !note "boundary_pin"
+        %rows_82 = in string[](%rows_16) { PortLabel = "rows" } !id 82 !note "boundary_pin"
+        !wire_order(11, 12, 13, 14, 15, 79, 80, 81, 83, 75, 76, 77, 78, 82)
+      } loc(15:3+366 to 32:4+748)
+      !wire_order(6, 7, 8, 85, 86)
+    } loc(13:1+293 to 33:2+750)
+    %__display_screen_draw_66 = FunctionCall(Definition: %__display_screen_draw, Exec: %_on_expr_0, Input0: %screen_76, Input1: %rows) { InputSources = [1, 1, 0, 0, 0, 0, 0, 0], _variant = 0, label = "__display_screen_draw" } : (Definition: any, Exec: exec, Input0: any, Input1: any, Input2: any, Input3: any, Input4: any, Input5: any, Input6: any, Input7: any) -> (Completed: exec, bAborted: bool, IterationsExecuted: int, Output0: any, Output1: any, Output2: any, Output3: any, Output4: any, Output5: any, Output6: any, Output7: any) !id 66 !scope !2 !chain 1 !note "fn call" loc(35:3+782 to 35:55+834)
+    %68 = Exec_ArrayVar_Get(Exec: %__display_screen_draw_66.Completed, ArrayVarRef: %rows, Index: 0) : (Exec: exec, ArrayVarRef: *string, Index: int) -> (Value: string, bOutOfBounds: bool, ExecOut: exec) !scope !2 !chain 1 !note "array get" loc(36:27+861 to 36:51+885)
+    %69 = Exec_Var_Set(Exec: %68.ExecOut, VarRef: %row_0.VarRef, Value: %68.Value) : (Exec: exec, VarRef: *string, Value: string) -> (ExecOut: exec) !scope !2 !chain 1 loc(36:3+837 to 36:51+885)
+    %71 = Exec_ArrayVar_Get(Exec: %69, ArrayVarRef: %rows, Index: 1) : (Exec: exec, ArrayVarRef: *string, Index: int) -> (Value: string, bOutOfBounds: bool, ExecOut: exec) !scope !2 !chain 1 !note "array get" loc(37:27+912 to 37:51+936)
+    %72 = Exec_Var_Set(Exec: %71.ExecOut, VarRef: %row_1.VarRef, Value: %71.Value) : (Exec: exec, VarRef: *string, Value: string) -> (ExecOut: exec) !scope !2 !chain 1 loc(37:3+888 to 37:51+936)
+    %screen_76 = in *color[](%screen) { PortLabel = "screen" } !id 76 !note "boundary_pin"
+    out %row_0_83 string = %row_0.Value { PortLabel = "row 0" } !id 83 !note "boundary_pin"
+    out %row_1_84 string = %row_1.Value { PortLabel = "row 1" } !note "boundary_pin"
+    !wire_order(88, 87, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 5, 89, 102, 103)
+  } loc(2:1+32 to 2:11+42)
+  %74 = Component_TextDisplay(Text: %row_0_83) { _display = "screen", _display_row = 0, _exterior = "display_row" } : (Text: string) -> () !layout_after(%screen_73) loc(2:1+32 to 2:11+42)
+  %75 = Component_TextDisplay(Text: %row_1_84) { _display = "screen", _display_row = 1, _exterior = "display_row" } : (Text: string) -> () !layout_after(%screen_73) loc(2:1+32 to 2:11+42)
+  !1 = !scope(HandlerBody "Loaded", parent: !0, loc(4:1+44 to 7:2+129))
+  !2 = !scope(HandlerBody "_on_expr_0", parent: !0, loc(34:1+751 to 38:2+938))
+  !3 = !scope(IfGroup, parent: !2, loc(20:7+488 to 29:8+718))
+  !4 = !scope(IfCond, parent: !3, loc(20:10+491 to 20:19+500))
+  !5 = !scope(IfThen, parent: !3, loc(20:20+501 to 22:8+537))
+  !6 = !scope(IfElse, parent: !3, loc(22:14+543 to 29:8+718))
+  !7 = !scope(IfGroup, parent: !6, loc(24:9+581 to 27:10+681))
+  !8 = !scope(IfCond, parent: !7, loc(24:12+584 to 24:23+595))
+  !9 = !scope(IfThen, parent: !7, loc(24:24+596 to 27:10+681))
+  !10 = !scope(IfElse, parent: !7, loc(24:9+581 to 27:10+681))
+  !wire_order(0, 1, 2, 3, 4, 18, 23, 19, 16, 29, 17, 36, 20, 41, 45, 21, 52, 60, 64, 69, 74, 9, 84, 10, 105, 107, 101, 104, 106)
+}

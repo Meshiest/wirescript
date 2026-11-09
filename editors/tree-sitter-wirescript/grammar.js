@@ -99,11 +99,23 @@ module.exports = grammar({
     // The lexer emits `@word` as a single token, so `@` and the word must be
     // adjacent. An annotation may take one parenthesised argument: a string
     // (`@label("text")`, `@layout("code")`) or any expression (`@label(name)`,
-    // `@color(Color(1.0, 0.0, 0.0))`, `@material(Glow)`).
+    // `@color(Color(1.0, 0.0, 0.0))`, `@material(Glow)`), or `name = value`
+    // options (`@display(width = 32, height = 20)`, `@seat(label = "P1")`).
     annotation: ($) =>
       seq(
         field('name', $.annotation_name),
-        optional(seq('(', optional(field('argument', $._expression)), ')')),
+        optional(
+          seq(
+            '(',
+            optional(
+              choice(
+                field('argument', $._expression),
+                seq(commaSep1($.named_argument), optional(',')),
+              ),
+            ),
+            ')',
+          ),
+        ),
       ),
 
     annotation_name: (_$) => token(seq('@', /[a-zA-Z_][a-zA-Z0-9_]*/)),
@@ -175,8 +187,8 @@ module.exports = grammar({
         optional($._annotations),
         'in',
         field('name', $.identifier),
-        ':',
-        field('type', $._type),
+        // A `@seat` input may leave its `Seat` type out.
+        optional(seq(':', field('type', $._type))),
       ),
 
     out_declaration: ($) =>

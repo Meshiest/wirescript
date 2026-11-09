@@ -124,6 +124,8 @@
     "WS124": "diagnostics.html#functions-fn",
     "WS125": "diagnostics.html#functions-fn",
     "WS126": "diagnostics.html#functions-fn",
+    "WS127": "diagnostics.html#displays-and-seats",
+    "WS128": "diagnostics.html#displays-and-seats",
     "WSP001": "diagnostics.html#silencing-a-warning"
   },
   "builtins": {
@@ -445,7 +447,9 @@
     "layout": "statements.html#layoutcode-source-shaped-gate-layout",
     "flat": "statements.html#flat-inline-every-chip",
     "sliced": "statements.html#sliced-loops-sliced",
-    "test": "statements.html#tests-test"
+    "test": "statements.html#tests-test",
+    "display": "statements.html#display-a-pixel-screen",
+    "seat": "statements.html#seat-a-seat-for-a-player"
   },
   "types": {
     "bool": "types.html#primitive-types",
@@ -464,7 +468,8 @@
     "teleport": "types.html#zone--teleport-references",
     "prefab": "expressions.html#prefab-references",
     "brick": "types.html#bricks",
-    "any": "types.html#any-type"
+    "any": "types.html#any-type",
+    "Seat": "statements.html#seat-a-seat-for-a-player"
   },
   "topics": {
     "constraintClass": "types.html#constraint-classes-bounds",

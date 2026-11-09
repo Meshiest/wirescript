@@ -1,0 +1,12 @@
+; wsir 1
+source_filename = "seat_rider.ws"
+
+module @seat_rider {
+  %1 = Component_Internal_Seat { _exterior = "seat", _seat = "p1", _seat_side = "bottom" } : () -> (bIsOccupied: bool, SittingCharacter: character) loc(1:7+6 to 1:12+11)
+  %2 = Exec_Gamemode_BroadcastChatMessage(Exec: %1.bIsOccupied, Message: "p1 sat") : (Exec: exec, Message: any) -> (ExecOut: exec) !scope !1 !chain 0 !note "BroadcastChatMessage" loc(4:3+32 to 4:33+62)
+  %keys = Component_Internal_InputSplitter(Character: %1.SittingCharacter) { _bindname = "keys" } : (Character: character) -> (InputForward: {Forward: float, Right: float, Up: float, Pitch: float, Yaw: float, Roll: float, MouseWheel: float, PressedC: bool, PressedE: bool, PressedQ: bool, PressedLeftMouse: bool, PressedRightMouse: bool}, bPressedC: any, bPressedE: any, bPressedLeftMouse: any, bPressedQ: any, bPressedRightMouse: any, InputMouseWheel: any, InputPitch: any, InputRight: any, InputRoll: any, InputUp: any, InputYaw: any) !note "InputReader" loc(6:12+76 to 6:38+102)
+  %_on_expr_0 = Expr_CompareGreater(InputA: %keys.InputForward, InputB: 0.5) { _bindname = "_on_expr_0" } : (InputA: float, InputB: float) -> (bOutput: bool) !id 5 loc(7:4+106 to 7:22+124)
+  %6 = Exec_Gamemode_BroadcastChatMessage(Exec: %_on_expr_0, Message: "p1 forward") : (Exec: exec, Message: any) -> (ExecOut: exec) !scope !2 !chain 1 !note "BroadcastChatMessage" loc(8:3+129 to 8:37+163)
+  !1 = !scope(HandlerBody "p1.occupied", parent: !0, loc(3:1+13 to 5:2+64))
+  !2 = !scope(HandlerBody "_on_expr_0", parent: !0, loc(7:1+103 to 9:2+165))
+}

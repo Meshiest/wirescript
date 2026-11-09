@@ -3,6 +3,7 @@
 src/**
 out/**
 scripts/**
+runner/**
 node_modules/**
 **/*.map
 **/*.ts

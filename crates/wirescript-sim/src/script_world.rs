@@ -34,13 +34,15 @@
 //! 17 interact alice                      # WholeGridInteracted (`interact alice held`)
 //! 18 target alice 10 Bow                 # WholeGridTargeted
 //! 19 answer alice yes                    # alice answers her oldest open box
+//! 20 sit alice p1                        # alice sits in the seat of `@seat in p1`
+//! 25 stand alice                         # alice gets up out of her seat
 //! ```
 //!
 //! Sweep lines queue results in file order whatever their tick. Player,
 //! team and teleport lines set the world up before the run and take tick 0.
 //! A player nothing names goes by [`DEFAULT_NAME`] and a user id made from
 //! their script name. A `move`, `input`, `aim`, `slot` or `zone` at tick 0 is
-//! how the run starts. An answer is `yes` or `ok`, `no` or `cancel`, or
+//! how the run starts, and so is a `sit` or `stand`. An answer is `yes` or `ok`, `no` or `cancel`, or
 //! `text <words>`.
 //!
 //! What the program shows one player is printed among the chat, prefixed with
@@ -128,6 +130,13 @@ enum Change {
         slot: i64,
     },
     Zone(Vec<String>),
+    Sit {
+        player: String,
+        seat: String,
+    },
+    Stand {
+        player: String,
+    },
 }
 
 /// How a player answers a box.
@@ -322,6 +331,8 @@ pub struct ScriptWorld {
     /// when `echo_ticks` is set.
     pub echo: bool,
     pub echo_ticks: bool,
+    /// Print each display to stdout when it changes, in this form.
+    pub echo_displays: Option<DisplayStyle>,
     actions: BTreeMap<u64, Vec<Action>>,
     /// Every player the script names, by script name, joined or not.
     pub players: BTreeMap<String, Player>,
@@ -356,6 +367,17 @@ pub struct ScriptWorld {
     assets: HashMap<String, u64>,
     /// Script actions that could not happen.
     problems: Vec<String>,
+    /// Who sits in each `@seat`, by the seat's name.
+    pub seated: BTreeMap<String, String>,
+    pub displays: crate::display::Displays,
+}
+
+/// How a display prints: as colored blocks for a terminal, or as the plain
+/// hex rows an `.expected` file holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayStyle {
+    Ansi,
+    Plain,
 }
 
 /// `text` with control characters (an escape sequence, a tab, a newline)
@@ -567,6 +589,13 @@ impl ScriptWorld {
                     value,
                 }
             }
+            ("sit", [player, seat]) => Change::Sit {
+                player: name(player),
+                seat: name(seat),
+            },
+            ("stand", [player]) => Change::Stand {
+                player: name(player),
+            },
             ("aim", [player, at @ ..]) => Change::Aim {
                 player: name(player),
                 direction: parse_vector(at).ok_or_else(|| bad("expected x y z"))?,
@@ -908,11 +937,25 @@ impl ScriptWorld {
                 }
                 self.zone = members;
             }
+            Change::Sit { player, seat } => {
+                self.player(&player);
+                match self.seated.get(&seat) {
+                    Some(other) if *other != player => self
+                        .problems
+                        .push(format!("{player} cannot sit in {seat}: {other} is sitting there")),
+                    _ => {
+                        self.seated.retain(|_, p| *p != player);
+                        self.seated.insert(seat, player);
+                    }
+                }
+            }
+            Change::Stand { player } => self.seated.retain(|_, p| *p != player),
         }
     }
 
-    /// Give player `name` a new, empty character.
+    /// Give player `name` a new, empty character, out of any seat.
     fn new_character(&mut self, name: &str) {
+        self.seated.retain(|_, p| p != name);
         let character = self.object();
         let p = self.player(name);
         p.character = character;
@@ -998,6 +1041,7 @@ impl ScriptWorld {
                 one(e)
             }
             Action::Leave(name) => {
+                self.seated.retain(|_, p| *p != name);
                 let (user_id, user_name, team) = {
                     let p = self.player(&name);
                     (p.user_id.clone(), p.user_name.clone(), p.team)
@@ -1077,6 +1121,7 @@ impl ScriptWorld {
                 ))
             }
             Action::Die { player, killer } => {
+                self.seated.retain(|_, p| *p != player);
                 let killer = killer.map(|k| self.player(&k).character).unwrap_or(0);
                 let p = self.player(&player);
                 p.spawned = true;
@@ -1299,6 +1344,10 @@ impl World for ScriptWorld {
         &self.lines
     }
 
+    fn take_chat(&mut self) -> Vec<ChatLine> {
+        std::mem::take(&mut self.lines)
+    }
+
     fn unfinished(&self) -> Option<String> {
         if let Some((tick, _)) = self.actions.first_key_value() {
             return Some(format!("the script's action at tick {tick} never ran"));
@@ -1316,6 +1365,41 @@ impl World for ScriptWorld {
 
     fn push_line(&mut self, tick: u64, line: &str) -> Result<(), String> {
         Self::push_line(self, tick, line)
+    }
+
+    fn displays(&self) -> Option<&crate::display::Displays> {
+        Some(&self.displays)
+    }
+
+    fn seated(&self) -> Option<&BTreeMap<String, String>> {
+        Some(&self.seated)
+    }
+
+    fn displays_mut(&mut self) -> Option<&mut crate::display::Displays> {
+        Some(&mut self.displays)
+    }
+
+    fn settle_displays(&mut self, tick: u64) {
+        let before = self.displays.frames().len();
+        self.displays.settle(tick);
+        let Some(style) = self.echo_displays else {
+            return;
+        };
+        for f in &self.displays.frames()[before..] {
+            match style {
+                DisplayStyle::Plain => {
+                    for line in f.screen.render_plain(f.tick) {
+                        println!("{line}");
+                    }
+                }
+                DisplayStyle::Ansi => {
+                    println!("[display {} @{}]", f.screen.name, f.tick);
+                    for line in f.screen.render_ansi() {
+                        println!("{line}");
+                    }
+                }
+            }
+        }
     }
 
     fn screen(&self, name: &str) -> Option<Vec<(i64, String)>> {
@@ -1348,6 +1432,21 @@ impl World for ScriptWorld {
             _ if class.ends_with("Internal_InputSplitter") => {
                 let who = self.who(inputs, "Character")?;
                 Ok(self.held_inputs(who, inputs.gate()))
+            }
+            _ if crate::world::is_seat(&class) => {
+                let sitter = inputs
+                    .gate()
+                    .seat
+                    .as_ref()
+                    .and_then(|seat| self.seated.get(seat))
+                    .and_then(|name| self.players.get(name));
+                Ok(match sitter {
+                    Some(p) => vec![
+                        ("bIsOccupied".into(), Value::Bool(true)),
+                        ("SittingCharacter".into(), Value::Object(p.character)),
+                    ],
+                    None => crate::world::empty_seat(),
+                })
             }
             _ => Err(format!("{class} reads the world, which this run does not script")),
         }

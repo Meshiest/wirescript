@@ -307,6 +307,7 @@ fn resolve_file(
     // are collected once.
     diagnostics.extend(parsed.diagnostics.iter().cloned());
     crate::testing::rewrite(&mut parsed.ast, &source, testing, diagnostics);
+    crate::display::reject_imported(&parsed.ast, diagnostics);
 
     let mut imported_ast = parsed.ast.clone();
     let mut sub_imports = Vec::new();
@@ -861,6 +862,18 @@ pub fn resolve_parsed(
     let mut diagnostics = parsed.diagnostics.clone();
     let mut testing = crate::testing::Rewritten::default();
     crate::testing::rewrite(&mut parsed.ast, source, &mut testing, &mut diagnostics);
+    let clean = !parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == crate::diagnostic::Severity::Error);
+    crate::display::rewrite(
+        &mut parsed.ast,
+        source,
+        file,
+        clean,
+        testing.end,
+        &mut diagnostics,
+    );
     let mut doc_comments = parsed.doc_comments.clone();
 
     let mut merged = DeclAccum::default();
@@ -964,6 +977,7 @@ pub fn resolve_parsed(
             module_color: parsed.ast.module_color.clone(),
             module_material: parsed.ast.module_material.clone(),
             imports: Arc::new(import_scope),
+            display_blocks: parsed.ast.display_blocks,
         },
         diagnostics,
         doc_comments,

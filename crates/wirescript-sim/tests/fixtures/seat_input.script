@@ -1,0 +1,10 @@
+2 sit alice p1
+4 input alice Forward 1
+6 input alice E 1
+7 input alice E 0
+8 stand alice
+9 input alice Forward 0
+10 sit bob p2
+12 input bob Right -1
+14 sit alice p1
+16 input alice Forward 1

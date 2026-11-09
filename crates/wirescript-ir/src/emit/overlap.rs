@@ -22,10 +22,7 @@ fn half_extent(catalog: &Catalog, b: &brdb::Brick) -> [i32; 3] {
         // catalog's default half-size below would understate).
         BrickType::Procedural { size, .. } => {
             let h = [i32::from(size.x), i32::from(size.y), i32::from(size.z)];
-            return match b.rotation {
-                brdb::Rotation::Deg90 | brdb::Rotation::Deg270 => [h[1], h[0], h[2]],
-                _ => h,
-            };
+            return oriented(b, h);
         }
         BrickType::Basic(_) => {
             let (lo, hi) = b.local_bounds();
@@ -47,9 +44,21 @@ fn half_extent(catalog: &Catalog, b: &brdb::Brick) -> [i32; 3] {
             break;
         }
     }
-    match b.rotation {
-        brdb::Rotation::Deg90 | brdb::Rotation::Deg270 => [half[1], half[0], half[2]],
-        _ => half,
+    oriented(b, half)
+}
+
+/// A brick's half-extents in the grid from its own: a quarter turn swaps x and
+/// y, and a brick standing on its side (`direction` along X or Y, a chip on
+/// the back of a display) has its height along that axis.
+fn oriented(b: &brdb::Brick, h: [i32; 3]) -> [i32; 3] {
+    let h = match b.rotation {
+        brdb::Rotation::Deg90 | brdb::Rotation::Deg270 => [h[1], h[0], h[2]],
+        _ => h,
+    };
+    match b.direction {
+        brdb::Direction::XPositive | brdb::Direction::XNegative => [h[2], h[1], h[0]],
+        brdb::Direction::YPositive | brdb::Direction::YNegative => [h[0], h[2], h[1]],
+        _ => h,
     }
 }
 

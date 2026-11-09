@@ -61,7 +61,21 @@ impl Parser<'_> {
     pub(super) fn parse_stmt(&mut self) -> Option<Stmt> {
         let t = self.peek().clone();
         if t.kind == TokenKind::Annotation {
-            let anns = self.parse_annotations();
+            let mut anns = self.parse_annotations();
+            if let Some(d) = anns.display.take() {
+                self.error_code(
+                    "WS127",
+                    "@display must be followed by a top-level `var`",
+                    d.range,
+                );
+            }
+            if let Some(s) = anns.seat.take() {
+                self.error_code(
+                    "WS128",
+                    "@seat must be followed by a top-level `in` declaration",
+                    s.range,
+                );
+            }
             let t2 = self.peek().clone();
             let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
             if let Some(r) = &anns.test {
@@ -134,7 +148,9 @@ impl Parser<'_> {
                             r.end,
                         );
                     }
-                    if let TopDecl::In(i) = self.parse_in_decl(side, label, label_expr, invisible) {
+                    if let TopDecl::In(i) =
+                        self.parse_in_decl(side, label, label_expr, invisible, false)
+                    {
                         return Some(Stmt::In(i));
                     }
                     return None;
@@ -380,7 +396,7 @@ impl Parser<'_> {
                     }
                 }
                 "in" => {
-                    if let TopDecl::In(i) = self.parse_in_decl(None, None, None, false) {
+                    if let TopDecl::In(i) = self.parse_in_decl(None, None, None, false, false) {
                         return Some(Stmt::In(i));
                     }
                 }

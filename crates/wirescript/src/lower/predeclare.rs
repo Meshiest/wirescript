@@ -1784,6 +1784,17 @@ fn declare_array_var_storage(
             .collect();
         properties.insert(*sym::INITIAL_VALUE, Literal::Array(lits));
     }
+    // A `@display` starts with every pixel there and transparent.
+    if let Some(spec) = crate::display::display_spec(d, &mut Vec::new()) {
+        let clear = Literal::LinearColor {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+        let pixels = (spec.width * spec.height) as usize;
+        properties.insert(*sym::INITIAL_VALUE, Literal::Array(vec![clear; pixels]));
+    }
     declare_array_var(ctx, &d.name, elem_type, properties, &d.range);
 }
 
@@ -2145,6 +2156,10 @@ pub(super) fn record_output_pins(
 }
 
 pub(super) fn pre_declare_input(ctx: &mut LowerCtx<'_>, d: &InDecl) {
+    if d.seat.is_some() {
+        super::display::lower_seat(ctx, d);
+        return;
+    }
     // A record-typed input port (inline, an alias, or an instantiated generic
     // alias) dissolves into one sub-port per field, bound as a `Record` so
     // `p.field` reads the right sub-port.

@@ -191,6 +191,18 @@ struct SimArgs {
     /// Run this `@test` once on load, as `wirescript test` does.
     #[arg(long, value_name = "NAME")]
     test: Option<String>,
+
+    /// Print each `@display` whenever it changes: as colored blocks
+    /// (`ansi`, the default) or as the hex rows an `.expected` file holds
+    /// (`plain`).
+    #[arg(
+        long,
+        value_name = "STYLE",
+        num_args = 0..=1,
+        default_missing_value = "ansi",
+        value_parser = ["ansi", "plain"]
+    )]
+    show_displays: Option<String>,
 }
 
 /// Where the outer microchip goes, and whether chips open.
@@ -345,7 +357,7 @@ fn check_dt(dt: f64) -> Result<(), Box<dyn Error>> {
 /// Step `sim` by commands read from stdin, printing chat as it is said.
 fn run_interactive(sim: &mut wirescript_sim::Sim) -> Result<(), Box<dyn Error>> {
     use std::io::BufRead;
-    const HELP: &str = "commands: step [N], screen <player>, quit; anything else is a script line without its tick (join alice, chat alice /go, input alice Forward 1)";
+    const HELP: &str = "commands: step [N], screen <player>, display [name], quit; anything else is a script line without its tick (join alice, chat alice /go, input alice Forward 1, sit alice p1, stand alice)";
     sim.run_until(0)?;
     eprintln!("tick 0 done. {HELP}");
     for line in std::io::stdin().lock().lines() {
@@ -369,6 +381,26 @@ fn run_interactive(sim: &mut wirescript_sim::Sim) -> Result<(), Box<dyn Error>> 
                 let target = sim.machine.tick() + n;
                 sim.run_until(target)?;
                 eprintln!("tick {target} done");
+            }
+            ["display"] | ["display", _] => {
+                let Some(displays) = sim.machine.world.displays() else {
+                    eprintln!("this run keeps no displays");
+                    continue;
+                };
+                let shown: Vec<_> = displays
+                    .screens()
+                    .iter()
+                    .filter(|s| words.get(1).is_none_or(|n| *n == s.name))
+                    .collect();
+                if shown.is_empty() {
+                    eprintln!("no display to show");
+                }
+                for s in shown {
+                    println!("[display {}]", s.name);
+                    for line in s.render_ansi() {
+                        println!("{line}");
+                    }
+                }
             }
             ["screen", name] => match sim.machine.world.screen(name) {
                 Some(texts) if texts.is_empty() => eprintln!("{name}'s screen is empty"),
@@ -476,6 +508,10 @@ fn run_sim(source: &Path, args: &SimArgs) -> Result<(), Box<dyn Error>> {
     let mut world = world()?;
     world.echo = true;
     world.echo_ticks = args.show_ticks;
+    world.echo_displays = args.show_displays.as_deref().map(|s| match s {
+        "plain" => wirescript_sim::script_world::DisplayStyle::Plain,
+        _ => wirescript_sim::script_world::DisplayStyle::Ansi,
+    });
     let loaded_at = started.elapsed();
     let gates = loaded.graph.gates.len();
     let mut sim = loaded.into_sim(Box::new(world), opts(args.seed));

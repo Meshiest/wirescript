@@ -228,7 +228,8 @@ fn resolve_simple_trigger(
         if let Some(binding) = rec_binding
             && let Some(trig) = binding_to_port(ctx, &binding, &h.range)
         {
-            return fires(trig, field_label(field));
+            let port = negate_trigger(ctx, trig, negated);
+            return fires(port, field_label(field));
         }
     }
 

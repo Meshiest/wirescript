@@ -6,6 +6,7 @@ use wirescript::{
 };
 
 mod analysis;
+pub mod runner;
 mod sim;
 
 pub(crate) fn make_loader(files_json: &str) -> MemLoader {

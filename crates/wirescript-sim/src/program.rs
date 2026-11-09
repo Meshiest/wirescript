@@ -3,9 +3,10 @@
 //! Each gate keeps the IR node it came from, so errors name source lines.
 
 use brdb::World;
-use wirescript_ir::{EmitOptions, Module, NodeId, Program, SourceRange};
+use wirescript_ir::{EmitOptions, Module, NodeId, Program, SourceRange, exterior};
 
 use crate::collections::HashMap;
+use crate::display::DisplayMeta;
 use crate::graph::Graph;
 use crate::load::{BrickAddr, LoadError, read_brz};
 
@@ -42,6 +43,7 @@ pub fn graph_from_world(
     for (&(addr, _), &g) in &graph.by_addr {
         on_brick.entry(addr).or_default().push(g);
     }
+    let mut node_gates: HashMap<NodeId, Vec<u32>> = HashMap::default();
     for (node, brick) in node_bricks {
         let Some(addr) = addrs.get(brick) else {
             continue;
@@ -50,9 +52,57 @@ pub fn graph_from_world(
             let gate = &mut graph.gates[g as usize];
             gate.node = Some(*node);
             gate.span = spans.get(node).cloned();
+            node_gates.entry(*node).or_default().push(g);
         }
     }
+    tag_exterior(&mut graph, &program.module, &node_gates);
     Ok(graph)
+}
+
+/// Name each `@seat` gate and list each `@display`'s row gates, from the
+/// root module's exterior nodes.
+fn tag_exterior(graph: &mut Graph, module: &Module, node_gates: &HashMap<NodeId, Vec<u32>>) {
+    let class_gate = |node: &NodeId, class: &str| {
+        node_gates
+            .get(node)
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|&g| graph.gates[g as usize].class.ends_with(class))
+    };
+    let mut seats = Vec::new();
+    let mut rows: HashMap<String, Vec<(u32, u32)>> = HashMap::default();
+    for (id, node) in module.nodes_in_order() {
+        if let Some((name, _)) = exterior::seat_of(node) {
+            if let Some(g) = class_gate(id, "Internal_Seat") {
+                seats.push((g, name));
+            }
+        } else if let Some((name, row)) = exterior::row_of(node)
+            && let Some(g) = class_gate(id, "TextDisplay")
+        {
+            rows.entry(name).or_default().push((row, g));
+        }
+    }
+    for (g, name) in seats {
+        graph.gates[g as usize].seat = Some(name);
+    }
+    for (_, node) in module.nodes_in_order() {
+        let Some(d) = exterior::DisplayInfo::of(node) else {
+            continue;
+        };
+        let mut gates = vec![None; d.height as usize];
+        for (row, g) in rows.remove(&d.name).unwrap_or_default() {
+            if let Some(slot) = gates.get_mut(row as usize) {
+                *slot = Some(g);
+            }
+        }
+        graph.displays.push(DisplayMeta {
+            name: d.name,
+            width: d.width,
+            height: d.height,
+            rows: gates,
+        });
+    }
 }
 
 /// Where the writer puts each brick of `world`: the main grid is grid 1, the

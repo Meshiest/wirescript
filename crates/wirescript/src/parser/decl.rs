@@ -28,7 +28,7 @@ impl Parser<'_> {
         self.eat_newlines();
         let t = self.peek().clone();
         if t.kind == TokenKind::Annotation {
-            let anns = self.parse_annotations();
+            let mut anns = self.parse_annotations();
             if let Some(r) = &anns.sliced {
                 self.error(
                     "@sliced must be followed by a `for` loop inside a handler".to_string(),
@@ -38,6 +38,24 @@ impl Parser<'_> {
             }
             let t2 = self.peek().clone();
             let kw = |k: &str| t2.kind == TokenKind::Kw && t2.text == k;
+            if !kw("var")
+                && let Some(d) = anns.display.take()
+            {
+                self.error_code(
+                    "WS127",
+                    "@display must be followed by a top-level `var`",
+                    d.range,
+                );
+            }
+            if !kw("in")
+                && let Some(s) = anns.seat.take()
+            {
+                self.error_code(
+                    "WS128",
+                    "@seat must be followed by a top-level `in` declaration",
+                    s.range,
+                );
+            }
             if let Some(r) = &anns.test {
                 let named_chip = kw("chip") && self.peek_at(1).kind == TokenKind::Ident;
                 if kw("fn") || kw("mod") || named_chip {
@@ -79,7 +97,9 @@ impl Parser<'_> {
                         r.end,
                     );
                 }
-                self.reject_style(&anns, "'in'/'out' declarations");
+                if anns.seat.is_none() {
+                    self.reject_style(&anns, "'in'/'out' declarations");
+                }
                 let side = anns.side.map(|(s, _)| s);
                 let label = anns.label.map(|(l, _)| l);
                 let label_expr = anns.label_expr.map(|(e, _)| e);
@@ -93,7 +113,14 @@ impl Parser<'_> {
                             r.end,
                         );
                     }
-                    return Some(self.parse_in_decl(side, label, label_expr, invisible));
+                    let seated = anns.seat.is_some();
+                    let mut decl = self.parse_in_decl(side, label, label_expr, invisible, seated);
+                    if let TopDecl::In(i) = &mut decl {
+                        i.seat = anns.seat;
+                        i.color_expr = anns.color.map(|(e, _)| e);
+                        i.material_expr = anns.material.map(|(e, _)| e);
+                    }
+                    return Some(decl);
                 }
                 return Some(TopDecl::Out(
                     self.parse_out_binding(side, label, label_expr, invisible, no_fold),
@@ -128,13 +155,16 @@ impl Parser<'_> {
             let is_static_var = kw("static")
                 && self.peek_at(1).kind == TokenKind::Kw
                 && self.peek_at(1).text == "var";
+            // A side picks where a `@display` stands, as it does for a `@seat`.
+            let side_ok = anns.side.is_none() || (anns.display.is_some() && kw("var"));
             let no_side_closed_invisible =
-                anns.side.is_none() && anns.closed.is_none() && anns.invisible.is_none();
+                side_ok && anns.closed.is_none() && anns.invisible.is_none();
             let styled = anns.color.is_some() || anns.material.is_some();
             let var_ann_ok = no_side_closed_invisible
                 && (anns.nofold.is_some()
                     || anns.label.is_some()
                     || anns.label_expr.is_some()
+                    || anns.display.is_some()
                     || styled);
             let bare_nofold = no_side_closed_invisible
                 && anns.nofold.is_some()
@@ -158,6 +188,21 @@ impl Parser<'_> {
                 if kw("var") {
                     let mut decl = self.parse_var_decl(false, no_fold, label, label_expr);
                     set_style(&mut decl, color, material);
+                    if let (TopDecl::Var(v), Some(mut display)) = (&mut decl, anns.display) {
+                        display.side = anns.side.map(|(s, _)| s);
+                        // `@display var screen` is a `color[]` when the type is left out.
+                        if v.typ.is_none() {
+                            let range = display.range.clone();
+                            v.typ = Some(TypeExpr::Array {
+                                inner: Box::new(TypeExpr::Name {
+                                    name: "color".to_string(),
+                                    range: range.clone(),
+                                }),
+                                range,
+                            });
+                        }
+                        v.display = Some(display);
+                    }
                     return Some(decl);
                 }
                 if kw("let") {
@@ -211,7 +256,7 @@ impl Parser<'_> {
                     }
                 }
                 "buffer" => return Some(self.parse_buffer_decl()),
-                "in" => return Some(self.parse_in_decl(None, None, None, false)),
+                "in" => return Some(self.parse_in_decl(None, None, None, false, false)),
                 "out" => {
                     return Some(TopDecl::Out(
                         self.parse_out_binding(None, None, None, false, false),
@@ -335,6 +380,7 @@ impl Parser<'_> {
             label_expr,
             color_expr: None,
             material_expr: None,
+            display: None,
             range: self.make_range(start, end),
         })
     }
@@ -365,11 +411,21 @@ impl Parser<'_> {
         label: Option<String>,
         label_expr: Option<Expr>,
         invisible: bool,
+        seated: bool,
     ) -> TopDecl {
         let start = self.expect(TokenKind::Kw, Some("in")).start;
-        let name = self.expect(TokenKind::Ident, None).text;
-        self.expect(TokenKind::Colon, None);
-        let typ = self.parse_type();
+        let name_tok = self.expect(TokenKind::Ident, None);
+        let name = name_tok.text;
+        // A `@seat` input is a `Seat` when the type is left out.
+        let typ = if seated && !self.check(TokenKind::Colon, None) {
+            TypeExpr::Name {
+                name: "Seat".to_string(),
+                range: self.make_range(name_tok.start, name_tok.end),
+            }
+        } else {
+            self.expect(TokenKind::Colon, None);
+            self.parse_type()
+        };
         let end = self.peek().start;
         self.eat_stmt_end();
         TopDecl::In(InDecl {
@@ -379,6 +435,9 @@ impl Parser<'_> {
             label,
             label_expr,
             invisible,
+            seat: None,
+            color_expr: None,
+            material_expr: None,
             range: self.make_range(start, end),
         })
     }

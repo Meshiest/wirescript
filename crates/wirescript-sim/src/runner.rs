@@ -146,6 +146,8 @@ impl Prepared {
                 lines.push((l.tick, l.text.clone()));
             }
         }
+        lines.extend(display_lines(sim.machine.world.as_ref()));
+        lines.sort_by_key(|(tick, _)| *tick);
         if error.is_none() {
             error = sim.machine.world.unfinished();
         }
@@ -161,6 +163,23 @@ impl Prepared {
         }
         Outcome { lines, error }
     }
+}
+
+/// Each picture the run's displays showed, as `Screen::render_plain` writes
+/// it, one line at a time with the tick it changed on.
+pub fn display_lines(world: &dyn crate::world::World) -> Vec<(u64, String)> {
+    world
+        .displays()
+        .map(|d| d.frames())
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|f| {
+            f.screen
+                .render_plain(f.tick)
+                .into_iter()
+                .map(move |l| (f.tick, l))
+        })
+        .collect()
 }
 
 /// Where a run's chat differs from the text of its `.expected` file, one
